@@ -2,7 +2,7 @@
 //!
 //! Governor 制限違反（ループ内 SOQL/DML/Callout 等）のヒューリスティック検出を行う。
 //! 解析の実体は `check/` 配下のサブモジュールに分割されており、本ファイルは
-//! 公開 API (`run`, `runWithConfig`) の再エクスポートとテストを提供する。
+//! 公開 API (`run`, `run_with_config`) の再エクスポートとテストを提供する。
 
 const std = @import("std");
 const Io = std.Io;
@@ -25,45 +25,55 @@ const TypeRelations = types.TypeRelations;
 const ApexFile = types.ApexFile;
 
 // Re-export functions for internal test usage
-const parseGuardUpperBound = bounds_mod.parseGuardUpperBound;
-const inferLoopInfo = bounds_mod.inferLoopInfo;
-const collectDoWhileStartConditions = preprocessor_mod.collectDoWhileStartConditions;
-const computeCpuLimitN = rules_mod.computeCpuLimitN;
-const estimateCpuTotalMs = rules_mod.estimateCpuTotalMs;
+const parse_guard_upper_bound = bounds_mod.parse_guard_upper_bound;
+const infer_loop_info = bounds_mod.infer_loop_info;
+const collect_do_while_start_conditions = preprocessor_mod.collect_do_while_start_conditions;
+const compute_cpu_limit_n = rules_mod.compute_cpu_limit_n;
+const estimate_cpu_total_ms = rules_mod.estimate_cpu_total_ms;
 
 // Delegates
-const collectApexFiles = file_collector.collectApexFiles;
-const deinitApexFiles = file_collector.deinitApexFiles;
-const collectTypeRelations = call_graph_mod.collectTypeRelations;
-const buildMethodSummaries = call_graph_mod.buildMethodSummaries;
-const scanContent = scanner_mod.scanContent;
-const stripCommentsPreserveLines = preprocessor_mod.stripCommentsPreserveLines;
+const collect_apex_files = file_collector.collect_apex_files;
+const deinit_apex_files = file_collector.deinit_apex_files;
+const collect_type_relations = call_graph_mod.collect_type_relations;
+const build_method_summaries = call_graph_mod.build_method_summaries;
+const scan_content = scanner_mod.scan_content;
+const strip_comments_preserve_lines = preprocessor_mod.strip_comments_preserve_lines;
 
-pub fn run(gpa: std.mem.Allocator, io: Io, roots: []const []const u8) !std.ArrayList(model.Finding) {
-    return runWithConfig(gpa, io, roots, config.Config.defaults());
+pub fn run(
+    gpa: std.mem.Allocator,
+    io: Io,
+    roots: []const []const u8,
+) !std.ArrayList(model.Finding) {
+    return run_with_config(gpa, io, roots, config.Config.defaults());
 }
 
-pub fn runWithConfig(gpa: std.mem.Allocator, io: Io, roots: []const []const u8, cfg: config.Config) !std.ArrayList(model.Finding) {
+pub fn run_with_config(
+    gpa: std.mem.Allocator,
+    io: Io,
+    roots: []const []const u8,
+    cfg: config.Config,
+) !std.ArrayList(model.Finding) {
     var findings: std.ArrayList(model.Finding) = .empty;
-    errdefer model.deinitFindings(gpa, &findings);
+    errdefer model.deinit_findings(gpa, &findings);
 
-    var files = try collectApexFiles(gpa, io, roots);
-    defer deinitApexFiles(gpa, &files);
+    var files = try collect_apex_files(gpa, io, roots);
+    defer deinit_apex_files(gpa, &files);
 
     var arena = std.heap.ArenaAllocator.init(gpa);
     defer arena.deinit();
+
     const arena_allocator = arena.allocator();
 
     // 各ファイルの stripped_content を事前計算（1回だけ strip）
     for (files.items) |*file| {
-        file.stripped_content = try stripCommentsPreserveLines(arena_allocator, file.content);
+        file.stripped_content = try strip_comments_preserve_lines(arena_allocator, file.content);
     }
 
-    var type_relations = try collectTypeRelations(arena_allocator, files.items);
-    var build_result = try buildMethodSummaries(arena_allocator, files.items, &type_relations);
+    var type_relations = try collect_type_relations(arena_allocator, files.items);
+    var build_result = try build_method_summaries(arena_allocator, files.items, &type_relations);
 
     for (files.items) |file| {
-        try scanContent(
+        try scan_content(
             gpa,
             file.path,
             file.stripped_content,
@@ -80,7 +90,7 @@ pub fn runWithConfig(gpa: std.mem.Allocator, io: Io, roots: []const []const u8, 
 
 // --------------- Test helpers ---------------
 
-fn runCheckOnTempSource(
+fn run_check_on_temp_source(
     gpa: std.mem.Allocator,
     source: []const u8,
     cfg: config.Config,
@@ -91,7 +101,7 @@ fn runCheckOnTempSource(
             .source = source,
         },
     };
-    return runCheckOnTempSources(gpa, &sources, cfg);
+    return run_check_on_temp_sources(gpa, &sources, cfg);
 }
 
 const SourceFile = struct {
@@ -99,40 +109,51 @@ const SourceFile = struct {
     source: []const u8,
 };
 
-fn runCheckOnTempSources(
+fn run_check_on_temp_sources(
     gpa: std.mem.Allocator,
     sources: []const SourceFile,
     cfg: config.Config,
 ) !std.ArrayList(model.Finding) {
     var findings: std.ArrayList(model.Finding) = .empty;
-    errdefer model.deinitFindings(gpa, &findings);
+    errdefer model.deinit_findings(gpa, &findings);
 
     // Build ApexFile slice directly from in-memory sources (no file I/O).
     var files = try std.ArrayList(ApexFile).initCapacity(gpa, sources.len);
     defer files.deinit(gpa);
+
     for (sources) |src| {
         files.appendAssumeCapacity(.{ .path = src.name, .content = src.source });
     }
 
     var arena = std.heap.ArenaAllocator.init(gpa);
     defer arena.deinit();
+
     const arena_alloc = arena.allocator();
 
     for (files.items) |*file| {
-        file.stripped_content = try stripCommentsPreserveLines(arena_alloc, file.content);
+        file.stripped_content = try strip_comments_preserve_lines(arena_alloc, file.content);
     }
 
-    var type_relations = try collectTypeRelations(arena_alloc, files.items);
-    var build_result = try buildMethodSummaries(arena_alloc, files.items, &type_relations);
+    var type_relations = try collect_type_relations(arena_alloc, files.items);
+    var build_result = try build_method_summaries(arena_alloc, files.items, &type_relations);
 
     for (files.items) |file| {
-        try scanContent(gpa, file.path, file.stripped_content, cfg, &build_result.summaries, &build_result.name_index, &type_relations, &findings);
+        try scan_content(
+            gpa,
+            file.path,
+            file.stripped_content,
+            cfg,
+            &build_result.summaries,
+            &build_result.name_index,
+            &type_relations,
+            &findings,
+        );
     }
 
     return findings;
 }
 
-fn findFindingByRule(findings: []const model.Finding, rule_id: []const u8) ?model.Finding {
+fn find_finding_by_rule(findings: []const model.Finding, rule_id: []const u8) ?model.Finding {
     for (findings) |finding| {
         if (std.mem.eql(u8, finding.rule_id, rule_id)) return finding;
     }
@@ -142,7 +163,7 @@ fn findFindingByRule(findings: []const model.Finding, rule_id: []const u8) ?mode
 // --------------- Tests ---------------
 
 test "guard upper bound parses from return guard" {
-    const update = parseGuardUpperBound("n > 200") orelse return error.TestUnexpectedResult;
+    const update = parse_guard_upper_bound("n > 200") orelse return error.TestUnexpectedResult;
     try std.testing.expectEqualStrings("n", update.name);
     try std.testing.expectEqual(@as(?u64, 200), update.max);
 }
@@ -150,17 +171,21 @@ test "guard upper bound parses from return guard" {
 test "for condition uses inferred variable bound" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
+
     const allocator = arena.allocator();
 
     var bounds = std.StringHashMap(Bound).init(allocator);
     const key = try allocator.dupe(u8, "n");
     try bounds.put(key, .{ .max = 120, .origin = .guard });
 
-    const loop = inferLoopInfo("for (Integer i = 0; i < n; i++) {", &bounds) orelse return error.TestUnexpectedResult;
+    const loop = infer_loop_info(
+        "for (Integer i = 0; i < n; i++) {",
+        &bounds,
+    ) orelse return error.TestUnexpectedResult;
     try std.testing.expectEqual(@as(?u64, 120), loop.max_iterations);
 }
 
-test "collectDoWhileStartConditions links do line to tail condition" {
+test "collect_do_while_start_conditions links do line to tail condition" {
     const source =
         \\public with sharing class DoWhileMapService {
         \\    public static void run(List<Account> records) {
@@ -175,14 +200,15 @@ test "collectDoWhileStartConditions links do line to tail condition" {
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
+
     const allocator = arena.allocator();
 
-    var mapped = try collectDoWhileStartConditions(allocator, source);
+    var mapped = try collect_do_while_start_conditions(allocator, source);
     const cond = mapped.get(5) orelse return error.TestUnexpectedResult;
     try std.testing.expectEqualStrings("i < n", cond);
 }
 
-test "collectDoWhileStartConditions supports do on separate line from brace" {
+test "collect_do_while_start_conditions supports do on separate line from brace" {
     const source =
         \\public with sharing class DoWhileSplitMapService {
         \\    public static void run(List<Account> records) {
@@ -198,9 +224,10 @@ test "collectDoWhileStartConditions supports do on separate line from brace" {
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
+
     const allocator = arena.allocator();
 
-    var mapped = try collectDoWhileStartConditions(allocator, source);
+    var mapped = try collect_do_while_start_conditions(allocator, source);
     const cond = mapped.get(5) orelse return error.TestUnexpectedResult;
     try std.testing.expectEqualStrings("i < n", cond);
 }
@@ -221,10 +248,17 @@ test "do-while loop uses inferred guard bound for DML finding" {
         \\}
     ;
 
-    var findings = try runCheckOnTempSource(std.testing.allocator, source, config.Config.defaults());
-    defer model.deinitFindings(std.testing.allocator, &findings);
+    var findings = try run_check_on_temp_source(
+        std.testing.allocator,
+        source,
+        config.Config.defaults(),
+    );
+    defer model.deinit_findings(std.testing.allocator, &findings);
 
-    const dml = findFindingByRule(findings.items, "AG003") orelse return error.TestUnexpectedResult;
+    const dml = find_finding_by_rule(
+        findings.items,
+        "AG003",
+    ) orelse return error.TestUnexpectedResult;
     try std.testing.expect(std.mem.indexOf(u8, dml.message, "Loop upper bound <= 120") != null);
 }
 
@@ -241,10 +275,14 @@ test "block comment inside loop does not trigger DML finding" {
         \\}
     ;
 
-    var findings = try runCheckOnTempSource(std.testing.allocator, source, config.Config.defaults());
-    defer model.deinitFindings(std.testing.allocator, &findings);
+    var findings = try run_check_on_temp_source(
+        std.testing.allocator,
+        source,
+        config.Config.defaults(),
+    );
+    defer model.deinit_findings(std.testing.allocator, &findings);
 
-    try std.testing.expect(findFindingByRule(findings.items, "AG003") == null);
+    try std.testing.expect(find_finding_by_rule(findings.items, "AG003") == null);
 }
 
 test "multiline block comment is ignored while real DML is still detected" {
@@ -264,16 +302,23 @@ test "multiline block comment is ignored while real DML is still detected" {
         \\}
     ;
 
-    var findings = try runCheckOnTempSource(std.testing.allocator, source, config.Config.defaults());
-    defer model.deinitFindings(std.testing.allocator, &findings);
+    var findings = try run_check_on_temp_source(
+        std.testing.allocator,
+        source,
+        config.Config.defaults(),
+    );
+    defer model.deinit_findings(std.testing.allocator, &findings);
 
-    const dml = findFindingByRule(findings.items, "AG003") orelse return error.TestUnexpectedResult;
+    const dml = find_finding_by_rule(
+        findings.items,
+        "AG003",
+    ) orelse return error.TestUnexpectedResult;
     try std.testing.expect(std.mem.indexOf(u8, dml.message, "Loop upper bound <= 120") != null);
 }
 
 test "cpu estimate helpers" {
-    try std.testing.expectEqual(@as(u64, 271), computeCpuLimitN(500, 35));
-    try std.testing.expectEqual(@as(?u64, 4700), estimateCpuTotalMs(500, 120, 35));
+    try std.testing.expectEqual(@as(u64, 271), compute_cpu_limit_n(500, 35));
+    try std.testing.expectEqual(@as(?u64, 4700), estimate_cpu_total_ms(500, 120, 35));
 }
 
 test "guarded loop yields bounded DML warning and cpu estimate" {
@@ -289,14 +334,24 @@ test "guarded loop yields bounded DML warning and cpu estimate" {
         \\}
     ;
 
-    var findings = try runCheckOnTempSource(std.testing.allocator, source, config.Config.defaults());
-    defer model.deinitFindings(std.testing.allocator, &findings);
+    var findings = try run_check_on_temp_source(
+        std.testing.allocator,
+        source,
+        config.Config.defaults(),
+    );
+    defer model.deinit_findings(std.testing.allocator, &findings);
 
-    const dml = findFindingByRule(findings.items, "AG003") orelse return error.TestUnexpectedResult;
+    const dml = find_finding_by_rule(
+        findings.items,
+        "AG003",
+    ) orelse return error.TestUnexpectedResult;
     try std.testing.expect(dml.severity == .warning);
     try std.testing.expect(std.mem.indexOf(u8, dml.message, "Loop upper bound <= 120") != null);
 
-    const cpu = findFindingByRule(findings.items, "AG009") orelse return error.TestUnexpectedResult;
+    const cpu = find_finding_by_rule(
+        findings.items,
+        "AG009",
+    ) orelse return error.TestUnexpectedResult;
     try std.testing.expect(std.mem.indexOf(u8, cpu.message, "500 + 120*25") != null);
 }
 
@@ -316,10 +371,17 @@ test "soql with bound 200 becomes governor error" {
         \\}
     ;
 
-    var findings = try runCheckOnTempSource(std.testing.allocator, source, config.Config.defaults());
-    defer model.deinitFindings(std.testing.allocator, &findings);
+    var findings = try run_check_on_temp_source(
+        std.testing.allocator,
+        source,
+        config.Config.defaults(),
+    );
+    defer model.deinit_findings(std.testing.allocator, &findings);
 
-    const soql = findFindingByRule(findings.items, "AG002") orelse return error.TestUnexpectedResult;
+    const soql = find_finding_by_rule(
+        findings.items,
+        "AG002",
+    ) orelse return error.TestUnexpectedResult;
     try std.testing.expect(soql.severity == .err);
     try std.testing.expect(std.mem.indexOf(u8, soql.message, "Loop upper bound <= 200") != null);
 }
@@ -337,10 +399,17 @@ test "Database.countQuery in loop is treated as SOQL" {
         \\}
     ;
 
-    var findings = try runCheckOnTempSource(std.testing.allocator, source, config.Config.defaults());
-    defer model.deinitFindings(std.testing.allocator, &findings);
+    var findings = try run_check_on_temp_source(
+        std.testing.allocator,
+        source,
+        config.Config.defaults(),
+    );
+    defer model.deinit_findings(std.testing.allocator, &findings);
 
-    const soql = findFindingByRule(findings.items, "AG002") orelse return error.TestUnexpectedResult;
+    const soql = find_finding_by_rule(
+        findings.items,
+        "AG002",
+    ) orelse return error.TestUnexpectedResult;
     try std.testing.expect(std.mem.indexOf(u8, soql.message, "Loop upper bound <= 90") != null);
 }
 
@@ -356,10 +425,17 @@ test "Database.merge in loop is treated as DML" {
         \\}
     ;
 
-    var findings = try runCheckOnTempSource(std.testing.allocator, source, config.Config.defaults());
-    defer model.deinitFindings(std.testing.allocator, &findings);
+    var findings = try run_check_on_temp_source(
+        std.testing.allocator,
+        source,
+        config.Config.defaults(),
+    );
+    defer model.deinit_findings(std.testing.allocator, &findings);
 
-    const dml = findFindingByRule(findings.items, "AG003") orelse return error.TestUnexpectedResult;
+    const dml = find_finding_by_rule(
+        findings.items,
+        "AG003",
+    ) orelse return error.TestUnexpectedResult;
     try std.testing.expect(std.mem.indexOf(u8, dml.message, "Loop upper bound <= 120") != null);
 }
 
@@ -377,12 +453,22 @@ test "JSON.deserializeUntyped in loop is flagged as JSON work" {
         \\}
     ;
 
-    var findings = try runCheckOnTempSource(std.testing.allocator, source, config.Config.defaults());
-    defer model.deinitFindings(std.testing.allocator, &findings);
+    var findings = try run_check_on_temp_source(
+        std.testing.allocator,
+        source,
+        config.Config.defaults(),
+    );
+    defer model.deinit_findings(std.testing.allocator, &findings);
 
-    const json = findFindingByRule(findings.items, "AG004") orelse return error.TestUnexpectedResult;
+    const json = find_finding_by_rule(
+        findings.items,
+        "AG004",
+    ) orelse return error.TestUnexpectedResult;
     try std.testing.expect(json.severity == .warning);
-    const cpu = findFindingByRule(findings.items, "AG009") orelse return error.TestUnexpectedResult;
+    const cpu = find_finding_by_rule(
+        findings.items,
+        "AG009",
+    ) orelse return error.TestUnexpectedResult;
     try std.testing.expect(std.mem.indexOf(u8, cpu.title, "JSON") != null);
 }
 
@@ -399,10 +485,17 @@ test "SOSL in loop is flagged as AG008" {
         \\}
     ;
 
-    var findings = try runCheckOnTempSource(std.testing.allocator, source, config.Config.defaults());
-    defer model.deinitFindings(std.testing.allocator, &findings);
+    var findings = try run_check_on_temp_source(
+        std.testing.allocator,
+        source,
+        config.Config.defaults(),
+    );
+    defer model.deinit_findings(std.testing.allocator, &findings);
 
-    const sosl = findFindingByRule(findings.items, "AG008") orelse return error.TestUnexpectedResult;
+    const sosl = find_finding_by_rule(
+        findings.items,
+        "AG008",
+    ) orelse return error.TestUnexpectedResult;
     try std.testing.expect(sosl.severity == .err);
     try std.testing.expect(std.mem.indexOf(u8, sosl.message, "Loop upper bound <= 25") != null);
 }
@@ -422,10 +515,17 @@ test "Http send in loop is flagged as AG010" {
         \\}
     ;
 
-    var findings = try runCheckOnTempSource(std.testing.allocator, source, config.Config.defaults());
-    defer model.deinitFindings(std.testing.allocator, &findings);
+    var findings = try run_check_on_temp_source(
+        std.testing.allocator,
+        source,
+        config.Config.defaults(),
+    );
+    defer model.deinit_findings(std.testing.allocator, &findings);
 
-    const callout = findFindingByRule(findings.items, "AG010") orelse return error.TestUnexpectedResult;
+    const callout = find_finding_by_rule(
+        findings.items,
+        "AG010",
+    ) orelse return error.TestUnexpectedResult;
     try std.testing.expect(callout.severity == .err);
     try std.testing.expect(std.mem.indexOf(u8, callout.message, "Loop upper bound <= 110") != null);
 }
@@ -443,10 +543,17 @@ test "Messaging.sendEmail in loop is flagged as AG011" {
         \\}
     ;
 
-    var findings = try runCheckOnTempSource(std.testing.allocator, source, config.Config.defaults());
-    defer model.deinitFindings(std.testing.allocator, &findings);
+    var findings = try run_check_on_temp_source(
+        std.testing.allocator,
+        source,
+        config.Config.defaults(),
+    );
+    defer model.deinit_findings(std.testing.allocator, &findings);
 
-    const msg = findFindingByRule(findings.items, "AG011") orelse return error.TestUnexpectedResult;
+    const msg = find_finding_by_rule(
+        findings.items,
+        "AG011",
+    ) orelse return error.TestUnexpectedResult;
     try std.testing.expect(msg.severity == .err);
     try std.testing.expect(std.mem.indexOf(u8, msg.message, "Loop upper bound <= 12") != null);
 }
@@ -468,10 +575,13 @@ test "cpu model config changes AG009 slope" {
     cfg.cpu_model.base_ms = 450;
     cfg.cpu_model.dml_ms = 10;
 
-    var findings = try runCheckOnTempSource(std.testing.allocator, source, cfg);
-    defer model.deinitFindings(std.testing.allocator, &findings);
+    var findings = try run_check_on_temp_source(std.testing.allocator, source, cfg);
+    defer model.deinit_findings(std.testing.allocator, &findings);
 
-    const cpu = findFindingByRule(findings.items, "AG009") orelse return error.TestUnexpectedResult;
+    const cpu = find_finding_by_rule(
+        findings.items,
+        "AG009",
+    ) orelse return error.TestUnexpectedResult;
     try std.testing.expect(std.mem.indexOf(u8, cpu.message, "450 + 120*10") != null);
 }
 
@@ -488,10 +598,17 @@ test "guard with non-bound conjunct is ignored for safety" {
         \\}
     ;
 
-    var findings = try runCheckOnTempSource(std.testing.allocator, source, config.Config.defaults());
-    defer model.deinitFindings(std.testing.allocator, &findings);
+    var findings = try run_check_on_temp_source(
+        std.testing.allocator,
+        source,
+        config.Config.defaults(),
+    );
+    defer model.deinit_findings(std.testing.allocator, &findings);
 
-    const dml = findFindingByRule(findings.items, "AG003") orelse return error.TestUnexpectedResult;
+    const dml = find_finding_by_rule(
+        findings.items,
+        "AG003",
+    ) orelse return error.TestUnexpectedResult;
     try std.testing.expect(std.mem.indexOf(u8, dml.message, "dynamic/unknown") != null);
 }
 
@@ -508,10 +625,17 @@ test "guard with OR still constrains bounded variable" {
         \\}
     ;
 
-    var findings = try runCheckOnTempSource(std.testing.allocator, source, config.Config.defaults());
-    defer model.deinitFindings(std.testing.allocator, &findings);
+    var findings = try run_check_on_temp_source(
+        std.testing.allocator,
+        source,
+        config.Config.defaults(),
+    );
+    defer model.deinit_findings(std.testing.allocator, &findings);
 
-    const dml = findFindingByRule(findings.items, "AG003") orelse return error.TestUnexpectedResult;
+    const dml = find_finding_by_rule(
+        findings.items,
+        "AG003",
+    ) orelse return error.TestUnexpectedResult;
     try std.testing.expect(std.mem.indexOf(u8, dml.message, "Loop upper bound <= 120") != null);
 }
 
@@ -528,10 +652,17 @@ test "assignment arithmetic upper bound is inferred from aliases" {
         \\}
     ;
 
-    var findings = try runCheckOnTempSource(std.testing.allocator, source, config.Config.defaults());
-    defer model.deinitFindings(std.testing.allocator, &findings);
+    var findings = try run_check_on_temp_source(
+        std.testing.allocator,
+        source,
+        config.Config.defaults(),
+    );
+    defer model.deinit_findings(std.testing.allocator, &findings);
 
-    const dml = findFindingByRule(findings.items, "AG003") orelse return error.TestUnexpectedResult;
+    const dml = find_finding_by_rule(
+        findings.items,
+        "AG003",
+    ) orelse return error.TestUnexpectedResult;
     try std.testing.expect(std.mem.indexOf(u8, dml.message, "Loop upper bound <= 119") != null);
 }
 
@@ -548,10 +679,17 @@ test "math min loop bound is used" {
         \\}
     ;
 
-    var findings = try runCheckOnTempSource(std.testing.allocator, source, config.Config.defaults());
-    defer model.deinitFindings(std.testing.allocator, &findings);
+    var findings = try run_check_on_temp_source(
+        std.testing.allocator,
+        source,
+        config.Config.defaults(),
+    );
+    defer model.deinit_findings(std.testing.allocator, &findings);
 
-    const dml = findFindingByRule(findings.items, "AG003") orelse return error.TestUnexpectedResult;
+    const dml = find_finding_by_rule(
+        findings.items,
+        "AG003",
+    ) orelse return error.TestUnexpectedResult;
     try std.testing.expect(std.mem.indexOf(u8, dml.message, "Loop upper bound <= 100") != null);
 }
 
@@ -567,10 +705,17 @@ test "size guard with >= sets inclusive cap" {
         \\}
     ;
 
-    var findings = try runCheckOnTempSource(std.testing.allocator, source, config.Config.defaults());
-    defer model.deinitFindings(std.testing.allocator, &findings);
+    var findings = try run_check_on_temp_source(
+        std.testing.allocator,
+        source,
+        config.Config.defaults(),
+    );
+    defer model.deinit_findings(std.testing.allocator, &findings);
 
-    const dml = findFindingByRule(findings.items, "AG003") orelse return error.TestUnexpectedResult;
+    const dml = find_finding_by_rule(
+        findings.items,
+        "AG003",
+    ) orelse return error.TestUnexpectedResult;
     try std.testing.expect(std.mem.indexOf(u8, dml.message, "Loop upper bound <= 150") != null);
 }
 
@@ -589,10 +734,17 @@ test "else-if guard on same line with brace is recognized" {
         \\}
     ;
 
-    var findings = try runCheckOnTempSource(std.testing.allocator, source, config.Config.defaults());
-    defer model.deinitFindings(std.testing.allocator, &findings);
+    var findings = try run_check_on_temp_source(
+        std.testing.allocator,
+        source,
+        config.Config.defaults(),
+    );
+    defer model.deinit_findings(std.testing.allocator, &findings);
 
-    const dml = findFindingByRule(findings.items, "AG003") orelse return error.TestUnexpectedResult;
+    const dml = find_finding_by_rule(
+        findings.items,
+        "AG003",
+    ) orelse return error.TestUnexpectedResult;
     try std.testing.expect(std.mem.indexOf(u8, dml.message, "Loop upper bound <= 140") != null);
 }
 
@@ -612,10 +764,17 @@ test "loop calling helper with DML is flagged via method summary" {
         \\}
     ;
 
-    var findings = try runCheckOnTempSource(std.testing.allocator, source, config.Config.defaults());
-    defer model.deinitFindings(std.testing.allocator, &findings);
+    var findings = try run_check_on_temp_source(
+        std.testing.allocator,
+        source,
+        config.Config.defaults(),
+    );
+    defer model.deinit_findings(std.testing.allocator, &findings);
 
-    const dml = findFindingByRule(findings.items, "AG003") orelse return error.TestUnexpectedResult;
+    const dml = find_finding_by_rule(
+        findings.items,
+        "AG003",
+    ) orelse return error.TestUnexpectedResult;
     try std.testing.expect(std.mem.indexOf(u8, dml.message, "Loop upper bound <= 120") != null);
 }
 
@@ -642,10 +801,17 @@ test "loop calling helper chain with SOQL is flagged transitively" {
         \\}
     ;
 
-    var findings = try runCheckOnTempSource(std.testing.allocator, source, config.Config.defaults());
-    defer model.deinitFindings(std.testing.allocator, &findings);
+    var findings = try run_check_on_temp_source(
+        std.testing.allocator,
+        source,
+        config.Config.defaults(),
+    );
+    defer model.deinit_findings(std.testing.allocator, &findings);
 
-    const soql = findFindingByRule(findings.items, "AG002") orelse return error.TestUnexpectedResult;
+    const soql = find_finding_by_rule(
+        findings.items,
+        "AG002",
+    ) orelse return error.TestUnexpectedResult;
     try std.testing.expect(std.mem.indexOf(u8, soql.message, "Loop upper bound <= 80") != null);
 }
 
@@ -677,10 +843,17 @@ test "loop calling helper in another class is flagged" {
         },
     };
 
-    var findings = try runCheckOnTempSources(std.testing.allocator, &sources, config.Config.defaults());
-    defer model.deinitFindings(std.testing.allocator, &findings);
+    var findings = try run_check_on_temp_sources(
+        std.testing.allocator,
+        &sources,
+        config.Config.defaults(),
+    );
+    defer model.deinit_findings(std.testing.allocator, &findings);
 
-    const dml = findFindingByRule(findings.items, "AG003") orelse return error.TestUnexpectedResult;
+    const dml = find_finding_by_rule(
+        findings.items,
+        "AG003",
+    ) orelse return error.TestUnexpectedResult;
     try std.testing.expect(std.mem.indexOf(u8, dml.message, "Loop upper bound <= 110") != null);
 }
 
@@ -725,10 +898,17 @@ test "loop calling helper chain across classes propagates SOQL" {
         },
     };
 
-    var findings = try runCheckOnTempSources(std.testing.allocator, &sources, config.Config.defaults());
-    defer model.deinitFindings(std.testing.allocator, &findings);
+    var findings = try run_check_on_temp_sources(
+        std.testing.allocator,
+        &sources,
+        config.Config.defaults(),
+    );
+    defer model.deinit_findings(std.testing.allocator, &findings);
 
-    const soql = findFindingByRule(findings.items, "AG002") orelse return error.TestUnexpectedResult;
+    const soql = find_finding_by_rule(
+        findings.items,
+        "AG002",
+    ) orelse return error.TestUnexpectedResult;
     try std.testing.expect(std.mem.indexOf(u8, soql.message, "Loop upper bound <= 70") != null);
 }
 
@@ -749,10 +929,17 @@ test "helper signature with brace on next line is summarized" {
         \\}
     ;
 
-    var findings = try runCheckOnTempSource(std.testing.allocator, source, config.Config.defaults());
-    defer model.deinitFindings(std.testing.allocator, &findings);
+    var findings = try run_check_on_temp_source(
+        std.testing.allocator,
+        source,
+        config.Config.defaults(),
+    );
+    defer model.deinit_findings(std.testing.allocator, &findings);
 
-    const dml = findFindingByRule(findings.items, "AG003") orelse return error.TestUnexpectedResult;
+    const dml = find_finding_by_rule(
+        findings.items,
+        "AG003",
+    ) orelse return error.TestUnexpectedResult;
     try std.testing.expect(std.mem.indexOf(u8, dml.message, "Loop upper bound <= 100") != null);
 }
 
@@ -774,10 +961,17 @@ test "callee inner loop multiplies governor estimate" {
         \\}
     ;
 
-    var findings = try runCheckOnTempSource(std.testing.allocator, source, config.Config.defaults());
-    defer model.deinitFindings(std.testing.allocator, &findings);
+    var findings = try run_check_on_temp_source(
+        std.testing.allocator,
+        source,
+        config.Config.defaults(),
+    );
+    defer model.deinit_findings(std.testing.allocator, &findings);
 
-    const dml = findFindingByRule(findings.items, "AG003") orelse return error.TestUnexpectedResult;
+    const dml = find_finding_by_rule(
+        findings.items,
+        "AG003",
+    ) orelse return error.TestUnexpectedResult;
     try std.testing.expect(dml.severity == .err);
     try std.testing.expect(std.mem.indexOf(u8, dml.message, "up to 200 times") != null);
 }
@@ -804,10 +998,17 @@ test "callee looped helper call multiplies transitive DML" {
         \\}
     ;
 
-    var findings = try runCheckOnTempSource(std.testing.allocator, source, config.Config.defaults());
-    defer model.deinitFindings(std.testing.allocator, &findings);
+    var findings = try run_check_on_temp_source(
+        std.testing.allocator,
+        source,
+        config.Config.defaults(),
+    );
+    defer model.deinit_findings(std.testing.allocator, &findings);
 
-    const dml = findFindingByRule(findings.items, "AG003") orelse return error.TestUnexpectedResult;
+    const dml = find_finding_by_rule(
+        findings.items,
+        "AG003",
+    ) orelse return error.TestUnexpectedResult;
     try std.testing.expect(dml.severity == .err);
     try std.testing.expect(std.mem.indexOf(u8, dml.message, "up to 200 times") != null);
 }
@@ -835,10 +1036,17 @@ test "typed receiver call resolves when variable is bound to new concrete helper
         \\}
     ;
 
-    var findings = try runCheckOnTempSource(std.testing.allocator, source, config.Config.defaults());
-    defer model.deinitFindings(std.testing.allocator, &findings);
+    var findings = try run_check_on_temp_source(
+        std.testing.allocator,
+        source,
+        config.Config.defaults(),
+    );
+    defer model.deinit_findings(std.testing.allocator, &findings);
 
-    const dml = findFindingByRule(findings.items, "AG003") orelse return error.TestUnexpectedResult;
+    const dml = find_finding_by_rule(
+        findings.items,
+        "AG003",
+    ) orelse return error.TestUnexpectedResult;
     try std.testing.expect(std.mem.indexOf(u8, dml.message, "Loop upper bound <= 120") != null);
 }
 
@@ -866,10 +1074,17 @@ test "typed receiver reassignment to concrete helper is reflected in call resolu
         \\}
     ;
 
-    var findings = try runCheckOnTempSource(std.testing.allocator, source, config.Config.defaults());
-    defer model.deinitFindings(std.testing.allocator, &findings);
+    var findings = try run_check_on_temp_source(
+        std.testing.allocator,
+        source,
+        config.Config.defaults(),
+    );
+    defer model.deinit_findings(std.testing.allocator, &findings);
 
-    const dml = findFindingByRule(findings.items, "AG003") orelse return error.TestUnexpectedResult;
+    const dml = find_finding_by_rule(
+        findings.items,
+        "AG003",
+    ) orelse return error.TestUnexpectedResult;
     try std.testing.expect(std.mem.indexOf(u8, dml.message, "Loop upper bound <= 120") != null);
 }
 
@@ -900,10 +1115,17 @@ test "dynamic dispatch resolves through interface-typed helper parameter" {
         \\}
     ;
 
-    var findings = try runCheckOnTempSource(std.testing.allocator, source, config.Config.defaults());
-    defer model.deinitFindings(std.testing.allocator, &findings);
+    var findings = try run_check_on_temp_source(
+        std.testing.allocator,
+        source,
+        config.Config.defaults(),
+    );
+    defer model.deinit_findings(std.testing.allocator, &findings);
 
-    const dml = findFindingByRule(findings.items, "AG003") orelse return error.TestUnexpectedResult;
+    const dml = find_finding_by_rule(
+        findings.items,
+        "AG003",
+    ) orelse return error.TestUnexpectedResult;
     try std.testing.expect(std.mem.indexOf(u8, dml.message, "Loop upper bound <= 120") != null);
 }
 
@@ -927,10 +1149,14 @@ test "overloaded methods use arity to avoid false positive" {
         \\}
     ;
 
-    var findings = try runCheckOnTempSource(std.testing.allocator, source, config.Config.defaults());
-    defer model.deinitFindings(std.testing.allocator, &findings);
+    var findings = try run_check_on_temp_source(
+        std.testing.allocator,
+        source,
+        config.Config.defaults(),
+    );
+    defer model.deinit_findings(std.testing.allocator, &findings);
 
-    try std.testing.expect(findFindingByRule(findings.items, "AG003") == null);
+    try std.testing.expect(find_finding_by_rule(findings.items, "AG003") == null);
 }
 
 test "overloaded methods match arity for positive detection" {
@@ -953,10 +1179,17 @@ test "overloaded methods match arity for positive detection" {
         \\}
     ;
 
-    var findings = try runCheckOnTempSource(std.testing.allocator, source, config.Config.defaults());
-    defer model.deinitFindings(std.testing.allocator, &findings);
+    var findings = try run_check_on_temp_source(
+        std.testing.allocator,
+        source,
+        config.Config.defaults(),
+    );
+    defer model.deinit_findings(std.testing.allocator, &findings);
 
-    const dml = findFindingByRule(findings.items, "AG003") orelse return error.TestUnexpectedResult;
+    const dml = find_finding_by_rule(
+        findings.items,
+        "AG003",
+    ) orelse return error.TestUnexpectedResult;
     try std.testing.expect(std.mem.indexOf(u8, dml.message, "Loop upper bound <= 120") != null);
 }
 
@@ -980,10 +1213,14 @@ test "same arity overload uses argument type for negative case" {
         \\}
     ;
 
-    var findings = try runCheckOnTempSource(std.testing.allocator, source, config.Config.defaults());
-    defer model.deinitFindings(std.testing.allocator, &findings);
+    var findings = try run_check_on_temp_source(
+        std.testing.allocator,
+        source,
+        config.Config.defaults(),
+    );
+    defer model.deinit_findings(std.testing.allocator, &findings);
 
-    try std.testing.expect(findFindingByRule(findings.items, "AG003") == null);
+    try std.testing.expect(find_finding_by_rule(findings.items, "AG003") == null);
 }
 
 test "same arity overload uses argument type for positive case" {
@@ -1006,10 +1243,17 @@ test "same arity overload uses argument type for positive case" {
         \\}
     ;
 
-    var findings = try runCheckOnTempSource(std.testing.allocator, source, config.Config.defaults());
-    defer model.deinitFindings(std.testing.allocator, &findings);
+    var findings = try run_check_on_temp_source(
+        std.testing.allocator,
+        source,
+        config.Config.defaults(),
+    );
+    defer model.deinit_findings(std.testing.allocator, &findings);
 
-    const dml = findFindingByRule(findings.items, "AG003") orelse return error.TestUnexpectedResult;
+    const dml = find_finding_by_rule(
+        findings.items,
+        "AG003",
+    ) orelse return error.TestUnexpectedResult;
     try std.testing.expect(std.mem.indexOf(u8, dml.message, "Loop upper bound <= 120") != null);
 }
 
@@ -1034,10 +1278,14 @@ test "same arity overload uses local variable type for negative case" {
         \\}
     ;
 
-    var findings = try runCheckOnTempSource(std.testing.allocator, source, config.Config.defaults());
-    defer model.deinitFindings(std.testing.allocator, &findings);
+    var findings = try run_check_on_temp_source(
+        std.testing.allocator,
+        source,
+        config.Config.defaults(),
+    );
+    defer model.deinit_findings(std.testing.allocator, &findings);
 
-    try std.testing.expect(findFindingByRule(findings.items, "AG003") == null);
+    try std.testing.expect(find_finding_by_rule(findings.items, "AG003") == null);
 }
 
 test "same arity overload uses indexed collection element type for positive case" {
@@ -1060,10 +1308,17 @@ test "same arity overload uses indexed collection element type for positive case
         \\}
     ;
 
-    var findings = try runCheckOnTempSource(std.testing.allocator, source, config.Config.defaults());
-    defer model.deinitFindings(std.testing.allocator, &findings);
+    var findings = try run_check_on_temp_source(
+        std.testing.allocator,
+        source,
+        config.Config.defaults(),
+    );
+    defer model.deinit_findings(std.testing.allocator, &findings);
 
-    const dml = findFindingByRule(findings.items, "AG003") orelse return error.TestUnexpectedResult;
+    const dml = find_finding_by_rule(
+        findings.items,
+        "AG003",
+    ) orelse return error.TestUnexpectedResult;
     try std.testing.expect(std.mem.indexOf(u8, dml.message, "Loop upper bound <= 120") != null);
 }
 
@@ -1082,11 +1337,15 @@ test "SOQL for loop does not trigger AG002" {
         \\}
     ;
 
-    var findings = try runCheckOnTempSource(std.testing.allocator, source, config.Config.defaults());
-    defer model.deinitFindings(std.testing.allocator, &findings);
+    var findings = try run_check_on_temp_source(
+        std.testing.allocator,
+        source,
+        config.Config.defaults(),
+    );
+    defer model.deinit_findings(std.testing.allocator, &findings);
 
-    try std.testing.expect(findFindingByRule(findings.items, "AG002") == null);
-    try std.testing.expect(findFindingByRule(findings.items, "AG009") == null);
+    try std.testing.expect(find_finding_by_rule(findings.items, "AG002") == null);
+    try std.testing.expect(find_finding_by_rule(findings.items, "AG009") == null);
 }
 
 test "nested SOQL for loop inside outer loop triggers AG002" {
@@ -1102,10 +1361,14 @@ test "nested SOQL for loop inside outer loop triggers AG002" {
         \\}
     ;
 
-    var findings = try runCheckOnTempSource(std.testing.allocator, source, config.Config.defaults());
-    defer model.deinitFindings(std.testing.allocator, &findings);
+    var findings = try run_check_on_temp_source(
+        std.testing.allocator,
+        source,
+        config.Config.defaults(),
+    );
+    defer model.deinit_findings(std.testing.allocator, &findings);
 
-    try std.testing.expect(findFindingByRule(findings.items, "AG002") != null);
+    try std.testing.expect(find_finding_by_rule(findings.items, "AG002") != null);
 }
 
 test "regular SOQL in loop still triggers AG002" {
@@ -1119,10 +1382,14 @@ test "regular SOQL in loop still triggers AG002" {
         \\}
     ;
 
-    var findings = try runCheckOnTempSource(std.testing.allocator, source, config.Config.defaults());
-    defer model.deinitFindings(std.testing.allocator, &findings);
+    var findings = try run_check_on_temp_source(
+        std.testing.allocator,
+        source,
+        config.Config.defaults(),
+    );
+    defer model.deinit_findings(std.testing.allocator, &findings);
 
-    try std.testing.expect(findFindingByRule(findings.items, "AG002") != null);
+    try std.testing.expect(find_finding_by_rule(findings.items, "AG002") != null);
 }
 
 // --------------- @isTest 除外テスト ---------------
@@ -1142,8 +1409,12 @@ test "@isTest class findings are suppressed by default" {
         \\}
     ;
 
-    var findings = try runCheckOnTempSource(std.testing.allocator, source, config.Config.defaults());
-    defer model.deinitFindings(std.testing.allocator, &findings);
+    var findings = try run_check_on_temp_source(
+        std.testing.allocator,
+        source,
+        config.Config.defaults(),
+    );
+    defer model.deinit_findings(std.testing.allocator, &findings);
 
     try std.testing.expectEqual(@as(usize, 0), findings.items.len);
 }
@@ -1165,8 +1436,8 @@ test "@isTest class findings shown with include_tests" {
 
     var cfg = config.Config.defaults();
     cfg.include_tests = true;
-    var findings = try runCheckOnTempSource(std.testing.allocator, source, cfg);
-    defer model.deinitFindings(std.testing.allocator, &findings);
+    var findings = try run_check_on_temp_source(std.testing.allocator, source, cfg);
+    defer model.deinit_findings(std.testing.allocator, &findings);
 
     try std.testing.expect(findings.items.len > 0);
 }
@@ -1182,8 +1453,12 @@ test "non-test class still produces findings" {
         \\}
     ;
 
-    var findings = try runCheckOnTempSource(std.testing.allocator, source, config.Config.defaults());
-    defer model.deinitFindings(std.testing.allocator, &findings);
+    var findings = try run_check_on_temp_source(
+        std.testing.allocator,
+        source,
+        config.Config.defaults(),
+    );
+    defer model.deinit_findings(std.testing.allocator, &findings);
 
-    try std.testing.expect(findFindingByRule(findings.items, "AG003") != null);
+    try std.testing.expect(find_finding_by_rule(findings.items, "AG003") != null);
 }

@@ -3,6 +3,7 @@
 const std = @import("std");
 const lsp_types = @import("types.zig");
 const ast = @import("../apex_parser/ast.zig");
+const parser_types = @import("../apex_parser/types.zig");
 const DocumentStore = @import("document_store.zig").DocumentStore;
 const position_mod = @import("position.zig");
 
@@ -24,14 +25,38 @@ pub fn search(
     var it = store.documents.iterator();
     while (it.next()) |entry| {
         const doc = entry.value_ptr;
-        const cached = try store.ensureParsed(doc.uri) orelse continue;
-        try collectFromDecls(cached.decls, doc.uri, doc.text, query, allocator, &results);
+        const cached = try store.ensure_parsed(doc.uri) orelse continue;
+        try collect_from_decls(cached.decls, doc.uri, doc.text, query, allocator, &results);
     }
 
     return results.toOwnedSlice(allocator);
 }
 
-fn collectFromDecls(
+/// collect_from_decls が再利用する呼び出しコンテキスト。
+const CollectCtx = struct {
+    uri: []const u8,
+    source: []const u8,
+    query: []const u8,
+    allocator: std.mem.Allocator,
+    out: *std.ArrayList(WorkspaceSymbol),
+};
+
+fn emit_symbol(
+    ctx: CollectCtx,
+    name: []const u8,
+    kind: lsp_types.SymbolKind,
+    loc: parser_types.SourceLoc,
+) !void {
+    if (!matches_query(name, ctx.query)) return;
+    try ctx.out.append(ctx.allocator, .{
+        .name = name,
+        .kind = kind,
+        .uri = ctx.uri,
+        .range = position_mod.loc_to_range(loc, ctx.source),
+    });
+}
+
+fn collect_from_decls(
     decls: []const ast.Decl,
     uri: []const u8,
     source: []const u8,
@@ -39,57 +64,41 @@ fn collectFromDecls(
     allocator: std.mem.Allocator,
     out: *std.ArrayList(WorkspaceSymbol),
 ) !void {
+    const ctx = CollectCtx{
+        .uri = uri,
+        .source = source,
+        .query = query,
+        .allocator = allocator,
+        .out = out,
+    };
     for (decls) |decl| {
         switch (decl) {
             .class_decl => |cd| {
-                if (matchesQuery(cd.name, query)) {
-                    try out.append(allocator, .{
-                        .name = cd.name,
-                        .kind = .class,
-                        .uri = uri,
-                        .range = position_mod.locToRange(cd.loc, source),
-                    });
-                }
-                // クラスメンバーも走査
-                try collectFromDecls(cd.members, uri, source, query, allocator, out);
+                try emit_symbol(ctx, cd.name, .class, cd.loc);
+                try collect_from_decls(cd.members, uri, source, query, allocator, out);
             },
-            .interface_decl => |id| {
-                if (matchesQuery(id.name, query)) {
-                    try out.append(allocator, .{ .name = id.name, .kind = .interface, .uri = uri, .range = position_mod.locToRange(id.loc, source) });
-                }
-            },
-            .enum_decl => |ed| {
-                if (matchesQuery(ed.name, query)) {
-                    try out.append(allocator, .{ .name = ed.name, .kind = .@"enum", .uri = uri, .range = position_mod.locToRange(ed.loc, source) });
-                }
-            },
-            .method_decl => |md| {
-                if (matchesQuery(md.name, query)) {
-                    try out.append(allocator, .{ .name = md.name, .kind = .method, .uri = uri, .range = position_mod.locToRange(md.loc, source) });
-                }
-            },
-            .field_decl => |fd| {
-                if (matchesQuery(fd.name, query)) {
-                    try out.append(allocator, .{ .name = fd.name, .kind = .field, .uri = uri, .range = position_mod.locToRange(fd.loc, source) });
-                }
-            },
+            .interface_decl => |id| try emit_symbol(ctx, id.name, .interface, id.loc),
+            .enum_decl => |ed| try emit_symbol(ctx, ed.name, .@"enum", ed.loc),
+            .method_decl => |md| try emit_symbol(ctx, md.name, .method, md.loc),
+            .field_decl => |fd| try emit_symbol(ctx, fd.name, .field, fd.loc),
             .constructor_decl => |cd| {
                 _ = cd;
-                if (matchesQuery("<constructor>", query)) {
-                    try out.append(allocator, .{ .name = "<constructor>", .kind = .constructor, .uri = uri, .range = .{} });
+                if (matches_query("<constructor>", query)) {
+                    try out.append(allocator, .{
+                        .name = "<constructor>",
+                        .kind = .constructor,
+                        .uri = uri,
+                        .range = .{},
+                    });
                 }
             },
-            .trigger_decl => |td| {
-                if (matchesQuery(td.name, query)) {
-                    try out.append(allocator, .{ .name = td.name, .kind = .event, .uri = uri, .range = position_mod.locToRange(td.loc, source) });
-                }
-            },
+            .trigger_decl => |td| try emit_symbol(ctx, td.name, .event, td.loc),
             .static_init => {},
         }
     }
 }
 
-fn matchesQuery(name: []const u8, query: []const u8) bool {
+fn matches_query(name: []const u8, query: []const u8) bool {
     if (query.len == 0) return true;
     // 大文字小文字無視の部分文字列マッチ
     return std.ascii.indexOfIgnoreCase(name, query) != null;

@@ -8,8 +8,8 @@
 const std = @import("std");
 const utils = @import("utils.zig");
 
-const satAdd = utils.satAdd;
-const satMul = utils.satMul;
+const sat_add = utils.sat_add;
+const sat_mul = utils.sat_mul;
 
 pub const BoundOrigin = enum {
     unknown,
@@ -62,27 +62,30 @@ pub const MethodMetrics = struct {
     string_append: u64 = 0,
 
     pub fn add(self: *MethodMetrics, other: MethodMetrics) void {
-        self.soql = satAdd(self.soql, other.soql);
-        self.dml = satAdd(self.dml, other.dml);
-        self.sosl = satAdd(self.sosl, other.sosl);
-        self.callout = satAdd(self.callout, other.callout);
-        self.messaging = satAdd(self.messaging, other.messaging);
-        self.json = satAdd(self.json, other.json);
-        self.clone = satAdd(self.clone, other.clone);
-        self.collection_alloc = satAdd(self.collection_alloc, other.collection_alloc);
-        self.string_append = satAdd(self.string_append, other.string_append);
+        self.soql = sat_add(self.soql, other.soql);
+        self.dml = sat_add(self.dml, other.dml);
+        self.sosl = sat_add(self.sosl, other.sosl);
+        self.callout = sat_add(self.callout, other.callout);
+        self.messaging = sat_add(self.messaging, other.messaging);
+        self.json = sat_add(self.json, other.json);
+        self.clone = sat_add(self.clone, other.clone);
+        self.collection_alloc = sat_add(self.collection_alloc, other.collection_alloc);
+        self.string_append = sat_add(self.string_append, other.string_append);
     }
 
-    pub fn addScaled(self: *MethodMetrics, other: MethodMetrics, multiplier: u64) void {
-        self.soql = satAdd(self.soql, satMul(other.soql, multiplier));
-        self.dml = satAdd(self.dml, satMul(other.dml, multiplier));
-        self.sosl = satAdd(self.sosl, satMul(other.sosl, multiplier));
-        self.callout = satAdd(self.callout, satMul(other.callout, multiplier));
-        self.messaging = satAdd(self.messaging, satMul(other.messaging, multiplier));
-        self.json = satAdd(self.json, satMul(other.json, multiplier));
-        self.clone = satAdd(self.clone, satMul(other.clone, multiplier));
-        self.collection_alloc = satAdd(self.collection_alloc, satMul(other.collection_alloc, multiplier));
-        self.string_append = satAdd(self.string_append, satMul(other.string_append, multiplier));
+    pub fn add_scaled(self: *MethodMetrics, other: MethodMetrics, multiplier: u64) void {
+        self.soql = sat_add(self.soql, sat_mul(other.soql, multiplier));
+        self.dml = sat_add(self.dml, sat_mul(other.dml, multiplier));
+        self.sosl = sat_add(self.sosl, sat_mul(other.sosl, multiplier));
+        self.callout = sat_add(self.callout, sat_mul(other.callout, multiplier));
+        self.messaging = sat_add(self.messaging, sat_mul(other.messaging, multiplier));
+        self.json = sat_add(self.json, sat_mul(other.json, multiplier));
+        self.clone = sat_add(self.clone, sat_mul(other.clone, multiplier));
+        self.collection_alloc = sat_add(
+            self.collection_alloc,
+            sat_mul(other.collection_alloc, multiplier),
+        );
+        self.string_append = sat_add(self.string_append, sat_mul(other.string_append, multiplier));
     }
 };
 

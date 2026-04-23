@@ -8,7 +8,7 @@ const lsp_types = @import("types.zig");
 const parser_types = @import("../apex_parser/types.zig");
 
 /// トークンリストから指定オフセット位置の identifier 名を返す。
-pub fn identifierAtOffset(tokens: []const parser_types.Token, offset: u32) ?[]const u8 {
+pub fn identifier_at_offset(tokens: []const parser_types.Token, offset: u32) ?[]const u8 {
     for (tokens) |tok| {
         if (tok.kind == .identifier and
             offset >= tok.loc.offset and
@@ -22,9 +22,9 @@ pub fn identifierAtOffset(tokens: []const parser_types.Token, offset: u32) ?[]co
 
 /// SourceLoc → LSP Range（開始位置のみ、終了位置は同一点）。
 /// symbols.zig, workspace_symbol.zig, server.zig 等の共通ヘルパー。
-pub fn locToRange(loc: parser_types.SourceLoc, source: []const u8) lsp_types.Range {
+pub fn loc_to_range(loc: parser_types.SourceLoc, source: []const u8) lsp_types.Range {
     const line = if (loc.line > 0) loc.line - 1 else 0;
-    const char = loc.utf16Col(source);
+    const char = loc.utf16_col(source);
     return .{
         .start = .{ .line = line, .character = char },
         .end = .{ .line = line, .character = char },
@@ -32,7 +32,7 @@ pub fn locToRange(loc: parser_types.SourceLoc, source: []const u8) lsp_types.Ran
 }
 
 /// LSP Position (0-indexed line, UTF-16 character) → バイトオフセット。
-pub fn positionToOffset(source: []const u8, line: u32, character: u32) ?u32 {
+pub fn position_to_offset(source: []const u8, line: u32, character: u32) ?u32 {
     var current_line: u32 = 0;
     var i: u32 = 0;
 
@@ -66,7 +66,7 @@ pub fn positionToOffset(source: []const u8, line: u32, character: u32) ?u32 {
 }
 
 /// バイトオフセット → LSP Position (0-indexed line, UTF-16 character)。
-pub fn offsetToPosition(source: []const u8, offset: u32) lsp_types.Position {
+pub fn offset_to_position(source: []const u8, offset: u32) lsp_types.Position {
     var line: u32 = 0;
     var line_start: u32 = 0;
 
@@ -105,64 +105,70 @@ pub fn offsetToPosition(source: []const u8, offset: u32) lsp_types.Position {
 // テスト
 // ---------------------------------------------------------------------------
 
-test "positionToOffset: first line, first char" {
+test "position_to_offset: first line, first char" {
     const source = "public class Foo {}";
-    try std.testing.expectEqual(@as(?u32, 0), positionToOffset(source, 0, 0));
+    try std.testing.expectEqual(@as(?u32, 0), position_to_offset(source, 0, 0));
 }
 
-test "positionToOffset: second line" {
+test "position_to_offset: second line" {
     const source = "line0\nline1\nline2";
     // line=1, char=0 → offset 6
-    try std.testing.expectEqual(@as(?u32, 6), positionToOffset(source, 1, 0));
+    try std.testing.expectEqual(@as(?u32, 6), position_to_offset(source, 1, 0));
     // line=1, char=3 → offset 9
-    try std.testing.expectEqual(@as(?u32, 9), positionToOffset(source, 1, 3));
+    try std.testing.expectEqual(@as(?u32, 9), position_to_offset(source, 1, 3));
 }
 
-test "positionToOffset: past end returns null" {
+test "position_to_offset: past end returns null" {
     const source = "abc";
-    try std.testing.expectEqual(@as(?u32, null), positionToOffset(source, 5, 0));
+    try std.testing.expectEqual(@as(?u32, null), position_to_offset(source, 5, 0));
 }
 
-test "offsetToPosition: roundtrip" {
+test "offset_to_position: roundtrip" {
     const source = "public class Foo {\n    void run() {}\n}";
-    const pos = offsetToPosition(source, 23); // 'v' in void
+    const pos = offset_to_position(source, 23); // 'v' in void
     // line 1, after 4 spaces
     try std.testing.expectEqual(@as(u32, 1), pos.line);
     try std.testing.expectEqual(@as(u32, 4), pos.character);
 
     // roundtrip
-    const offset = positionToOffset(source, pos.line, pos.character);
+    const offset = position_to_offset(source, pos.line, pos.character);
     try std.testing.expectEqual(@as(?u32, 23), offset);
 }
 
-// -- identifierAtOffset テスト --
+// -- identifier_at_offset テスト --
 
 const lexer = @import("../apex_parser/lexer.zig");
 
-test "identifierAtOffset finds class name" {
+test "identifier_at_offset finds class name" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
+
     const source = "public class Foo {}";
     const tokens = try lexer.tokenize(source, arena.allocator());
     // 'Foo' starts at offset 13
-    try std.testing.expectEqualStrings("Foo", identifierAtOffset(tokens, 13).?);
-    try std.testing.expectEqualStrings("Foo", identifierAtOffset(tokens, 14).?); // middle of 'Foo'
+    try std.testing.expectEqualStrings("Foo", identifier_at_offset(tokens, 13).?);
+    try std.testing.expectEqualStrings(
+        "Foo",
+        identifier_at_offset(tokens, 14).?,
+    ); // middle of 'Foo'
 }
 
-test "identifierAtOffset returns null on keyword" {
+test "identifier_at_offset returns null on keyword" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
+
     const source = "public class Foo {}";
     const tokens = try lexer.tokenize(source, arena.allocator());
     // offset 0 = 'public' (keyword, not identifier)
-    try std.testing.expect(identifierAtOffset(tokens, 0) == null);
+    try std.testing.expect(identifier_at_offset(tokens, 0) == null);
 }
 
-test "identifierAtOffset returns null between tokens" {
+test "identifier_at_offset returns null between tokens" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
+
     const source = "public class Foo {}";
     const tokens = try lexer.tokenize(source, arena.allocator());
     // offset 6 = space
-    try std.testing.expect(identifierAtOffset(tokens, 6) == null);
+    try std.testing.expect(identifier_at_offset(tokens, 6) == null);
 }

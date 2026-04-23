@@ -4,37 +4,39 @@ const std = @import("std");
 const lsp_types = @import("types.zig");
 const binder_mod = @import("binder.zig");
 
-pub fn getSignatureHelp(
-    result: *const binder_mod.BindResult,
-    source: []const u8,
-    offset: u32,
-    allocator: std.mem.Allocator,
-) !?lsp_types.SignatureHelp {
-    // offset から逆方向に '(' を探す
+const OpenParen = struct {
+    method_end: u32,
+    comma_count: u32,
+};
+
+fn find_enclosing_open_paren(source: []const u8, offset: u32) ?OpenParen {
     var paren_depth: i32 = 0;
     var comma_count: u32 = 0;
     var i: u32 = offset;
-    var found_open: bool = false;
-    var method_end: u32 = 0;
-
     while (i > 0) {
         i -= 1;
         const ch = source[i];
         if (ch == ')') {
             paren_depth += 1;
         } else if (ch == '(') {
-            if (paren_depth == 0) {
-                found_open = true;
-                method_end = i;
-                break;
-            }
+            if (paren_depth == 0) return .{ .method_end = i, .comma_count = comma_count };
             paren_depth -= 1;
         } else if (ch == ',' and paren_depth == 0) {
             comma_count += 1;
         }
     }
+    return null;
+}
 
-    if (!found_open) return null;
+pub fn get_signature_help(
+    result: *const binder_mod.BindResult,
+    source: []const u8,
+    offset: u32,
+    allocator: std.mem.Allocator,
+) !?lsp_types.SignatureHelp {
+    const open = find_enclosing_open_paren(source, offset) orelse return null;
+    const method_end = open.method_end;
+    const comma_count = open.comma_count;
 
     // '(' の直前のシンボルを探す
     var name_end = method_end;
@@ -42,7 +44,7 @@ pub fn getSignatureHelp(
     if (name_end == 0) return null;
 
     // binder でシンボル解決
-    const sym = binder_mod.symbolAtPosition(result, name_end - 1) orelse return null;
+    const sym = binder_mod.symbol_at_position(result, name_end - 1) orelse return null;
     if (sym.kind != .method and sym.kind != .constructor) return null;
 
     // パラメータ情報を構築
@@ -86,6 +88,7 @@ const parser = @import("../apex_parser/parser.zig");
 test "inside method call shows params" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
+
     const alloc = arena.allocator();
 
     const source = "public class Foo { public void run(String name, Integer count) { run(); } }";
@@ -95,7 +98,7 @@ test "inside method call shows params" {
 
     // 'run(' の後にカーソル
     const call_pos = std.mem.indexOf(u8, source, "run();").? + 4; // after '('
-    const result = try getSignatureHelp(&br, source, @intCast(call_pos), alloc);
+    const result = try get_signature_help(&br, source, @intCast(call_pos), alloc);
     try std.testing.expect(result != null);
     try std.testing.expect(result.?.signatures.len > 0);
 }
@@ -103,6 +106,7 @@ test "inside method call shows params" {
 test "outside call returns null" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
+
     const alloc = arena.allocator();
 
     const source = "public class Foo { public void run() {} }";
@@ -110,6 +114,6 @@ test "outside call returns null" {
     const decls = try parser.parse(tokens, alloc);
     const br = try binder_mod.bind(decls, tokens, source, alloc);
 
-    const result = try getSignatureHelp(&br, source, 0, alloc);
+    const result = try get_signature_help(&br, source, 0, alloc);
     try std.testing.expect(result == null);
 }

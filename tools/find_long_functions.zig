@@ -67,12 +67,12 @@ fn scanFile(
     }
 
     const Ctx = struct {
-        fn lessThan(_: void, a: FnRange, b: FnRange) bool {
+        fn less_than(_: void, a: FnRange, b: FnRange) bool {
             if (a.line_opening != b.line_opening) return a.line_opening < b.line_opening;
             return a.line_closing < b.line_closing;
         }
     };
-    std.mem.sort(FnRange, functions.items, {}, Ctx.lessThan);
+    std.mem.sort(FnRange, functions.items, {}, Ctx.less_than);
 
     for (functions.items, 0..) |fn_range, i| {
         if (i + 1 < functions.items.len and

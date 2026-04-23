@@ -32,10 +32,10 @@ pub fn encode(tokens: []const Token, source: []const u8, allocator: std.mem.Allo
     for (tokens) |tok| {
         if (tok.kind == .eof) continue;
 
-        const token_type = classifyToken(tok) orelse continue;
+        const token_type = classify_token(tok) orelse continue;
 
         const line = if (tok.loc.line > 0) tok.loc.line - 1 else 0;
-        const char = tok.loc.utf16Col(source);
+        const char = tok.loc.utf16_col(source);
         const length: u32 = @intCast(tok.lexeme.len);
 
         const delta_line = line - prev_line;
@@ -54,21 +54,21 @@ pub fn encode(tokens: []const Token, source: []const u8, allocator: std.mem.Allo
     return data.toOwnedSlice(allocator);
 }
 
-fn classifyToken(tok: Token) ?u32 {
+fn classify_token(tok: Token) ?u32 {
     return switch (tok.kind) {
-        // キーワード
-        .if_kw, .else_kw, .for_kw, .while_kw, .do_kw, .return_kw, .break_kw, .continue_kw, .switch_kw, .when_kw, .try_kw, .catch_kw, .finally_kw, .throw_kw, .new_kw, .this_kw, .super_kw, .instanceof_kw, .void_kw => TT.keyword,
-
-        // 宣言キーワード
-        .class_kw, .interface_kw, .enum_kw, .trigger_kw, .extends_kw, .implements_kw => TT.keyword,
-
-        // 修飾子キーワード
-        .public_kw, .private_kw, .protected_kw, .global_kw, .static_kw, .final_kw, .abstract_kw, .virtual_kw, .override_kw, .transient_kw, .with_kw, .without_kw, .sharing_kw => TT.keyword,
-
-        // DML キーワード
-        .insert_kw, .update_kw, .upsert_kw, .delete_kw, .undelete_kw, .merge_kw => TT.keyword,
-
-        // リテラル
+        // キーワード / 宣言 / 修飾子 / DML / リテラル
+        .if_kw, .else_kw, .for_kw, .while_kw, .do_kw => TT.keyword,
+        .return_kw, .break_kw, .continue_kw, .switch_kw, .when_kw => TT.keyword,
+        .try_kw, .catch_kw, .finally_kw, .throw_kw, .new_kw => TT.keyword,
+        .this_kw, .super_kw, .instanceof_kw, .void_kw => TT.keyword,
+        .class_kw, .interface_kw, .enum_kw, .trigger_kw => TT.keyword,
+        .extends_kw, .implements_kw => TT.keyword,
+        .public_kw, .private_kw, .protected_kw, .global_kw => TT.keyword,
+        .static_kw, .final_kw, .abstract_kw, .virtual_kw => TT.keyword,
+        .override_kw, .transient_kw => TT.keyword,
+        .with_kw, .without_kw, .sharing_kw => TT.keyword,
+        .insert_kw, .update_kw, .upsert_kw => TT.keyword,
+        .delete_kw, .undelete_kw, .merge_kw => TT.keyword,
         .true_kw, .false_kw, .null_kw => TT.keyword,
         .string_literal, .soql_literal => TT.string,
         .integer_literal, .double_literal, .long_literal => TT.number,
@@ -77,13 +77,24 @@ fn classifyToken(tok: Token) ?u32 {
         .annotation => TT.decorator,
 
         // 演算子
-        .plus, .minus, .star, .slash, .percent, .eq, .neq, .lt, .gt, .lte, .gte, .strict_eq, .strict_neq, .and_op, .or_op, .not_op, .assign, .plus_assign, .minus_assign, .star_assign, .slash_assign, .arrow, .question, .question_question, .question_question_equal, .question_dot, .ampersand, .caret, .pipe => TT.operator,
+        .plus, .minus, .star, .slash, .percent => TT.operator,
+        .eq, .neq, .lt, .gt, .lte, .gte => TT.operator,
+        .strict_eq, .strict_neq => TT.operator,
+        .and_op, .or_op, .not_op => TT.operator,
+        .assign, .plus_assign, .minus_assign => TT.operator,
+        .star_assign, .slash_assign => TT.operator,
+        .arrow, .question, .question_question => TT.operator,
+        .question_question_equal, .question_dot => TT.operator,
+        .ampersand, .caret, .pipe => TT.operator,
 
         // 識別子 — 今は全て variable として分類（型推論は Phase 2+）
         .identifier => TT.variable,
 
         // 区切り文字・その他は非ハイライト
-        .dot, .comma, .semicolon, .colon, .lparen, .rparen, .lbrace, .rbrace, .lbracket, .rbracket, .plus_plus, .minus_minus, .eof => null,
+        .dot, .comma, .semicolon, .colon => null,
+        .lparen, .rparen, .lbrace, .rbrace => null,
+        .lbracket, .rbracket => null,
+        .plus_plus, .minus_minus, .eof => null,
     };
 }
 

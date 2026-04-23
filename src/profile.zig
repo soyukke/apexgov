@@ -37,7 +37,12 @@ const BaselineDocument = struct {
     profiles: []const BaselineProfile = &.{},
 };
 
-pub fn run(gpa: std.mem.Allocator, io: Io, inputs: []const []const u8, cfg: config.Config) !std.ArrayList(model.ProfileResult) {
+pub fn run(
+    gpa: std.mem.Allocator,
+    io: Io,
+    inputs: []const []const u8,
+    cfg: config.Config,
+) !std.ArrayList(model.ProfileResult) {
     var files: std.ArrayList([]const u8) = .empty;
     defer {
         for (files.items) |path| gpa.free(path);
@@ -45,20 +50,20 @@ pub fn run(gpa: std.mem.Allocator, io: Io, inputs: []const []const u8, cfg: conf
     }
 
     for (inputs) |input| {
-        try collectLogs(gpa, io, input, &files);
+        try collect_logs(gpa, io, input, &files);
     }
 
     var results: std.ArrayList(model.ProfileResult) = .empty;
-    errdefer model.deinitProfiles(gpa, &results);
+    errdefer model.deinit_profiles(gpa, &results);
 
     for (files.items) |path| {
-        try parseLogTransactions(gpa, io, path, cfg, &results);
+        try parse_log_transactions(gpa, io, path, cfg, &results);
     }
 
     return results;
 }
 
-pub fn compareWithBaseline(
+pub fn compare_with_baseline(
     gpa: std.mem.Allocator,
     io: Io,
     current: []const model.ProfileResult,
@@ -66,7 +71,7 @@ pub fn compareWithBaseline(
     threshold_percent: u8,
 ) !std.ArrayList(Regression) {
     var regressions: std.ArrayList(Regression) = .empty;
-    errdefer deinitRegressions(gpa, &regressions);
+    errdefer deinit_regressions(gpa, &regressions);
 
     if (baseline_path == null) return regressions;
 
@@ -79,10 +84,14 @@ pub fn compareWithBaseline(
     defer parsed.deinit();
 
     for (current) |curr| {
-        const baseline = findBaseline(curr, parsed.value.profiles) orelse continue;
+        const baseline = find_baseline(curr, parsed.value.profiles) orelse continue;
 
-        const cpu_regressed = exceedsPercent(curr.cpu_ms, baseline.cpu_ms, threshold_percent);
-        const heap_regressed = exceedsPercent(curr.heap_bytes, baseline.heap_bytes, threshold_percent);
+        const cpu_regressed = exceeds_percent(curr.cpu_ms, baseline.cpu_ms, threshold_percent);
+        const heap_regressed = exceeds_percent(
+            curr.heap_bytes,
+            baseline.heap_bytes,
+            threshold_percent,
+        );
         if (!cpu_regressed and !heap_regressed) continue;
 
         try regressions.append(gpa, .{
@@ -101,7 +110,7 @@ pub fn compareWithBaseline(
     return regressions;
 }
 
-pub fn deinitRegressions(gpa: std.mem.Allocator, regressions: *std.ArrayList(Regression)) void {
+pub fn deinit_regressions(gpa: std.mem.Allocator, regressions: *std.ArrayList(Regression)) void {
     for (regressions.items) |regression| {
         gpa.free(regression.source);
         gpa.free(regression.label);
@@ -109,16 +118,20 @@ pub fn deinitRegressions(gpa: std.mem.Allocator, regressions: *std.ArrayList(Reg
     regressions.deinit(gpa);
 }
 
-fn findBaseline(curr: model.ProfileResult, baseline_profiles: []const BaselineProfile) ?BaselineProfile {
+fn find_baseline(
+    curr: model.ProfileResult,
+    baseline_profiles: []const BaselineProfile,
+) ?BaselineProfile {
     const curr_mode = if (curr.is_async) "async" else "sync";
-    const curr_label_known = !isUnknown(curr.label);
+    const curr_label_known = !is_unknown(curr.label);
     const curr_base = std.fs.path.basename(curr.source);
 
     for (baseline_profiles) |baseline| {
         if (!std.ascii.eqlIgnoreCase(curr_mode, baseline.mode)) continue;
-        if (baseline.transaction_index != 0 and baseline.transaction_index != curr.transaction_index) continue;
+        if (baseline.transaction_index != 0 and
+            baseline.transaction_index != curr.transaction_index) continue;
 
-        const baseline_label_known = !isUnknown(baseline.label);
+        const baseline_label_known = !is_unknown(baseline.label);
         if (curr_label_known and baseline_label_known) {
             if (std.mem.eql(u8, curr.label, baseline.label)) return baseline;
             continue;
@@ -130,11 +143,11 @@ fn findBaseline(curr: model.ProfileResult, baseline_profiles: []const BaselinePr
     return null;
 }
 
-fn isUnknown(label: []const u8) bool {
+fn is_unknown(label: []const u8) bool {
     return label.len == 0 or std.ascii.eqlIgnoreCase(label, "unknown");
 }
 
-fn exceedsPercent(current: u64, baseline: u64, threshold_percent: u8) bool {
+fn exceeds_percent(current: u64, baseline: u64, threshold_percent: u8) bool {
     if (baseline == 0) return current > 0;
 
     const lhs: u128 = @as(u128, current) * 100;
@@ -142,8 +155,13 @@ fn exceedsPercent(current: u64, baseline: u64, threshold_percent: u8) bool {
     return lhs > rhs;
 }
 
-fn collectLogs(gpa: std.mem.Allocator, io: Io, input: []const u8, files: *std.ArrayList([]const u8)) !void {
-    collectLogsInDirectory(gpa, io, input, files) catch |err| switch (err) {
+fn collect_logs(
+    gpa: std.mem.Allocator,
+    io: Io,
+    input: []const u8,
+    files: *std.ArrayList([]const u8),
+) !void {
+    collect_logs_in_directory(gpa, io, input, files) catch |err| switch (err) {
         error.NotDir => {
             try files.append(gpa, try gpa.dupe(u8, input));
         },
@@ -151,7 +169,12 @@ fn collectLogs(gpa: std.mem.Allocator, io: Io, input: []const u8, files: *std.Ar
     };
 }
 
-fn collectLogsInDirectory(gpa: std.mem.Allocator, io: Io, root: []const u8, files: *std.ArrayList([]const u8)) !void {
+fn collect_logs_in_directory(
+    gpa: std.mem.Allocator,
+    io: Io,
+    root: []const u8,
+    files: *std.ArrayList([]const u8),
+) !void {
     var dir = try Io.Dir.cwd().openDir(io, root, .{ .iterate = true });
     defer dir.close(io);
 
@@ -160,7 +183,7 @@ fn collectLogsInDirectory(gpa: std.mem.Allocator, io: Io, root: []const u8, file
 
     while (try walker.next(io)) |entry| {
         if (entry.kind != .file) continue;
-        if (!isLogFile(entry.path)) continue;
+        if (!is_log_file(entry.path)) continue;
 
         const joined = try std.fs.path.join(gpa, &.{ root, entry.path });
         errdefer gpa.free(joined);
@@ -177,7 +200,7 @@ const TransactionMetrics = struct {
     is_async: bool = false,
 };
 
-fn parseLogTransactions(
+fn parse_log_transactions(
     gpa: std.mem.Allocator,
     io: Io,
     path: []const u8,
@@ -197,14 +220,14 @@ fn parseLogTransactions(
         const line = std.mem.trim(u8, raw, " \t\r");
         if (line.len == 0) continue;
 
-        if (isExecutionStartedLine(line)) {
+        if (is_execution_started_line(line)) {
             if (tx_started) {
-                try appendTransactionResult(gpa, path, cfg, tx_index, &current, results);
+                try append_transaction_result(gpa, path, cfg, tx_index, &current, results);
             }
             tx_started = true;
             tx_index = tx_index + 1;
             current = .{};
-        } else if (!tx_started and lineMarksTransactionActivity(line)) {
+        } else if (!tx_started and line_marks_transaction_activity(line)) {
             tx_started = true;
             tx_index = 1;
             current = .{};
@@ -213,29 +236,29 @@ fn parseLogTransactions(
         if (!tx_started) continue;
 
         if (current.label == null and std.mem.indexOf(u8, line, "CODE_UNIT_STARTED|") != null) {
-            current.label = try parseCodeUnitLabel(gpa, line);
+            current.label = try parse_code_unit_label(gpa, line);
         }
-        if (containsAsyncMarker(line)) {
+        if (contains_async_marker(line)) {
             current.is_async = true;
         }
 
-        if (parseLimitValue(line, "Maximum CPU time:")) |value| {
+        if (parse_limit_value(line, "Maximum CPU time:")) |value| {
             current.saw_metric = true;
             const parsed: u32 = @intCast(@min(value, std.math.maxInt(u32)));
             if (parsed > current.cpu_max) current.cpu_max = parsed;
         }
-        if (parseLimitValue(line, "Maximum heap size:")) |value| {
+        if (parse_limit_value(line, "Maximum heap size:")) |value| {
             current.saw_metric = true;
             if (value > current.heap_max) current.heap_max = value;
         }
     }
 
     if (tx_started) {
-        try appendTransactionResult(gpa, path, cfg, tx_index, &current, results);
+        try append_transaction_result(gpa, path, cfg, tx_index, &current, results);
     }
 }
 
-fn appendTransactionResult(
+fn append_transaction_result(
     gpa: std.mem.Allocator,
     path: []const u8,
     cfg: config.Config,
@@ -247,6 +270,7 @@ fn appendTransactionResult(
         if (tx.label) |value| gpa.free(value);
         tx.* = .{};
     }
+
     if (!tx.saw_metric) return;
 
     const label_source = tx.label orelse "unknown";
@@ -266,17 +290,17 @@ fn appendTransactionResult(
     });
 }
 
-fn isExecutionStartedLine(line: []const u8) bool {
+fn is_execution_started_line(line: []const u8) bool {
     return std.mem.indexOf(u8, line, "EXECUTION_STARTED") != null;
 }
 
-fn lineMarksTransactionActivity(line: []const u8) bool {
+fn line_marks_transaction_activity(line: []const u8) bool {
     return std.mem.indexOf(u8, line, "CODE_UNIT_STARTED|") != null or
-        parseLimitValue(line, "Maximum CPU time:") != null or
-        parseLimitValue(line, "Maximum heap size:") != null;
+        parse_limit_value(line, "Maximum CPU time:") != null or
+        parse_limit_value(line, "Maximum heap size:") != null;
 }
 
-fn parseCodeUnitLabel(gpa: std.mem.Allocator, line: []const u8) ![]const u8 {
+fn parse_code_unit_label(gpa: std.mem.Allocator, line: []const u8) ![]const u8 {
     var parts = std.mem.splitScalar(u8, line, '|');
     var last: []const u8 = "";
     while (parts.next()) |part| {
@@ -288,7 +312,7 @@ fn parseCodeUnitLabel(gpa: std.mem.Allocator, line: []const u8) ![]const u8 {
     return gpa.dupe(u8, last);
 }
 
-fn parseLimitValue(line: []const u8, marker: []const u8) ?u64 {
+fn parse_limit_value(line: []const u8, marker: []const u8) ?u64 {
     const marker_idx = std.mem.indexOf(u8, line, marker) orelse return null;
     var i = marker_idx + marker.len;
 
@@ -300,29 +324,29 @@ fn parseLimitValue(line: []const u8, marker: []const u8) ?u64 {
     return std.fmt.parseUnsigned(u64, line[start..i], 10) catch null;
 }
 
-fn containsAsyncMarker(line: []const u8) bool {
+fn contains_async_marker(line: []const u8) bool {
     return std.mem.indexOf(u8, line, "FUTURE_HANDLER") != null or
         std.mem.indexOf(u8, line, "QUEUEABLE") != null or
         std.mem.indexOf(u8, line, "BATCH_") != null or
         std.mem.indexOf(u8, line, "SCHEDULED") != null;
 }
 
-fn isLogFile(path: []const u8) bool {
+fn is_log_file(path: []const u8) bool {
     const ext = std.fs.path.extension(path);
     return std.ascii.eqlIgnoreCase(ext, ".log");
 }
 
-test "parseLimitValue parses numeric prefix" {
+test "parse_limit_value parses numeric prefix" {
     const line = "MAXIMUM LIMIT_USAGE_FOR_NS|(default)| Maximum CPU time: 1234 out of 10000";
-    const parsed = parseLimitValue(line, "Maximum CPU time:") orelse unreachable;
+    const parsed = parse_limit_value(line, "Maximum CPU time:") orelse unreachable;
     try std.testing.expectEqual(@as(u64, 1234), parsed);
 }
 
-test "exceedsPercent compares with threshold" {
-    try std.testing.expect(exceedsPercent(116, 100, 15));
-    try std.testing.expect(!exceedsPercent(115, 100, 15));
-    try std.testing.expect(exceedsPercent(1, 0, 15));
-    try std.testing.expect(!exceedsPercent(0, 0, 15));
+test "exceeds_percent compares with threshold" {
+    try std.testing.expect(exceeds_percent(116, 100, 15));
+    try std.testing.expect(!exceeds_percent(115, 100, 15));
+    try std.testing.expect(exceeds_percent(1, 0, 15));
+    try std.testing.expect(!exceeds_percent(0, 0, 15));
 }
 
 test "run splits multi-transaction log file" {
@@ -354,8 +378,13 @@ test "run splits multi-transaction log file" {
     defer std.testing.allocator.free(log_path);
 
     const inputs = [_][]const u8{log_path};
-    var profiles = try run(std.testing.allocator, std.testing.io, &inputs, config.Config.defaults());
-    defer model.deinitProfiles(std.testing.allocator, &profiles);
+    var profiles = try run(
+        std.testing.allocator,
+        std.testing.io,
+        &inputs,
+        config.Config.defaults(),
+    );
+    defer model.deinit_profiles(std.testing.allocator, &profiles);
 
     try std.testing.expectEqual(@as(usize, 2), profiles.items.len);
     try std.testing.expectEqual(@as(u32, 1), profiles.items[0].transaction_index);
@@ -368,7 +397,7 @@ test "run splits multi-transaction log file" {
     try std.testing.expectEqual(@as(u32, 4200), profiles.items[1].cpu_ms);
 }
 
-test "compareWithBaseline reports regression by label and mode" {
+test "compare_with_baseline reports regression by label and mode" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -423,8 +452,14 @@ test "compareWithBaseline reports regression by label and mode" {
         },
     };
 
-    var regressions = try compareWithBaseline(std.testing.allocator, std.testing.io, &current, baseline_path, 15);
-    defer deinitRegressions(std.testing.allocator, &regressions);
+    var regressions = try compare_with_baseline(
+        std.testing.allocator,
+        std.testing.io,
+        &current,
+        baseline_path,
+        15,
+    );
+    defer deinit_regressions(std.testing.allocator, &regressions);
 
     try std.testing.expectEqual(@as(usize, 1), regressions.items.len);
     try std.testing.expect(std.mem.eql(u8, regressions.items[0].label, "MyService.run"));
@@ -432,7 +467,7 @@ test "compareWithBaseline reports regression by label and mode" {
     try std.testing.expect(regressions.items[0].heap_regressed);
 }
 
-test "compareWithBaseline can disambiguate by transaction index" {
+test "compare_with_baseline can disambiguate by transaction index" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -479,15 +514,21 @@ test "compareWithBaseline can disambiguate by transaction index" {
         },
     };
 
-    var regressions = try compareWithBaseline(std.testing.allocator, std.testing.io, &current, baseline_path, 15);
-    defer deinitRegressions(std.testing.allocator, &regressions);
+    var regressions = try compare_with_baseline(
+        std.testing.allocator,
+        std.testing.io,
+        &current,
+        baseline_path,
+        15,
+    );
+    defer deinit_regressions(std.testing.allocator, &regressions);
 
     try std.testing.expectEqual(@as(usize, 1), regressions.items.len);
     try std.testing.expectEqual(@as(u32, 3000), regressions.items[0].cpu_current);
     try std.testing.expectEqual(@as(u32, 2500), regressions.items[0].cpu_baseline);
 }
 
-test "compareWithBaseline returns empty when baseline path is null" {
+test "compare_with_baseline returns empty when baseline path is null" {
     const current = [_]model.ProfileResult{
         .{
             .source = "sync.log",
@@ -501,12 +542,19 @@ test "compareWithBaseline returns empty when baseline path is null" {
         },
     };
 
-    var regressions = try compareWithBaseline(std.testing.allocator, std.testing.io, &current, null, 15);
-    defer deinitRegressions(std.testing.allocator, &regressions);
+    var regressions = try compare_with_baseline(
+        std.testing.allocator,
+        std.testing.io,
+        &current,
+        null,
+        15,
+    );
+    defer deinit_regressions(std.testing.allocator, &regressions);
+
     try std.testing.expectEqual(@as(usize, 0), regressions.items.len);
 }
 
-test "compareWithBaseline matches by basename when label is unknown" {
+test "compare_with_baseline matches by basename when label is unknown" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -544,8 +592,14 @@ test "compareWithBaseline matches by basename when label is unknown" {
         },
     };
 
-    var regressions = try compareWithBaseline(std.testing.allocator, std.testing.io, &current, baseline_path, 15);
-    defer deinitRegressions(std.testing.allocator, &regressions);
+    var regressions = try compare_with_baseline(
+        std.testing.allocator,
+        std.testing.io,
+        &current,
+        baseline_path,
+        15,
+    );
+    defer deinit_regressions(std.testing.allocator, &regressions);
 
     try std.testing.expectEqual(@as(usize, 1), regressions.items.len);
     try std.testing.expect(regressions.items[0].cpu_regressed);

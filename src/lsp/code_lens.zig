@@ -13,7 +13,7 @@ const Range = lsp_types.Range;
 /// - @IsTest / @isTest / @test アノテーション（case-insensitive）
 /// - @isTest(SeeAllData=true) 等パラメータ付き
 /// - testMethod 修飾子
-fn isTestMethod(md: *const ast.MethodDecl) bool {
+fn is_test_method(md: *const ast.MethodDecl) bool {
     if (md.modifiers.is_test_method) return true;
     for (md.annotations) |ann| {
         if (std.ascii.eqlIgnoreCase(ann, "@isTest") or
@@ -32,7 +32,7 @@ fn isTestMethod(md: *const ast.MethodDecl) bool {
 }
 
 /// AST 宣言リストから CodeLens 配列を生成する。
-pub fn getCodeLenses(
+pub fn get_code_lenses(
     decls: []const ast.Decl,
     source: []const u8,
     uri: []const u8,
@@ -48,14 +48,14 @@ pub fn getCodeLenses(
                 for (cd.members) |member| {
                     switch (member) {
                         .method_decl => |md| {
-                            if (isTestMethod(md)) {
+                            if (is_test_method(md)) {
                                 has_test = true;
                                 const args = try allocator.alloc([]const u8, 3);
                                 args[0] = uri;
                                 args[1] = cd.name;
                                 args[2] = md.name;
                                 try result.append(allocator, .{
-                                    .range = position_mod.locToRange(md.loc, source),
+                                    .range = position_mod.loc_to_range(md.loc, source),
                                     .command = .{
                                         .title = "\u{25B6} Run Test (saved)",
                                         .command = "apexgov.runTest",
@@ -73,7 +73,7 @@ pub fn getCodeLenses(
                     args[0] = uri;
                     args[1] = cd.name;
                     try result.append(allocator, .{
-                        .range = position_mod.locToRange(cd.loc, source),
+                        .range = position_mod.loc_to_range(cd.loc, source),
                         .command = .{
                             .title = "\u{25B6} Run All Tests (saved)",
                             .command = "apexgov.runAllTests",
@@ -105,13 +105,13 @@ const TestResult = struct {
     }
 };
 
-fn parseAndGetLenses(source: []const u8) !TestResult {
+fn parse_and_get_lenses(source: []const u8) !TestResult {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     const alloc = arena.allocator();
 
     const tokens = try lexer.tokenize(source, alloc);
     const decls = try parser.parse(tokens, alloc);
-    const lenses = try getCodeLenses(decls, source, "file:///test.cls", alloc);
+    const lenses = try get_code_lenses(decls, source, "file:///test.cls", alloc);
     return .{ .lenses = lenses, .arena = arena };
 }
 
@@ -125,7 +125,7 @@ test "@IsTest メソッドに Run Test レンズ" {
         \\    }
         \\}
     ;
-    var r = try parseAndGetLenses(source);
+    var r = try parse_and_get_lenses(source);
     defer r.deinit();
 
     // 1 per-method lens + 1 class-level lens = 2
@@ -148,7 +148,7 @@ test "テストなしクラスはレンズなし" {
         \\    public void process() {}
         \\}
     ;
-    var r = try parseAndGetLenses(source);
+    var r = try parse_and_get_lenses(source);
     defer r.deinit();
 
     try std.testing.expectEqual(@as(usize, 0), r.lenses.len);
@@ -164,7 +164,7 @@ test "クラスレベル Run All Tests レンズ" {
         \\    static void test2() {}
         \\}
     ;
-    var r = try parseAndGetLenses(source);
+    var r = try parse_and_get_lenses(source);
     defer r.deinit();
 
     // 2 per-method + 1 class-level = 3
@@ -173,7 +173,10 @@ test "クラスレベル Run All Tests レンズ" {
     // Last one should be Run All Tests
     const class_lens = r.lenses[2];
     try std.testing.expectEqualStrings("apexgov.runAllTests", class_lens.command.?.command);
-    try std.testing.expectEqualStrings("\u{25B6} Run All Tests (saved)", class_lens.command.?.title);
+    try std.testing.expectEqualStrings(
+        "\u{25B6} Run All Tests (saved)",
+        class_lens.command.?.title,
+    );
     const args = class_lens.command.?.arguments.?;
     try std.testing.expectEqual(@as(usize, 2), args.len);
     try std.testing.expectEqualStrings("MyTest", args[1]);
@@ -189,7 +192,7 @@ test "大文字小文字不問" {
         \\    static void test2() {}
         \\}
     ;
-    var r = try parseAndGetLenses(source);
+    var r = try parse_and_get_lenses(source);
     defer r.deinit();
 
     // 2 per-method + 1 class-level = 3
@@ -204,7 +207,7 @@ test "パラメータ付き @isTest(SeeAllData=true)" {
         \\    static void testWithData() {}
         \\}
     ;
-    var r = try parseAndGetLenses(source);
+    var r = try parse_and_get_lenses(source);
     defer r.deinit();
 
     try std.testing.expectEqual(@as(usize, 2), r.lenses.len);
@@ -220,7 +223,7 @@ test "testMethod 修飾子" {
         \\    }
         \\}
     ;
-    var r = try parseAndGetLenses(source);
+    var r = try parse_and_get_lenses(source);
     defer r.deinit();
 
     // 1 per-method + 1 class-level = 2
@@ -244,7 +247,7 @@ test "複数クラス" {
         \\    static void testB2() {}
         \\}
     ;
-    var r = try parseAndGetLenses(source);
+    var r = try parse_and_get_lenses(source);
     defer r.deinit();
 
     // TestA: 1 method + 1 class = 2

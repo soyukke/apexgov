@@ -10,38 +10,38 @@ const utils = @import("utils.zig");
 
 const OwnerScope = types.OwnerScope;
 const LoopScope = types.LoopScope;
-const extractLeadingIdentifier = utils.extractLeadingIdentifier;
+const extract_leading_identifier = utils.extract_leading_identifier;
 
-pub fn maybeEnterOwnerScope(
+pub fn maybe_enter_owner_scope(
     allocator: std.mem.Allocator,
     scopes: *std.ArrayList(OwnerScope),
     brace_depth: i32,
     line: []const u8,
 ) !void {
-    const owner = parseOwnerStart(line) orelse return;
+    const owner = parse_owner_start(line) orelse return;
     try scopes.append(allocator, .{
         .name = owner,
         .end_depth = brace_depth + 1,
     });
 }
 
-pub fn popClosedOwners(scopes: *std.ArrayList(OwnerScope), brace_depth: i32) void {
+pub fn pop_closed_owners(scopes: *std.ArrayList(OwnerScope), brace_depth: i32) void {
     while (scopes.items.len > 0 and scopes.items[scopes.items.len - 1].end_depth > brace_depth) {
         _ = scopes.pop();
     }
 }
 
-pub fn popClosedScopes(scopes: *std.ArrayList(LoopScope), brace_depth: i32) void {
+pub fn pop_closed_scopes(scopes: *std.ArrayList(LoopScope), brace_depth: i32) void {
     while (scopes.items.len > 0 and scopes.items[scopes.items.len - 1].end_depth > brace_depth) {
         _ = scopes.pop();
     }
 }
 
-pub fn parseOwnerStart(line: []const u8) ?[]const u8 {
-    return parseClassStart(line) orelse parseTriggerStart(line);
+pub fn parse_owner_start(line: []const u8) ?[]const u8 {
+    return parse_class_start(line) orelse parse_trigger_start(line);
 }
 
-pub fn parseClassStart(line: []const u8) ?[]const u8 {
+pub fn parse_class_start(line: []const u8) ?[]const u8 {
     if (std.mem.indexOfScalar(u8, line, '{') == null) return null;
 
     var start: ?usize = null;
@@ -52,12 +52,12 @@ pub fn parseClassStart(line: []const u8) ?[]const u8 {
     }
     const class_start = start orelse return null;
     const rest = std.mem.trimStart(u8, line[class_start..], " \t");
-    return extractLeadingIdentifier(rest);
+    return extract_leading_identifier(rest);
 }
 
-pub fn parseTriggerStart(line: []const u8) ?[]const u8 {
+pub fn parse_trigger_start(line: []const u8) ?[]const u8 {
     if (!std.mem.startsWith(u8, line, "trigger ")) return null;
     if (std.mem.indexOfScalar(u8, line, '{') == null) return null;
     const rest = std.mem.trimStart(u8, line[8..], " \t");
-    return extractLeadingIdentifier(rest);
+    return extract_leading_identifier(rest);
 }

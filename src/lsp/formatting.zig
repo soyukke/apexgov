@@ -13,7 +13,12 @@ pub const FormattingOptions = struct {
 };
 
 /// ソースコードをフォーマットし、結果のテキストを返す。
-pub fn formatSource(tokens: []const Token, source: []const u8, opts: FormattingOptions, allocator: std.mem.Allocator) ![]const u8 {
+pub fn format_source(
+    tokens: []const Token,
+    source: []const u8,
+    opts: FormattingOptions,
+    allocator: std.mem.Allocator,
+) ![]const u8 {
     _ = tokens; // 将来的にトークン情報も活用
 
     var result: std.ArrayList(u8) = .empty;
@@ -70,7 +75,8 @@ const lexer = @import("../apex_parser/lexer.zig");
 fn format(source: []const u8) ![]const u8 {
     const tokens = try lexer.tokenize(source, std.testing.allocator);
     defer std.testing.allocator.free(tokens);
-    return formatSource(tokens, source, .{}, std.testing.allocator);
+
+    return format_source(tokens, source, .{}, std.testing.allocator);
 }
 
 test "indents class body" {
@@ -86,7 +92,10 @@ test "indents nested blocks" {
     const result = try format(source);
     defer std.testing.allocator.free(result);
 
-    try std.testing.expectEqualStrings("public class Foo {\n    public void run() {\n        return;\n    }\n}\n", result);
+    try std.testing.expectEqualStrings(
+        "public class Foo {\n    public void run() {\n        return;\n    }\n}\n",
+        result,
+    );
 }
 
 test "preserves string literal content" {
@@ -101,5 +110,6 @@ test "preserves string literal content" {
 test "empty document" {
     const result = try format("");
     defer std.testing.allocator.free(result);
+
     try std.testing.expectEqualStrings("", result);
 }

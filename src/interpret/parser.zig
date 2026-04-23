@@ -5,4 +5,4 @@
 const apex_parser = @import("../apex_parser/parser.zig");
 
 pub const parse = apex_parser.parse;
-pub const parseExpr = apex_parser.parseExpr;
+pub const parse_expr = apex_parser.parse_expr;

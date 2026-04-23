@@ -17,13 +17,8 @@ ci:
 # ZIG_STYLE_CHECKER 環境変数で checker 本体のパスを差し替え可能。
 style_checker := env("ZIG_STYLE_CHECKER", "tools/check_style.zig")
 
-# 共通オプション:
-# - src/interpret/ と src/apex_parser/ は Apex ランタイム/パーサ実装で
-#   Apex 言語仕様の識別子 (camelCase) をミラーするため、
-#   function_not_snake_case だけ除外する。
-style_checker_args := "--root src " + \
-    "--disable-path src/interpret/:function_not_snake_case " + \
-    "--disable-path src/apex_parser/:function_not_snake_case"
+# 共通オプション: ルール除外なし。全 src/ 配下に対して同一ルールを適用する。
+style_checker_args := "--root src"
 
 # zig fmt でフォーマット崩れを検出 (書き換えはしない)
 fmt-check:

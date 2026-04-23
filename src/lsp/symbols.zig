@@ -13,61 +13,84 @@ const Position = types.Position;
 const SourceLoc = parser_types.SourceLoc;
 
 /// AST 宣言リストから DocumentSymbol 配列を生成する。
-pub fn collectSymbols(decls: []const ast.Decl, source: []const u8, allocator: std.mem.Allocator) ![]DocumentSymbol {
+pub fn collect_symbols(
+    decls: []const ast.Decl,
+    source: []const u8,
+    allocator: std.mem.Allocator,
+) ![]DocumentSymbol {
     var result: std.ArrayList(DocumentSymbol) = .empty;
     for (decls) |decl| {
-        try collectDecl(decl, source, allocator, &result);
+        try collect_decl(decl, source, allocator, &result);
     }
     return result.toOwnedSlice(allocator);
 }
 
-fn collectDecl(decl: ast.Decl, source: []const u8, allocator: std.mem.Allocator, out: *std.ArrayList(DocumentSymbol)) !void {
+fn collect_class_decl(
+    cd: anytype,
+    source: []const u8,
+    allocator: std.mem.Allocator,
+    out: *std.ArrayList(DocumentSymbol),
+) anyerror!void {
+    var children: std.ArrayList(DocumentSymbol) = .empty;
+    for (cd.members) |member| {
+        try collect_decl(member, source, allocator, &children);
+    }
+    try out.append(allocator, .{
+        .name = cd.name,
+        .kind = .class,
+        .range = position_mod.loc_to_range(cd.loc, source),
+        .selectionRange = position_mod.loc_to_range(cd.loc, source),
+        .children = try children.toOwnedSlice(allocator),
+    });
+}
+
+fn collect_enum_decl(
+    ed: anytype,
+    source: []const u8,
+    allocator: std.mem.Allocator,
+    out: *std.ArrayList(DocumentSymbol),
+) !void {
+    var children: std.ArrayList(DocumentSymbol) = .empty;
+    for (ed.values) |v| {
+        try children.append(allocator, .{
+            .name = v,
+            .kind = .enum_member,
+            .range = .{},
+            .selectionRange = .{},
+        });
+    }
+    try out.append(allocator, .{
+        .name = ed.name,
+        .kind = .@"enum",
+        .range = position_mod.loc_to_range(ed.loc, source),
+        .selectionRange = position_mod.loc_to_range(ed.loc, source),
+        .children = try children.toOwnedSlice(allocator),
+    });
+}
+
+fn collect_decl(
+    decl: ast.Decl,
+    source: []const u8,
+    allocator: std.mem.Allocator,
+    out: *std.ArrayList(DocumentSymbol),
+) !void {
     switch (decl) {
-        .class_decl => |cd| {
-            var children: std.ArrayList(DocumentSymbol) = .empty;
-            for (cd.members) |member| {
-                try collectDecl(member, source, allocator, &children);
-            }
-            try out.append(allocator, .{
-                .name = cd.name,
-                .kind = .class,
-                .range = position_mod.locToRange(cd.loc, source),
-                .selectionRange = position_mod.locToRange(cd.loc, source),
-                .children = try children.toOwnedSlice(allocator),
-            });
-        },
+        .class_decl => |cd| try collect_class_decl(cd, source, allocator, out),
         .interface_decl => |id| {
             try out.append(allocator, .{
                 .name = id.name,
                 .kind = .interface,
-                .range = position_mod.locToRange(id.loc, source),
-                .selectionRange = position_mod.locToRange(id.loc, source),
+                .range = position_mod.loc_to_range(id.loc, source),
+                .selectionRange = position_mod.loc_to_range(id.loc, source),
             });
         },
-        .enum_decl => |ed| {
-            var children: std.ArrayList(DocumentSymbol) = .empty;
-            for (ed.values) |v| {
-                try children.append(allocator, .{
-                    .name = v,
-                    .kind = .enum_member,
-                    .range = .{},
-                    .selectionRange = .{},
-                });
-            }
-            try out.append(allocator, .{
-                .name = ed.name,
-                .kind = .@"enum",
-                .range = position_mod.locToRange(ed.loc, source),
-                .selectionRange = position_mod.locToRange(ed.loc, source),
-                .children = try children.toOwnedSlice(allocator),
-            });
-        },
+        .enum_decl => |ed| try collect_enum_decl(ed, source, allocator, out),
         .method_decl => |md| {
             try out.append(allocator, .{
                 .name = md.name,
                 .kind = .method,
-                .range = position_mod.locToRange(md.loc, source),
-                .selectionRange = position_mod.locToRange(md.loc, source),
+                .range = position_mod.loc_to_range(md.loc, source),
+                .selectionRange = position_mod.loc_to_range(md.loc, source),
             });
         },
         .constructor_decl => |cd| {
@@ -78,20 +101,23 @@ fn collectDecl(decl: ast.Decl, source: []const u8, allocator: std.mem.Allocator,
             });
         },
         .field_decl => |fd| {
-            const kind: SymbolKind = if (fd.modifiers.is_static and fd.modifiers.is_final) .constant else .field;
+            const kind: SymbolKind = if (fd.modifiers.is_static and fd.modifiers.is_final)
+                .constant
+            else
+                .field;
             try out.append(allocator, .{
                 .name = fd.name,
                 .kind = kind,
-                .range = position_mod.locToRange(fd.loc, source),
-                .selectionRange = position_mod.locToRange(fd.loc, source),
+                .range = position_mod.loc_to_range(fd.loc, source),
+                .selectionRange = position_mod.loc_to_range(fd.loc, source),
             });
         },
         .trigger_decl => |td| {
             try out.append(allocator, .{
                 .name = td.name,
                 .kind = .event,
-                .range = position_mod.locToRange(td.loc, source),
-                .selectionRange = position_mod.locToRange(td.loc, source),
+                .range = position_mod.loc_to_range(td.loc, source),
+                .selectionRange = position_mod.loc_to_range(td.loc, source),
             });
         },
         .static_init => {},
@@ -115,20 +141,23 @@ const TestResult = struct {
     }
 };
 
-fn parseAndCollect(source: []const u8) !TestResult {
+fn parse_and_collect(source: []const u8) !TestResult {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     const alloc = arena.allocator();
 
     const tokens = try lexer.tokenize(source, alloc);
     const decls = try parser.parse(tokens, alloc);
-    const syms = try collectSymbols(decls, source, alloc);
+    const syms = try collect_symbols(decls, source, alloc);
     return .{ .symbols = syms, .arena = arena };
 }
 
 test "class with methods → class symbol with method children" {
-    const source = "public class AccountService { public void process() {} private Integer count() { return 0; } }";
-    var r = try parseAndCollect(source);
+    const source =
+        "public class AccountService {" ++
+        " public void process() {} private Integer count() { return 0; } }";
+    var r = try parse_and_collect(source);
     defer r.deinit();
+
     const symbols = r.symbols;
 
     try std.testing.expectEqual(@as(usize, 1), symbols.len);
@@ -141,9 +170,12 @@ test "class with methods → class symbol with method children" {
 }
 
 test "class with fields → field symbols" {
-    const source = "public class Foo { public String name; private static final Integer MAX = 100; }";
-    var r = try parseAndCollect(source);
+    const source =
+        "public class Foo {" ++
+        " public String name; private static final Integer MAX = 100; }";
+    var r = try parse_and_collect(source);
     defer r.deinit();
+
     const children = r.symbols[0].children;
 
     try std.testing.expectEqual(@as(usize, 2), children.len);
@@ -155,8 +187,9 @@ test "class with fields → field symbols" {
 
 test "enum → enum symbol with enum_member children" {
     const source = "public enum Season { SPRING, SUMMER, FALL, WINTER }";
-    var r = try parseAndCollect(source);
+    var r = try parse_and_collect(source);
     defer r.deinit();
+
     const symbols = r.symbols;
 
     try std.testing.expectEqual(@as(usize, 1), symbols.len);
@@ -169,7 +202,7 @@ test "enum → enum symbol with enum_member children" {
 
 test "interface → interface symbol" {
     const source = "public interface Runnable { void run(); }";
-    var r = try parseAndCollect(source);
+    var r = try parse_and_collect(source);
     defer r.deinit();
 
     try std.testing.expectEqual(@as(usize, 1), r.symbols.len);
@@ -179,7 +212,7 @@ test "interface → interface symbol" {
 
 test "trigger → event symbol" {
     const source = "trigger AccountTrigger on Account (before insert, after update) { }";
-    var r = try parseAndCollect(source);
+    var r = try parse_and_collect(source);
     defer r.deinit();
 
     try std.testing.expectEqual(@as(usize, 1), r.symbols.len);
@@ -189,7 +222,7 @@ test "trigger → event symbol" {
 
 test "position mapping: class on line 1" {
     const source = "public class Foo {}";
-    var r = try parseAndCollect(source);
+    var r = try parse_and_collect(source);
     defer r.deinit();
 
     try std.testing.expectEqual(@as(u32, 0), r.symbols[0].range.start.line);

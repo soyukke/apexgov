@@ -11,14 +11,14 @@ pub const Severity = enum {
     warning,
     err,
 
-    pub fn fromString(value: []const u8) ?Severity {
+    pub fn from_string(value: []const u8) ?Severity {
         if (std.ascii.eqlIgnoreCase(value, "info")) return .info;
         if (std.ascii.eqlIgnoreCase(value, "warning")) return .warning;
         if (std.ascii.eqlIgnoreCase(value, "error")) return .err;
         return null;
     }
 
-    pub fn asString(self: Severity) []const u8 {
+    pub fn as_string(self: Severity) []const u8 {
         return switch (self) {
             .info => "info",
             .warning => "warning",
@@ -40,7 +40,7 @@ pub const OutputFormat = enum {
     json,
     sarif,
 
-    pub fn fromString(value: []const u8) ?OutputFormat {
+    pub fn from_string(value: []const u8) ?OutputFormat {
         if (std.ascii.eqlIgnoreCase(value, "text")) return .text;
         if (std.ascii.eqlIgnoreCase(value, "json")) return .json;
         if (std.ascii.eqlIgnoreCase(value, "sarif")) return .sarif;
@@ -68,20 +68,20 @@ pub const ProfileResult = struct {
     cpu_budget: u32,
     heap_budget: u64,
 
-    pub fn cpuExceeded(self: ProfileResult) bool {
+    pub fn cpu_exceeded(self: ProfileResult) bool {
         return self.cpu_ms > self.cpu_budget;
     }
 
-    pub fn heapExceeded(self: ProfileResult) bool {
+    pub fn heap_exceeded(self: ProfileResult) bool {
         return self.heap_bytes > self.heap_budget;
     }
 
-    pub fn anyExceeded(self: ProfileResult) bool {
-        return self.cpuExceeded() or self.heapExceeded();
+    pub fn any_exceeded(self: ProfileResult) bool {
+        return self.cpu_exceeded() or self.heap_exceeded();
     }
 };
 
-pub fn deinitFindings(gpa: std.mem.Allocator, findings: *std.ArrayList(Finding)) void {
+pub fn deinit_findings(gpa: std.mem.Allocator, findings: *std.ArrayList(Finding)) void {
     for (findings.items) |finding| {
         gpa.free(finding.title);
         gpa.free(finding.message);
@@ -90,7 +90,7 @@ pub fn deinitFindings(gpa: std.mem.Allocator, findings: *std.ArrayList(Finding))
     findings.deinit(gpa);
 }
 
-pub fn deinitProfiles(gpa: std.mem.Allocator, profiles: *std.ArrayList(ProfileResult)) void {
+pub fn deinit_profiles(gpa: std.mem.Allocator, profiles: *std.ArrayList(ProfileResult)) void {
     for (profiles.items) |profile| {
         gpa.free(profile.source);
         gpa.free(profile.label);

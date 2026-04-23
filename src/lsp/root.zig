@@ -37,6 +37,7 @@ pub fn serve(allocator: std.mem.Allocator, io: Io) !void {
     const stdout = Io.File.stdout();
     var srv = Server.init(allocator, io, stdin, stdout);
     defer srv.deinit();
+
     try srv.run();
 }
 

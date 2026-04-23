@@ -15,7 +15,7 @@ const std = @import("std");
 
 /// XML テキストから `<tag>value</tag>` の value を抽出する。
 /// ネストなし・属性なしの単純タグのみ対応。
-pub fn xmlTagValue(xml: []const u8, tag: []const u8) ?[]const u8 {
+pub fn xml_tag_value(xml: []const u8, tag: []const u8) ?[]const u8 {
     // <tag> を探す
     const open_tag_start = std.mem.indexOf(u8, xml, "<") orelse return null;
     _ = open_tag_start;
@@ -37,8 +37,17 @@ pub fn xmlTagValue(xml: []const u8, tag: []const u8) ?[]const u8 {
             // 閉じタグを探す
             const value_start = open_end + 1;
             var close_pattern_buf: [128]u8 = undefined;
-            const close_pattern = std.fmt.bufPrint(&close_pattern_buf, "</{s}>", .{tag}) catch return null;
-            const close_start = std.mem.indexOfPos(u8, xml, value_start, close_pattern) orelse return null;
+            const close_pattern = std.fmt.bufPrint(
+                &close_pattern_buf,
+                "</{s}>",
+                .{tag},
+            ) catch return null;
+            const close_start = std.mem.indexOfPos(
+                u8,
+                xml,
+                value_start,
+                close_pattern,
+            ) orelse return null;
             const value = std.mem.trim(u8, xml[value_start..close_start], " \t\r\n");
             return value;
         }
@@ -48,12 +57,20 @@ pub fn xmlTagValue(xml: []const u8, tag: []const u8) ?[]const u8 {
 }
 
 /// XML テキストから `<tag>value</tag>` を全て抽出する（複数マッチ対応）。
-pub fn xmlTagValues(xml: []const u8, tag: []const u8, allocator: std.mem.Allocator) ![]const []const u8 {
+pub fn xml_tag_values(
+    xml: []const u8,
+    tag: []const u8,
+    allocator: std.mem.Allocator,
+) ![]const []const u8 {
     var results: std.ArrayList([]const u8) = .empty;
     var pos: usize = 0;
 
     var close_pattern_buf: [128]u8 = undefined;
-    const close_pattern = std.fmt.bufPrint(&close_pattern_buf, "</{s}>", .{tag}) catch return results.toOwnedSlice(allocator);
+    const close_pattern = std.fmt.bufPrint(
+        &close_pattern_buf,
+        "</{s}>",
+        .{tag},
+    ) catch return results.toOwnedSlice(allocator);
 
     while (pos < xml.len) {
         const open_start = std.mem.indexOfPos(u8, xml, pos, "<") orelse break;
@@ -67,7 +84,12 @@ pub fn xmlTagValues(xml: []const u8, tag: []const u8, allocator: std.mem.Allocat
 
         if (std.mem.eql(u8, tag_name, tag)) {
             const value_start = open_end + 1;
-            const close_start = std.mem.indexOfPos(u8, xml, value_start, close_pattern) orelse break;
+            const close_start = std.mem.indexOfPos(
+                u8,
+                xml,
+                value_start,
+                close_pattern,
+            ) orelse break;
             const value = std.mem.trim(u8, xml[value_start..close_start], " \t\r\n");
             try results.append(allocator, value);
             pos = close_start + close_pattern.len;
@@ -83,14 +105,21 @@ pub fn xmlTagValues(xml: []const u8, tag: []const u8, allocator: std.mem.Allocat
 // ---------------------------------------------------------------------------
 
 /// Salesforce フィールド型名を TypeScript 型に変換する。
-pub fn sfTypeToTs(sf_type: []const u8) []const u8 {
+pub fn sf_type_to_ts(sf_type: []const u8) []const u8 {
     // 数値系
-    if (eqlAny(sf_type, &.{ "Number", "Currency", "Percent", "Double", "Int", "Long" })) return "number";
+    if (eql_any(sf_type, &.{
+        "Number",
+        "Currency",
+        "Percent",
+        "Double",
+        "Int",
+        "Long",
+    })) return "number";
     // 真偽値
     if (std.mem.eql(u8, sf_type, "Checkbox")) return "boolean";
     // それ以外は string（Text, LongTextArea, RichTextArea, Phone, Email, Url,
     // Date, DateTime, Time, Picklist, MultiselectPicklist, Lookup, MasterDetail, Id, etc.）
-    if (eqlAny(sf_type, &.{
+    if (eql_any(sf_type, &.{
         "Text",                 "LongTextArea", "RichTextArea",  "Html",
         "Phone",                "Email",        "Url",           "TextArea",
         "Date",                 "DateTime",     "Time",          "Picklist",
@@ -100,7 +129,7 @@ pub fn sfTypeToTs(sf_type: []const u8) []const u8 {
     return "any";
 }
 
-fn eqlAny(s: []const u8, candidates: []const []const u8) bool {
+fn eql_any(s: []const u8, candidates: []const []const u8) bool {
     for (candidates) |c| {
         if (std.mem.eql(u8, s, c)) return true;
     }
@@ -118,18 +147,18 @@ pub const SchemaField = struct {
 };
 
 /// field-meta.xml の内容からフィールド情報を抽出する。
-pub fn parseFieldMeta(xml: []const u8, object_name: []const u8) ?SchemaField {
-    const full_name = xmlTagValue(xml, "fullName") orelse return null;
-    const sf_type = xmlTagValue(xml, "type") orelse "Text";
+pub fn parse_field_meta(xml: []const u8, object_name: []const u8) ?SchemaField {
+    const full_name = xml_tag_value(xml, "fullName") orelse return null;
+    const sf_type = xml_tag_value(xml, "type") orelse "Text";
     return .{
         .object_name = object_name,
         .field_name = full_name,
-        .ts_type = sfTypeToTs(sf_type),
+        .ts_type = sf_type_to_ts(sf_type),
     };
 }
 
 /// SchemaField から TypeScript 型定義文字列を生成する。
-pub fn renderSchemaField(field: SchemaField, writer: anytype) !void {
+pub fn render_schema_field(field: SchemaField, writer: anytype) !void {
     try writer.print(
         \\declare module "@salesforce/schema/{s}.{s}" {{
         \\    const {s}: {s};
@@ -144,12 +173,12 @@ pub fn renderSchemaField(field: SchemaField, writer: anytype) !void {
 // ---------------------------------------------------------------------------
 
 /// CustomLabels.labels-meta.xml からラベル名を全て抽出する。
-pub fn parseLabelNames(xml: []const u8, allocator: std.mem.Allocator) ![]const []const u8 {
-    return xmlTagValues(xml, "fullName", allocator);
+pub fn parse_label_names(xml: []const u8, allocator: std.mem.Allocator) ![]const []const u8 {
+    return xml_tag_values(xml, "fullName", allocator);
 }
 
 /// ラベル名から TypeScript 型定義を生成する。
-pub fn renderLabel(label_name: []const u8, writer: anytype) !void {
+pub fn render_label(label_name: []const u8, writer: anytype) !void {
     try writer.print(
         \\declare module "@salesforce/label/c.{s}" {{
         \\    var {s}: string;
@@ -163,7 +192,7 @@ pub fn renderLabel(label_name: []const u8, writer: anytype) !void {
 // ---------------------------------------------------------------------------
 
 /// リソース名から TypeScript 型定義を生成する。
-pub fn renderResourceUrl(resource_name: []const u8, writer: anytype) !void {
+pub fn render_resource_url(resource_name: []const u8, writer: anytype) !void {
     try writer.print(
         \\declare module "@salesforce/resourceUrl/{s}" {{
         \\    var {s}: string;
@@ -178,7 +207,7 @@ pub fn renderResourceUrl(resource_name: []const u8, writer: anytype) !void {
 
 /// メッセージチャネル名から TypeScript 型定義を生成する。
 /// 公式 LWC LS と同様、モジュールパスに __c サフィックスを付与する。
-pub fn renderMessageChannel(channel_name: []const u8, writer: anytype) !void {
+pub fn render_message_channel(channel_name: []const u8, writer: anytype) !void {
     try writer.print(
         \\declare module "@salesforce/messageChannel/{s}__c" {{
         \\    var {s}: string;
@@ -192,7 +221,7 @@ pub fn renderMessageChannel(channel_name: []const u8, writer: anytype) !void {
 // ---------------------------------------------------------------------------
 
 /// コンテンツアセット名から TypeScript 型定義を生成する。
-pub fn renderContentAssetUrl(asset_name: []const u8, writer: anytype) !void {
+pub fn render_content_asset_url(asset_name: []const u8, writer: anytype) !void {
     try writer.print(
         \\declare module "@salesforce/contentAssetUrl/{s}" {{
         \\    var {s}: string;
@@ -211,7 +240,11 @@ pub const ApexMethod = struct {
 };
 
 /// Apex ソースコードから @AuraEnabled public/global static メソッドを検出する。
-pub fn findAuraEnabledMethods(source: []const u8, class_name: []const u8, allocator: std.mem.Allocator) ![]ApexMethod {
+pub fn find_aura_enabled_methods(
+    source: []const u8,
+    class_name: []const u8,
+    allocator: std.mem.Allocator,
+) ![]ApexMethod {
     var methods: std.ArrayList(ApexMethod) = .empty;
     var pos: usize = 0;
 
@@ -241,7 +274,7 @@ pub fn findAuraEnabledMethods(source: []const u8, class_name: []const u8, alloca
         // "static" が含まれているか確認
         if (std.ascii.indexOfIgnoreCase(sig, "static") != null) {
             // メソッド名を抽出: 最後の "identifier(" パターンを探す
-            if (extractMethodName(sig)) |method_name| {
+            if (extract_method_name(sig)) |method_name| {
                 try methods.append(allocator, .{
                     .class_name = class_name,
                     .method_name = method_name,
@@ -254,7 +287,7 @@ pub fn findAuraEnabledMethods(source: []const u8, class_name: []const u8, alloca
     return methods.toOwnedSlice(allocator);
 }
 
-fn extractMethodName(sig: []const u8) ?[]const u8 {
+fn extract_method_name(sig: []const u8) ?[]const u8 {
     // 最後の '(' の直前にある識別子がメソッド名
     const paren_pos = std.mem.lastIndexOfScalar(u8, sig, '(') orelse return null;
     // '(' の前の空白をスキップ
@@ -263,17 +296,17 @@ fn extractMethodName(sig: []const u8) ?[]const u8 {
     if (end == 0) return null;
     // 識別子の先頭を探す
     var start = end;
-    while (start > 0 and isIdentChar(sig[start - 1])) start -= 1;
+    while (start > 0 and is_ident_char(sig[start - 1])) start -= 1;
     if (start == end) return null;
     return sig[start..end];
 }
 
-fn isIdentChar(c: u8) bool {
+fn is_ident_char(c: u8) bool {
     return std.ascii.isAlphanumeric(c) or c == '_';
 }
 
 /// ApexMethod から TypeScript 型定義を生成する。
-pub fn renderApexMethod(method: ApexMethod, writer: anytype) !void {
+pub fn render_apex_method(method: ApexMethod, writer: anytype) !void {
     try writer.print(
         \\declare module "@salesforce/apex/{s}.{s}" {{
         \\    export default function {s}(params?: any): Promise<any>;
@@ -286,12 +319,12 @@ pub fn renderApexMethod(method: ApexMethod, writer: anytype) !void {
 // テスト
 // ---------------------------------------------------------------------------
 
-test "xmlTagValue extracts simple tag" {
+test "xml_tag_value extracts simple tag" {
     const xml = "<type>Number</type>";
-    try std.testing.expectEqualStrings("Number", xmlTagValue(xml, "type").?);
+    try std.testing.expectEqualStrings("Number", xml_tag_value(xml, "type").?);
 }
 
-test "xmlTagValue extracts from full field-meta.xml" {
+test "xml_tag_value extracts from full field-meta.xml" {
     const xml =
         \\<?xml version="1.0" encoding="UTF-8" ?>
         \\<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
@@ -299,40 +332,41 @@ test "xmlTagValue extracts from full field-meta.xml" {
         \\    <type>Currency</type>
         \\</CustomField>
     ;
-    try std.testing.expectEqualStrings("Amount__c", xmlTagValue(xml, "fullName").?);
-    try std.testing.expectEqualStrings("Currency", xmlTagValue(xml, "type").?);
+    try std.testing.expectEqualStrings("Amount__c", xml_tag_value(xml, "fullName").?);
+    try std.testing.expectEqualStrings("Currency", xml_tag_value(xml, "type").?);
 }
 
-test "xmlTagValue returns null for missing tag" {
+test "xml_tag_value returns null for missing tag" {
     const xml = "<type>Number</type>";
-    try std.testing.expect(xmlTagValue(xml, "missing") == null);
+    try std.testing.expect(xml_tag_value(xml, "missing") == null);
 }
 
-test "xmlTagValues extracts multiple labels" {
+test "xml_tag_values extracts multiple labels" {
     const xml =
         \\<CustomLabels>
         \\    <labels><fullName>Label1</fullName></labels>
         \\    <labels><fullName>Label2</fullName></labels>
         \\</CustomLabels>
     ;
-    const names = try xmlTagValues(xml, "fullName", std.testing.allocator);
+    const names = try xml_tag_values(xml, "fullName", std.testing.allocator);
     defer std.testing.allocator.free(names);
+
     try std.testing.expectEqual(@as(usize, 2), names.len);
     try std.testing.expectEqualStrings("Label1", names[0]);
     try std.testing.expectEqualStrings("Label2", names[1]);
 }
 
-test "sfTypeToTs maps correctly" {
-    try std.testing.expectEqualStrings("number", sfTypeToTs("Number"));
-    try std.testing.expectEqualStrings("number", sfTypeToTs("Currency"));
-    try std.testing.expectEqualStrings("boolean", sfTypeToTs("Checkbox"));
-    try std.testing.expectEqualStrings("string", sfTypeToTs("Text"));
-    try std.testing.expectEqualStrings("string", sfTypeToTs("Date"));
-    try std.testing.expectEqualStrings("string", sfTypeToTs("Lookup"));
-    try std.testing.expectEqualStrings("any", sfTypeToTs("SomeUnknownType"));
+test "sf_type_to_ts maps correctly" {
+    try std.testing.expectEqualStrings("number", sf_type_to_ts("Number"));
+    try std.testing.expectEqualStrings("number", sf_type_to_ts("Currency"));
+    try std.testing.expectEqualStrings("boolean", sf_type_to_ts("Checkbox"));
+    try std.testing.expectEqualStrings("string", sf_type_to_ts("Text"));
+    try std.testing.expectEqualStrings("string", sf_type_to_ts("Date"));
+    try std.testing.expectEqualStrings("string", sf_type_to_ts("Lookup"));
+    try std.testing.expectEqualStrings("any", sf_type_to_ts("SomeUnknownType"));
 }
 
-test "parseFieldMeta extracts field info" {
+test "parse_field_meta extracts field info" {
     const xml =
         \\<?xml version="1.0" encoding="UTF-8" ?>
         \\<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
@@ -340,16 +374,17 @@ test "parseFieldMeta extracts field info" {
         \\    <type>Currency</type>
         \\</CustomField>
     ;
-    const field = parseFieldMeta(xml, "Account").?;
+    const field = parse_field_meta(xml, "Account").?;
     try std.testing.expectEqualStrings("Account", field.object_name);
     try std.testing.expectEqualStrings("Revenue__c", field.field_name);
     try std.testing.expectEqualStrings("number", field.ts_type);
 }
 
-test "renderSchemaField generates correct .d.ts" {
+test "render_schema_field generates correct .d.ts" {
     var buf = std.Io.Writer.Allocating.init(std.testing.allocator);
     defer buf.deinit();
-    try renderSchemaField(.{
+
+    try render_schema_field(.{
         .object_name = "Account",
         .field_name = "Name",
         .ts_type = "string",
@@ -364,10 +399,11 @@ test "renderSchemaField generates correct .d.ts" {
     try std.testing.expectEqualStrings(expected, buf.written());
 }
 
-test "renderLabel matches official format" {
+test "render_label matches official format" {
     var buf = std.Io.Writer.Allocating.init(std.testing.allocator);
     defer buf.deinit();
-    try renderLabel("Github_username", &buf.writer);
+
+    try render_label("Github_username", &buf.writer);
     const expected =
         \\declare module "@salesforce/label/c.Github_username" {
         \\    var Github_username: string;
@@ -377,10 +413,11 @@ test "renderLabel matches official format" {
     try std.testing.expectEqualStrings(expected, buf.written());
 }
 
-test "renderResourceUrl matches official format" {
+test "render_resource_url matches official format" {
     var buf = std.Io.Writer.Allocating.init(std.testing.allocator);
     defer buf.deinit();
-    try renderResourceUrl("leafletjs", &buf.writer);
+
+    try render_resource_url("leafletjs", &buf.writer);
     const expected =
         \\declare module "@salesforce/resourceUrl/leafletjs" {
         \\    var leafletjs: string;
@@ -390,10 +427,11 @@ test "renderResourceUrl matches official format" {
     try std.testing.expectEqualStrings(expected, buf.written());
 }
 
-test "renderMessageChannel adds __c suffix (official format)" {
+test "render_message_channel adds __c suffix (official format)" {
     var buf = std.Io.Writer.Allocating.init(std.testing.allocator);
     defer buf.deinit();
-    try renderMessageChannel("PropertySelected", &buf.writer);
+
+    try render_message_channel("PropertySelected", &buf.writer);
     const expected =
         \\declare module "@salesforce/messageChannel/PropertySelected__c" {
         \\    var PropertySelected: string;
@@ -403,10 +441,11 @@ test "renderMessageChannel adds __c suffix (official format)" {
     try std.testing.expectEqualStrings(expected, buf.written());
 }
 
-test "renderContentAssetUrl matches official format" {
+test "render_content_asset_url matches official format" {
     var buf = std.Io.Writer.Allocating.init(std.testing.allocator);
     defer buf.deinit();
-    try renderContentAssetUrl("dreamhouselogosquare", &buf.writer);
+
+    try render_content_asset_url("dreamhouselogosquare", &buf.writer);
     const expected =
         \\declare module "@salesforce/contentAssetUrl/dreamhouselogosquare" {
         \\    var dreamhouselogosquare: string;
@@ -416,7 +455,7 @@ test "renderContentAssetUrl matches official format" {
     try std.testing.expectEqualStrings(expected, buf.written());
 }
 
-test "findAuraEnabledMethods detects @AuraEnabled static method" {
+test "find_aura_enabled_methods detects @AuraEnabled static method" {
     const source =
         \\public with sharing class MyController {
         \\    @AuraEnabled(cacheable=true)
@@ -426,26 +465,28 @@ test "findAuraEnabledMethods detects @AuraEnabled static method" {
         \\    public void nonAuraMethod() {}
         \\}
     ;
-    const methods = try findAuraEnabledMethods(source, "MyController", std.testing.allocator);
+    const methods = try find_aura_enabled_methods(source, "MyController", std.testing.allocator);
     defer std.testing.allocator.free(methods);
+
     try std.testing.expectEqual(@as(usize, 1), methods.len);
     try std.testing.expectEqualStrings("MyController", methods[0].class_name);
     try std.testing.expectEqualStrings("getAccounts", methods[0].method_name);
 }
 
-test "findAuraEnabledMethods skips non-static @AuraEnabled" {
+test "find_aura_enabled_methods skips non-static @AuraEnabled" {
     const source =
         \\public class Foo {
         \\    @AuraEnabled
         \\    public String name { get; set; }
         \\}
     ;
-    const methods = try findAuraEnabledMethods(source, "Foo", std.testing.allocator);
+    const methods = try find_aura_enabled_methods(source, "Foo", std.testing.allocator);
     defer std.testing.allocator.free(methods);
+
     try std.testing.expectEqual(@as(usize, 0), methods.len);
 }
 
-test "findAuraEnabledMethods detects multiple methods" {
+test "find_aura_enabled_methods detects multiple methods" {
     const source =
         \\public class Ctrl {
         \\    @AuraEnabled
@@ -456,21 +497,27 @@ test "findAuraEnabledMethods detects multiple methods" {
         \\    }
         \\}
     ;
-    const methods = try findAuraEnabledMethods(source, "Ctrl", std.testing.allocator);
+    const methods = try find_aura_enabled_methods(source, "Ctrl", std.testing.allocator);
     defer std.testing.allocator.free(methods);
+
     try std.testing.expectEqual(@as(usize, 2), methods.len);
     try std.testing.expectEqualStrings("getName", methods[0].method_name);
     try std.testing.expectEqualStrings("getContacts", methods[1].method_name);
 }
 
-test "renderApexMethod generates correct .d.ts" {
+test "render_apex_method generates correct .d.ts" {
     var buf = std.Io.Writer.Allocating.init(std.testing.allocator);
     defer buf.deinit();
-    try renderApexMethod(.{
+
+    try render_apex_method(.{
         .class_name = "AccountController",
         .method_name = "getAccounts",
     }, &buf.writer);
     const output = buf.written();
-    try std.testing.expect(std.mem.indexOf(u8, output, "@salesforce/apex/AccountController.getAccounts") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "export default function getAccounts") != null);
+    try std.testing.expect(
+        std.mem.indexOf(u8, output, "@salesforce/apex/AccountController.getAccounts") != null,
+    );
+    try std.testing.expect(
+        std.mem.indexOf(u8, output, "export default function getAccounts") != null,
+    );
 }
