@@ -19127,69 +19127,17 @@ pub const Evaluator = struct {
         const pt_has_generics = std.mem.indexOfScalar(u8, pt, '<') != null;
         if (std.ascii.eqlIgnoreCase(hint, pt)) return 3;
         if (hint_has_generics and pt_has_generics and std.ascii.eqlIgnoreCase(hint_base, pt_base)) {
-            if (std.ascii.eqlIgnoreCase(hint_base, "Map")) {
-                const hint_args = extract_map_type_args(hint);
-                const param_args = extract_map_type_args(pt);
-                if (hint_args != null and param_args != null and names_match_by_simple_name(
-                    strip_type_namespace(hint_args.?.key),
-                    strip_type_namespace(param_args.?.key),
-                )) {
-                    const hint_value = strip_type_namespace(hint_args.?.value);
-                    const param_value = strip_type_namespace(param_args.?.value);
-                    if (names_match_by_simple_name(hint_value, param_value)) return 3;
-                    if (std.ascii.eqlIgnoreCase(type_base_name(param_value), "SObject") and
-                        self.is_s_object_type_name(type_base_name(hint_value)))
-                    {
-                        return 3;
-                    }
-                }
-            } else if (extract_collection_element_type_name(hint)) |hint_elem_type| {
-                if (extract_collection_element_type_name(pt)) |param_elem_type| {
-                    const hint_elem = strip_type_namespace(hint_elem_type);
-                    const param_elem = strip_type_namespace(param_elem_type);
-                    if (names_match_by_simple_name(hint_elem, param_elem)) return 3;
-                    if (std.ascii.eqlIgnoreCase(type_base_name(param_elem), "SObject") and
-                        self.is_s_object_type_name(type_base_name(hint_elem)))
-                    {
-                        return 3;
-                    }
-                }
-            }
+            if (self.score_generic_container_match(hint, pt, hint_base)) |s| return s;
         }
         if (!(hint_has_generics and pt_has_generics) and
-            std.ascii.eqlIgnoreCase(hint_base, pt_base))
-        {
-            return 3;
-        }
-        // Match dotted form against its simple tail (and vice versa) so that a
-        // `ModeTarget2.Mode` declared-type hint scores against a bare `Mode`
-        // parameter declaration. This is common when user code references an
-        // inner enum from outside the declaring class.
+            std.ascii.eqlIgnoreCase(hint_base, pt_base)) return 3;
         if (!(hint_has_generics and pt_has_generics)) {
-            if (std.mem.lastIndexOfScalar(u8, hint_base, '.')) |di| {
-                if (std.ascii.eqlIgnoreCase(hint_base[di + 1 ..], pt_base)) return 3;
-            }
-            if (std.mem.lastIndexOfScalar(u8, pt_base, '.')) |di| {
-                if (std.ascii.eqlIgnoreCase(pt_base[di + 1 ..], hint_base)) return 3;
-            }
+            if (score_dotted_tail_match(hint_base, pt_base)) |s| return s;
         }
         if (std.ascii.eqlIgnoreCase(pt, "Object")) return 1;
-
         if (is_collection_type_name(hint_base)) {
-            if (std.ascii.eqlIgnoreCase(pt_base, "Iterable")) {
-                if (hint_has_generics and pt_has_generics) {
-                    const hint_elem_type = extract_collection_element_type_name(hint);
-                    const param_elem_type = extract_collection_element_type_name(pt);
-                    if (hint_elem_type != null and param_elem_type != null and names_match_by_simple_name(strip_type_namespace(hint_elem_type.?), strip_type_namespace(param_elem_type.?))) {
-                        return if (std.ascii.eqlIgnoreCase(hint_base, "Set")) 4 else 3;
-                    }
-                }
-                if (std.ascii.eqlIgnoreCase(hint_base, "Set")) return 2;
-                if (std.ascii.eqlIgnoreCase(hint_base, "List")) return 1;
-            }
-            return 0;
+            return score_collection_vs_iterable(hint, pt, hint_base, pt_base, hint_has_generics, pt_has_generics);
         }
-
         if (self.is_s_object_type_name(hint_base) and
             (std.ascii.eqlIgnoreCase(pt_base, "SObject") or
                 std.ascii.eqlIgnoreCase(pt_base, "sObject") or
@@ -19197,9 +19145,84 @@ pub const Evaluator = struct {
         {
             return 3;
         }
-
         if (self.find_class(hint_base) != null and self.is_subclass_of(hint_base, pt_base))
             return 2;
+        return 0;
+    }
+
+    /// When hint and param both have the same generic container base (both
+    /// `Map<..>` or both `List<..>`/`Set<..>`), compare element types and
+    /// accept SObject-typed params for any SObject element. Returns the score
+    /// or null when element types disagree.
+    fn score_generic_container_match(
+        self: *Evaluator,
+        hint: []const u8,
+        pt: []const u8,
+        hint_base: []const u8,
+    ) ?i32 {
+        if (std.ascii.eqlIgnoreCase(hint_base, "Map")) {
+            return self.score_generic_map_match(hint, pt);
+        }
+        const hint_elem_type = extract_collection_element_type_name(hint) orelse return null;
+        const param_elem_type = extract_collection_element_type_name(pt) orelse return null;
+        const hint_elem = strip_type_namespace(hint_elem_type);
+        const param_elem = strip_type_namespace(param_elem_type);
+        if (names_match_by_simple_name(hint_elem, param_elem)) return 3;
+        if (std.ascii.eqlIgnoreCase(type_base_name(param_elem), "SObject") and
+            self.is_s_object_type_name(type_base_name(hint_elem))) return 3;
+        return null;
+    }
+
+    fn score_generic_map_match(self: *Evaluator, hint: []const u8, pt: []const u8) ?i32 {
+        const hint_args = extract_map_type_args(hint) orelse return null;
+        const param_args = extract_map_type_args(pt) orelse return null;
+        if (!names_match_by_simple_name(
+            strip_type_namespace(hint_args.key),
+            strip_type_namespace(param_args.key),
+        )) return null;
+        const hint_value = strip_type_namespace(hint_args.value);
+        const param_value = strip_type_namespace(param_args.value);
+        if (names_match_by_simple_name(hint_value, param_value)) return 3;
+        if (std.ascii.eqlIgnoreCase(type_base_name(param_value), "SObject") and
+            self.is_s_object_type_name(type_base_name(hint_value))) return 3;
+        return null;
+    }
+
+    /// Match a dotted hint name against its simple tail (and vice versa) so
+    /// that `ModeTarget2.Mode` scores against a bare `Mode` parameter. Common
+    /// when user code references an inner enum from outside its declaring
+    /// class.
+    fn score_dotted_tail_match(hint_base: []const u8, pt_base: []const u8) ?i32 {
+        if (std.mem.lastIndexOfScalar(u8, hint_base, '.')) |di| {
+            if (std.ascii.eqlIgnoreCase(hint_base[di + 1 ..], pt_base)) return 3;
+        }
+        if (std.mem.lastIndexOfScalar(u8, pt_base, '.')) |di| {
+            if (std.ascii.eqlIgnoreCase(pt_base[di + 1 ..], hint_base)) return 3;
+        }
+        return null;
+    }
+
+    fn score_collection_vs_iterable(
+        hint: []const u8,
+        pt: []const u8,
+        hint_base: []const u8,
+        pt_base: []const u8,
+        hint_has_generics: bool,
+        pt_has_generics: bool,
+    ) i32 {
+        if (!std.ascii.eqlIgnoreCase(pt_base, "Iterable")) return 0;
+        if (hint_has_generics and pt_has_generics) {
+            const hint_elem_type = extract_collection_element_type_name(hint);
+            const param_elem_type = extract_collection_element_type_name(pt);
+            if (hint_elem_type != null and param_elem_type != null and names_match_by_simple_name(
+                strip_type_namespace(hint_elem_type.?),
+                strip_type_namespace(param_elem_type.?),
+            )) {
+                return if (std.ascii.eqlIgnoreCase(hint_base, "Set")) 4 else 3;
+            }
+        }
+        if (std.ascii.eqlIgnoreCase(hint_base, "Set")) return 2;
+        if (std.ascii.eqlIgnoreCase(hint_base, "List")) return 1;
         return 0;
     }
 
