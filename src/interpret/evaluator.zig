@@ -3313,61 +3313,11 @@ pub const Evaluator = struct {
             return error.ApexException;
         }
         // If no Id, throw DmlException
-        if (obj.id == null) {
-            // Also check if Id is in fields
-            const id_field = utils.sobject_get(&obj.fields, "Id");
-            if (id_field == null or id_field.? == .null_val) {
-                const exc = try self.arena.create(types.ObjectInstance);
-                exc.* = .{ .class_name = "DmlException" };
-                try exc.fields.put(self.arena, "message", Value{ .string = "MISSING_ARGUMENT: Id not specified in an update call:" });
-                self.pending_exception = Value{ .object = exc };
-                return error.ApexException;
-            }
-            // Set id from field
-            if (id_field.? == .string) obj.id = id_field.?.string;
-        }
+        try self.ensure_update_record_id(obj);
         // Validate that the record exists in the store (if it has an Id)
         if (obj.id) |record_id| {
-            if (utils.sobject_get(&obj.fields, "OwnerId")) |owner_val| {
-                if (owner_val == .string and self.is_guest_user_id(owner_val.string)) {
-                    const exc = try self.arena.create(types.ObjectInstance);
-                    exc.* = .{ .class_name = "DmlException" };
-                    try exc.fields.put(self.arena, "message", Value{ .string = "FIELD_INTEGRITY_EXCEPTION, field integrity exception (Guest users cannot be record owners.)" });
-                    self.pending_exception = Value{ .object = exc };
-                    return error.ApexException;
-                }
-            }
-            var found_rec: ?*types.SObject = null;
-            if (self.store.getPtr(obj.type_name)) |records| {
-                for (records.items) |rec| {
-                    if (rec == .sobject and rec.sobject.id != null and
-                        std.mem.eql(u8, rec.sobject.id.?, record_id))
-                    {
-                        found_rec = rec.sobject;
-                        break;
-                    }
-                }
-            }
-            if (found_rec == null) {
-                // Also check via Id field
-                if (utils.sobject_get(&obj.fields, "Id")) |id_val| {
-                    if (id_val == .string) {
-                        var store_iter = self.store.iterator();
-                        while (store_iter.next()) |entry| {
-                            if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, obj.type_name)) {
-                                for (entry.value_ptr.items) |rec| {
-                                    if (rec == .sobject and rec.sobject.id != null and
-                                        std.mem.eql(u8, rec.sobject.id.?, id_val.string))
-                                    {
-                                        found_rec = rec.sobject;
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+            try self.reject_guest_owner_update(obj);
+            const found_rec = self.find_update_target_record(obj, record_id);
             if (found_rec == null) {
                 const exc = try self.arena.create(types.ObjectInstance);
                 exc.* = .{ .class_name = "DmlException" };
@@ -3378,35 +3328,111 @@ pub const Evaluator = struct {
             if (self.find_unique_field_conflict(obj, true)) |field_name| {
                 return self.throw_duplicate_value(field_name);
             }
-            // Update the store snapshot with current field values.
-            // If stored == obj (same pointer, e.g. from an uncopied SOQL result),
-            // we must snapshot keys/values first to avoid iterator invalidation
-            // when put() triggers a grow.
-            if (found_rec) |stored| {
-                const now_str = builtins.current_date_time_string(self.arena) catch "2026-01-01T00:00:00Z";
-                obj.fields.put(self.arena, "LastModifiedDate", Value{ .string = now_str }) catch {};
-                obj.fields.put(self.arena, "LastModifiedById", Value{ .string = "005000000000001" }) catch {};
-                if (utils.sobject_get(&obj.fields, "LastModifiedBy") == null) {
-                    const modified_by = try self.arena.create(types.SObject);
-                    modified_by.* = .{ .type_name = "User", .id = "005000000000001" };
-                    try modified_by.fields.put(self.arena, "Id", Value{ .string = "005000000000001" });
-                    try modified_by.fields.put(self.arena, "Name", Value{ .string = "Test User" });
-                    try modified_by.fields.put(self.arena, "Username", Value{ .string = "testuser@example.com" });
-                    try obj.fields.put(self.arena, "LastModifiedBy", Value{ .sobject = modified_by });
-                }
-                if (stored == obj) {
-                    const keys = self.arena.dupe([]const u8, obj.fields.keys()) catch return;
-                    const vals = self.arena.dupe(Value, obj.fields.values()) catch return;
-                    for (keys, vals) |k, v| {
-                        stored.fields.put(self.arena, k, v) catch {};
-                    }
-                } else {
-                    for (obj.fields.keys(), obj.fields.values()) |k, v| {
-                        stored.fields.put(self.arena, k, v) catch {};
-                    }
+            try self.copy_update_fields_to_store(obj, found_rec.?);
+        }
+    }
+
+    fn ensure_update_record_id(self: *Evaluator, obj: *types.SObject) !void {
+        if (obj.id != null) return;
+        const id_field = utils.sobject_get(&obj.fields, "Id");
+        if (id_field == null or id_field.? == .null_val) {
+            const exc = try self.arena.create(types.ObjectInstance);
+            exc.* = .{ .class_name = "DmlException" };
+            try exc.fields.put(
+                self.arena,
+                "message",
+                Value{ .string = "MISSING_ARGUMENT: Id not specified in an update call:" },
+            );
+            self.pending_exception = Value{ .object = exc };
+            return error.ApexException;
+        }
+        if (id_field.? == .string) obj.id = id_field.?.string;
+    }
+
+    fn reject_guest_owner_update(self: *Evaluator, obj: *types.SObject) !void {
+        const owner_val = utils.sobject_get(&obj.fields, "OwnerId") orelse return;
+        if (owner_val != .string or !self.is_guest_user_id(owner_val.string)) return;
+        const exc = try self.arena.create(types.ObjectInstance);
+        exc.* = .{ .class_name = "DmlException" };
+        try exc.fields.put(
+            self.arena,
+            "message",
+            Value{ .string = "FIELD_INTEGRITY_EXCEPTION, field integrity exception (Guest users cannot be record owners.)" },
+        );
+        self.pending_exception = Value{ .object = exc };
+        return error.ApexException;
+    }
+
+    fn find_update_target_record(
+        self: *Evaluator,
+        obj: *types.SObject,
+        record_id: []const u8,
+    ) ?*types.SObject {
+        if (self.store.getPtr(obj.type_name)) |records| {
+            for (records.items) |rec| {
+                if (rec == .sobject and rec.sobject.id != null and
+                    std.mem.eql(u8, rec.sobject.id.?, record_id))
+                {
+                    return rec.sobject;
                 }
             }
         }
+        if (utils.sobject_get(&obj.fields, "Id")) |id_val| {
+            if (id_val == .string) return self.find_update_target_record_by_id_field(obj, id_val.string);
+        }
+        return null;
+    }
+
+    fn find_update_target_record_by_id_field(
+        self: *Evaluator,
+        obj: *types.SObject,
+        id_field: []const u8,
+    ) ?*types.SObject {
+        var store_iter = self.store.iterator();
+        while (store_iter.next()) |entry| {
+            if (!std.ascii.eqlIgnoreCase(entry.key_ptr.*, obj.type_name)) continue;
+            for (entry.value_ptr.items) |rec| {
+                if (rec == .sobject and rec.sobject.id != null and
+                    std.mem.eql(u8, rec.sobject.id.?, id_field))
+                {
+                    return rec.sobject;
+                }
+            }
+        }
+        return null;
+    }
+
+    fn copy_update_fields_to_store(
+        self: *Evaluator,
+        obj: *types.SObject,
+        stored: *types.SObject,
+    ) !void {
+        const now_str = builtins.current_date_time_string(self.arena) catch "2026-01-01T00:00:00Z";
+        obj.fields.put(self.arena, "LastModifiedDate", Value{ .string = now_str }) catch {};
+        obj.fields.put(self.arena, "LastModifiedById", Value{ .string = "005000000000001" }) catch {};
+        if (utils.sobject_get(&obj.fields, "LastModifiedBy") == null) {
+            try self.put_last_modified_by_stub(obj);
+        }
+        if (stored == obj) {
+            const keys = self.arena.dupe([]const u8, obj.fields.keys()) catch return;
+            const vals = self.arena.dupe(Value, obj.fields.values()) catch return;
+            for (keys, vals) |k, v| {
+                stored.fields.put(self.arena, k, v) catch {};
+            }
+        } else {
+            for (obj.fields.keys(), obj.fields.values()) |k, v| {
+                stored.fields.put(self.arena, k, v) catch {};
+            }
+        }
+    }
+
+    fn put_last_modified_by_stub(self: *Evaluator, obj: *types.SObject) !void {
+        const modified_by = try self.arena.create(types.SObject);
+        modified_by.* = .{ .type_name = "User", .id = "005000000000001" };
+        try modified_by.fields.put(self.arena, "Id", Value{ .string = "005000000000001" });
+        try modified_by.fields.put(self.arena, "Name", Value{ .string = "Test User" });
+        try modified_by.fields.put(self.arena, "Username", Value{ .string = "testuser@example.com" });
+        try obj.fields.put(self.arena, "LastModifiedBy", Value{ .sobject = modified_by });
     }
 
     /// `upsert_record` の external id 分岐を抽出。マッチする既存レコードが
@@ -17137,39 +17163,7 @@ fn overload_score_for_arg(arg: Value, pt: []const u8) i32 {
         return 0;
     }
     if (arg == .list) {
-        if (std.ascii.eqlIgnoreCase(pt, "List")) return 2;
-        // Check List element type against generic parameter: List<Database.SaveResult> etc.
-        if (std.mem.startsWith(u8, pt, "List<") or std.mem.startsWith(u8, pt, "list<")) {
-            // Extract element type from param: "List<Database.SaveResult>" → "Database.SaveResult"
-            if (std.mem.indexOf(u8, pt, "<")) |lt| {
-                if (std.mem.lastIndexOf(u8, pt, ">")) |gt| {
-                    const elem_type = pt[lt + 1 .. gt];
-                    // Check first element of the list
-                    // SObject is a generic parent type — any SObject matches List<SObject>
-                    if (std.ascii.eqlIgnoreCase(elem_type, "SObject") or std.ascii.eqlIgnoreCase(elem_type, "sObject") or std.ascii.eqlIgnoreCase(elem_type, "Sobject")) {
-                        if (arg.list.items.items.len > 0) {
-                            if (arg.list.items.items[0] == .sobject) return 3;
-                        }
-                        return 2; // Empty list matches List<SObject>
-                    }
-                    if (arg.list.items.items.len > 0) {
-                        const first = arg.list.items.items[0];
-                        if (first == .sobject) {
-                            if (std.ascii.eqlIgnoreCase(first.sobject.type_name, elem_type)) return 3;
-                            // Simple name match
-                            if (std.mem.lastIndexOfScalar(u8, elem_type, '.')) |di| {
-                                if (std.ascii.eqlIgnoreCase(first.sobject.type_name, elem_type[di + 1 ..])) return 3;
-                            }
-                        }
-                        if (first == .object) {
-                            if (std.ascii.eqlIgnoreCase(first.object.class_name, elem_type)) return 3;
-                        }
-                    }
-                    return 1; // It's a List but element type doesn't match
-                }
-            }
-        }
-        return 0;
+        return overload_score_for_list_arg(arg.list, pt);
     }
     if (arg == .map) {
         if (std.ascii.eqlIgnoreCase(pt, "Map")) return 2;
@@ -17185,48 +17179,79 @@ fn overload_score_for_arg(arg: Value, pt: []const u8) i32 {
         return 0;
     }
     if (arg == .sobject) {
-        const tn = arg.sobject.type_name;
-        // Exact type match (e.g., Database.SaveResult matches param Database.SaveResult)
-        if (std.ascii.eqlIgnoreCase(tn, pt)) return 3;
-        // Simple name match (e.g., "SaveResult" matches param "Database.SaveResult")
-        if (std.mem.lastIndexOfScalar(u8, pt, '.')) |di| {
-            if (std.ascii.eqlIgnoreCase(tn, pt[di + 1 ..])) return 3;
-        }
-        if (std.mem.lastIndexOfScalar(u8, tn, '.')) |di| {
-            if (std.ascii.eqlIgnoreCase(tn[di + 1 ..], pt)) return 3;
-        }
-        // Generic SObject match
-        if (std.ascii.eqlIgnoreCase(pt, "SObject") or std.ascii.eqlIgnoreCase(pt, "Sobject") or std.ascii.eqlIgnoreCase(pt, "sObject")) return 2;
-        return 0;
+        return overload_score_for_sobject_arg(arg.sobject, pt);
     }
     if (arg == .object) {
-        const cn = arg.object.class_name;
-        // Exact class name match (case-insensitive)
-        if (std.ascii.eqlIgnoreCase(cn, pt)) return 3;
-        // Match when the class_name is dotted ("Outer.Inner") and pt uses the simple form.
-        if (std.mem.lastIndexOfScalar(u8, cn, '.')) |di| {
-            if (std.ascii.eqlIgnoreCase(cn[di + 1 ..], pt)) return 3;
+        return overload_score_for_object_arg(arg.object, pt);
+    }
+    return 0;
+}
+
+fn overload_score_for_list_arg(list: *types.ListValue, pt: []const u8) i32 {
+    if (std.ascii.eqlIgnoreCase(pt, "List")) return 2;
+    if (!std.mem.startsWith(u8, pt, "List<") and !std.mem.startsWith(u8, pt, "list<")) return 0;
+    const lt = std.mem.indexOf(u8, pt, "<") orelse return 0;
+    const gt = std.mem.lastIndexOf(u8, pt, ">") orelse return 0;
+    const elem_type = pt[lt + 1 .. gt];
+    if (std.ascii.eqlIgnoreCase(elem_type, "SObject") or
+        std.ascii.eqlIgnoreCase(elem_type, "sObject") or
+        std.ascii.eqlIgnoreCase(elem_type, "Sobject"))
+    {
+        if (list.items.items.len > 0) {
+            if (list.items.items[0] == .sobject) return 3;
         }
-        // Match when the param type is dotted ("System.Type") and the class_name uses
-        // the simple form ("Type") — happens whenever the interpreter stores built-in
-        // objects with their Apex simple names while user code spells the qualified form.
-        if (std.mem.lastIndexOfScalar(u8, pt, '.')) |di| {
-            if (std.ascii.eqlIgnoreCase(pt[di + 1 ..], cn)) return 3;
+        return 2;
+    }
+    if (list.items.items.len == 0) return 1;
+    const first = list.items.items[0];
+    if (first == .sobject) {
+        if (std.ascii.eqlIgnoreCase(first.sobject.type_name, elem_type)) return 3;
+        if (std.mem.lastIndexOfScalar(u8, elem_type, '.')) |di| {
+            if (std.ascii.eqlIgnoreCase(first.sobject.type_name, elem_type[di + 1 ..])) return 3;
         }
-        // Date/DateTime objects should score well for their specific types
-        if (std.ascii.eqlIgnoreCase(cn, "Date")) {
-            if (std.ascii.eqlIgnoreCase(pt, "Date")) return 2;
-            if (std.ascii.eqlIgnoreCase(pt, "Object")) return 1;
-            return 0;
-        }
-        if (std.ascii.eqlIgnoreCase(cn, "Datetime")) {
-            if (std.ascii.eqlIgnoreCase(pt, "DateTime") or std.ascii.eqlIgnoreCase(pt, "Datetime")) return 2;
-            if (std.ascii.eqlIgnoreCase(pt, "Object")) return 1;
-            return 0;
-        }
+    }
+    if (first == .object) {
+        if (std.ascii.eqlIgnoreCase(first.object.class_name, elem_type)) return 3;
+    }
+    return 1;
+}
+
+fn overload_score_for_sobject_arg(sob: *types.SObject, pt: []const u8) i32 {
+    const tn = sob.type_name;
+    if (std.ascii.eqlIgnoreCase(tn, pt)) return 3;
+    if (std.mem.lastIndexOfScalar(u8, pt, '.')) |di| {
+        if (std.ascii.eqlIgnoreCase(tn, pt[di + 1 ..])) return 3;
+    }
+    if (std.mem.lastIndexOfScalar(u8, tn, '.')) |di| {
+        if (std.ascii.eqlIgnoreCase(tn[di + 1 ..], pt)) return 3;
+    }
+    if (std.ascii.eqlIgnoreCase(pt, "SObject") or
+        std.ascii.eqlIgnoreCase(pt, "Sobject") or
+        std.ascii.eqlIgnoreCase(pt, "sObject"))
+        return 2;
+    return 0;
+}
+
+fn overload_score_for_object_arg(obj: *types.ObjectInstance, pt: []const u8) i32 {
+    const cn = obj.class_name;
+    if (std.ascii.eqlIgnoreCase(cn, pt)) return 3;
+    if (std.mem.lastIndexOfScalar(u8, cn, '.')) |di| {
+        if (std.ascii.eqlIgnoreCase(cn[di + 1 ..], pt)) return 3;
+    }
+    if (std.mem.lastIndexOfScalar(u8, pt, '.')) |di| {
+        if (std.ascii.eqlIgnoreCase(pt[di + 1 ..], cn)) return 3;
+    }
+    if (std.ascii.eqlIgnoreCase(cn, "Date")) {
+        if (std.ascii.eqlIgnoreCase(pt, "Date")) return 2;
         if (std.ascii.eqlIgnoreCase(pt, "Object")) return 1;
         return 0;
     }
+    if (std.ascii.eqlIgnoreCase(cn, "Datetime")) {
+        if (std.ascii.eqlIgnoreCase(pt, "DateTime") or std.ascii.eqlIgnoreCase(pt, "Datetime")) return 2;
+        if (std.ascii.eqlIgnoreCase(pt, "Object")) return 1;
+        return 0;
+    }
+    if (std.ascii.eqlIgnoreCase(pt, "Object")) return 1;
     return 0;
 }
 
