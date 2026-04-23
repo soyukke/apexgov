@@ -3216,141 +3216,154 @@ pub const Evaluator = struct {
         self.trigger_depth += 1;
         defer self.trigger_depth -= 1;
 
-        // Lowercase object type for lookup
         const obj_lower = std.ascii.lowerString(
             self.arena.alloc(u8, obj_type.len) catch return,
             obj_type,
         );
-
         const trigger_list = self.triggers.get(obj_lower) orelse return;
-
         for (trigger_list.items) |td| {
-            // Check if this trigger handles the event
-            var handles_event = false;
-            for (td.events) |e| {
-                if (e == event) {
-                    handles_event = true;
-                    break;
-                }
-            }
-            if (!handles_event) continue;
-
-            // Build Trigger context
-            const new_list_val = try self.arena.create(types.ListValue);
-            new_list_val.* = .{};
-            for (new_records.items) |item| {
-                try new_list_val.items.append(self.arena, item);
-            }
-
-            var old_list_val: ?*types.ListValue = null;
-            if (old_records) |ors| {
-                const olv = try self.arena.create(types.ListValue);
-                olv.* = .{};
-                for (ors.items) |item| {
-                    try olv.items.append(self.arena, item);
-                }
-                old_list_val = olv;
-            }
-
-            // Build newMap/oldMap as MapValue (Id → SObject)
-            var new_map_val: ?Value = null;
-            if (event != .before_insert) {
-                const map = try self.arena.create(types.MapValue);
-                map.* = .{};
-                for (new_records.items) |item| {
-                    if (item == .sobject and item.sobject.id != null) {
-                        try map.entries.put(self.arena, item.sobject.id.?, item);
-                    }
-                }
-                new_map_val = Value{ .map = map };
-            }
-
-            var old_map_val: ?Value = null;
-            if (old_records) |ors| {
-                const map = try self.arena.create(types.MapValue);
-                map.* = .{};
-                for (ors.items) |item| {
-                    if (item == .sobject and item.sobject.id != null) {
-                        try map.entries.put(self.arena, item.sobject.id.?, item);
-                    }
-                }
-                old_map_val = Value{ .map = map };
-            }
-
-            const is_before =
-                (event == .before_insert or event == .before_update or event == .before_delete);
-            const is_after = !is_before;
-            const is_insert = (event == .before_insert or event == .after_insert);
-            const is_update = (event == .before_update or event == .after_update);
-            const is_delete = (event == .before_delete or event == .after_delete);
-            const is_undelete = (event == .after_undelete);
-
-            const operation_type: []const u8 = switch (event) {
-                .before_insert => "BEFORE_INSERT",
-                .before_update => "BEFORE_UPDATE",
-                .before_delete => "BEFORE_DELETE",
-                .after_insert => "AFTER_INSERT",
-                .after_update => "AFTER_UPDATE",
-                .after_delete => "AFTER_DELETE",
-                .after_undelete => "AFTER_UNDELETE",
-            };
-
-            // Save and set trigger context
-            const prev_context = self.trigger_context;
-            self.trigger_context = .{
-                .is_executing = true,
-                .is_insert = is_insert,
-                .is_update = is_update,
-                .is_delete = is_delete,
-                .is_undelete = is_undelete,
-                .is_before = is_before,
-                .is_after = is_after,
-                .new_list = if (is_delete and is_before) (if (old_list_val) |olv| Value{ .list = olv } else null) else Value{ .list = new_list_val },
-                .old_list = if (old_list_val) |olv| Value{ .list = olv } else null,
-                .new_map = new_map_val,
-                .old_map = old_map_val,
-                .size = @intCast(new_records.items.len),
-                .operation_type = operation_type,
-            };
-            // For delete triggers, Trigger.new is null and Trigger.old has the records
-            if (is_delete) {
-                self.trigger_context.?.new_list = if (is_after) null else null;
-                self.trigger_context.?.old_list = if (old_list_val) |olv| Value{ .list = olv } else Value{ .list = new_list_val };
-                if (is_before) {
-                    self.trigger_context.?.new_list = null;
-                }
-            }
-
-            defer self.trigger_context = prev_context;
-
-            // Execute trigger body
-            const trigger_env = try self.global_env.child();
-            _ = self.exec_block(td.body, trigger_env) catch |err| {
-                // If trigger throws an exception, wrap it in DmlException
-                if (err == error.ApexException) {
-                    if (self.pending_exception) |pe| {
-                        if (pe == .object) {
-                            const class_name_str = pe.object.class_name;
-                            // If it's already a DmlException, just propagate it
-                            if (std.ascii.indexOfIgnoreCase(
-                                class_name_str,
-                                "DmlException",
-                            ) != null) {
-                                return err;
-                            }
-                            // Wrap non-DML exceptions in DmlException
-                            const msg = if (pe.object.fields.get("message")) |m| (if (m == .string) m.string else "Trigger exception") else "Trigger exception";
-                            const dml_exc = try self.arena.create(types.ObjectInstance);
-                            dml_exc.* = .{ .class_name = "DmlException" };
-                            try dml_exc.fields.put(self.arena, "message", Value{ .string = msg });
-                            self.pending_exception = Value{ .object = dml_exc };
-                        }
-                    }
-                    return err;
-                }
-                return err;
-            };
+            if (!trigger_handles_event(td, event)) continue;
+            try self.execute_single_trigger(td, event, new_records, old_records);
         }
+    }
+
+    fn trigger_handles_event(
+        td: anytype,
+        event: ast.TriggerEvent,
+    ) bool {
+        for (td.events) |e| {
+            if (e == event) return true;
+        }
+        return false;
+    }
+
+    fn execute_single_trigger(
+        self: *Evaluator,
+        td: anytype,
+        event: ast.TriggerEvent,
+        new_records: *std.ArrayListUnmanaged(Value),
+        old_records: ?std.ArrayListUnmanaged(Value),
+    ) !void {
+        const new_list_val = try self.build_trigger_list(new_records.items);
+        const old_list_val: ?*types.ListValue = if (old_records) |ors|
+            try self.build_trigger_list(ors.items)
+        else
+            null;
+        const new_map_val: ?Value = if (event != .before_insert)
+            try self.build_trigger_map(new_records.items)
+        else
+            null;
+        const old_map_val: ?Value = if (old_records) |ors|
+            try self.build_trigger_map(ors.items)
+        else
+            null;
+
+        const prev_context = self.trigger_context;
+        self.trigger_context = build_trigger_context(
+            event,
+            new_records.items.len,
+            new_list_val,
+            old_list_val,
+            new_map_val,
+            old_map_val,
+        );
+        defer self.trigger_context = prev_context;
+
+        const trigger_env = try self.global_env.child();
+        _ = self.exec_block(td.body, trigger_env) catch |err| {
+            if (err == error.ApexException) try self.wrap_trigger_exception_as_dml();
+            return err;
+        };
+    }
+
+    fn build_trigger_list(
+        self: *Evaluator,
+        records: []const Value,
+    ) !*types.ListValue {
+        const lv = try self.arena.create(types.ListValue);
+        lv.* = .{};
+        for (records) |item| try lv.items.append(self.arena, item);
+        return lv;
+    }
+
+    fn build_trigger_map(self: *Evaluator, records: []const Value) !Value {
+        const map = try self.arena.create(types.MapValue);
+        map.* = .{};
+        for (records) |item| {
+            if (item == .sobject and item.sobject.id != null) {
+                try map.entries.put(self.arena, item.sobject.id.?, item);
+            }
+        }
+        return Value{ .map = map };
+    }
+
+    fn build_trigger_context(
+        event: ast.TriggerEvent,
+        size: usize,
+        new_list_val: *types.ListValue,
+        old_list_val: ?*types.ListValue,
+        new_map_val: ?Value,
+        old_map_val: ?Value,
+    ) TriggerContext {
+        const is_before = event == .before_insert or event == .before_update or
+            event == .before_delete;
+        const is_after = !is_before;
+        const is_insert = event == .before_insert or event == .after_insert;
+        const is_update = event == .before_update or event == .after_update;
+        const is_delete = event == .before_delete or event == .after_delete;
+        const is_undelete = event == .after_undelete;
+        const operation_type: []const u8 = switch (event) {
+            .before_insert => "BEFORE_INSERT",
+            .before_update => "BEFORE_UPDATE",
+            .before_delete => "BEFORE_DELETE",
+            .after_insert => "AFTER_INSERT",
+            .after_update => "AFTER_UPDATE",
+            .after_delete => "AFTER_DELETE",
+            .after_undelete => "AFTER_UNDELETE",
+        };
+        // For delete triggers, Trigger.new is null and Trigger.old has the records.
+        const new_list_for_context: ?Value = if (is_delete)
+            (if (is_before) null else null)
+        else
+            Value{ .list = new_list_val };
+        const old_list_for_context: ?Value = if (is_delete)
+            (if (old_list_val) |olv| Value{ .list = olv } else Value{ .list = new_list_val })
+        else if (old_list_val) |olv|
+            Value{ .list = olv }
+        else
+            null;
+        return .{
+            .is_executing = true,
+            .is_insert = is_insert,
+            .is_update = is_update,
+            .is_delete = is_delete,
+            .is_undelete = is_undelete,
+            .is_before = is_before,
+            .is_after = is_after,
+            .new_list = new_list_for_context,
+            .old_list = old_list_for_context,
+            .new_map = new_map_val,
+            .old_map = old_map_val,
+            .size = @intCast(size),
+            .operation_type = operation_type,
+        };
+    }
+
+    /// Wrap a non-DML exception thrown by a trigger body in a DmlException so
+    /// the enclosing DML operation reports it at commit time. Preexisting
+    /// DmlException propagates unchanged.
+    fn wrap_trigger_exception_as_dml(self: *Evaluator) !void {
+        const pe = self.pending_exception orelse return;
+        if (pe != .object) return;
+        if (std.ascii.indexOfIgnoreCase(pe.object.class_name, "DmlException") != null) return;
+        const msg = if (pe.object.fields.get("message")) |m|
+            (if (m == .string) m.string else "Trigger exception")
+        else
+            "Trigger exception";
+        const dml_exc = try self.arena.create(types.ObjectInstance);
+        dml_exc.* = .{ .class_name = "DmlException" };
+        try dml_exc.fields.put(self.arena, "message", Value{ .string = msg });
+        self.pending_exception = Value{ .object = dml_exc };
     }
 
     fn insert_record(self: *Evaluator, obj: *types.SObject) anyerror!void {
