@@ -72,6 +72,18 @@ const invalid_sobject_type_fmt =
     "If you are attempting to use a custom object, be sure to append the '__c' " ++
     "after the entity name.";
 
+const logging_level_names = [_][]const u8{
+    "INTERNAL", "FINEST", "FINER", "FINE",
+    "DEBUG",    "INFO",   "WARN",  "ERROR",
+    "NONE",
+};
+
+const trigger_operation_names = [_][]const u8{
+    "BEFORE_INSERT",  "BEFORE_UPDATE", "BEFORE_DELETE",
+    "AFTER_INSERT",   "AFTER_UPDATE",  "AFTER_DELETE",
+    "AFTER_UNDELETE",
+};
+
 const new_known_non_sobject_types = [_][]const u8{
     "RestRequest",                      "RestResponse",
     "HttpRequest",                      "HttpResponse",
@@ -16985,13 +16997,13 @@ pub const Evaluator = struct {
     fn lookup_enum_ordinal(s: []const u8) i64 {
         // System.LoggingLevel: Salesforce declaration order (most verbose first)
         // INTERNAL=0, FINEST=1, FINER=2, FINE=3, DEBUG=4, INFO=5, WARN=6, ERROR=7, NONE=8
-        const logging_levels = [_][]const u8{ "INTERNAL", "FINEST", "FINER", "FINE", "DEBUG", "INFO", "WARN", "ERROR", "NONE" };
+        const logging_levels = logging_level_names;
         for (logging_levels, 0..) |name, i| {
             if (std.ascii.eqlIgnoreCase(s, name)) return @intCast(i);
         }
         // System.TriggerOperation: BEFORE_INSERT=0, BEFORE_UPDATE=1, BEFORE_DELETE=2,
         // AFTER_INSERT=3, AFTER_UPDATE=4, AFTER_DELETE=5, AFTER_UNDELETE=6
-        const trigger_ops = [_][]const u8{ "BEFORE_INSERT", "BEFORE_UPDATE", "BEFORE_DELETE", "AFTER_INSERT", "AFTER_UPDATE", "AFTER_DELETE", "AFTER_UNDELETE" };
+        const trigger_ops = trigger_operation_names;
         for (trigger_ops, 0..) |name, i| {
             if (std.ascii.eqlIgnoreCase(s, name)) return @intCast(i);
         }
@@ -18764,10 +18776,7 @@ pub const Evaluator = struct {
         method: []const u8,
         args: []const Value,
     ) !Value {
-        const logging_level_names = [_][]const u8{
-            "INTERNAL", "FINEST", "FINER", "FINE", "DEBUG", "INFO",
-            "WARN",     "ERROR",  "NONE",
-        };
+        const ll_names = logging_level_names;
         const trigger_op_names = [_][]const u8{
             "BEFORE_INSERT",  "BEFORE_UPDATE", "BEFORE_DELETE",
             "AFTER_INSERT",   "AFTER_UPDATE",  "AFTER_DELETE",
@@ -18775,7 +18784,7 @@ pub const Evaluator = struct {
         };
         const is_logging = std.ascii.eqlIgnoreCase(inner, "LoggingLevel");
         const valid_values: []const []const u8 = if (is_logging)
-            &logging_level_names
+            &ll_names
         else
             &trigger_op_names;
         if (std.ascii.eqlIgnoreCase(method, "valueOf") and args.len > 0 and args[0] == .string) {
@@ -22255,8 +22264,8 @@ fn split_by_regex(
 /// Used for overload resolution since enum values are represented as plain strings.
 fn is_system_enum_value(enum_simple: []const u8, value: []const u8) bool {
     if (enum_simple.len == 0 or value.len == 0) return false;
-    const trigger_ops = [_][]const u8{ "BEFORE_INSERT", "BEFORE_UPDATE", "BEFORE_DELETE", "AFTER_INSERT", "AFTER_UPDATE", "AFTER_DELETE", "AFTER_UNDELETE" };
-    const logging_levels = [_][]const u8{ "INTERNAL", "FINEST", "FINER", "FINE", "DEBUG", "INFO", "WARN", "ERROR", "NONE" };
+    const trigger_ops = trigger_operation_names;
+    const logging_levels = logging_level_names;
     const access_types = [_][]const u8{ "CREATABLE", "READABLE", "UPDATABLE", "UPSERTABLE" };
     const access_levels = [_][]const u8{ "USER_MODE", "SYSTEM_MODE" };
     const quiddity_vals = [_][]const u8{
