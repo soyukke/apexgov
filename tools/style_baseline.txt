@@ -6,17 +6,3 @@
 # running: just lint-update-baseline
 #
 # Format: <path>\t<rule>\t<count>
-src/apex_parser/lexer.zig	line_too_long	2
-src/apex_parser/parser.zig	line_too_long	6
-src/apex_parser/parser.zig	function_too_long	1
-src/check/preprocessor.zig	function_too_long	1
-src/interpret/builtins.zig	line_too_long	114
-src/interpret/builtins.zig	function_too_long	27
-src/interpret/evaluator.zig	line_too_long	202
-src/interpret/evaluator.zig	function_too_long	55
-src/interpret/regex.zig	line_too_long	9
-src/interpret/regex.zig	function_too_long	1
-src/interpret/root.zig	line_too_long	209
-src/interpret/root.zig	function_too_long	4
-src/interpret/utils.zig	line_too_long	1
-src/lsp/server.zig	function_too_long	1
