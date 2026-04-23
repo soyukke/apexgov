@@ -3160,105 +3160,82 @@ fn add_describe_field_if_missing(ctx: *BuiltinContext, fields_kv: *types.MapValu
     try fields_kv.entries.put(ctx.arena, field_name, try create_s_object_field_token_value(ctx.arena, object_type, field_name));
 }
 
+const known_describe_field_sets = [_]struct { object: []const u8, fields: []const []const u8 }{
+    .{ .object = "Account", .fields = &.{
+        "ParentId",           "AccountNumber",     "Phone",
+        "Fax",                "Website",           "Industry",
+        "Type",               "BillingStreet",     "BillingCity",
+        "BillingState",       "BillingPostalCode", "BillingCountry",
+        "ShippingStreet",     "ShippingCity",      "ShippingState",
+        "ShippingPostalCode", "ShippingCountry",   "NumberOfEmployees",
+        "Description",        "Rating",            "AnnualRevenue",
+        "Site",               "Sic",               "TickerSymbol",
+    } },
+    .{ .object = "Contact", .fields = &.{
+        "AccountId",         "FirstName",      "LastName",     "Email",
+        "Phone",             "MobilePhone",    "HomePhone",    "OtherPhone",
+        "Fax",               "Title",          "Department",   "Birthdate",
+        "MailingCity",       "MailingCountry", "MailingState", "MailingStreet",
+        "MailingPostalCode", "LeadSource",     "Description",  "OwnerId",
+        "ReportsToId",
+    } },
+    .{ .object = "Lead", .fields = &.{
+        "FirstName", "LastName", "Company", "Email",
+    } },
+    .{ .object = "Task", .fields = &.{
+        "Subject", "ActivityDate", "Priority", "Status", "WhatId", "WhoId",
+    } },
+    .{ .object = "Opportunity", .fields = &.{
+        "AccountId",        "StageName",            "CloseDate",  "Amount",
+        "Probability",      "Type",                 "LeadSource", "Description",
+        "IsPrivate",        "IsWon",                "IsClosed",   "ExpectedRevenue",
+        "ForecastCategory", "ForecastCategoryName", "NextStep",
+    } },
+    .{ .object = "User", .fields = &.{
+        "Username",       "Email",             "FirstName",    "LastName",
+        "ProfileId",      "Alias",             "UserType",     "IsActive",
+        "TimeZoneSidKey", "LanguageLocaleKey", "LocaleSidKey", "EmailEncodingKey",
+        "LastLoginDate",  "ManagerId",         "CompanyName",  "Department",
+        "Phone",          "MobilePhone",       "Title",        "UserRoleId",
+        "Division",       "Street",            "City",         "State",
+        "PostalCode",     "Country",
+    } },
+    .{ .object = "Profile", .fields = &.{
+        "DeveloperName", "UserType", "UserLicenseId",
+    } },
+    .{ .object = "EmailMessage", .fields = &.{
+        "Subject", "ParentId", "FromAddress", "FromName", "TextBody", "HtmlBody", "ToId",
+    } },
+    .{ .object = "Case", .fields = &.{
+        "AccountId",  "ContactId",     "OwnerId",      "ParentId",
+        "Status",     "Priority",      "Origin",       "Reason",
+        "Subject",    "Description",   "Type",         "IsClosed",
+        "ClosedDate", "SuppliedEmail", "SuppliedName", "SuppliedPhone",
+    } },
+    .{ .object = "CaseComment", .fields = &.{
+        "ParentId", "CommentBody", "IsPublished",
+    } },
+    .{ .object = "AccountBrand", .fields = &.{
+        "CompanyName", "Email", "Phone",
+    } },
+};
+
 fn add_known_describe_fields(ctx: *BuiltinContext, fields_kv: *types.MapValue, object_type: []const u8) !void {
-    if (std.ascii.eqlIgnoreCase(object_type, "Account")) {
-        for ([_][]const u8{
-            "ParentId",           "AccountNumber",     "Phone",
-            "Fax",                "Website",           "Industry",
-            "Type",               "BillingStreet",     "BillingCity",
-            "BillingState",       "BillingPostalCode", "BillingCountry",
-            "ShippingStreet",     "ShippingCity",      "ShippingState",
-            "ShippingPostalCode", "ShippingCountry",   "NumberOfEmployees",
-            "Description",        "Rating",            "AnnualRevenue",
-            "Site",               "Sic",               "TickerSymbol",
-        }) |field_name| {
-            try add_describe_field_if_missing(ctx, fields_kv, object_type, field_name);
-        }
+    for (known_describe_field_sets) |entry| {
+        if (!std.ascii.eqlIgnoreCase(object_type, entry.object)) continue;
+        try add_describe_field_names(ctx, fields_kv, object_type, entry.fields);
         return;
     }
-    if (std.ascii.eqlIgnoreCase(object_type, "Contact")) {
-        for ([_][]const u8{
-            "AccountId",         "FirstName",      "LastName",     "Email",
-            "Phone",             "MobilePhone",    "HomePhone",    "OtherPhone",
-            "Fax",               "Title",          "Department",   "Birthdate",
-            "MailingCity",       "MailingCountry", "MailingState", "MailingStreet",
-            "MailingPostalCode", "LeadSource",     "Description",  "OwnerId",
-            "ReportsToId",
-        }) |field_name| {
-            try add_describe_field_if_missing(ctx, fields_kv, object_type, field_name);
-        }
-        return;
-    }
-    if (std.ascii.eqlIgnoreCase(object_type, "Lead")) {
-        for ([_][]const u8{ "FirstName", "LastName", "Company", "Email" }) |field_name| {
-            try add_describe_field_if_missing(ctx, fields_kv, object_type, field_name);
-        }
-        return;
-    }
-    if (std.ascii.eqlIgnoreCase(object_type, "Task")) {
-        for ([_][]const u8{ "Subject", "ActivityDate", "Priority", "Status", "WhatId", "WhoId" }) |field_name| {
-            try add_describe_field_if_missing(ctx, fields_kv, object_type, field_name);
-        }
-        return;
-    }
-    if (std.ascii.eqlIgnoreCase(object_type, "Opportunity")) {
-        for ([_][]const u8{
-            "AccountId",        "StageName",            "CloseDate",  "Amount",
-            "Probability",      "Type",                 "LeadSource", "Description",
-            "IsPrivate",        "IsWon",                "IsClosed",   "ExpectedRevenue",
-            "ForecastCategory", "ForecastCategoryName", "NextStep",
-        }) |field_name| {
-            try add_describe_field_if_missing(ctx, fields_kv, object_type, field_name);
-        }
-        return;
-    }
-    if (std.ascii.eqlIgnoreCase(object_type, "User")) {
-        for ([_][]const u8{
-            "Username",       "Email",             "FirstName",    "LastName",
-            "ProfileId",      "Alias",             "UserType",     "IsActive",
-            "TimeZoneSidKey", "LanguageLocaleKey", "LocaleSidKey", "EmailEncodingKey",
-            "LastLoginDate",  "ManagerId",         "CompanyName",  "Department",
-            "Phone",          "MobilePhone",       "Title",        "UserRoleId",
-            "Division",       "Street",            "City",         "State",
-            "PostalCode",     "Country",
-        }) |field_name| {
-            try add_describe_field_if_missing(ctx, fields_kv, object_type, field_name);
-        }
-        return;
-    }
-    if (std.ascii.eqlIgnoreCase(object_type, "Profile")) {
-        for ([_][]const u8{ "DeveloperName", "UserType", "UserLicenseId" }) |field_name| {
-            try add_describe_field_if_missing(ctx, fields_kv, object_type, field_name);
-        }
-        return;
-    }
-    if (std.ascii.eqlIgnoreCase(object_type, "EmailMessage")) {
-        for ([_][]const u8{ "Subject", "ParentId", "FromAddress", "FromName", "TextBody", "HtmlBody", "ToId" }) |field_name| {
-            try add_describe_field_if_missing(ctx, fields_kv, object_type, field_name);
-        }
-        return;
-    }
-    if (std.ascii.eqlIgnoreCase(object_type, "Case")) {
-        for ([_][]const u8{
-            "AccountId",  "ContactId",     "OwnerId",      "ParentId",
-            "Status",     "Priority",      "Origin",       "Reason",
-            "Subject",    "Description",   "Type",         "IsClosed",
-            "ClosedDate", "SuppliedEmail", "SuppliedName", "SuppliedPhone",
-        }) |field_name| {
-            try add_describe_field_if_missing(ctx, fields_kv, object_type, field_name);
-        }
-        return;
-    }
-    if (std.ascii.eqlIgnoreCase(object_type, "CaseComment")) {
-        for ([_][]const u8{ "ParentId", "CommentBody", "IsPublished" }) |field_name| {
-            try add_describe_field_if_missing(ctx, fields_kv, object_type, field_name);
-        }
-        return;
-    }
-    if (std.ascii.eqlIgnoreCase(object_type, "AccountBrand")) {
-        for ([_][]const u8{ "CompanyName", "Email", "Phone" }) |field_name| {
-            try add_describe_field_if_missing(ctx, fields_kv, object_type, field_name);
-        }
+}
+
+fn add_describe_field_names(
+    ctx: *BuiltinContext,
+    fields_kv: *types.MapValue,
+    object_type: []const u8,
+    field_names: []const []const u8,
+) !void {
+    for (field_names) |field_name| {
+        try add_describe_field_if_missing(ctx, fields_kv, object_type, field_name);
     }
 }
 
@@ -5087,16 +5064,9 @@ fn dispatch_obj_select_option(ctx: *BuiltinContext, obj: *types.ObjectInstance, 
 }
 
 fn dispatch_obj_describe_field_result(ctx: *BuiltinContext, obj: *types.ObjectInstance, method_name: []const u8) !?Value {
-    const object_type = if (obj.fields.get("objectType")) |ov|
-        if (ov == .string) ov.string else null
-    else
-        null;
-    const field_name = if (obj.fields.get("fieldName")) |fv|
-        if (fv == .string) fv.string else if (obj.fields.get("name")) |nv| if (nv == .string) nv.string else "" else ""
-    else if (obj.fields.get("name")) |nv|
-        if (nv == .string) nv.string else ""
-    else
-        "";
+    const names = describe_field_names(obj);
+    const object_type = names.object_type;
+    const field_name = names.field_name;
     if (std.ascii.eqlIgnoreCase(method_name, "isAccessible")) {
         return obj.fields.get("isAccessible") orelse Value{ .boolean = resolve_field_read_permission(ctx.eval, object_type, field_name) };
     }
@@ -5125,29 +5095,7 @@ fn dispatch_obj_describe_field_result(ctx: *BuiltinContext, obj: *types.ObjectIn
     if (std.ascii.eqlIgnoreCase(method_name, "getInlineHelpText")) return obj.fields.get("inlineHelpText") orelse Value.null_val;
     if (std.ascii.eqlIgnoreCase(method_name, "getLabel")) return obj.fields.get("label") orelse obj.fields.get("name") orelse Value{ .string = "" };
     if (std.ascii.eqlIgnoreCase(method_name, "getReferenceTo")) {
-        const list = try ctx.arena.create(types.ListValue);
-        list.* = .{};
-        if (obj.fields.get("objectType")) |object_type_val| {
-            if (object_type_val == .string) {
-                const field_name_val = obj.fields.get("fieldName") orelse obj.fields.get("name") orelse Value{ .string = "" };
-                if (field_name_val == .string) {
-                    if (lookup_field_metadata(ctx, object_type_val.string, field_name_val.string)) |metadata| {
-                        if (metadata.reference_to) |reference_to| {
-                            const token = try ctx.arena.create(types.ObjectInstance);
-                            token.* = .{ .class_name = "Schema.SObjectType" };
-                            try token.fields.put(ctx.arena, "name", Value{ .string = reference_to });
-                            try list.items.append(ctx.arena, Value{ .object = token });
-                        }
-                    } else if (standard_reference_target_for_field_name(field_name_val.string)) |reference_to| {
-                        const token = try ctx.arena.create(types.ObjectInstance);
-                        token.* = .{ .class_name = "Schema.SObjectType" };
-                        try token.fields.put(ctx.arena, "name", Value{ .string = reference_to });
-                        try list.items.append(ctx.arena, Value{ .object = token });
-                    }
-                }
-            }
-        }
-        return Value{ .list = list };
+        return try describe_field_reference_to(ctx, obj);
     }
     if (std.ascii.eqlIgnoreCase(method_name, "getDescribe")) {
         if (std.ascii.eqlIgnoreCase(obj.class_name, "Schema.SObjectField") or
@@ -5167,36 +5115,102 @@ fn dispatch_obj_describe_field_result(ctx: *BuiltinContext, obj: *types.ObjectIn
     // compares `record.getSObjectType() == fieldDescribe.getSObjectType()` and
     // threw "Invalid argument: externalIdField" when we returned null here.
     if (std.ascii.eqlIgnoreCase(method_name, "getSObjectType")) {
-        if (obj.fields.get("objectType")) |ov| {
-            if (ov == .string and ov.string.len > 0) {
-                const sot = try ctx.arena.create(types.ObjectInstance);
-                sot.* = .{ .class_name = "Schema.SObjectType" };
-                try sot.fields.put(ctx.arena, "name", Value{ .string = ov.string });
-                return Value{ .object = sot };
-            }
-        }
-        return Value.null_val;
+        return try describe_field_s_object_type(ctx, obj);
     }
     // Schema.DescribeFieldResult.isIdLookup(): true for Id and any explicitly
     // id-lookup field (custom external IDs expose this flag via field-meta).
     if (std.ascii.eqlIgnoreCase(method_name, "isIdLookup")) {
-        if (std.ascii.eqlIgnoreCase(field_name, "Id")) return Value{ .boolean = true };
-        if (object_type) |obj_name| {
-            if (lookup_field_metadata(ctx, obj_name, field_name)) |meta| {
-                if (meta.is_external_id) return Value{ .boolean = true };
-            }
-        }
-        return obj.fields.get("isIdLookup") orelse Value{ .boolean = false };
+        return describe_field_id_lookup(ctx, obj, object_type, field_name);
     }
     if (std.ascii.eqlIgnoreCase(method_name, "isExternalId")) {
-        if (object_type) |obj_name| {
-            if (lookup_field_metadata(ctx, obj_name, field_name)) |meta| {
-                if (meta.is_external_id) return Value{ .boolean = true };
-            }
-        }
-        return obj.fields.get("isExternalId") orelse Value{ .boolean = false };
+        return describe_field_external_id(ctx, obj, object_type, field_name);
     }
     return null;
+}
+
+const DescribeFieldNames = struct {
+    object_type: ?[]const u8,
+    field_name: []const u8,
+};
+
+fn describe_field_names(obj: *types.ObjectInstance) DescribeFieldNames {
+    const object_type = if (obj.fields.get("objectType")) |ov|
+        if (ov == .string) ov.string else null
+    else
+        null;
+    const field_name = if (obj.fields.get("fieldName")) |fv|
+        if (fv == .string) fv.string else if (obj.fields.get("name")) |nv| if (nv == .string) nv.string else "" else ""
+    else if (obj.fields.get("name")) |nv|
+        if (nv == .string) nv.string else ""
+    else
+        "";
+    return .{ .object_type = object_type, .field_name = field_name };
+}
+
+fn describe_field_reference_to(ctx: *BuiltinContext, obj: *types.ObjectInstance) !Value {
+    const list = try ctx.arena.create(types.ListValue);
+    list.* = .{};
+    const object_type_val = obj.fields.get("objectType") orelse return Value{ .list = list };
+    if (object_type_val != .string) return Value{ .list = list };
+    const field_name_val = obj.fields.get("fieldName") orelse obj.fields.get("name") orelse Value{ .string = "" };
+    if (field_name_val != .string) return Value{ .list = list };
+
+    if (lookup_field_metadata(ctx, object_type_val.string, field_name_val.string)) |metadata| {
+        if (metadata.reference_to) |reference_to| {
+            try append_s_object_type_token(ctx, list, reference_to);
+        }
+    } else if (standard_reference_target_for_field_name(field_name_val.string)) |reference_to| {
+        try append_s_object_type_token(ctx, list, reference_to);
+    }
+    return Value{ .list = list };
+}
+
+fn append_s_object_type_token(ctx: *BuiltinContext, list: *types.ListValue, name: []const u8) !void {
+    const token = try ctx.arena.create(types.ObjectInstance);
+    token.* = .{ .class_name = "Schema.SObjectType" };
+    try token.fields.put(ctx.arena, "name", Value{ .string = name });
+    try list.items.append(ctx.arena, Value{ .object = token });
+}
+
+fn describe_field_s_object_type(ctx: *BuiltinContext, obj: *types.ObjectInstance) !Value {
+    if (obj.fields.get("objectType")) |object_type_val| {
+        if (object_type_val == .string and object_type_val.string.len > 0) {
+            const sot = try ctx.arena.create(types.ObjectInstance);
+            sot.* = .{ .class_name = "Schema.SObjectType" };
+            try sot.fields.put(ctx.arena, "name", Value{ .string = object_type_val.string });
+            return Value{ .object = sot };
+        }
+    }
+    return Value.null_val;
+}
+
+fn describe_field_id_lookup(
+    ctx: *BuiltinContext,
+    obj: *types.ObjectInstance,
+    object_type: ?[]const u8,
+    field_name: []const u8,
+) Value {
+    if (std.ascii.eqlIgnoreCase(field_name, "Id")) return Value{ .boolean = true };
+    if (object_type) |obj_name| {
+        if (lookup_field_metadata(ctx, obj_name, field_name)) |meta| {
+            if (meta.is_external_id) return Value{ .boolean = true };
+        }
+    }
+    return obj.fields.get("isIdLookup") orelse Value{ .boolean = false };
+}
+
+fn describe_field_external_id(
+    ctx: *BuiltinContext,
+    obj: *types.ObjectInstance,
+    object_type: ?[]const u8,
+    field_name: []const u8,
+) Value {
+    if (object_type) |obj_name| {
+        if (lookup_field_metadata(ctx, obj_name, field_name)) |meta| {
+            if (meta.is_external_id) return Value{ .boolean = true };
+        }
+    }
+    return obj.fields.get("isExternalId") orelse Value{ .boolean = false };
 }
 
 fn dispatch_obj_s_object_type(ctx: *BuiltinContext, obj: *types.ObjectInstance, method_name: []const u8, args: []const Value) !?Value {
