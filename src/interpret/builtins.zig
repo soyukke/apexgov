@@ -6610,160 +6610,188 @@ fn dispatch_s_object_instance(
     method_name: []const u8,
     args: []const Value,
 ) !?Value {
-    if (std.ascii.eqlIgnoreCase(method_name, "getSObjectType")) {
-        // Return a Schema.SObjectType object that supports getDescribe()
-        const sot = try ctx.arena.create(types.ObjectInstance);
-        sot.* = .{ .class_name = "Schema.SObjectType" };
-        try sot.fields.put(ctx.arena, "name", Value{ .string = sob.type_name });
-        return Value{ .object = sot };
-    }
-    if (std.ascii.eqlIgnoreCase(method_name, "getDescribe")) {
+    const ci = std.ascii;
+    if (ci.eqlIgnoreCase(method_name, "getSObjectType")) return sob_get_sobject_type(ctx, sob);
+    if (ci.eqlIgnoreCase(method_name, "getDescribe"))
         return try create_describe_result(ctx, sob.type_name);
+    if (ci.eqlIgnoreCase(method_name, "clone") or ci.eqlIgnoreCase(method_name, "deepClone")) {
+        return try sob_clone(ctx, sob, method_name, args);
     }
-    // clone / deepClone
-    if (std.ascii.eqlIgnoreCase(method_name, "clone") or
-        std.ascii.eqlIgnoreCase(method_name, "deepClone"))
-    {
-        const new_sob = try ctx.arena.create(types.SObject);
-        new_sob.* = .{ .type_name = sob.type_name, .is_clone = true };
-        for (sob.fields.keys(), sob.fields.values()) |k, v| {
-            try new_sob.fields.put(ctx.arena, k, v);
-        }
-        // Deep clone preserves id; clone with no args may not
-        if (std.ascii.eqlIgnoreCase(method_name, "clone")) {
-            // clone(preserveId, isDeepClone, preserveReadonlyTimestamps, preserveAutonumber)
-            const preserve_id =
-                if (args.len > 0 and args[0] == .boolean) args[0].boolean else false;
-            if (!preserve_id) {
-                _ = new_sob.fields.orderedRemove("Id");
-                new_sob.id = null;
-            } else {
-                new_sob.id = sob.id;
-            }
+    if (ci.eqlIgnoreCase(method_name, "isClone")) return Value{ .boolean = sob.is_clone };
+    if (ci.eqlIgnoreCase(method_name, "addError") and args.len > 0) {
+        return try sob_add_error(ctx, sob, args);
+    }
+    if (ci.eqlIgnoreCase(method_name, "hasErrors")) return sob_has_errors(sob);
+    if (ci.eqlIgnoreCase(method_name, "getSObjects") and args.len > 0 and args[0] == .string) {
+        return try sob_get_sobjects(ctx, sob, args[0].string);
+    }
+    if (ci.eqlIgnoreCase(method_name, "get") and args.len > 0 and args[0] == .string) {
+        return try sob_get(ctx, sob, args[0].string);
+    }
+    if (ci.eqlIgnoreCase(method_name, "put") and args.len >= 2 and args[0] == .string) {
+        return try sob_put(ctx, sob, args[0].string, args[1]);
+    }
+    if (ci.eqlIgnoreCase(method_name, "getPopulatedFieldsAsMap"))
+        return try sob_get_populated_fields_as_map(ctx, sob);
+    return null;
+}
+
+fn sob_get_sobject_type(ctx: *BuiltinContext, sob: *types.SObject) !?Value {
+    // Return a Schema.SObjectType object that supports getDescribe()
+    const sot = try ctx.arena.create(types.ObjectInstance);
+    sot.* = .{ .class_name = "Schema.SObjectType" };
+    try sot.fields.put(ctx.arena, "name", Value{ .string = sob.type_name });
+    return Value{ .object = sot };
+}
+
+fn sob_clone(
+    ctx: *BuiltinContext,
+    sob: *types.SObject,
+    method_name: []const u8,
+    args: []const Value,
+) !Value {
+    const new_sob = try ctx.arena.create(types.SObject);
+    new_sob.* = .{ .type_name = sob.type_name, .is_clone = true };
+    for (sob.fields.keys(), sob.fields.values()) |k, v| {
+        try new_sob.fields.put(ctx.arena, k, v);
+    }
+    // Deep clone preserves id; clone with no args may not
+    if (std.ascii.eqlIgnoreCase(method_name, "clone")) {
+        // clone(preserveId, isDeepClone, preserveReadonlyTimestamps, preserveAutonumber)
+        const preserve_id =
+            if (args.len > 0 and args[0] == .boolean) args[0].boolean else false;
+        if (!preserve_id) {
+            _ = new_sob.fields.orderedRemove("Id");
+            new_sob.id = null;
         } else {
             new_sob.id = sob.id;
         }
-        return Value{ .sobject = new_sob };
+    } else {
+        new_sob.id = sob.id;
     }
-    // isClone() — true when created via .clone()/.deepClone()
-    if (std.ascii.eqlIgnoreCase(method_name, "isClone")) {
-        return Value{ .boolean = sob.is_clone };
-    }
-    // addError → attach a Database.Error to the SObject. Matches Apex semantics:
-    // the method itself does not throw — the surrounding DML (or trigger dispatcher)
-    // is responsible for translating the attached errors into a DmlException when it
-    // commits.
-    if (std.ascii.eqlIgnoreCase(method_name, "addError") and args.len > 0) {
-        const msg_val = if (args.len >= 2) args[1] else args[0];
-        const field_val: ?Value = if (args.len >= 2) args[0] else null;
-        const err_obj = try ctx.arena.create(types.ObjectInstance);
-        err_obj.* = .{ .class_name = "Database.Error" };
-        try err_obj.fields.put(ctx.arena, "message", msg_val);
-        try err_obj.fields.put(
-            ctx.arena,
-            "statusCode",
-            Value{ .string = "FIELD_CUSTOM_VALIDATION_EXCEPTION" },
-        );
-        const fields_list = try ctx.arena.create(types.ListValue);
-        fields_list.* = .{};
-        if (field_val) |fv| {
-            const field_name: []const u8 = switch (fv) {
-                .string => |s| s,
-                .object => |ob| blk: {
-                    if (ob.fields.get("fieldName")) |fn_val| if (fn_val == .string) break :blk fn_val.string;
-                    if (ob.fields.get("name")) |n_val| if (n_val == .string) break :blk n_val.string;
-                    break :blk "";
-                },
-                else => "",
-            };
-            try fields_list.items.append(ctx.arena, Value{ .string = field_name });
-            try err_obj.fields.put(ctx.arena, "field", Value{ .string = field_name });
-        }
-        try err_obj.fields.put(ctx.arena, "fields", Value{ .list = fields_list });
+    return Value{ .sobject = new_sob };
+}
 
-        const errors_list = if (utils.sobject_get(&sob.fields, "errors")) |existing|
-            if (existing == .list) existing.list else blk: {
-                const lst = try ctx.arena.create(types.ListValue);
-                lst.* = .{};
-                break :blk lst;
-            }
-        else blk: {
-            const lst = try ctx.arena.create(types.ListValue);
-            lst.* = .{};
-            break :blk lst;
-        };
-        try errors_list.items.append(ctx.arena, Value{ .object = err_obj });
-        try utils.sobject_put(&sob.fields, ctx.arena, "errors", Value{ .list = errors_list });
-        return Value.void_val;
+/// addError → attach a Database.Error to the SObject. Matches Apex semantics:
+/// the method itself does not throw — the surrounding DML (or trigger
+/// dispatcher) is responsible for translating the attached errors into a
+/// DmlException when it commits.
+fn sob_add_error(ctx: *BuiltinContext, sob: *types.SObject, args: []const Value) !Value {
+    const msg_val = if (args.len >= 2) args[1] else args[0];
+    const field_val: ?Value = if (args.len >= 2) args[0] else null;
+    const err_obj = try ctx.arena.create(types.ObjectInstance);
+    err_obj.* = .{ .class_name = "Database.Error" };
+    try err_obj.fields.put(ctx.arena, "message", msg_val);
+    try err_obj.fields.put(
+        ctx.arena,
+        "statusCode",
+        Value{ .string = "FIELD_CUSTOM_VALIDATION_EXCEPTION" },
+    );
+    const fields_list = try ctx.arena.create(types.ListValue);
+    fields_list.* = .{};
+    if (field_val) |fv| {
+        const field_name = sob_extract_add_error_field_name(fv);
+        try fields_list.items.append(ctx.arena, Value{ .string = field_name });
+        try err_obj.fields.put(ctx.arena, "field", Value{ .string = field_name });
     }
-    if (std.ascii.eqlIgnoreCase(method_name, "hasErrors")) {
-        if (utils.sobject_get(&sob.fields, "errors")) |existing| {
-            if (existing == .list) return Value{ .boolean = existing.list.items.items.len > 0 };
-        }
-        return Value{ .boolean = false };
+    try err_obj.fields.put(ctx.arena, "fields", Value{ .list = fields_list });
+
+    const errors_list = try sob_get_or_init_errors_list(ctx, sob);
+    try errors_list.items.append(ctx.arena, Value{ .object = err_obj });
+    try utils.sobject_put(&sob.fields, ctx.arena, "errors", Value{ .list = errors_list });
+    return Value.void_val;
+}
+
+fn sob_extract_add_error_field_name(fv: Value) []const u8 {
+    return switch (fv) {
+        .string => |s| s,
+        .object => |ob| blk: {
+            if (ob.fields.get("fieldName")) |fn_val|
+                if (fn_val == .string) break :blk fn_val.string;
+            if (ob.fields.get("name")) |n_val| if (n_val == .string) break :blk n_val.string;
+            break :blk "";
+        },
+        else => "",
+    };
+}
+
+fn sob_get_or_init_errors_list(
+    ctx: *BuiltinContext,
+    sob: *types.SObject,
+) !*types.ListValue {
+    if (utils.sobject_get(&sob.fields, "errors")) |existing| {
+        if (existing == .list) return existing.list;
     }
-    if (std.ascii.eqlIgnoreCase(method_name, "getSObjects") and
-        args.len > 0 and
-        args[0] == .string)
-    {
-        // Case-insensitive lookup
-        for (sob.fields.keys(), sob.fields.values()) |k, v| {
-            if (std.ascii.eqlIgnoreCase(k, args[0].string)) {
-                if (ctx.eval.relationship_records_value(v)) |records| return records;
-                return v;
-            }
-        }
-        // If stripped SObject, throw SObjectException for missing relationship
-        if (sob.is_stripped) {
-            const msg = try std.fmt.allocPrint(
-                ctx.arena,
-                "SObject row was retrieved via SOQL without querying the requested field: {s}",
-                .{args[0].string},
-            );
-            return ctx.throw_exception("SObjectException", msg);
-        }
-        return Value.null_val;
+    const lst = try ctx.arena.create(types.ListValue);
+    lst.* = .{};
+    return lst;
+}
+
+fn sob_has_errors(sob: *types.SObject) Value {
+    if (utils.sobject_get(&sob.fields, "errors")) |existing| {
+        if (existing == .list) return Value{ .boolean = existing.list.items.items.len > 0 };
     }
-    if (std.ascii.eqlIgnoreCase(method_name, "get") and args.len > 0 and args[0] == .string) {
-        if (ctx.eval.get_s_object_field_value_case_insensitive(sob, args[0].string)) |value| {
-            return value;
+    return Value{ .boolean = false };
+}
+
+fn sob_get_sobjects(ctx: *BuiltinContext, sob: *types.SObject, rel_name: []const u8) !?Value {
+    // Case-insensitive lookup
+    for (sob.fields.keys(), sob.fields.values()) |k, v| {
+        if (std.ascii.eqlIgnoreCase(k, rel_name)) {
+            if (ctx.eval.relationship_records_value(v)) |records| return records;
+            return v;
         }
-        if (sobject_field_exists(ctx, sob, args[0].string)) {
-            return Value.null_val;
-        }
+    }
+    // If stripped SObject, throw SObjectException for missing relationship
+    if (sob.is_stripped) {
         const msg = try std.fmt.allocPrint(
             ctx.arena,
-            "Invalid field {s} for {s}",
-            .{ args[0].string, sob.type_name },
+            "SObject row was retrieved via SOQL without querying the requested field: {s}",
+            .{rel_name},
         );
-        return ctx.throw_exception("System.SObjectException", msg);
+        return ctx.throw_exception("SObjectException", msg);
     }
-    if (std.ascii.eqlIgnoreCase(method_name, "put") and args.len >= 2 and args[0] == .string) {
-        const normalized = try normalize_s_object_field_assignment(
-            ctx,
-            sob,
-            args[0].string,
-            args[1],
-        );
-        try utils.sobject_put(&sob.fields, ctx.arena, args[0].string, normalized);
-        if (std.ascii.eqlIgnoreCase(args[0].string, "Id") and normalized == .string) {
-            sob.id = normalized.string;
-        }
-        return normalized;
+    return Value.null_val;
+}
+
+fn sob_get(ctx: *BuiltinContext, sob: *types.SObject, field_name: []const u8) !?Value {
+    if (ctx.eval.get_s_object_field_value_case_insensitive(sob, field_name)) |value| {
+        return value;
     }
-    if (std.ascii.eqlIgnoreCase(method_name, "getPopulatedFieldsAsMap")) {
-        const map = try ctx.arena.create(types.MapValue);
-        map.* = .{};
-        for (sob.fields.keys(), sob.fields.values()) |k, v| {
-            if (v == .null_val) continue;
-            // Synthetic bookkeeping keys (addError stash, attachment metadata, etc.)
-            // are not real SObject fields and must not appear in the populated map.
-            if (std.ascii.eqlIgnoreCase(k, "errors")) continue;
-            try map.entries.put(ctx.arena, k, v);
-        }
-        return Value{ .map = map };
+    if (sobject_field_exists(ctx, sob, field_name)) return Value.null_val;
+    const msg = try std.fmt.allocPrint(
+        ctx.arena,
+        "Invalid field {s} for {s}",
+        .{ field_name, sob.type_name },
+    );
+    return ctx.throw_exception("System.SObjectException", msg);
+}
+
+fn sob_put(
+    ctx: *BuiltinContext,
+    sob: *types.SObject,
+    field_name: []const u8,
+    value: Value,
+) !Value {
+    const normalized = try normalize_s_object_field_assignment(ctx, sob, field_name, value);
+    try utils.sobject_put(&sob.fields, ctx.arena, field_name, normalized);
+    if (std.ascii.eqlIgnoreCase(field_name, "Id") and normalized == .string) {
+        sob.id = normalized.string;
     }
-    return null;
+    return normalized;
+}
+
+fn sob_get_populated_fields_as_map(ctx: *BuiltinContext, sob: *types.SObject) !Value {
+    const map = try ctx.arena.create(types.MapValue);
+    map.* = .{};
+    for (sob.fields.keys(), sob.fields.values()) |k, v| {
+        if (v == .null_val) continue;
+        // Synthetic bookkeeping keys (addError stash, attachment metadata, etc.)
+        // are not real SObject fields and must not appear in the populated map.
+        if (std.ascii.eqlIgnoreCase(k, "errors")) continue;
+        try map.entries.put(ctx.arena, k, v);
+    }
+    return Value{ .map = map };
 }
 
 // ---------------------------------------------------------------------------
