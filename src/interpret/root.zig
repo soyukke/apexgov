@@ -579,11 +579,16 @@ fn is_test_class(cd: *ast.ClassDecl) bool {
 fn is_test_method(md: *ast.MethodDecl) bool {
     if (md.modifiers.is_test_method) return true;
     for (md.annotations) |ann| {
-        if (std.ascii.eqlIgnoreCase(ann, "@isTest") or std.ascii.eqlIgnoreCase(ann, "@IsTest") or std.ascii.eqlIgnoreCase(ann, "@test")) {
+        if (std.ascii.eqlIgnoreCase(ann, "@isTest") or
+            std.ascii.eqlIgnoreCase(ann, "@IsTest") or
+            std.ascii.eqlIgnoreCase(ann, "@test"))
+        {
             return true;
         }
         // Also match @isTest(SeeAllData=true) and similar parameterized annotations
-        if (std.ascii.startsWithIgnoreCase(ann, "@isTest(") or std.ascii.startsWithIgnoreCase(ann, "@test(")) {
+        if (std.ascii.startsWithIgnoreCase(ann, "@isTest(") or
+            std.ascii.startsWithIgnoreCase(ann, "@test("))
+        {
             return true;
         }
     }
@@ -613,7 +618,9 @@ fn collect_cls_files(
 
     while (walker.next(io) catch null) |entry| {
         if (entry.kind != .file) continue;
-        if (!std.mem.endsWith(u8, entry.basename, ".cls") and !std.mem.endsWith(u8, entry.basename, ".trigger")) {
+        if (!std.mem.endsWith(u8, entry.basename, ".cls") and
+            !std.mem.endsWith(u8, entry.basename, ".trigger"))
+        {
             continue;
         }
         // Skip name-shadowing stub classes that intentionally shadow system classes
@@ -1188,7 +1195,11 @@ fn decode_xml_text(
     }
     const decoded = buf.items;
     // Strip surrounding single quotes (Apex string literal in metadata)
-    if (strip_outer_quotes and decoded.len >= 2 and decoded[0] == '\'' and decoded[decoded.len - 1] == '\'') {
+    if (strip_outer_quotes and
+        decoded.len >= 2 and
+        decoded[0] == '\'' and
+        decoded[decoded.len - 1] == '\'')
+    {
         return alloc.dupe(u8, decoded[1 .. decoded.len - 1]);
     }
     return alloc.dupe(u8, decoded);

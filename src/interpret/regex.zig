@@ -133,7 +133,11 @@ pub fn replace_all(
         // Expand replacement (handle $1..$9 backreferences)
         var ri: usize = 0;
         while (ri < replacement.len) : (ri += 1) {
-            if (replacement[ri] == '$' and ri + 1 < replacement.len and replacement[ri + 1] >= '0' and replacement[ri + 1] <= '9') {
+            if (replacement[ri] == '$' and
+                ri + 1 < replacement.len and
+                replacement[ri + 1] >= '0' and
+                replacement[ri + 1] <= '9')
+            {
                 const gidx: usize = replacement[ri + 1] - '0';
                 ri += 1;
                 if (m.group_slice(gidx, input)) |gs| {
@@ -261,7 +265,11 @@ fn match_at(
             // Lookbehind: (?<=...) positive, (?<!...) negative — zero-width assertion
             // Bounded by the pattern's maximum possible match length (kept small for perf;
             // matches Java/JS behavior of restricting lookbehind to fixed/bounded width).
-            if (inner.len >= 3 and inner[0] == '?' and inner[1] == '<' and (inner[2] == '=' or inner[2] == '!')) {
+            if (inner.len >= 3 and
+                inner[0] == '?' and
+                inner[1] == '<' and
+                (inner[2] == '=' or inner[2] == '!'))
+            {
                 const is_positive = inner[2] == '=';
                 const lb_pat = inner[3..];
                 const max_lb = lookbehind_max_len(lb_pat);

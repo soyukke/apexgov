@@ -56,7 +56,10 @@ const Lexer = struct {
         if (c == '@') return self.scan_annotation(start, start_loc);
 
         // ドット始まり小数: .01, .5 etc.
-        if (c == '.' and self.pos + 1 < self.source.len and std.ascii.isDigit(self.source[self.pos + 1])) {
+        if (c == '.' and
+            self.pos + 1 < self.source.len and
+            std.ascii.isDigit(self.source[self.pos + 1]))
+        {
             self.advance(); // skip '.'
             while (self.pos < self.source.len and std.ascii.isDigit(self.source[self.pos])) {
                 self.advance();
@@ -95,7 +98,9 @@ const Lexer = struct {
 
     fn scan_number(self: *Lexer, start: u32, start_loc: SourceLoc) Token {
         var is_double = false;
-        while (self.pos < self.source.len and (std.ascii.isDigit(self.source[self.pos]) or self.source[self.pos] == '.')) {
+        while (self.pos < self.source.len and
+            (std.ascii.isDigit(self.source[self.pos]) or self.source[self.pos] == '.'))
+        {
             if (self.source[self.pos] == '.') {
                 if (is_double) break; // second dot → stop
                 is_double = true;
@@ -103,12 +108,16 @@ const Lexer = struct {
             self.advance();
         }
         // long suffix (L/l)
-        if (self.pos < self.source.len and (self.source[self.pos] == 'L' or self.source[self.pos] == 'l')) {
+        if (self.pos < self.source.len and
+            (self.source[self.pos] == 'L' or self.source[self.pos] == 'l'))
+        {
             self.advance();
             return self.make_token_at(.long_literal, self.source[start..self.pos], start_loc);
         }
         // double suffix (D/d)
-        if (self.pos < self.source.len and (self.source[self.pos] == 'D' or self.source[self.pos] == 'd')) {
+        if (self.pos < self.source.len and
+            (self.source[self.pos] == 'D' or self.source[self.pos] == 'd'))
+        {
             self.advance();
             return self.make_token_at(.double_literal, self.source[start..self.pos], start_loc);
         }

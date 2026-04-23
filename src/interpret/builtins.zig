@@ -277,7 +277,9 @@ pub fn dispatch_static(
     if (ci.eqlIgnoreCase(class_name, "Database")) return dispatch_database(ctx, method_name, args);
     if (ci.eqlIgnoreCase(class_name, "RestContext"))
         return dispatch_static_rest_context(ctx, method_name);
-    if (ci.eqlIgnoreCase(class_name, "HttpResponse") or ci.eqlIgnoreCase(class_name, "HttpRequest")) {
+    if (ci.eqlIgnoreCase(class_name, "HttpResponse") or
+        ci.eqlIgnoreCase(class_name, "HttpRequest"))
+    {
         const obj = try ctx.arena.create(types.ObjectInstance);
         obj.* = .{ .class_name = class_name };
         return Value{ .object = obj };
@@ -287,7 +289,9 @@ pub fn dispatch_static(
     if (ci.eqlIgnoreCase(class_name, "Security"))
         return dispatch_static_security(ctx, method_name, args);
     if (ci.eqlIgnoreCase(class_name, "AccessLevel")) return Value{ .string = method_name };
-    if (std.mem.startsWith(u8, class_name, "ConnectApi") or ci.eqlIgnoreCase(class_name, "ConnectApi")) {
+    if (std.mem.startsWith(u8, class_name, "ConnectApi") or
+        ci.eqlIgnoreCase(class_name, "ConnectApi"))
+    {
         if (ctx.see_all_data) return Value.null_val;
         return ctx.throw_exception(
             "UnsupportedOperationException",
@@ -343,7 +347,9 @@ pub fn dispatch_static(
         }
     }
     if (ci.eqlIgnoreCase(class_name, "Test")) return dispatch_static_test(ctx, method_name, args);
-    if (ci.eqlIgnoreCase(class_name, "Location") or ci.eqlIgnoreCase(class_name, "System.Location")) {
+    if (ci.eqlIgnoreCase(class_name, "Location") or
+        ci.eqlIgnoreCase(class_name, "System.Location"))
+    {
         if (ci.eqlIgnoreCase(method_name, "newInstance") and args.len >= 2) {
             const loc = try ctx.arena.create(types.ObjectInstance);
             loc.* = .{ .class_name = "System.Location" };
@@ -397,7 +403,9 @@ pub fn dispatch_static(
     // fflib_IDGenerator lives in fflib-apex-mocks, but fflib-apex-common's tests call
     // it even when the mock source isn't co-loaded. Emitting a deterministic fake Id
     // keeps those tests on the happy path.
-    if (ci.eqlIgnoreCase(class_name, "fflib_IDGenerator") and ctx.eval.classes.get("fflib_IDGenerator") == null) {
+    if (ci.eqlIgnoreCase(class_name, "fflib_IDGenerator") and
+        ctx.eval.classes.get("fflib_IDGenerator") == null)
+    {
         if (ci.eqlIgnoreCase(method_name, "generate") and args.len > 0) {
             const sobj_name: []const u8 = if (args[0] == .object and
                 (ci.eqlIgnoreCase(args[0].object.class_name, "Schema.SObjectType") or
@@ -533,7 +541,9 @@ fn dispatch_static_string(
         if (args.len >= 1 and args[0] == .list) {
             if (std.mem.eql(u8, sep, "\n") and args[0].list.items.items.len == 1) {
                 const only = args[0].list.items.items[0];
-                if (only == .string and std.mem.eql(u8, only.string, "AnonymousBlock: line 1, column 1")) {
+                if (only == .string and
+                    std.mem.eql(u8, only.string, "AnonymousBlock: line 1, column 1"))
+                {
                     // When ignored stack-trace frames collapse down to only the
                     // synthetic anonymous entry point, Salesforce behaves as if
                     // no useful trace remains.
@@ -860,7 +870,10 @@ fn dispatch_static_math(method_name: []const u8, args: []const Value) !?Value {
         }
         return Value{ .integer = 0 };
     }
-    if (std.ascii.eqlIgnoreCase(method_name, "floor") or std.ascii.eqlIgnoreCase(method_name, "ceil") or std.ascii.eqlIgnoreCase(method_name, "round")) {
+    if (std.ascii.eqlIgnoreCase(method_name, "floor") or
+        std.ascii.eqlIgnoreCase(method_name, "ceil") or
+        std.ascii.eqlIgnoreCase(method_name, "round"))
+    {
         if (args.len > 0) {
             if (args[0] == .double) {
                 if (std.ascii.eqlIgnoreCase(method_name, "floor"))
@@ -873,7 +886,9 @@ fn dispatch_static_math(method_name: []const u8, args: []const Value) !?Value {
         }
         return Value{ .integer = 0 };
     }
-    if (std.ascii.eqlIgnoreCase(method_name, "max") or std.ascii.eqlIgnoreCase(method_name, "min")) {
+    if (std.ascii.eqlIgnoreCase(method_name, "max") or
+        std.ascii.eqlIgnoreCase(method_name, "min"))
+    {
         if (args.len >= 2) {
             const a = if (args[0] == .double) args[0].double else if (args[0] == .integer) @as(f64, @floatFromInt(args[0].integer)) else 0.0;
             const b = if (args[1] == .double) args[1].double else if (args[1] == .integer) @as(f64, @floatFromInt(args[1].integer)) else 0.0;
@@ -976,7 +991,9 @@ fn dispatch_static_date_time(
     if (std.ascii.eqlIgnoreCase(method_name, "now")) {
         return try make_datetime_value(ctx.arena, try current_date_time_string(ctx.arena));
     }
-    if (std.ascii.eqlIgnoreCase(method_name, "newInstance") or std.ascii.eqlIgnoreCase(method_name, "newInstanceGmt")) {
+    if (std.ascii.eqlIgnoreCase(method_name, "newInstance") or
+        std.ascii.eqlIgnoreCase(method_name, "newInstanceGmt"))
+    {
         // Datetime.newInstance(Date, Time) — combine a date and a time-of-day.
         // Date is stored as an ObjectInstance with a "value" field. Time is
         // currently represented as a plain "HH:MM:SS.fff" string.
@@ -1055,7 +1072,9 @@ fn dispatch_static_json(
     method_name: []const u8,
     args: []const Value,
 ) !?Value {
-    if (std.ascii.eqlIgnoreCase(method_name, "serialize") or std.ascii.eqlIgnoreCase(method_name, "serializePretty")) {
+    if (std.ascii.eqlIgnoreCase(method_name, "serialize") or
+        std.ascii.eqlIgnoreCase(method_name, "serializePretty"))
+    {
         if (args.len > 0) {
             if (args[0] == .object and
                 (std.ascii.eqlIgnoreCase(args[0].object.class_name, "Schema.SObjectField") or
@@ -1174,7 +1193,9 @@ fn dispatch_static_json(
                                 } else if (json_str[val_start] == '[') {
                                     var arr_depth2: i32 = 1;
                                     var arr_pos: usize = val_start + 1;
-                                    while (arr_pos < json_str.len and arr_depth2 > 0) : (arr_pos += 1) {
+                                    while (arr_pos < json_str.len and
+                                        arr_depth2 > 0) : (arr_pos += 1)
+                                    {
                                         if (json_str[arr_pos] == '[') arr_depth2 += 1;
                                         if (json_str[arr_pos] == ']') arr_depth2 -= 1;
                                         if (json_str[arr_pos] == '"') {
@@ -1243,7 +1264,9 @@ fn dispatch_static_json(
                                     // deserialize
                                     var obj_depth: i32 = 1;
                                     var obj_pos: usize = val_start + 1;
-                                    while (obj_pos < json_str.len and obj_depth > 0) : (obj_pos += 1) {
+                                    while (obj_pos < json_str.len and
+                                        obj_depth > 0) : (obj_pos += 1)
+                                    {
                                         if (json_str[obj_pos] == '{') obj_depth += 1;
                                         if (json_str[obj_pos] == '}') obj_depth -= 1;
                                         if (json_str[obj_pos] == '"') {
@@ -1625,7 +1648,9 @@ fn dispatch_static_feature_management(
                 &psa.sobject.fields,
                 "AssigneeId",
             ) orelse continue;
-            if (assignee_id != .string or !std.ascii.eqlIgnoreCase(assignee_id.string, ctx.eval.current_user_id)) {
+            if (assignee_id != .string or
+                !std.ascii.eqlIgnoreCase(assignee_id.string, ctx.eval.current_user_id))
+            {
                 continue;
             }
             const permission_set_id = utils.sobject_get(
@@ -1697,7 +1722,9 @@ fn dispatch_static_feature_management(
                         &cp.sobject.fields,
                         "DeveloperName",
                     ) orelse continue;
-                    if (developer_name == .string and std.ascii.eqlIgnoreCase(developer_name.string, permission_name)) {
+                    if (developer_name == .string and
+                        std.ascii.eqlIgnoreCase(developer_name.string, permission_name))
+                    {
                         return Value{ .boolean = true };
                     }
                 }
@@ -1736,10 +1763,14 @@ fn dispatch_static_logging_level(
 }
 
 fn dispatch_static_rest_context(ctx: *BuiltinContext, method_name: []const u8) !?Value {
-    if (std.ascii.eqlIgnoreCase(method_name, "request") or std.ascii.eqlIgnoreCase(method_name, "getRequest")) {
+    if (std.ascii.eqlIgnoreCase(method_name, "request") or
+        std.ascii.eqlIgnoreCase(method_name, "getRequest"))
+    {
         return try ensure_rest_context_member(ctx, "request");
     }
-    if (std.ascii.eqlIgnoreCase(method_name, "response") or std.ascii.eqlIgnoreCase(method_name, "getResponse")) {
+    if (std.ascii.eqlIgnoreCase(method_name, "response") or
+        std.ascii.eqlIgnoreCase(method_name, "getResponse"))
+    {
         return try ensure_rest_context_member(ctx, "response");
     }
     return Value.null_val;
@@ -1889,7 +1920,8 @@ fn dispatch_static_security(
                     "read"
                 else if (std.ascii.eqlIgnoreCase(access_type, "CREATABLE"))
                     "create"
-                else if (std.ascii.eqlIgnoreCase(access_type, "UPDATABLE") or std.ascii.eqlIgnoreCase(access_type, "UPSERTABLE"))
+                else if (std.ascii.eqlIgnoreCase(access_type, "UPDATABLE") or
+                    std.ascii.eqlIgnoreCase(access_type, "UPSERTABLE"))
                     "edit"
                 else
                     "create";
@@ -1918,7 +1950,8 @@ fn dispatch_static_security(
                             field_name,
                             "create",
                         )
-                    else if (std.ascii.eqlIgnoreCase(access_type, "UPDATABLE") or std.ascii.eqlIgnoreCase(access_type, "UPSERTABLE"))
+                    else if (std.ascii.eqlIgnoreCase(access_type, "UPDATABLE") or
+                        std.ascii.eqlIgnoreCase(access_type, "UPSERTABLE"))
                         resolve_field_write_permission(
                             ctx.eval,
                             item.sobject.type_name,
@@ -1983,7 +2016,8 @@ fn dispatch_static_limits(ctx: *BuiltinContext, method_name: []const u8) !?Value
         return Value{ .integer = @intCast(ctx.eval.limits_soql) };
     if (ci.eqlIgnoreCase(method_name, "getAsyncCalls"))
         return Value{ .integer = @intCast(ctx.eval.limits_queueable) };
-    if (ci.eqlIgnoreCase(method_name, "getPublishImmediateDml") or ci.eqlIgnoreCase(method_name, "getPublishImmediateDML"))
+    if (ci.eqlIgnoreCase(method_name, "getPublishImmediateDml") or
+        ci.eqlIgnoreCase(method_name, "getPublishImmediateDML"))
         return Value{ .integer = @intCast(ctx.eval.limits_publish_immediate) };
     if (ci.eqlIgnoreCase(method_name, "getQueueableJobs"))
         return Value{ .integer = @intCast(ctx.eval.limits_queueable) };
@@ -2384,7 +2418,9 @@ fn dispatch_static_crypto(
         try obj.fields.put(ctx.arena, "value", val);
         return Value{ .object = obj };
     }
-    if (std.ascii.eqlIgnoreCase(method_name, "verifyHMAC") or std.ascii.eqlIgnoreCase(method_name, "verifyMac")) {
+    if (std.ascii.eqlIgnoreCase(method_name, "verifyHMAC") or
+        std.ascii.eqlIgnoreCase(method_name, "verifyMac"))
+    {
         const data_bytes = if (args.len >= 2) blob_to_bytes(args[1]) else "data";
         const key_bytes = if (args.len >= 3) blob_to_bytes(args[2]) else "key";
         const expected_bytes = if (args.len >= 4) blob_to_bytes(args[3]) else "";
@@ -2398,7 +2434,9 @@ fn dispatch_static_crypto(
         ) or std.mem.eql(u8, expected_bytes, "") };
     }
     if (std.ascii.eqlIgnoreCase(method_name, "verify")) return Value{ .boolean = true };
-    if (std.ascii.eqlIgnoreCase(method_name, "getRandomInteger") or std.ascii.eqlIgnoreCase(method_name, "getRandomLong")) {
+    if (std.ascii.eqlIgnoreCase(method_name, "getRandomInteger") or
+        std.ascii.eqlIgnoreCase(method_name, "getRandomLong"))
+    {
         // 0.16 で `std.crypto.random` は削除。決定論スタブとして固定値を返す。
         const buf: [8]u8 = .{ 0, 0, 0, 0, 0, 0, 0, 1 };
         const val: i64 = @bitCast(buf);
@@ -2463,7 +2501,10 @@ fn dispatch_static_encoding_util(
             return args[0].object.fields.get("value") orelse Value{ .string = "" };
         return Value{ .string = "base64encoded" };
     }
-    if (std.ascii.eqlIgnoreCase(method_name, "base64Decode") and args.len > 0 and args[0] == .string) {
+    if (std.ascii.eqlIgnoreCase(method_name, "base64Decode") and
+        args.len > 0 and
+        args[0] == .string)
+    {
         const blob = try ctx.arena.create(types.ObjectInstance);
         blob.* = .{ .class_name = "Blob" };
         try blob.fields.put(ctx.arena, "value", args[0]);
@@ -2474,7 +2515,10 @@ fn dispatch_static_encoding_util(
         const hex_str = try bytes_to_hex_alloc(ctx.arena, raw_bytes);
         return Value{ .string = hex_str };
     }
-    if (std.ascii.eqlIgnoreCase(method_name, "convertFromHex") and args.len > 0 and args[0] == .string) {
+    if (std.ascii.eqlIgnoreCase(method_name, "convertFromHex") and
+        args.len > 0 and
+        args[0] == .string)
+    {
         const hex = args[0].string;
         const decoded = try hex_to_bytes_alloc(ctx.arena, hex);
         const blob = try ctx.arena.create(types.ObjectInstance);
@@ -2739,7 +2783,9 @@ fn evaluate_simple_equality_formula(formula: []const u8, record: Value) bool {
     const trimmed = std.mem.trim(u8, formula, " \t\n\r");
     // CONTAINS(<path>, "substring") — Salesforce string-contains function.
     // Null haystack ⇒ false, per FormulaFilter's "treat null as false" spec.
-    if (std.ascii.startsWithIgnoreCase(trimmed, "CONTAINS(") and std.mem.endsWith(u8, trimmed, ")")) {
+    if (std.ascii.startsWithIgnoreCase(trimmed, "CONTAINS(") and
+        std.mem.endsWith(u8, trimmed, ")"))
+    {
         const inner = trimmed["CONTAINS(".len .. trimmed.len - 1];
         const comma_idx = std.mem.indexOfScalar(u8, inner, ',') orelse return false;
         const path_part = std.mem.trim(u8, inner[0..comma_idx], " \t\n\r");
@@ -2842,12 +2888,17 @@ fn dispatch_static_can_the_user(
     method_name: []const u8,
     args: []const Value,
 ) !?Value {
-    if (std.ascii.eqlIgnoreCase(method_name, "read") or std.ascii.eqlIgnoreCase(method_name, "flsAccessible")) {
+    if (std.ascii.eqlIgnoreCase(method_name, "read") or
+        std.ascii.eqlIgnoreCase(method_name, "flsAccessible"))
+    {
         const sobject_type = get_s_object_type_from_args(args);
         if (sobject_type) |sot| return Value{ .boolean = resolve_object_crud_permission(ctx.eval, sot, "read") };
         return Value{ .boolean = !ctx.eval.is_restricted_user };
     }
-    if (std.ascii.eqlIgnoreCase(method_name, "create") or std.ascii.eqlIgnoreCase(method_name, "edit") or std.ascii.eqlIgnoreCase(method_name, "crud")) {
+    if (std.ascii.eqlIgnoreCase(method_name, "create") or
+        std.ascii.eqlIgnoreCase(method_name, "edit") or
+        std.ascii.eqlIgnoreCase(method_name, "crud"))
+    {
         const sobject_type = get_s_object_type_from_args(args);
         if (sobject_type) |sot| return Value{ .boolean = resolve_object_crud_permission(ctx.eval, sot, method_name) };
         return Value{ .boolean = !ctx.eval.is_restricted_user };
@@ -2868,7 +2919,9 @@ fn dispatch_static_can_the_user(
         }
         return Value{ .boolean = true };
     }
-    if (std.ascii.eqlIgnoreCase(method_name, "bulkFLSAccessible") or std.ascii.eqlIgnoreCase(method_name, "getFLSForFieldSet")) {
+    if (std.ascii.eqlIgnoreCase(method_name, "bulkFLSAccessible") or
+        std.ascii.eqlIgnoreCase(method_name, "getFLSForFieldSet"))
+    {
         const map = try ctx.arena.create(types.MapValue);
         map.* = .{};
         if (args.len >= 2 and args[1] == .set) {
@@ -2900,7 +2953,9 @@ fn dispatch_static_apex_pages(
     method_name: []const u8,
     args: []const Value,
 ) !?Value {
-    if (std.ascii.eqlIgnoreCase(method_name, "addMessages") or std.ascii.eqlIgnoreCase(method_name, "addMessage")) {
+    if (std.ascii.eqlIgnoreCase(method_name, "addMessages") or
+        std.ascii.eqlIgnoreCase(method_name, "addMessage"))
+    {
         if (args.len > 0) {
             const msg_text = blk: {
                 if (args[0] == .object) {
@@ -3012,7 +3067,9 @@ fn dispatch_static_network(ctx: *BuiltinContext, method_name: []const u8) !?Valu
 }
 
 fn dispatch_static_url(ctx: *BuiltinContext, method_name: []const u8) !?Value {
-    if (std.ascii.eqlIgnoreCase(method_name, "getOrgDomainUrl") or std.ascii.eqlIgnoreCase(method_name, "getSalesforceBaseUrl")) {
+    if (std.ascii.eqlIgnoreCase(method_name, "getOrgDomainUrl") or
+        std.ascii.eqlIgnoreCase(method_name, "getSalesforceBaseUrl"))
+    {
         const obj = try ctx.arena.create(types.ObjectInstance);
         obj.* = .{ .class_name = "Url" };
         try obj.fields.put(ctx.arena, "Host", Value{ .string = "test.salesforce.com" });
@@ -3130,13 +3187,20 @@ fn standard_reference_target_for_field_name(field_name: []const u8) ?[]const u8 
 
 fn default_field_is_nillable(object_type: []const u8, field_name: []const u8) bool {
     if (std.ascii.eqlIgnoreCase(field_name, "Id")) return false;
-    if (std.ascii.eqlIgnoreCase(field_name, "Name") and has_implicit_name_field(object_type) and !has_custom_object_suffix(object_type)) {
+    if (std.ascii.eqlIgnoreCase(field_name, "Name") and
+        has_implicit_name_field(object_type) and
+        !has_custom_object_suffix(object_type))
+    {
         return false;
     }
-    if (std.ascii.eqlIgnoreCase(object_type, "Account") and std.ascii.eqlIgnoreCase(field_name, "Name")) {
+    if (std.ascii.eqlIgnoreCase(object_type, "Account") and
+        std.ascii.eqlIgnoreCase(field_name, "Name"))
+    {
         return false;
     }
-    if (std.ascii.eqlIgnoreCase(object_type, "Opportunity") and std.ascii.eqlIgnoreCase(field_name, "Name")) {
+    if (std.ascii.eqlIgnoreCase(object_type, "Opportunity") and
+        std.ascii.eqlIgnoreCase(field_name, "Name"))
+    {
         return false;
     }
     if ((std.ascii.eqlIgnoreCase(object_type, "Contact") or std.ascii.eqlIgnoreCase(object_type, "Lead")) and std.ascii.eqlIgnoreCase(field_name, "LastName")) return false;
@@ -3738,7 +3802,11 @@ fn add_describe_fields_from_record(
         return;
     for (record.sobject.fields.keys(), record.sobject.fields.values()) |field_name, field_value| {
         if (std.mem.indexOfScalar(u8, field_name, '.') != null) continue;
-        if (field_value == .sobject or field_value == .list or field_value == .map or field_value == .set) {
+        if (field_value == .sobject or
+            field_value == .list or
+            field_value == .map or
+            field_value == .set)
+        {
             continue;
         }
         try add_describe_field_if_missing(ctx, fields_kv, object_type, field_name);
@@ -3864,7 +3932,8 @@ fn create_field_describe_result_with_type(
         metadata.?.length.?
     else if (std.ascii.eqlIgnoreCase(field_name, "Id"))
         18
-    else if (std.ascii.eqlIgnoreCase(field_name, "Name") or std.ascii.eqlIgnoreCase(field_name, "OwnerId"))
+    else if (std.ascii.eqlIgnoreCase(field_name, "Name") or
+        std.ascii.eqlIgnoreCase(field_name, "OwnerId"))
         255
     else
         131072;
@@ -3896,7 +3965,9 @@ fn create_field_describe_result_with_type(
         "BOOLEAN"
     else if (std.ascii.eqlIgnoreCase(ft, "Integer") or std.ascii.eqlIgnoreCase(ft, "Long"))
         "INTEGER"
-    else if (std.ascii.eqlIgnoreCase(ft, "Double") or std.ascii.eqlIgnoreCase(ft, "Currency") or std.ascii.eqlIgnoreCase(ft, "Percent"))
+    else if (std.ascii.eqlIgnoreCase(ft, "Double") or
+        std.ascii.eqlIgnoreCase(ft, "Currency") or
+        std.ascii.eqlIgnoreCase(ft, "Percent"))
         "DOUBLE"
     else if (std.ascii.eqlIgnoreCase(ft, "Date"))
         "DATE"
@@ -3918,19 +3989,32 @@ fn create_field_describe_result_with_type(
 fn map_xml_type_to_display_type(xml_type: []const u8) []const u8 {
     const ci = std.ascii;
     if (ci.eqlIgnoreCase(xml_type, "Text") or ci.eqlIgnoreCase(xml_type, "STRING")) return "STRING";
-    if (ci.eqlIgnoreCase(xml_type, "LongTextArea") or ci.eqlIgnoreCase(xml_type, "TextArea") or ci.eqlIgnoreCase(xml_type, "RichTextArea") or ci.eqlIgnoreCase(xml_type, "Html")) {
+    if (ci.eqlIgnoreCase(xml_type, "LongTextArea") or
+        ci.eqlIgnoreCase(xml_type, "TextArea") or
+        ci.eqlIgnoreCase(xml_type, "RichTextArea") or
+        ci.eqlIgnoreCase(xml_type, "Html"))
+    {
         return "TEXTAREA";
     }
-    if (ci.eqlIgnoreCase(xml_type, "Checkbox") or ci.eqlIgnoreCase(xml_type, "Boolean") or ci.eqlIgnoreCase(xml_type, "BOOLEAN")) {
+    if (ci.eqlIgnoreCase(xml_type, "Checkbox") or
+        ci.eqlIgnoreCase(xml_type, "Boolean") or
+        ci.eqlIgnoreCase(xml_type, "BOOLEAN"))
+    {
         return "BOOLEAN";
     }
-    if (ci.eqlIgnoreCase(xml_type, "Number") or ci.eqlIgnoreCase(xml_type, "Double") or ci.eqlIgnoreCase(xml_type, "DOUBLE")) {
+    if (ci.eqlIgnoreCase(xml_type, "Number") or
+        ci.eqlIgnoreCase(xml_type, "Double") or
+        ci.eqlIgnoreCase(xml_type, "DOUBLE"))
+    {
         return "DOUBLE";
     }
     if (ci.eqlIgnoreCase(xml_type, "DateTime") or ci.eqlIgnoreCase(xml_type, "DATETIME"))
         return "DATETIME";
     if (ci.eqlIgnoreCase(xml_type, "Date") or ci.eqlIgnoreCase(xml_type, "DATE")) return "DATE";
-    if (ci.eqlIgnoreCase(xml_type, "Lookup") or ci.eqlIgnoreCase(xml_type, "MasterDetail") or ci.eqlIgnoreCase(xml_type, "REFERENCE")) {
+    if (ci.eqlIgnoreCase(xml_type, "Lookup") or
+        ci.eqlIgnoreCase(xml_type, "MasterDetail") or
+        ci.eqlIgnoreCase(xml_type, "REFERENCE"))
+    {
         return "REFERENCE";
     }
     if (ci.eqlIgnoreCase(xml_type, "Url") or ci.eqlIgnoreCase(xml_type, "URL")) return "URL";
@@ -3938,14 +4022,18 @@ fn map_xml_type_to_display_type(xml_type: []const u8) []const u8 {
     if (ci.eqlIgnoreCase(xml_type, "Email") or ci.eqlIgnoreCase(xml_type, "EMAIL")) return "EMAIL";
     if (ci.eqlIgnoreCase(xml_type, "Picklist") or ci.eqlIgnoreCase(xml_type, "PICKLIST"))
         return "PICKLIST";
-    if (ci.eqlIgnoreCase(xml_type, "MultiselectPicklist") or ci.eqlIgnoreCase(xml_type, "MULTIPICKLIST")) {
+    if (ci.eqlIgnoreCase(xml_type, "MultiselectPicklist") or
+        ci.eqlIgnoreCase(xml_type, "MULTIPICKLIST"))
+    {
         return "MULTIPICKLIST";
     }
     if (ci.eqlIgnoreCase(xml_type, "Currency") or ci.eqlIgnoreCase(xml_type, "CURRENCY"))
         return "CURRENCY";
     if (ci.eqlIgnoreCase(xml_type, "Percent") or ci.eqlIgnoreCase(xml_type, "PERCENT"))
         return "PERCENT";
-    if (ci.eqlIgnoreCase(xml_type, "EncryptedText") or ci.eqlIgnoreCase(xml_type, "ENCRYPTEDSTRING")) {
+    if (ci.eqlIgnoreCase(xml_type, "EncryptedText") or
+        ci.eqlIgnoreCase(xml_type, "ENCRYPTEDSTRING"))
+    {
         return "ENCRYPTEDSTRING";
     }
     if (ci.eqlIgnoreCase(xml_type, "Integer") or ci.eqlIgnoreCase(xml_type, "INTEGER"))
@@ -3999,7 +4087,9 @@ fn infer_field_type_for_object(object_type: []const u8, field_name: []const u8) 
         std.mem.endsWith(u8, field_name, "Date__c") or
         std.mem.endsWith(u8, field_name, "Timestamp__c"))
         return "DateTime";
-    if (std.ascii.eqlIgnoreCase(field_name, "Priority") or std.ascii.eqlIgnoreCase(field_name, "Status")) {
+    if (std.ascii.eqlIgnoreCase(field_name, "Priority") or
+        std.ascii.eqlIgnoreCase(field_name, "Status"))
+    {
         return "Picklist";
     }
     return "String";
@@ -4048,7 +4138,9 @@ fn infer_standard_picklist_type(object_type: []const u8, field_name: []const u8)
         .{ .object = "User", .field = "EmailEncodingKey", .xml_type = "Picklist" },
     };
     for (picklists) |e| {
-        if (std.ascii.eqlIgnoreCase(e.object, object_type) and std.ascii.eqlIgnoreCase(e.field, field_name)) {
+        if (std.ascii.eqlIgnoreCase(e.object, object_type) and
+            std.ascii.eqlIgnoreCase(e.field, field_name))
+        {
             return e.xml_type;
         }
     }
@@ -4112,7 +4204,9 @@ pub fn normalize_s_object_field_assignment(
         };
     }
 
-    if (std.ascii.eqlIgnoreCase(display_type, "INTEGER") or std.ascii.eqlIgnoreCase(display_type, "LONG")) {
+    if (std.ascii.eqlIgnoreCase(display_type, "INTEGER") or
+        std.ascii.eqlIgnoreCase(display_type, "LONG"))
+    {
         return switch (value) {
             .integer => value,
             .double => |d| Value{ .integer = @intFromFloat(d) },
@@ -4151,7 +4245,9 @@ pub fn normalize_s_object_field_assignment(
         };
     }
 
-    if (std.ascii.eqlIgnoreCase(display_type, "ID") or std.ascii.eqlIgnoreCase(display_type, "REFERENCE")) {
+    if (std.ascii.eqlIgnoreCase(display_type, "ID") or
+        std.ascii.eqlIgnoreCase(display_type, "REFERENCE"))
+    {
         return switch (value) {
             .string => value,
             .sobject => |related| if (related.id) |id| Value{ .string = id } else value,
@@ -4297,7 +4393,11 @@ fn dispatch_double_instance(
             else => 0,
         };
         const result = std.math.pow(f64, d, exp);
-        if (@floor(result) == result and !std.math.isNan(result) and !std.math.isInf(result) and @abs(result) < 9_007_199_254_740_992.0) {
+        if (@floor(result) == result and
+            !std.math.isNan(result) and
+            !std.math.isInf(result) and
+            @abs(result) < 9_007_199_254_740_992.0)
+        {
             return Value{ .integer = @intFromFloat(result) };
         }
         return Value{ .double = result };
@@ -4393,7 +4493,9 @@ fn dispatch_object_instance(
     if (ci.eqlIgnoreCase(cn, "Formula.FormulaBuilder") or ci.eqlIgnoreCase(cn, "FormulaBuilder")) {
         if (try dispatch_obj_formula_builder(ctx, obj, method_name, args)) |v| return v;
     }
-    if (ci.eqlIgnoreCase(cn, "FormulaEval.FormulaInstance") or ci.eqlIgnoreCase(cn, "FormulaInstance")) {
+    if (ci.eqlIgnoreCase(cn, "FormulaEval.FormulaInstance") or
+        ci.eqlIgnoreCase(cn, "FormulaInstance"))
+    {
         if (try dispatch_obj_formula_instance(ctx, obj, method_name, args)) |v| return v;
     }
     if (ci.eqlIgnoreCase(cn, "Pattern")) return dispatch_obj_pattern(ctx, obj, method_name, args);
@@ -4428,7 +4530,9 @@ fn dispatch_object_instance(
         }
         return .void_val;
     }
-    if ((ci.eqlIgnoreCase(cn, "RestRequest") or ci.eqlIgnoreCase(cn, "RestResponse")) and ci.eqlIgnoreCase(method_name, "getHeader")) {
+    if ((ci.eqlIgnoreCase(cn, "RestRequest") or ci.eqlIgnoreCase(cn, "RestResponse")) and
+        ci.eqlIgnoreCase(method_name, "getHeader"))
+    {
         if (args.len > 0 and args[0] == .string) {
             if (obj.fields.get("headers")) |headers_val| {
                 if (headers_val == .map) {
@@ -4443,7 +4547,9 @@ fn dispatch_object_instance(
         }
         return Value.null_val;
     }
-    if ((ci.eqlIgnoreCase(cn, "RestRequest") or ci.eqlIgnoreCase(cn, "RestResponse")) and ci.eqlIgnoreCase(method_name, "getHeaderKeys")) {
+    if ((ci.eqlIgnoreCase(cn, "RestRequest") or ci.eqlIgnoreCase(cn, "RestResponse")) and
+        ci.eqlIgnoreCase(method_name, "getHeaderKeys"))
+    {
         const list = try ctx.arena.create(types.ListValue);
         list.* = .{};
         if (obj.fields.get("headers")) |headers_val| {
@@ -4487,10 +4593,14 @@ fn dispatch_object_instance(
     if (ci.eqlIgnoreCase(cn, "ApexPages.Message")) {
         if (try dispatch_obj_apex_pages_message(obj, method_name)) |v| return v;
     }
-    if (ci.eqlIgnoreCase(cn, "ApexPages.StandardController") or ci.eqlIgnoreCase(cn, "StandardController")) {
+    if (ci.eqlIgnoreCase(cn, "ApexPages.StandardController") or
+        ci.eqlIgnoreCase(cn, "StandardController"))
+    {
         if (try dispatch_obj_standard_controller(ctx, obj, method_name)) |v| return v;
     }
-    if (ci.eqlIgnoreCase(cn, "ApexPages.StandardSetController") or ci.eqlIgnoreCase(cn, "StandardSetController")) {
+    if (ci.eqlIgnoreCase(cn, "ApexPages.StandardSetController") or
+        ci.eqlIgnoreCase(cn, "StandardSetController"))
+    {
         if (try dispatch_obj_standard_set_controller(ctx, obj, method_name, args)) |v| return v;
     }
     if (ci.eqlIgnoreCase(cn, "Database.QueryLocator") or ci.eqlIgnoreCase(cn, "QueryLocator")) {
@@ -4528,7 +4638,9 @@ fn dispatch_object_instance(
             return Value{ .object = iter };
         }
     }
-    if (ci.eqlIgnoreCase(cn, "Schema.FieldSetCollection") or ci.eqlIgnoreCase(cn, "FieldSetCollection")) {
+    if (ci.eqlIgnoreCase(cn, "Schema.FieldSetCollection") or
+        ci.eqlIgnoreCase(cn, "FieldSetCollection"))
+    {
         if (ci.eqlIgnoreCase(method_name, "getMap")) {
             return obj.fields.get("map") orelse blk: {
                 const empty = try ctx.arena.create(types.MapValue);
@@ -4546,7 +4658,9 @@ fn dispatch_object_instance(
             };
         }
     }
-    if (ci.eqlIgnoreCase(cn, "VisualEditor.DynamicPickListRows") or ci.eqlIgnoreCase(cn, "DynamicPickListRows")) {
+    if (ci.eqlIgnoreCase(cn, "VisualEditor.DynamicPickListRows") or
+        ci.eqlIgnoreCase(cn, "DynamicPickListRows"))
+    {
         if (std.ascii.eqlIgnoreCase(method_name, "addRow") and args.len > 0) {
             const rows_val = obj.fields.get("dataRows") orelse blk: {
                 const rows = try ctx.arena.create(types.ListValue);
@@ -4662,7 +4776,9 @@ fn dispatch_object_instance(
             return Value{ .list = list };
         }
     }
-    if (ci.eqlIgnoreCase(cn, "DescribeSObjectResult") or ci.eqlIgnoreCase(cn, "Schema.DescribeSObjectResult")) {
+    if (ci.eqlIgnoreCase(cn, "DescribeSObjectResult") or
+        ci.eqlIgnoreCase(cn, "Schema.DescribeSObjectResult"))
+    {
         if (try dispatch_obj_describe_s_object(ctx, obj, method_name)) |v| return v;
     }
     if (ci.eqlIgnoreCase(cn, "Schema.RecordTypeInfo") or ci.eqlIgnoreCase(cn, "RecordTypeInfo")) {
@@ -4784,7 +4900,9 @@ fn dispatch_obj_common(
         };
 
     // Date-like methods
-    if (std.ascii.eqlIgnoreCase(method_name, "addDays") or std.ascii.eqlIgnoreCase(method_name, "addMonths")) {
+    if (std.ascii.eqlIgnoreCase(method_name, "addDays") or
+        std.ascii.eqlIgnoreCase(method_name, "addMonths"))
+    {
         return obj.fields.get("value") orelse Value{ .string = "2026-04-20" };
     }
 
@@ -4988,7 +5106,9 @@ fn dispatch_obj_matcher(
     if (std.ascii.eqlIgnoreCase(method_name, "group_count")) {
         return obj.fields.get("group_count") orelse Value{ .integer = 0 };
     }
-    if (std.ascii.eqlIgnoreCase(method_name, "start") or std.ascii.eqlIgnoreCase(method_name, "end")) {
+    if (std.ascii.eqlIgnoreCase(method_name, "start") or
+        std.ascii.eqlIgnoreCase(method_name, "end"))
+    {
         const current = obj.fields.get("currentMatch") orelse return Value.null_val;
         const idx: usize = if (args.len > 0 and args[0] == .integer and args[0].integer >= 0) @intCast(args[0].integer) else 0;
         if (current == .object) {
@@ -5018,7 +5138,9 @@ fn dispatch_obj_matcher(
                     if (candidate.object.fields.get("groups")) |groups| {
                         if (groups != .list or groups.list.items.items.len == 0) continue;
                         const whole = groups.list.items.items[0];
-                        if (whole == .string and std.mem.eql(u8, whole.string, input_value.string)) {
+                        if (whole == .string and
+                            std.mem.eql(u8, whole.string, input_value.string))
+                        {
                             try obj.fields.put(ctx.arena, "currentMatch", candidate);
                             try obj.fields.put(ctx.arena, "pos", Value{ .integer = 1 });
                             return Value{ .boolean = true };
@@ -5184,7 +5306,9 @@ fn dispatch_obj_schema_describe_field(
         }
         return Value{ .list = list };
     }
-    if (std.ascii.eqlIgnoreCase(method_name, "isAccessible") or std.ascii.eqlIgnoreCase(method_name, "isFilterable")) {
+    if (std.ascii.eqlIgnoreCase(method_name, "isAccessible") or
+        std.ascii.eqlIgnoreCase(method_name, "isFilterable"))
+    {
         return Value{ .boolean = resolve_field_read_permission(ctx.eval, object_type, field_name) };
     }
     if (std.ascii.eqlIgnoreCase(method_name, "isUpdateable")) {
@@ -5210,13 +5334,19 @@ fn dispatch_obj_schema_describe_field(
     if (std.ascii.eqlIgnoreCase(method_name, "isNameField")) {
         if (std.ascii.eqlIgnoreCase(field_name, "Name")) return Value{ .boolean = true };
         if (object_type) |obj_name| {
-            if (std.ascii.eqlIgnoreCase(obj_name, "Case") and std.ascii.eqlIgnoreCase(field_name, "CaseNumber")) {
+            if (std.ascii.eqlIgnoreCase(obj_name, "Case") and
+                std.ascii.eqlIgnoreCase(field_name, "CaseNumber"))
+            {
                 return Value{ .boolean = true };
             }
-            if (std.ascii.eqlIgnoreCase(obj_name, "Contract") and std.ascii.eqlIgnoreCase(field_name, "ContractNumber")) {
+            if (std.ascii.eqlIgnoreCase(obj_name, "Contract") and
+                std.ascii.eqlIgnoreCase(field_name, "ContractNumber"))
+            {
                 return Value{ .boolean = true };
             }
-            if (std.ascii.eqlIgnoreCase(obj_name, "Order") and std.ascii.eqlIgnoreCase(field_name, "OrderNumber")) {
+            if (std.ascii.eqlIgnoreCase(obj_name, "Order") and
+                std.ascii.eqlIgnoreCase(field_name, "OrderNumber"))
+            {
                 return Value{ .boolean = true };
             }
         }
@@ -5233,10 +5363,14 @@ fn dispatch_obj_schema_describe_field(
     if (std.ascii.eqlIgnoreCase(method_name, "getLength"))
         return obj.fields.get("length") orelse Value{ .integer = 131072 };
     if (std.ascii.eqlIgnoreCase(method_name, "getScale")) return Value{ .integer = 0 };
-    if (std.ascii.eqlIgnoreCase(method_name, "getSoapType") or std.ascii.eqlIgnoreCase(method_name, "getSoaptype")) {
+    if (std.ascii.eqlIgnoreCase(method_name, "getSoapType") or
+        std.ascii.eqlIgnoreCase(method_name, "getSoaptype"))
+    {
         return obj.fields.get("soapType") orelse Value{ .string = "STRING" };
     }
-    if (std.ascii.eqlIgnoreCase(method_name, "getType") or std.ascii.eqlIgnoreCase(method_name, "getDisplayType")) {
+    if (std.ascii.eqlIgnoreCase(method_name, "getType") or
+        std.ascii.eqlIgnoreCase(method_name, "getDisplayType"))
+    {
         return obj.fields.get("type") orelse Value{ .string = "STRING" };
     }
     if (std.ascii.eqlIgnoreCase(method_name, "getName")) return obj.fields.get("fieldName") orelse obj.fields.get("name") orelse Value{ .string = "Field" };
@@ -5251,7 +5385,9 @@ fn dispatch_obj_schema_describe_field(
         return obj.fields.get("inlineHelpText") orelse Value.null_val;
     if (std.ascii.eqlIgnoreCase(method_name, "getLabel")) return obj.fields.get("label") orelse obj.fields.get("fieldName") orelse obj.fields.get("name") orelse Value{ .string = "Field" };
     if (std.ascii.eqlIgnoreCase(method_name, "toString")) return obj.fields.get("fieldName") orelse obj.fields.get("name") orelse Value{ .string = "Field" };
-    if (std.ascii.eqlIgnoreCase(method_name, "getDefaultValue") or std.ascii.eqlIgnoreCase(method_name, "getDefaultValueFormula")) {
+    if (std.ascii.eqlIgnoreCase(method_name, "getDefaultValue") or
+        std.ascii.eqlIgnoreCase(method_name, "getDefaultValueFormula"))
+    {
         // Field-meta.xml <default_value> round-trip not wired yet; resolve
         // well-known standard-field defaults so that utility classes using
         // `(String) Task.Status.getDescribe().getDefaultValue()` style code
@@ -5379,7 +5515,10 @@ fn dispatch_obj_http(
             try obj.fields.put(ctx.arena, "endpoint", args[0]);
         if (std.ascii.eqlIgnoreCase(method_name, "setMethod") and args.len > 0)
             try obj.fields.put(ctx.arena, "method", args[0]);
-        if (std.ascii.eqlIgnoreCase(method_name, "setHeader") and args.len >= 2 and args[0] == .string) {
+        if (std.ascii.eqlIgnoreCase(method_name, "setHeader") and
+            args.len >= 2 and
+            args[0] == .string)
+        {
             const headers = try ensure_headers_map(ctx, obj);
             try headers.entries.put(ctx.arena, args[0].string, args[1]);
         }
@@ -5470,7 +5609,9 @@ fn dispatch_obj_standard_controller(
         }
         return Value.null_val;
     }
-    if (std.ascii.eqlIgnoreCase(method_name, "save") or std.ascii.eqlIgnoreCase(method_name, "cancel")) {
+    if (std.ascii.eqlIgnoreCase(method_name, "save") or
+        std.ascii.eqlIgnoreCase(method_name, "cancel"))
+    {
         const pr = try ctx.arena.create(types.ObjectInstance);
         pr.* = .{ .class_name = "PageReference" };
         try pr.fields.put(ctx.arena, "url", Value{ .string = "" });
@@ -5521,7 +5662,8 @@ fn dispatch_obj_standard_set_controller(
             "next",
         ) or std.ascii.eqlIgnoreCase(method_name, "previous"))
         return Value.void_val;
-    if (std.ascii.eqlIgnoreCase(method_name, "getHasNext") or std.ascii.eqlIgnoreCase(method_name, "getHasPrevious"))
+    if (std.ascii.eqlIgnoreCase(method_name, "getHasNext") or
+        std.ascii.eqlIgnoreCase(method_name, "getHasPrevious"))
         return Value{ .boolean = false };
     return null;
 }
@@ -5874,10 +6016,14 @@ fn dispatch_obj_describe_field_result(
     if (std.ascii.eqlIgnoreCase(method_name, "getLength"))
         return obj.fields.get("length") orelse Value{ .integer = 131072 };
     if (std.ascii.eqlIgnoreCase(method_name, "getScale")) return Value{ .integer = 0 };
-    if (std.ascii.eqlIgnoreCase(method_name, "getSoapType") or std.ascii.eqlIgnoreCase(method_name, "getSoaptype")) {
+    if (std.ascii.eqlIgnoreCase(method_name, "getSoapType") or
+        std.ascii.eqlIgnoreCase(method_name, "getSoaptype"))
+    {
         return obj.fields.get("soapType") orelse Value{ .string = "STRING" };
     }
-    if (std.ascii.eqlIgnoreCase(method_name, "getType") or std.ascii.eqlIgnoreCase(method_name, "getDisplayType")) {
+    if (std.ascii.eqlIgnoreCase(method_name, "getType") or
+        std.ascii.eqlIgnoreCase(method_name, "getDisplayType"))
+    {
         return obj.fields.get("type") orelse Value{ .string = "STRING" };
     }
     if (std.ascii.eqlIgnoreCase(method_name, "getName"))
@@ -6029,7 +6175,8 @@ fn dispatch_obj_s_object_type(
             "delete";
         return Value{ .boolean = resolve_object_crud_permission(ctx.eval, sobj_name, operation) };
     }
-    if (std.ascii.eqlIgnoreCase(method_name, "isQueryable") or std.ascii.eqlIgnoreCase(method_name, "isSearchable"))
+    if (std.ascii.eqlIgnoreCase(method_name, "isQueryable") or
+        std.ascii.eqlIgnoreCase(method_name, "isSearchable"))
         return Value{ .boolean = true };
     if (std.ascii.eqlIgnoreCase(method_name, "newSObject")) {
         const name = if (obj.fields.get("name")) |n| n.string else "SObject";
@@ -6097,7 +6244,9 @@ fn dispatch_s_object_instance(
         return try create_describe_result(ctx, sob.type_name);
     }
     // clone / deepClone
-    if (std.ascii.eqlIgnoreCase(method_name, "clone") or std.ascii.eqlIgnoreCase(method_name, "deepClone")) {
+    if (std.ascii.eqlIgnoreCase(method_name, "clone") or
+        std.ascii.eqlIgnoreCase(method_name, "deepClone"))
+    {
         const new_sob = try ctx.arena.create(types.SObject);
         new_sob.* = .{ .type_name = sob.type_name, .is_clone = true };
         for (sob.fields.keys(), sob.fields.values()) |k, v| {
@@ -6176,7 +6325,10 @@ fn dispatch_s_object_instance(
         }
         return Value{ .boolean = false };
     }
-    if (std.ascii.eqlIgnoreCase(method_name, "getSObjects") and args.len > 0 and args[0] == .string) {
+    if (std.ascii.eqlIgnoreCase(method_name, "getSObjects") and
+        args.len > 0 and
+        args[0] == .string)
+    {
         // Case-insensitive lookup
         for (sob.fields.keys(), sob.fields.values()) |k, v| {
             if (std.ascii.eqlIgnoreCase(k, args[0].string)) {
@@ -6315,7 +6467,9 @@ fn collect_assigned_permission_set_ids(eval: *evaluator_mod.Evaluator, out: *[64
                 &psa.sobject.fields,
                 "AssigneeId",
             ) orelse continue;
-            if (assignee_id != .string or !std.ascii.eqlIgnoreCase(assignee_id.string, eval.current_user_id)) {
+            if (assignee_id != .string or
+                !std.ascii.eqlIgnoreCase(assignee_id.string, eval.current_user_id))
+            {
                 continue;
             }
             if (utils.sobject_get(&psa.sobject.fields, "PermissionSetId")) |permission_set_id| {
@@ -6481,13 +6635,19 @@ fn permission_name_mentions_field(
     const snake_name = append_snake_case(&snake_buf, field_name);
     if (snake_name.len > 0 and lower_contains(permission_name, snake_name)) return true;
 
-    if (std.ascii.eqlIgnoreCase(field_name, "Name") or std.ascii.eqlIgnoreCase(field_name, "LastName")) {
+    if (std.ascii.eqlIgnoreCase(field_name, "Name") or
+        std.ascii.eqlIgnoreCase(field_name, "LastName"))
+    {
         if (lower_contains(permission_name, "name_field")) return true;
         if (object_type) |obj_name| {
-            if (std.ascii.eqlIgnoreCase(obj_name, "Contact") and lower_contains(permission_name, "contact_name")) {
+            if (std.ascii.eqlIgnoreCase(obj_name, "Contact") and
+                lower_contains(permission_name, "contact_name"))
+            {
                 return true;
             }
-            if (std.ascii.eqlIgnoreCase(obj_name, "Lead") and lower_contains(permission_name, "lead_name")) {
+            if (std.ascii.eqlIgnoreCase(obj_name, "Lead") and
+                lower_contains(permission_name, "lead_name"))
+            {
                 return true;
             }
         }
@@ -6509,10 +6669,14 @@ fn permission_name_allows_object_operation(
     if (std.ascii.eqlIgnoreCase(operation, "create")) {
         return lower_contains(permission_name, "create");
     }
-    if (std.ascii.eqlIgnoreCase(operation, "edit") or std.ascii.eqlIgnoreCase(operation, "update")) {
+    if (std.ascii.eqlIgnoreCase(operation, "edit") or
+        std.ascii.eqlIgnoreCase(operation, "update"))
+    {
         return lower_contains_any(permission_name, &.{ "edit", "update" });
     }
-    if (std.ascii.eqlIgnoreCase(operation, "delete") or std.ascii.eqlIgnoreCase(operation, "destroy")) {
+    if (std.ascii.eqlIgnoreCase(operation, "delete") or
+        std.ascii.eqlIgnoreCase(operation, "destroy"))
+    {
         return lower_contains_any(permission_name, &.{ "delete", "destroy" });
     }
 
@@ -6530,7 +6694,9 @@ fn permission_name_allows_field_operation(
         return false;
 
     if (lower_contains(permission_name, "all_fields")) {
-        if (lower_contains(permission_name, "except") and permission_name_mentions_field(permission_name, object_type, field_name)) {
+        if (lower_contains(permission_name, "except") and
+            permission_name_mentions_field(permission_name, object_type, field_name))
+        {
             return false;
         }
         return true;
@@ -6647,7 +6813,9 @@ fn check_field_permission(
         if (!permission_record_matches_assigned_set(eval, utils.sobject_get(&fp.sobject.fields, "ParentId"))) continue;
 
         const fp_field = utils.sobject_get(&fp.sobject.fields, "Field") orelse continue;
-        if (fp_field != .string or !field_permission_matches(object_type, fp_field.string, field_name)) {
+        if (fp_field != .string or
+            !field_permission_matches(object_type, fp_field.string, field_name))
+        {
             continue;
         }
 
@@ -6672,7 +6840,8 @@ fn is_field_allowed_by_perm_sets(
 ) bool {
     const perm_field = if (std.ascii.eqlIgnoreCase(operation, "create"))
         "PermissionsCreate"
-    else if (std.ascii.eqlIgnoreCase(operation, "edit") or std.ascii.eqlIgnoreCase(operation, "update"))
+    else if (std.ascii.eqlIgnoreCase(operation, "edit") or
+        std.ascii.eqlIgnoreCase(operation, "update"))
         "PermissionsEdit"
     else
         "PermissionsRead";
@@ -6727,7 +6896,8 @@ fn lookup_object_permission(
             "PermissionsCreate"
         else if (std.ascii.eqlIgnoreCase(operation, "edit"))
             "PermissionsEdit"
-        else if (std.ascii.eqlIgnoreCase(operation, "destroy") or std.ascii.eqlIgnoreCase(operation, "delete"))
+        else if (std.ascii.eqlIgnoreCase(operation, "destroy") or
+            std.ascii.eqlIgnoreCase(operation, "delete"))
             "PermissionsDelete"
         else if (std.ascii.eqlIgnoreCase(operation, "read"))
             "PermissionsRead"
@@ -6744,7 +6914,9 @@ fn lookup_object_permission(
 
 fn default_object_crud_access(eval: *evaluator_mod.Evaluator, sobject_type: []const u8) bool {
     if (eval.is_restricted_user) return false;
-    if (eval.is_standard_user and (eval.is_setup_object(sobject_type) or has_custom_object_suffix(sobject_type))) {
+    if (eval.is_standard_user and
+        (eval.is_setup_object(sobject_type) or has_custom_object_suffix(sobject_type)))
+    {
         return false;
     }
     return true;
@@ -7000,10 +7172,13 @@ fn handle_reserved_keywords(ctx: *BuiltinContext, args: []const Value) ![]const 
         var pos: usize = 0;
         const haystack = result.items;
         while (pos < haystack.len) {
-            if (pos + search.len <= haystack.len and std.mem.eql(u8, haystack[pos .. pos + search.len], search)) {
+            if (pos + search.len <= haystack.len and
+                std.mem.eql(u8, haystack[pos .. pos + search.len], search))
+            {
                 // Check if followed by whitespace+colon (JSON key context)
                 var check = pos + search.len;
-                while (check < haystack.len and (haystack[check] == ' ' or haystack[check] == '\t')) check += 1;
+                while (check < haystack.len and
+                    (haystack[check] == ' ' or haystack[check] == '\t')) check += 1;
                 if (check < haystack.len and haystack[check] == ':') {
                     try new_result.appendSlice(ctx.arena, replace);
                     pos += search.len;
@@ -7053,7 +7228,10 @@ fn handle_csv_to_json(
                     std.ascii.eqlIgnoreCase(k, "csvData")) and v == .string)
                 {
                     csv_str = v.string;
-                } else if (std.ascii.eqlIgnoreCase(k, "separator") and v == .string and v.string.len > 0) {
+                } else if (std.ascii.eqlIgnoreCase(k, "separator") and
+                    v == .string and
+                    v.string.len > 0)
+                {
                     separator = v.string[0];
                 }
             }
@@ -7063,7 +7241,9 @@ fn handle_csv_to_json(
     if (csv_str.len == 0) return "[]";
 
     const normalized_csv = blk: {
-        if (std.mem.indexOf(u8, csv_str, "\\n") == null and std.mem.indexOf(u8, csv_str, "\\r") == null) {
+        if (std.mem.indexOf(u8, csv_str, "\\n") == null and
+            std.mem.indexOf(u8, csv_str, "\\r") == null)
+        {
             break :blk csv_str;
         }
         var buf: std.ArrayListUnmanaged(u8) = .empty;
@@ -7207,16 +7387,25 @@ fn rename_field(name: []const u8) []const u8 {
         return "FirstName";
     if (std.ascii.eqlIgnoreCase(name, "last_name") or std.ascii.eqlIgnoreCase(name, "Last Name"))
         return "LastName";
-    if (std.ascii.eqlIgnoreCase(name, "email_address") or std.ascii.eqlIgnoreCase(name, "Email Address")) {
+    if (std.ascii.eqlIgnoreCase(name, "email_address") or
+        std.ascii.eqlIgnoreCase(name, "Email Address"))
+    {
         return "Email";
     }
-    if (std.ascii.eqlIgnoreCase(name, "company_name") or std.ascii.eqlIgnoreCase(name, "Company Name") or std.ascii.eqlIgnoreCase(name, "company")) {
+    if (std.ascii.eqlIgnoreCase(name, "company_name") or
+        std.ascii.eqlIgnoreCase(name, "Company Name") or
+        std.ascii.eqlIgnoreCase(name, "company"))
+    {
         return "Company";
     }
-    if (std.ascii.eqlIgnoreCase(name, "phone_number") or std.ascii.eqlIgnoreCase(name, "Phone Number")) {
+    if (std.ascii.eqlIgnoreCase(name, "phone_number") or
+        std.ascii.eqlIgnoreCase(name, "Phone Number"))
+    {
         return "Phone";
     }
-    if (std.ascii.eqlIgnoreCase(name, "address") or std.ascii.eqlIgnoreCase(name, "mailing_address")) {
+    if (std.ascii.eqlIgnoreCase(name, "address") or
+        std.ascii.eqlIgnoreCase(name, "mailing_address"))
+    {
         return "MailingStreet";
     }
     return name;
@@ -7231,7 +7420,9 @@ fn extract_data_weave_input_string(args: []const Value, field_name: []const u8) 
     } else if (args[0] == .map) {
         var iter = args[0].map.entries.iterator();
         while (iter.next()) |entry| {
-            if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, field_name) and entry.value_ptr.* == .string) {
+            if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, field_name) and
+                entry.value_ptr.* == .string)
+            {
                 return entry.value_ptr.*.string;
             }
         }
@@ -7366,7 +7557,11 @@ fn handle_json_date_format(ctx: *BuiltinContext, args: []const Value) ![]const u
                     "2024-01-01T00:00:00.000Z";
                 // Format date: YYYY-MM-DDTHH:MM:SS → hh:mm:ss a, MMMM dd, yyyy
                 const created_date = blk: {
-                    if (raw_date.len >= 19 and raw_date[4] == '-' and raw_date[7] == '-' and raw_date[10] == 'T') {
+                    if (raw_date.len >= 19 and
+                        raw_date[4] == '-' and
+                        raw_date[7] == '-' and
+                        raw_date[10] == 'T')
+                    {
                         const year = raw_date[0..4];
                         const month_num = std.fmt.parseInt(u8, raw_date[5..7], 10) catch 1;
                         const day = raw_date[8..10];

@@ -153,7 +153,9 @@ fn object_value_eql(av: anytype, bv: anytype) bool {
     const b_type_is_sobject_type = std.ascii.eqlIgnoreCase(bv.class_name, "Schema.SObjectType");
     const a_type_is_type = std.ascii.eqlIgnoreCase(av.class_name, "Type");
     const b_type_is_type = std.ascii.eqlIgnoreCase(bv.class_name, "Type");
-    if ((a_type_is_sobject_type and b_type_is_sobject_type) or (a_type_is_type and b_type_is_type)) {
+    if ((a_type_is_sobject_type and b_type_is_sobject_type) or
+        (a_type_is_type and b_type_is_type))
+    {
         return object_name_field_eql(av, bv);
     }
     if (is_date_like_class(av.class_name) and is_date_like_class(bv.class_name)) {
