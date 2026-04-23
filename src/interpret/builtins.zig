@@ -5887,26 +5887,7 @@ fn handle_pluralize(ctx: *BuiltinContext, args: []const Value) ![]const u8 {
     for (words.items) |word| {
         if (!first) try buf.appendSlice(ctx.arena, ", ");
         first = false;
-        // Find plural form
-        var plural: []const u8 = word;
-        var found_mapping = false;
-        for (mappings) |m| {
-            if (std.ascii.eqlIgnoreCase(word, m.singular)) {
-                plural = m.plural;
-                found_mapping = true;
-                break;
-            }
-        }
-        // If not in known list, apply basic rules
-        if (!found_mapping) {
-            if (std.mem.endsWith(u8, word, "s") or std.mem.endsWith(u8, word, "x") or
-                std.mem.endsWith(u8, word, "ch") or std.mem.endsWith(u8, word, "sh"))
-            {
-                plural = try std.fmt.allocPrint(ctx.arena, "{s}es", .{word});
-            } else {
-                plural = try std.fmt.allocPrint(ctx.arena, "{s}s", .{word});
-            }
-        }
+        const plural = try pluralize_word(ctx.arena, word, mappings[0..]);
         try buf.appendSlice(ctx.arena, "{\"");
         try buf.appendSlice(ctx.arena, word);
         try buf.appendSlice(ctx.arena, "\": \"");
@@ -5915,6 +5896,22 @@ fn handle_pluralize(ctx: *BuiltinContext, args: []const Value) ![]const u8 {
     }
     try buf.appendSlice(ctx.arena, "]");
     return buf.items;
+}
+
+/// `handle_pluralize` から抽出。単語を複数形に変換する:
+/// 1) 既知マッピング (box→boxes, person→people 等) にあればそれを使う、
+/// 2) なければ末尾が s/x/ch/sh なら `+es`、それ以外は `+s`。
+/// `mappings` は anonymous struct の slice なので `anytype` で受ける。
+fn pluralize_word(arena: std.mem.Allocator, word: []const u8, mappings: anytype) ![]const u8 {
+    for (mappings) |m| {
+        if (std.ascii.eqlIgnoreCase(word, m.singular)) return m.plural;
+    }
+    if (std.mem.endsWith(u8, word, "s") or std.mem.endsWith(u8, word, "x") or
+        std.mem.endsWith(u8, word, "ch") or std.mem.endsWith(u8, word, "sh"))
+    {
+        return try std.fmt.allocPrint(arena, "{s}es", .{word});
+    }
+    return try std.fmt.allocPrint(arena, "{s}s", .{word});
 }
 
 /// Handle DataWeave reserved keyword escaping

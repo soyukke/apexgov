@@ -3409,39 +3409,47 @@ pub const Evaluator = struct {
         }
     }
 
+    /// `upsert_record` の external id 分岐を抽出。マッチする既存レコードが
+    /// 見つかり update したら `true` を、まだ insert に落ちるべき場合は
+    /// `false` を返す。
+    fn upsert_by_external_id(self: *Evaluator, obj: *types.SObject, field_name: []const u8) anyerror!bool {
+        if (std.ascii.eqlIgnoreCase(field_name, "Id")) {
+            if (obj.id != null) {
+                try self.update_record(obj);
+                return true;
+            }
+            if (utils.sobject_get(&obj.fields, "Id")) |id_val| {
+                if (id_val == .string and id_val.string.len > 0) {
+                    obj.id = id_val.string;
+                    try self.update_record(obj);
+                    return true;
+                }
+            }
+            try self.insert_record(obj);
+            return true;
+        }
+        const field_value = get_upsert_field_value(obj, field_name);
+        if (field_value == .null_val) {
+            const exc = try self.arena.create(types.ObjectInstance);
+            exc.* = .{ .class_name = "DmlException" };
+            try exc.fields.put(self.arena, "message", Value{ .string = "MISSING_ARGUMENT: external id field not specified in an upsert call" });
+            self.pending_exception = Value{ .object = exc };
+            return error.ApexException;
+        }
+        if (self.find_record_by_field_value(obj.type_name, field_name, field_value)) |existing| {
+            if (existing.id) |existing_id| {
+                obj.id = existing_id;
+                try utils.sobject_put(&obj.fields, self.arena, "Id", Value{ .string = existing_id });
+            }
+            try self.update_record(obj);
+            return true;
+        }
+        return false;
+    }
+
     fn upsert_record(self: *Evaluator, obj: *types.SObject, external_id_field: ?[]const u8) anyerror!void {
         if (external_id_field) |field_name| {
-            if (std.ascii.eqlIgnoreCase(field_name, "Id")) {
-                if (obj.id != null) {
-                    try self.update_record(obj);
-                    return;
-                }
-                if (utils.sobject_get(&obj.fields, "Id")) |id_val| {
-                    if (id_val == .string and id_val.string.len > 0) {
-                        obj.id = id_val.string;
-                        try self.update_record(obj);
-                        return;
-                    }
-                }
-                try self.insert_record(obj);
-                return;
-            }
-            const field_value = get_upsert_field_value(obj, field_name);
-            if (field_value == .null_val) {
-                const exc = try self.arena.create(types.ObjectInstance);
-                exc.* = .{ .class_name = "DmlException" };
-                try exc.fields.put(self.arena, "message", Value{ .string = "MISSING_ARGUMENT: external id field not specified in an upsert call" });
-                self.pending_exception = Value{ .object = exc };
-                return error.ApexException;
-            }
-            if (self.find_record_by_field_value(obj.type_name, field_name, field_value)) |existing| {
-                if (existing.id) |existing_id| {
-                    obj.id = existing_id;
-                    try utils.sobject_put(&obj.fields, self.arena, "Id", Value{ .string = existing_id });
-                }
-                try self.update_record(obj);
-                return;
-            }
+            if (try self.upsert_by_external_id(obj, field_name)) return;
         }
         if (obj.id != null) {
             // Check if record exists in store
@@ -8257,59 +8265,62 @@ pub const Evaluator = struct {
                 if (std.ascii.eqlIgnoreCase(member_name, "class")) return value;
                 return self.make_s_object_field_token(owner_name, member_name);
             },
-            .field_access => |fa| {
-                if (fa.object.* == .field_access) {
-                    const inner_fa = fa.object.field_access;
-                    if (inner_fa.object.* == .identifier and
-                        std.ascii.eqlIgnoreCase(inner_fa.object.identifier.name, "Schema"))
-                    {
-                        if (is_known_schema_enum_type(inner_fa.field)) {
-                            return Value{ .string = fa.field };
-                        }
-                        if (std.ascii.eqlIgnoreCase(inner_fa.field, "sObjectType") or
-                            std.ascii.eqlIgnoreCase(inner_fa.field, "SObjectType"))
-                        {
-                            const sot = try self.arena.create(types.ObjectInstance);
-                            sot.* = .{ .class_name = "Schema.SObjectType" };
-                            try sot.fields.put(self.arena, "name", Value{ .string = fa.field });
-                            return Value{ .object = sot };
-                        }
-                        if (std.ascii.eqlIgnoreCase(fa.field, "SObjectType")) {
-                            const sot = try self.arena.create(types.ObjectInstance);
-                            sot.* = .{ .class_name = "Schema.SObjectType" };
-                            try sot.fields.put(self.arena, "name", Value{ .string = inner_fa.field });
-                            return Value{ .object = sot };
-                        }
-                        if (!std.ascii.eqlIgnoreCase(fa.field, "class")) {
-                            return self.make_s_object_field_token(inner_fa.field, fa.field);
-                        }
-                    }
-                }
-                if (fa.object.* == .identifier and std.mem.startsWith(u8, fa.object.identifier.name, "Schema.")) {
-                    const schema_name = fa.object.identifier.name["Schema.".len..];
-                    if (is_known_schema_enum_type(schema_name)) {
-                        return Value{ .string = fa.field };
-                    }
-                    if (std.ascii.eqlIgnoreCase(schema_name, "SObjectType")) {
-                        const sot = try self.arena.create(types.ObjectInstance);
-                        sot.* = .{ .class_name = "Schema.SObjectType" };
-                        try sot.fields.put(self.arena, "name", Value{ .string = fa.field });
-                        return Value{ .object = sot };
-                    }
-                    if (std.ascii.eqlIgnoreCase(fa.field, "SObjectType")) {
-                        const sot = try self.arena.create(types.ObjectInstance);
-                        sot.* = .{ .class_name = "Schema.SObjectType" };
-                        try sot.fields.put(self.arena, "name", Value{ .string = schema_name });
-                        return Value{ .object = sot };
-                    }
-                    if (!std.ascii.eqlIgnoreCase(fa.field, "class")) {
-                        return self.make_s_object_field_token(schema_name, fa.field);
-                    }
-                }
-                return value;
-            },
+            .field_access => |fa| return try self.coerce_schema_field_access(fa, value),
             else => return value,
         }
+    }
+
+    /// `maybe_coerce_schema_expr_value` の `.field_access` 分岐を抽出。
+    /// `Schema.X.Y` および `Schema.X.Y.Z` 形式のネストされた field access を
+    /// 扱う。known enum は member を string として、`SObjectType` は
+    /// `Schema.SObjectType` オブジェクトとして、それ以外は
+    /// `SObjectField` トークンとして返す。
+    fn coerce_schema_field_access(self: *Evaluator, fa: anytype, value: Value) !Value {
+        if (fa.object.* == .field_access) {
+            const inner_fa = fa.object.field_access;
+            if (inner_fa.object.* == .identifier and
+                std.ascii.eqlIgnoreCase(inner_fa.object.identifier.name, "Schema"))
+            {
+                if (is_known_schema_enum_type(inner_fa.field)) {
+                    return Value{ .string = fa.field };
+                }
+                if (std.ascii.eqlIgnoreCase(inner_fa.field, "sObjectType") or
+                    std.ascii.eqlIgnoreCase(inner_fa.field, "SObjectType"))
+                {
+                    return try self.make_schema_sobject_type_object(fa.field);
+                }
+                if (std.ascii.eqlIgnoreCase(fa.field, "SObjectType")) {
+                    return try self.make_schema_sobject_type_object(inner_fa.field);
+                }
+                if (!std.ascii.eqlIgnoreCase(fa.field, "class")) {
+                    return self.make_s_object_field_token(inner_fa.field, fa.field);
+                }
+            }
+        }
+        if (fa.object.* == .identifier and std.mem.startsWith(u8, fa.object.identifier.name, "Schema.")) {
+            const schema_name = fa.object.identifier.name["Schema.".len..];
+            if (is_known_schema_enum_type(schema_name)) {
+                return Value{ .string = fa.field };
+            }
+            if (std.ascii.eqlIgnoreCase(schema_name, "SObjectType")) {
+                return try self.make_schema_sobject_type_object(fa.field);
+            }
+            if (std.ascii.eqlIgnoreCase(fa.field, "SObjectType")) {
+                return try self.make_schema_sobject_type_object(schema_name);
+            }
+            if (!std.ascii.eqlIgnoreCase(fa.field, "class")) {
+                return self.make_s_object_field_token(schema_name, fa.field);
+            }
+        }
+        return value;
+    }
+
+    /// `Schema.SObjectType` オブジェクトを `name = type_name` で 1 個作る。
+    fn make_schema_sobject_type_object(self: *Evaluator, type_name: []const u8) !Value {
+        const sot = try self.arena.create(types.ObjectInstance);
+        sot.* = .{ .class_name = "Schema.SObjectType" };
+        try sot.fields.put(self.arena, "name", Value{ .string = type_name });
+        return Value{ .object = sot };
     }
 
     fn render_type_ref(self: *Evaluator, type_ref: types.TypeRef) []const u8 {
