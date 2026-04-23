@@ -10587,40 +10587,38 @@ pub const Evaluator = struct {
 
     fn eval_list_method(self: *Evaluator, list: *types.ListValue, method: []const u8, args: []const Value) !Value {
         if (std.ascii.eqlIgnoreCase(method, "iterator")) {
-            const iter = try self.arena.create(types.ObjectInstance);
-            iter.* = .{ .class_name = "System.Iterator" };
-            const values_list = try self.arena.create(types.ListValue);
-            values_list.* = .{};
-            for (list.items.items) |item| {
-                try values_list.items.append(self.arena, item);
-            }
-            try iter.fields.put(self.arena, "__items__", Value{ .list = values_list });
-            try iter.fields.put(self.arena, "__pos__", Value{ .integer = 0 });
-            return Value{ .object = iter };
-        }
-        if (std.ascii.eqlIgnoreCase(method, "add")) {
-            if (args.len >= 2 and args[0] == .integer) {
-                if (args[0].integer < 0) return .void_val;
-                const i: usize = @intCast(args[0].integer);
-                if (i <= list.items.items.len) {
-                    try list.items.insert(self.arena, i, args[1]);
-                }
-                return .void_val;
-            }
-            if (args.len > 0) try list.items.append(self.arena, args[0]);
-            return .void_val;
+            return try self.eval_list_iterator(list);
         }
         if (std.ascii.eqlIgnoreCase(method, "toString")) {
-            var buffer = std.ArrayListUnmanaged(u8).empty;
-            try buffer.append(self.arena, '(');
-            for (list.items.items, 0..) |item, idx| {
-                if (idx > 0) try buffer.appendSlice(self.arena, ", ");
-                const item_string = try self.value_to_string(item);
-                try buffer.appendSlice(self.arena, item_string);
-            }
-            try buffer.append(self.arena, ')');
-            return Value{ .string = buffer.items };
+            return try self.eval_list_to_string(list);
         }
+        if (try self.eval_list_basic_method(list, method, args)) |result| return result;
+        if (std.ascii.eqlIgnoreCase(method, "sort")) {
+            try self.eval_list_sort(list, args);
+            return .void_val;
+        }
+        if (std.ascii.eqlIgnoreCase(method, "clone") or std.ascii.eqlIgnoreCase(method, "deepClone")) {
+            return try self.eval_list_clone(list, std.ascii.eqlIgnoreCase(method, "deepClone"));
+        }
+        if (std.ascii.eqlIgnoreCase(method, "indexOf") and args.len > 0) {
+            for (list.items.items, 0..) |item, idx| {
+                if (self.values_equal(item, args[0])) return Value{ .integer = @intCast(idx) };
+            }
+            return Value{ .integer = -1 };
+        }
+        if (std.ascii.eqlIgnoreCase(method, "getSObjectType")) {
+            return try self.eval_list_s_object_type(list);
+        }
+        return Value.null_val;
+    }
+
+    fn eval_list_basic_method(
+        self: *Evaluator,
+        list: *types.ListValue,
+        method: []const u8,
+        args: []const Value,
+    ) !?Value {
+        if (std.ascii.eqlIgnoreCase(method, "add")) return try self.eval_list_add(list, args);
         if (std.ascii.eqlIgnoreCase(method, "hashCode")) {
             return Value{ .integer = try self.value_hash_code(Value{ .list = list }) };
         }
@@ -10632,13 +10630,13 @@ pub const Evaluator = struct {
         if (std.ascii.eqlIgnoreCase(method, "get") and args.len > 0 and args[0] == .integer) {
             if (args[0].integer < 0) return Value.null_val;
             const i: usize = @intCast(args[0].integer);
-            if (i < list.items.items.len) return list.items.items[i];
-            return Value.null_val;
+            return if (i < list.items.items.len) list.items.items[i] else Value.null_val;
         }
         if (std.ascii.eqlIgnoreCase(method, "set") and args.len >= 2 and args[0] == .integer) {
-            if (args[0].integer < 0) return .void_val;
-            const i: usize = @intCast(args[0].integer);
-            if (i < list.items.items.len) list.items.items[i] = args[1];
+            if (args[0].integer >= 0) {
+                const i: usize = @intCast(args[0].integer);
+                if (i < list.items.items.len) list.items.items[i] = args[1];
+            }
             return .void_val;
         }
         if (std.ascii.eqlIgnoreCase(method, "clear")) {
@@ -10654,147 +10652,169 @@ pub const Evaluator = struct {
         if (std.ascii.eqlIgnoreCase(method, "remove") and args.len > 0 and args[0] == .integer) {
             if (args[0].integer < 0) return .void_val;
             const i: usize = @intCast(args[0].integer);
-            if (i < list.items.items.len) {
-                const removed = list.items.orderedRemove(i);
-                return removed;
-            }
-            return .void_val;
-        }
-        if (std.ascii.eqlIgnoreCase(method, "sort")) {
-            // If an arg is provided and is a Comparator instance, use it
-            if (args.len > 0 and args[0] == .object) {
-                const comparator_obj = args[0].object;
-                if (self.find_class(comparator_obj.class_name)) |comparator_class| {
-                    // Insertion sort using comparator.compare(a, b)
-                    const items = list.items.items;
-                    var i_idx: usize = 1;
-                    while (i_idx < items.len) : (i_idx += 1) {
-                        const key = items[i_idx];
-                        var j_idx: usize = i_idx;
-                        while (j_idx > 0) {
-                            const cmp = try self.call_instance_method(comparator_class, comparator_obj, "compare", &.{ items[j_idx - 1], key });
-                            if (cmp == .integer and cmp.integer > 0) {
-                                items[j_idx] = items[j_idx - 1];
-                                j_idx -= 1;
-                            } else break;
-                        }
-                        items[j_idx] = key;
-                    }
-                }
-            } else {
-                // Default sort: for objects implementing Comparable, use compareTo.
-                // Otherwise, sort by natural order (strings, integers, etc.)
-                const items = list.items.items;
-                const use_comparable = items.len > 0 and items[0] == .object and
-                    self.has_comparable_interface(items[0].object.class_name);
-                var i_idx: usize = 1;
-                while (i_idx < items.len) : (i_idx += 1) {
-                    const key = items[i_idx];
-                    var j_idx: usize = i_idx;
-                    while (j_idx > 0) {
-                        const cmp = if (use_comparable and items[j_idx - 1] == .object and key == .object)
-                            try self.call_compare_to(items[j_idx - 1].object, key)
-                        else
-                            self.compare_values(items[j_idx - 1], key);
-                        if (cmp > 0) {
-                            items[j_idx] = items[j_idx - 1];
-                            j_idx -= 1;
-                        } else break;
-                    }
-                    items[j_idx] = key;
-                }
-            }
-            return .void_val;
+            return if (i < list.items.items.len) list.items.orderedRemove(i) else Value.void_val;
         }
         if (std.ascii.eqlIgnoreCase(method, "addAll") and args.len > 0) {
-            if (args[0] == .list) {
-                for (args[0].list.items.items) |item| try list.items.append(self.arena, item);
-            } else if (args[0] == .set) {
-                for (args[0].set.entries.values()) |item| try list.items.append(self.arena, item);
-            }
+            try self.eval_list_add_all(list, args[0]);
             return .void_val;
         }
-        if (std.ascii.eqlIgnoreCase(method, "clone") or std.ascii.eqlIgnoreCase(method, "deepClone")) {
-            const is_deep = std.ascii.eqlIgnoreCase(method, "deepClone");
-            const new_list = try self.arena.create(types.ListValue);
-            new_list.* = .{};
-            new_list.element_type = list.element_type;
-            new_list.explicitly_generic = list.explicitly_generic;
-            for (list.items.items) |item| {
-                const cloned = if (is_deep and item == .sobject) blk: {
-                    const clone = try self.clone_s_object(item.sobject);
-                    break :blk Value{ .sobject = clone };
-                } else item;
-                try new_list.items.append(self.arena, cloned);
-            }
-            return Value{ .list = new_list };
-        }
-        if (std.ascii.eqlIgnoreCase(method, "indexOf") and args.len > 0) {
-            for (list.items.items, 0..) |item, idx| {
-                if (self.values_equal(item, args[0])) return Value{ .integer = @intCast(idx) };
-            }
-            return Value{ .integer = -1 };
-        }
-        if (std.ascii.eqlIgnoreCase(method, "getSObjectType")) {
-            if (list.element_type) |element_type| {
-                const base_type = type_base_name(element_type);
-                if (std.ascii.eqlIgnoreCase(base_type, "Object") or
-                    is_collection_type_name(base_type))
-                {
-                    return Value.null_val;
-                }
-                // Generic List<SObject> on the declaration side: look at the actual
-                // elements. If every item is the same concrete SObjectType (the
-                // common case when a typed list was coerced through a SObject
-                // parameter — e.g. `Map<Id, SObject>.values()` then passed into a
-                // super(records) that declares `List<SObject>`), report that type
-                // instead of null. Real Apex runs `List<Opportunity>.getSObjectType()
-                // == Opportunity`; fflib_SObjectDomain relies on the inference when
-                // a sibling Map<Id, SObject>.values() gets piped through its generic
-                // construct() shim.
-                //
-                // However, lists that the user *explicitly* constructed with
-                // `new List<SObject>()` (and then populated element-by-element)
-                // must keep returning null — that matches real Apex, and
-                // NebulaLogger's `setRecord(System.Iterable<Id>)` depends on it
-                // to classify ID-collection inputs as `Unknown`.
-                if (std.ascii.eqlIgnoreCase(base_type, "SObject")) {
-                    if (list.explicitly_generic) return Value.null_val;
-                    if (list.items.items.len == 0) return Value.null_val;
-                    var inferred: ?[]const u8 = null;
-                    for (list.items.items) |item| {
-                        if (item != .sobject) return Value.null_val;
-                        if (inferred) |prev| {
-                            if (!std.ascii.eqlIgnoreCase(prev, item.sobject.type_name)) return Value.null_val;
-                        } else {
-                            inferred = item.sobject.type_name;
-                        }
-                    }
-                    if (inferred) |type_name| {
-                        const sot = try self.arena.create(types.ObjectInstance);
-                        sot.* = .{ .class_name = "Schema.SObjectType" };
-                        try sot.fields.put(self.arena, "name", Value{ .string = type_name });
-                        return Value{ .object = sot };
-                    }
-                    return Value.null_val;
-                }
-                const sot = try self.arena.create(types.ObjectInstance);
-                sot.* = .{ .class_name = "Schema.SObjectType" };
-                try sot.fields.put(self.arena, "name", Value{ .string = base_type });
-                return Value{ .object = sot };
-            }
+        return null;
+    }
 
-            // Fall back to the first runtime element when there is no declared element type.
-            if (list.items.items.len > 0 and list.items.items[0] == .sobject) {
-                const sot = try self.arena.create(types.ObjectInstance);
-                sot.* = .{ .class_name = "Schema.SObjectType" };
-                try sot.fields.put(self.arena, "name", Value{ .string = list.items.items[0].sobject.type_name });
-                return Value{ .object = sot };
+    fn eval_list_add(self: *Evaluator, list: *types.ListValue, args: []const Value) !Value {
+        if (args.len >= 2 and args[0] == .integer) {
+            if (args[0].integer < 0) return .void_val;
+            const i: usize = @intCast(args[0].integer);
+            if (i <= list.items.items.len) try list.items.insert(self.arena, i, args[1]);
+            return .void_val;
+        }
+        if (args.len > 0) try list.items.append(self.arena, args[0]);
+        return .void_val;
+    }
+
+    fn eval_list_add_all(self: *Evaluator, list: *types.ListValue, source: Value) !void {
+        if (source == .list) {
+            for (source.list.items.items) |item| try list.items.append(self.arena, item);
+        } else if (source == .set) {
+            for (source.set.entries.values()) |item| try list.items.append(self.arena, item);
+        }
+    }
+
+    fn eval_list_iterator(self: *Evaluator, list: *types.ListValue) !Value {
+        const iter = try self.arena.create(types.ObjectInstance);
+        iter.* = .{ .class_name = "System.Iterator" };
+        const values_list = try self.arena.create(types.ListValue);
+        values_list.* = .{};
+        for (list.items.items) |item| {
+            try values_list.items.append(self.arena, item);
+        }
+        try iter.fields.put(self.arena, "__items__", Value{ .list = values_list });
+        try iter.fields.put(self.arena, "__pos__", Value{ .integer = 0 });
+        return Value{ .object = iter };
+    }
+
+    fn eval_list_to_string(self: *Evaluator, list: *types.ListValue) !Value {
+        var buffer = std.ArrayListUnmanaged(u8).empty;
+        try buffer.append(self.arena, '(');
+        for (list.items.items, 0..) |item, idx| {
+            if (idx > 0) try buffer.appendSlice(self.arena, ", ");
+            const item_string = try self.value_to_string(item);
+            try buffer.appendSlice(self.arena, item_string);
+        }
+        try buffer.append(self.arena, ')');
+        return Value{ .string = buffer.items };
+    }
+
+    fn eval_list_sort(self: *Evaluator, list: *types.ListValue, args: []const Value) !void {
+        if (args.len > 0 and args[0] == .object) {
+            if (self.find_class(args[0].object.class_name)) |comparator_class| {
+                try self.sort_list_with_comparator(list.items.items, args[0].object, comparator_class);
             }
-            // Empty list or non-SObject list → return null (Salesforce behavior)
-            return Value.null_val;
+            return;
+        }
+        try self.sort_list_natural(list.items.items);
+    }
+
+    fn sort_list_with_comparator(
+        self: *Evaluator,
+        items: []Value,
+        comparator_obj: *types.ObjectInstance,
+        comparator_class: *ast.ClassDecl,
+    ) !void {
+        var i_idx: usize = 1;
+        while (i_idx < items.len) : (i_idx += 1) {
+            const key = items[i_idx];
+            var j_idx: usize = i_idx;
+            while (j_idx > 0) {
+                const cmp = try self.call_instance_method(
+                    comparator_class,
+                    comparator_obj,
+                    "compare",
+                    &.{ items[j_idx - 1], key },
+                );
+                if (cmp == .integer and cmp.integer > 0) {
+                    items[j_idx] = items[j_idx - 1];
+                    j_idx -= 1;
+                } else break;
+            }
+            items[j_idx] = key;
+        }
+    }
+
+    fn sort_list_natural(self: *Evaluator, items: []Value) !void {
+        const use_comparable = items.len > 0 and items[0] == .object and
+            self.has_comparable_interface(items[0].object.class_name);
+        var i_idx: usize = 1;
+        while (i_idx < items.len) : (i_idx += 1) {
+            const key = items[i_idx];
+            var j_idx: usize = i_idx;
+            while (j_idx > 0) {
+                const cmp = if (use_comparable and items[j_idx - 1] == .object and key == .object)
+                    try self.call_compare_to(items[j_idx - 1].object, key)
+                else
+                    self.compare_values(items[j_idx - 1], key);
+                if (cmp > 0) {
+                    items[j_idx] = items[j_idx - 1];
+                    j_idx -= 1;
+                } else break;
+            }
+            items[j_idx] = key;
+        }
+    }
+
+    fn eval_list_clone(self: *Evaluator, list: *types.ListValue, is_deep: bool) !Value {
+        const new_list = try self.arena.create(types.ListValue);
+        new_list.* = .{};
+        new_list.element_type = list.element_type;
+        new_list.explicitly_generic = list.explicitly_generic;
+        for (list.items.items) |item| {
+            const cloned = if (is_deep and item == .sobject) blk: {
+                const clone = try self.clone_s_object(item.sobject);
+                break :blk Value{ .sobject = clone };
+            } else item;
+            try new_list.items.append(self.arena, cloned);
+        }
+        return Value{ .list = new_list };
+    }
+
+    fn eval_list_s_object_type(self: *Evaluator, list: *types.ListValue) !Value {
+        if (list.element_type) |element_type| {
+            const base_type = type_base_name(element_type);
+            if (std.ascii.eqlIgnoreCase(base_type, "Object") or is_collection_type_name(base_type)) {
+                return Value.null_val;
+            }
+            if (std.ascii.eqlIgnoreCase(base_type, "SObject")) {
+                return try self.infer_generic_s_object_list_type(list);
+            }
+            return try self.schema_s_object_type_value(base_type);
+        }
+
+        if (list.items.items.len > 0 and list.items.items[0] == .sobject) {
+            return try self.schema_s_object_type_value(list.items.items[0].sobject.type_name);
         }
         return Value.null_val;
+    }
+
+    fn infer_generic_s_object_list_type(self: *Evaluator, list: *types.ListValue) !Value {
+        if (list.explicitly_generic or list.items.items.len == 0) return Value.null_val;
+        var inferred: ?[]const u8 = null;
+        for (list.items.items) |item| {
+            if (item != .sobject) return Value.null_val;
+            if (inferred) |prev| {
+                if (!std.ascii.eqlIgnoreCase(prev, item.sobject.type_name)) return Value.null_val;
+            } else {
+                inferred = item.sobject.type_name;
+            }
+        }
+        if (inferred) |type_name| return try self.schema_s_object_type_value(type_name);
+        return Value.null_val;
+    }
+
+    fn schema_s_object_type_value(self: *Evaluator, type_name: []const u8) !Value {
+        const sot = try self.arena.create(types.ObjectInstance);
+        sot.* = .{ .class_name = "Schema.SObjectType" };
+        try sot.fields.put(self.arena, "name", Value{ .string = type_name });
+        return Value{ .object = sot };
     }
 
     fn uses_unique_collection_key(_: *Evaluator, value: Value) bool {
@@ -14438,51 +14458,10 @@ pub const Evaluator = struct {
     }
 
     fn handle_system_method(self: *Evaluator, inner: []const u8, method: []const u8, args: []const Value, current_env: *Env) !Value {
-        // System.enqueueJob → execute the Queueable's execute method synchronously
-        // Queueable runs in a separate transaction in Salesforce, so save/restore limits
-        if (std.ascii.eqlIgnoreCase(inner, "enqueueJob") and args.len > 0 and args[0] == .object) {
-            return self.enqueue_job(args[0].object);
-        }
-        if (std.ascii.eqlIgnoreCase(inner, "enqueueJob")) return .void_val;
-        if (std.ascii.eqlIgnoreCase(inner, "attachFinalizer")) {
-            if (self.active_queueable_job_id != null and args.len > 0 and args[0] == .object) {
-                self.attached_finalizer = args[0].object;
-            }
-            return .void_val;
-        }
-        // System.runAs → now handled by run_as_stmt in the AST; this is a fallback no-op
-        if (std.ascii.eqlIgnoreCase(inner, "runAs")) {
-            return .void_val;
-        }
-        // System.schedule → store cron expression and return unique job ID
-        if (std.ascii.eqlIgnoreCase(inner, "schedule")) {
-            const job_id = try std.fmt.allocPrint(self.arena, "08e{d:0>15}", .{self.next_id});
-            self.next_id += 1;
-            // args: (jobName, cronExpression, schedulableInstance)
-            if (args.len >= 2 and args[1] == .string) {
-                try self.scheduled_jobs.put(self.arena, job_id, args[1].string);
-            }
-            if (args.len >= 3 and args[2] == .object) {
-                try self.pending_schedulables.append(self.arena, args[2]);
-            }
-            return Value{ .string = job_id };
-        }
-        // System.abortJob → no-op
-        if (std.ascii.eqlIgnoreCase(inner, "abortJob")) return .void_val;
-        // System.debug
-        if (std.ascii.eqlIgnoreCase(inner, "debug") and args.len > 0) {
-            const msg = try utils.coerce_to_string(args[0], self.arena);
-            try self.stdout.appendSlice(self.arena, msg);
-            try self.stdout.append(self.arena, '\n');
-            return .void_val;
-        }
+        if (try self.handle_system_runtime_method(inner, args)) |result| return result;
         // System.Request.getCurrent() → return a Request object
         if (std.ascii.eqlIgnoreCase(inner, "Request")) {
-            var bctx = builtins.BuiltinContext{ .arena = self.arena, .stdout = &self.stdout, .pending_exception = &self.pending_exception, .see_all_data = self.see_all_data, .eval = self };
-            if (try builtins.dispatch_static(&bctx, "Request", method, args)) |result| return result;
-            const obj = try self.arena.create(types.ObjectInstance);
-            obj.* = .{ .class_name = "Request" };
-            return Value{ .object = obj };
+            return self.handle_system_request(method, args);
         }
         // System.AccessType/AccessLevel
         if (std.ascii.eqlIgnoreCase(inner, "AccessType") or std.ascii.eqlIgnoreCase(inner, "AccessLevel")) {
@@ -14490,36 +14469,7 @@ pub const Evaluator = struct {
         }
         // System.LoggingLevel / System.TriggerOperation
         if (std.ascii.eqlIgnoreCase(inner, "LoggingLevel") or std.ascii.eqlIgnoreCase(inner, "TriggerOperation")) {
-            // valueOf(name) → return the enum value string, throw NoSuchElementException for invalid values
-            if (std.ascii.eqlIgnoreCase(method, "valueOf") and args.len > 0 and args[0] == .string) {
-                const valid_values: []const []const u8 = if (std.ascii.eqlIgnoreCase(inner, "LoggingLevel"))
-                    &.{ "INTERNAL", "FINEST", "FINER", "FINE", "DEBUG", "INFO", "WARN", "ERROR", "NONE" }
-                else
-                    &.{ "BEFORE_INSERT", "BEFORE_UPDATE", "BEFORE_DELETE", "AFTER_INSERT", "AFTER_UPDATE", "AFTER_DELETE", "AFTER_UNDELETE" };
-                for (valid_values) |v| {
-                    if (std.ascii.eqlIgnoreCase(args[0].string, v)) return Value{ .string = v };
-                }
-                const exc = try self.arena.create(types.ObjectInstance);
-                exc.* = .{ .class_name = "System.NoSuchElementException" };
-                try exc.fields.put(self.arena, "message", Value{ .string = try std.fmt.allocPrint(self.arena, "No enum constant System.{s}.{s}", .{ inner, args[0].string }) });
-                self.pending_exception = Value{ .object = exc };
-                return error.ApexException;
-            }
-            // values() → return list of all values
-            if (std.ascii.eqlIgnoreCase(method, "values")) {
-                const list = try self.arena.create(types.ListValue);
-                list.* = .{};
-                if (std.ascii.eqlIgnoreCase(inner, "LoggingLevel")) {
-                    const names = [_][]const u8{ "INTERNAL", "FINEST", "FINER", "FINE", "DEBUG", "INFO", "WARN", "ERROR", "NONE" };
-                    for (names) |name| try list.items.append(self.arena, Value{ .string = name });
-                } else {
-                    const names = [_][]const u8{ "BEFORE_INSERT", "BEFORE_UPDATE", "BEFORE_DELETE", "AFTER_INSERT", "AFTER_UPDATE", "AFTER_DELETE", "AFTER_UNDELETE" };
-                    for (names) |name| try list.items.append(self.arena, Value{ .string = name });
-                }
-                return Value{ .list = list };
-            }
-            // ENUM_VALUE → return the value name
-            return Value{ .string = method };
+            return self.handle_system_enum(inner, method, args);
         }
         // System.SObjectAccessDecision
         if (std.ascii.eqlIgnoreCase(inner, "SObjectAccessDecision")) {
@@ -14527,75 +14477,13 @@ pub const Evaluator = struct {
         }
         // System.Limits → all methods return 0
         if (std.ascii.eqlIgnoreCase(inner, "Limits")) {
-            var bctx = builtins.BuiltinContext{ .arena = self.arena, .stdout = &self.stdout, .pending_exception = &self.pending_exception, .see_all_data = self.see_all_data, .eval = self };
+            var bctx = self.make_builtin_context();
             if (try builtins.dispatch_static(&bctx, "Limits", method, args)) |result| return result;
             return Value{ .integer = 0 };
         }
         // System.JSON.serialize / System.JSON.deserialize / System.JSON.deserializeUntyped
         if (std.ascii.eqlIgnoreCase(inner, "JSON")) {
-            if (std.ascii.eqlIgnoreCase(method, "serialize") or std.ascii.eqlIgnoreCase(method, "serializePretty")) {
-                if (args.len > 0) {
-                    if (args[0] == .object and
-                        (std.ascii.eqlIgnoreCase(args[0].object.class_name, "Schema.SObjectField") or
-                            std.ascii.eqlIgnoreCase(args[0].object.class_name, "SObjectField")))
-                    {
-                        const exc = try self.arena.create(types.ObjectInstance);
-                        exc.* = .{ .class_name = "System.JSONException" };
-                        try exc.fields.put(self.arena, "message", Value{ .string = "Apex Type unsupported in JSON: Schema.SObjectField" });
-                        self.pending_exception = Value{ .object = exc };
-                        return error.ApexException;
-                    }
-                    return Value{ .string = try utils.to_json(args[0], self.arena) };
-                }
-                return Value{ .string = "{}" };
-            }
-            if (std.ascii.eqlIgnoreCase(method, "deserialize") or std.ascii.eqlIgnoreCase(method, "deserializeUntyped")) {
-                if (args.len >= 1 and args[0] == .null_val) {
-                    const exc = try self.arena.create(types.ObjectInstance);
-                    exc.* = .{ .class_name = "System.JSONException" };
-                    try exc.fields.put(self.arena, "message", Value{ .string = "Argument cannot be null." });
-                    self.pending_exception = Value{ .object = exc };
-                    return error.ApexException;
-                }
-                if (args.len >= 1 and args[0] == .string) {
-                    const json_str = args[0].string;
-                    const trimmed_json = std.mem.trim(u8, json_str, " \t\r\n");
-                    // Check balanced braces/brackets for truncated JSON detection
-                    if (!utils.is_json_balanced(trimmed_json)) {
-                        const exc = try self.arena.create(types.ObjectInstance);
-                        exc.* = .{ .class_name = "System.JSONException" };
-                        try exc.fields.put(self.arena, "message", Value{ .string = "Unexpected end-of-input" });
-                        self.pending_exception = Value{ .object = exc };
-                        return error.ApexException;
-                    }
-                    // Delegate to builtins for actual parsing
-                    var bctx = builtins.BuiltinContext{ .arena = self.arena, .stdout = &self.stdout, .pending_exception = &self.pending_exception, .see_all_data = self.see_all_data, .eval = self };
-                    if (try builtins.dispatch_static(&bctx, "JSON", method, args)) |result| return result;
-                    const type_name: []const u8 = if (args.len >= 2 and args[1] == .object) blk: {
-                        if (std.ascii.eqlIgnoreCase(args[1].object.class_name, "Type")) {
-                            if (args[1].object.fields.get("name")) |n| {
-                                if (n == .string) break :blk n.string;
-                            }
-                        }
-                        break :blk args[1].object.class_name;
-                    } else "Object";
-                    if (self.parse_json_value(json_str, type_name)) |pv| return pv;
-                }
-                return Value.null_val;
-            }
-            // JSON.createParser → JSONParser instance with the JSON body stored
-            if (std.ascii.eqlIgnoreCase(method, "createParser")) {
-                if (args.len >= 1 and args[0] == .string) {
-                    const parser_obj = try self.arena.create(types.ObjectInstance);
-                    parser_obj.* = .{ .class_name = "JSONParser" };
-                    try parser_obj.fields.put(self.arena, "__json_body__", args[0]);
-                    return Value{ .object = parser_obj };
-                }
-                return Value.null_val;
-            }
-            // Other JSON methods: delegate to builtins
-            var bctx2 = builtins.BuiltinContext{ .arena = self.arena, .stdout = &self.stdout, .pending_exception = &self.pending_exception, .see_all_data = self.see_all_data, .eval = self };
-            if (try builtins.dispatch_static(&bctx2, "JSON", method, args)) |result| return result;
+            if (try self.handle_system_json(method, args)) |result| return result;
         }
         // System.Test.startTest / System.Test.stopTest / setMock / etc.
         if (std.ascii.eqlIgnoreCase(inner, "Test")) {
@@ -14612,10 +14500,207 @@ pub const Evaluator = struct {
         // Generic fallback: delegate System.X.method to builtins.dispatchStatic(X, method, args)
         // This covers System.UserInfo, System.Type, System.Assert, System.URL, etc.
         {
-            var bctx = builtins.BuiltinContext{ .arena = self.arena, .stdout = &self.stdout, .pending_exception = &self.pending_exception, .see_all_data = self.see_all_data, .eval = self };
+            var bctx = self.make_builtin_context();
             if (try builtins.dispatch_static(&bctx, inner, method, args)) |result| return result;
         }
         return .void_val;
+    }
+
+    fn handle_system_runtime_method(
+        self: *Evaluator,
+        inner: []const u8,
+        args: []const Value,
+    ) !?Value {
+        if (std.ascii.eqlIgnoreCase(inner, "enqueueJob") and args.len > 0 and args[0] == .object) {
+            return try self.enqueue_job(args[0].object);
+        }
+        if (std.ascii.eqlIgnoreCase(inner, "enqueueJob")) return .void_val;
+        if (std.ascii.eqlIgnoreCase(inner, "attachFinalizer")) {
+            if (self.active_queueable_job_id != null and args.len > 0 and args[0] == .object) {
+                self.attached_finalizer = args[0].object;
+            }
+            return .void_val;
+        }
+        if (std.ascii.eqlIgnoreCase(inner, "runAs")) return .void_val;
+        if (std.ascii.eqlIgnoreCase(inner, "schedule")) return try self.handle_system_schedule(args);
+        if (std.ascii.eqlIgnoreCase(inner, "abortJob")) return .void_val;
+        if (std.ascii.eqlIgnoreCase(inner, "debug") and args.len > 0) {
+            const msg = try utils.coerce_to_string(args[0], self.arena);
+            try self.stdout.appendSlice(self.arena, msg);
+            try self.stdout.append(self.arena, '\n');
+            return .void_val;
+        }
+        return null;
+    }
+
+    fn handle_system_schedule(self: *Evaluator, args: []const Value) !Value {
+        const job_id = try std.fmt.allocPrint(self.arena, "08e{d:0>15}", .{self.next_id});
+        self.next_id += 1;
+        if (args.len >= 2 and args[1] == .string) {
+            try self.scheduled_jobs.put(self.arena, job_id, args[1].string);
+        }
+        if (args.len >= 3 and args[2] == .object) {
+            try self.pending_schedulables.append(self.arena, args[2]);
+        }
+        return Value{ .string = job_id };
+    }
+
+    fn handle_system_request(self: *Evaluator, method: []const u8, args: []const Value) !Value {
+        var bctx = self.make_builtin_context();
+        if (try builtins.dispatch_static(&bctx, "Request", method, args)) |result| return result;
+        const obj = try self.arena.create(types.ObjectInstance);
+        obj.* = .{ .class_name = "Request" };
+        return Value{ .object = obj };
+    }
+
+    fn handle_system_enum(
+        self: *Evaluator,
+        inner: []const u8,
+        method: []const u8,
+        args: []const Value,
+    ) !Value {
+        if (std.ascii.eqlIgnoreCase(method, "valueOf") and args.len > 0 and args[0] == .string) {
+            return try self.system_enum_value_of(inner, args[0].string);
+        }
+        if (std.ascii.eqlIgnoreCase(method, "values")) {
+            return try self.system_enum_values(inner);
+        }
+        return Value{ .string = method };
+    }
+
+    fn system_enum_value_of(self: *Evaluator, inner: []const u8, name: []const u8) !Value {
+        for (system_enum_values_for(inner)) |v| {
+            if (std.ascii.eqlIgnoreCase(name, v)) return Value{ .string = v };
+        }
+        const exc = try self.arena.create(types.ObjectInstance);
+        exc.* = .{ .class_name = "System.NoSuchElementException" };
+        const msg = try std.fmt.allocPrint(
+            self.arena,
+            "No enum constant System.{s}.{s}",
+            .{ inner, name },
+        );
+        try exc.fields.put(self.arena, "message", Value{ .string = msg });
+        self.pending_exception = Value{ .object = exc };
+        return error.ApexException;
+    }
+
+    fn system_enum_values(self: *Evaluator, inner: []const u8) !Value {
+        const list = try self.arena.create(types.ListValue);
+        list.* = .{};
+        for (system_enum_values_for(inner)) |name| {
+            try list.items.append(self.arena, Value{ .string = name });
+        }
+        return Value{ .list = list };
+    }
+
+    fn system_enum_values_for(inner: []const u8) []const []const u8 {
+        if (std.ascii.eqlIgnoreCase(inner, "LoggingLevel")) {
+            return &.{ "INTERNAL", "FINEST", "FINER", "FINE", "DEBUG", "INFO", "WARN", "ERROR", "NONE" };
+        }
+        return &.{ "BEFORE_INSERT", "BEFORE_UPDATE", "BEFORE_DELETE", "AFTER_INSERT", "AFTER_UPDATE", "AFTER_DELETE", "AFTER_UNDELETE" };
+    }
+
+    fn handle_system_json(
+        self: *Evaluator,
+        method: []const u8,
+        args: []const Value,
+    ) !?Value {
+        if (std.ascii.eqlIgnoreCase(method, "serialize") or
+            std.ascii.eqlIgnoreCase(method, "serializePretty"))
+        {
+            return try self.handle_system_json_serialize(args);
+        }
+        if (std.ascii.eqlIgnoreCase(method, "deserialize") or
+            std.ascii.eqlIgnoreCase(method, "deserializeUntyped"))
+        {
+            return try self.handle_system_json_deserialize(method, args);
+        }
+        if (std.ascii.eqlIgnoreCase(method, "createParser")) {
+            return try self.handle_system_json_create_parser(args);
+        }
+        var bctx = self.make_builtin_context();
+        return try builtins.dispatch_static(&bctx, "JSON", method, args);
+    }
+
+    fn handle_system_json_serialize(self: *Evaluator, args: []const Value) !Value {
+        if (args.len == 0) return Value{ .string = "{}" };
+        if (args[0] == .object and
+            (std.ascii.eqlIgnoreCase(args[0].object.class_name, "Schema.SObjectField") or
+                std.ascii.eqlIgnoreCase(args[0].object.class_name, "SObjectField")))
+        {
+            return self.throw_system_json_exception("Apex Type unsupported in JSON: Schema.SObjectField");
+        }
+        return Value{ .string = try utils.to_json(args[0], self.arena) };
+    }
+
+    fn handle_system_json_deserialize(
+        self: *Evaluator,
+        method: []const u8,
+        args: []const Value,
+    ) !Value {
+        if (args.len >= 1 and args[0] == .null_val) {
+            return self.throw_system_json_exception("Argument cannot be null.");
+        }
+        if (args.len >= 1 and args[0] == .string) {
+            return try self.deserialize_system_json_string(method, args);
+        }
+        return Value.null_val;
+    }
+
+    fn deserialize_system_json_string(
+        self: *Evaluator,
+        method: []const u8,
+        args: []const Value,
+    ) !Value {
+        const json_str = args[0].string;
+        const trimmed_json = std.mem.trim(u8, json_str, " \t\r\n");
+        if (!utils.is_json_balanced(trimmed_json)) {
+            return self.throw_system_json_exception("Unexpected end-of-input");
+        }
+        var bctx = self.make_builtin_context();
+        if (try builtins.dispatch_static(&bctx, "JSON", method, args)) |result| return result;
+        if (self.parse_json_value(json_str, system_json_type_name(args))) |pv| return pv;
+        return Value.null_val;
+    }
+
+    fn system_json_type_name(args: []const Value) []const u8 {
+        if (args.len >= 2 and args[1] == .object) {
+            if (std.ascii.eqlIgnoreCase(args[1].object.class_name, "Type")) {
+                if (args[1].object.fields.get("name")) |n| {
+                    if (n == .string) return n.string;
+                }
+            }
+            return args[1].object.class_name;
+        }
+        return "Object";
+    }
+
+    fn handle_system_json_create_parser(self: *Evaluator, args: []const Value) !Value {
+        if (args.len >= 1 and args[0] == .string) {
+            const parser_obj = try self.arena.create(types.ObjectInstance);
+            parser_obj.* = .{ .class_name = "JSONParser" };
+            try parser_obj.fields.put(self.arena, "__json_body__", args[0]);
+            return Value{ .object = parser_obj };
+        }
+        return Value.null_val;
+    }
+
+    fn throw_system_json_exception(self: *Evaluator, message: []const u8) !Value {
+        const exc = try self.arena.create(types.ObjectInstance);
+        exc.* = .{ .class_name = "System.JSONException" };
+        try exc.fields.put(self.arena, "message", Value{ .string = message });
+        self.pending_exception = Value{ .object = exc };
+        return error.ApexException;
+    }
+
+    fn make_builtin_context(self: *Evaluator) builtins.BuiltinContext {
+        return .{
+            .arena = self.arena,
+            .stdout = &self.stdout,
+            .pending_exception = &self.pending_exception,
+            .see_all_data = self.see_all_data,
+            .eval = self,
+        };
     }
 
     // -----------------------------------------------------------------------
