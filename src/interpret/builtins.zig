@@ -3592,63 +3592,76 @@ fn create_child_relationships_value(ctx: *BuiltinContext, parent_type: []const u
         );
     }
 
-    const standard = [_]struct { parent: []const u8, child: []const u8, fk: []const u8, relationship: []const u8 }{
-        .{ .parent = "Account", .child = "Contact", .fk = "AccountId", .relationship = "Contacts" },
-        .{ .parent = "Account", .child = "Opportunity", .fk = "AccountId", .relationship = "Opportunities" },
-        .{ .parent = "Account", .child = "Case", .fk = "AccountId", .relationship = "Cases" },
-        .{ .parent = "Account", .child = "Contract", .fk = "AccountId", .relationship = "Contracts" },
-        .{ .parent = "Account", .child = "Order", .fk = "AccountId", .relationship = "Orders" },
-        .{ .parent = "Account", .child = "Asset", .fk = "AccountId", .relationship = "Assets" },
-        .{ .parent = "Account", .child = "Event", .fk = "WhatId", .relationship = "Events" },
-        .{ .parent = "Account", .child = "Task", .fk = "WhatId", .relationship = "Tasks" },
-        .{ .parent = "Account", .child = "AccountContactRelation", .fk = "AccountId", .relationship = "AccountContactRelations" },
-        .{ .parent = "Contact", .child = "Asset", .fk = "ContactId", .relationship = "Assets" },
-        .{ .parent = "Contact", .child = "Case", .fk = "ContactId", .relationship = "Cases" },
-        .{ .parent = "Contact", .child = "Event", .fk = "WhoId", .relationship = "Events" },
-        .{ .parent = "Contact", .child = "Task", .fk = "WhoId", .relationship = "Tasks" },
-        .{ .parent = "Contact", .child = "CampaignMember", .fk = "ContactId", .relationship = "CampaignMembers" },
-        .{ .parent = "Contact", .child = "AccountContactRelation", .fk = "ContactId", .relationship = "AccountContactRelations" },
-        .{ .parent = "Lead", .child = "CampaignMember", .fk = "LeadId", .relationship = "CampaignMembers" },
-        .{ .parent = "Lead", .child = "Event", .fk = "WhoId", .relationship = "Events" },
-        .{ .parent = "Lead", .child = "Task", .fk = "WhoId", .relationship = "Tasks" },
-        .{ .parent = "Opportunity", .child = "OpportunityLineItem", .fk = "OpportunityId", .relationship = "OpportunityLineItems" },
-        .{ .parent = "Opportunity", .child = "OpportunityContactRole", .fk = "OpportunityId", .relationship = "OpportunityContactRoles" },
-        .{ .parent = "Opportunity", .child = "Event", .fk = "WhatId", .relationship = "Events" },
-        .{ .parent = "Opportunity", .child = "Task", .fk = "WhatId", .relationship = "Tasks" },
-        .{ .parent = "Opportunity", .child = "Quote", .fk = "OpportunityId", .relationship = "Quotes" },
-        .{ .parent = "Opportunity", .child = "OpportunityFieldHistory", .fk = "OpportunityId", .relationship = "Histories" },
-        .{ .parent = "Product2", .child = "OpportunityLineItem", .fk = "Product2Id", .relationship = "OpportunityLineItems" },
-        .{ .parent = "Product2", .child = "PricebookEntry", .fk = "Product2Id", .relationship = "PricebookEntries" },
-        .{ .parent = "PricebookEntry", .child = "OpportunityLineItem", .fk = "PricebookEntryId", .relationship = "OpportunityLineItems" },
-        .{ .parent = "Pricebook2", .child = "PricebookEntry", .fk = "Pricebook2Id", .relationship = "PricebookEntries" },
-        .{ .parent = "Quote", .child = "QuoteLineItem", .fk = "QuoteId", .relationship = "QuoteLineItems" },
-        .{ .parent = "Campaign", .child = "CampaignMember", .fk = "CampaignId", .relationship = "CampaignMembers" },
-        .{ .parent = "Campaign", .child = "Opportunity", .fk = "CampaignId", .relationship = "Opportunities" },
-        .{ .parent = "Case", .child = "CaseComment", .fk = "ParentId", .relationship = "CaseComments" },
-        .{ .parent = "Case", .child = "EmailMessage", .fk = "ParentId", .relationship = "EmailMessages" },
-        .{ .parent = "Case", .child = "Event", .fk = "WhatId", .relationship = "Events" },
-        .{ .parent = "Case", .child = "Task", .fk = "WhatId", .relationship = "Tasks" },
-        .{ .parent = "User", .child = "UserLogin", .fk = "UserId", .relationship = "UserLogins" },
-        .{ .parent = "User", .child = "Event", .fk = "OwnerId", .relationship = "Events" },
-        .{ .parent = "User", .child = "Task", .fk = "OwnerId", .relationship = "Tasks" },
-        .{ .parent = "Contract", .child = "ContractLineItem", .fk = "ContractId", .relationship = "ContractLineItems" },
-        .{ .parent = "Contract", .child = "Opportunity", .fk = "ContractId", .relationship = "Opportunities" },
-        .{ .parent = "Contract", .child = "Order", .fk = "ContractId", .relationship = "Orders" },
-        .{ .parent = "Order", .child = "OrderItem", .fk = "OrderId", .relationship = "OrderItems" },
-        .{ .parent = "Opportunity", .child = "ListEmail", .fk = "RelatedToId", .relationship = "ListEmails" },
-        .{ .parent = "ListEmail", .child = "Task", .fk = "WhatId", .relationship = "Tasks" },
-        .{ .parent = "Account", .child = "User", .fk = "AccountId", .relationship = "Users" },
-        // Self-referencing hierarchy relationships.
-        .{ .parent = "Account", .child = "Account", .fk = "ParentId", .relationship = "ChildAccounts" },
-        .{ .parent = "Opportunity", .child = "Opportunity", .fk = "ParentId", .relationship = "ChildOpportunities" },
-        .{ .parent = "Case", .child = "Case", .fk = "ParentId", .relationship = "ChildCases" },
-    };
-    for (standard) |entry| {
+    for (standard_child_relationship_table()) |entry| {
         if (!std.ascii.eqlIgnoreCase(entry.parent, parent_type)) continue;
         try append_child_relationship_value(ctx, list, entry.child, entry.fk, entry.relationship);
     }
 
     return Value{ .list = list };
+}
+
+const StandardChildRelationshipEntry = struct {
+    parent: []const u8,
+    child: []const u8,
+    fk: []const u8,
+    relationship: []const u8,
+};
+
+fn standard_child_relationship_table() []const StandardChildRelationshipEntry {
+    const table = struct {
+        const entries = [_]StandardChildRelationshipEntry{
+            .{ .parent = "Account", .child = "Contact", .fk = "AccountId", .relationship = "Contacts" },
+            .{ .parent = "Account", .child = "Opportunity", .fk = "AccountId", .relationship = "Opportunities" },
+            .{ .parent = "Account", .child = "Case", .fk = "AccountId", .relationship = "Cases" },
+            .{ .parent = "Account", .child = "Contract", .fk = "AccountId", .relationship = "Contracts" },
+            .{ .parent = "Account", .child = "Order", .fk = "AccountId", .relationship = "Orders" },
+            .{ .parent = "Account", .child = "Asset", .fk = "AccountId", .relationship = "Assets" },
+            .{ .parent = "Account", .child = "Event", .fk = "WhatId", .relationship = "Events" },
+            .{ .parent = "Account", .child = "Task", .fk = "WhatId", .relationship = "Tasks" },
+            .{ .parent = "Account", .child = "AccountContactRelation", .fk = "AccountId", .relationship = "AccountContactRelations" },
+            .{ .parent = "Contact", .child = "Asset", .fk = "ContactId", .relationship = "Assets" },
+            .{ .parent = "Contact", .child = "Case", .fk = "ContactId", .relationship = "Cases" },
+            .{ .parent = "Contact", .child = "Event", .fk = "WhoId", .relationship = "Events" },
+            .{ .parent = "Contact", .child = "Task", .fk = "WhoId", .relationship = "Tasks" },
+            .{ .parent = "Contact", .child = "CampaignMember", .fk = "ContactId", .relationship = "CampaignMembers" },
+            .{ .parent = "Contact", .child = "AccountContactRelation", .fk = "ContactId", .relationship = "AccountContactRelations" },
+            .{ .parent = "Lead", .child = "CampaignMember", .fk = "LeadId", .relationship = "CampaignMembers" },
+            .{ .parent = "Lead", .child = "Event", .fk = "WhoId", .relationship = "Events" },
+            .{ .parent = "Lead", .child = "Task", .fk = "WhoId", .relationship = "Tasks" },
+            .{ .parent = "Opportunity", .child = "OpportunityLineItem", .fk = "OpportunityId", .relationship = "OpportunityLineItems" },
+            .{ .parent = "Opportunity", .child = "OpportunityContactRole", .fk = "OpportunityId", .relationship = "OpportunityContactRoles" },
+            .{ .parent = "Opportunity", .child = "Event", .fk = "WhatId", .relationship = "Events" },
+            .{ .parent = "Opportunity", .child = "Task", .fk = "WhatId", .relationship = "Tasks" },
+            .{ .parent = "Opportunity", .child = "Quote", .fk = "OpportunityId", .relationship = "Quotes" },
+            .{ .parent = "Opportunity", .child = "OpportunityFieldHistory", .fk = "OpportunityId", .relationship = "Histories" },
+            .{ .parent = "Product2", .child = "OpportunityLineItem", .fk = "Product2Id", .relationship = "OpportunityLineItems" },
+            .{ .parent = "Product2", .child = "PricebookEntry", .fk = "Product2Id", .relationship = "PricebookEntries" },
+            .{ .parent = "PricebookEntry", .child = "OpportunityLineItem", .fk = "PricebookEntryId", .relationship = "OpportunityLineItems" },
+            .{ .parent = "Pricebook2", .child = "PricebookEntry", .fk = "Pricebook2Id", .relationship = "PricebookEntries" },
+            .{ .parent = "Quote", .child = "QuoteLineItem", .fk = "QuoteId", .relationship = "QuoteLineItems" },
+            .{ .parent = "Campaign", .child = "CampaignMember", .fk = "CampaignId", .relationship = "CampaignMembers" },
+            .{ .parent = "Campaign", .child = "Opportunity", .fk = "CampaignId", .relationship = "Opportunities" },
+            .{ .parent = "Case", .child = "CaseComment", .fk = "ParentId", .relationship = "CaseComments" },
+            .{ .parent = "Case", .child = "EmailMessage", .fk = "ParentId", .relationship = "EmailMessages" },
+            .{ .parent = "Case", .child = "Event", .fk = "WhatId", .relationship = "Events" },
+            .{ .parent = "Case", .child = "Task", .fk = "WhatId", .relationship = "Tasks" },
+            .{ .parent = "User", .child = "UserLogin", .fk = "UserId", .relationship = "UserLogins" },
+            .{ .parent = "User", .child = "Event", .fk = "OwnerId", .relationship = "Events" },
+            .{ .parent = "User", .child = "Task", .fk = "OwnerId", .relationship = "Tasks" },
+            .{ .parent = "Contract", .child = "ContractLineItem", .fk = "ContractId", .relationship = "ContractLineItems" },
+            .{ .parent = "Contract", .child = "Opportunity", .fk = "ContractId", .relationship = "Opportunities" },
+            .{ .parent = "Contract", .child = "Order", .fk = "ContractId", .relationship = "Orders" },
+            .{ .parent = "Order", .child = "OrderItem", .fk = "OrderId", .relationship = "OrderItems" },
+            .{ .parent = "Opportunity", .child = "ListEmail", .fk = "RelatedToId", .relationship = "ListEmails" },
+            .{ .parent = "ListEmail", .child = "Task", .fk = "WhatId", .relationship = "Tasks" },
+            .{ .parent = "Account", .child = "User", .fk = "AccountId", .relationship = "Users" },
+            // Self-referencing hierarchy relationships.
+            .{ .parent = "Account", .child = "Account", .fk = "ParentId", .relationship = "ChildAccounts" },
+            .{ .parent = "Opportunity", .child = "Opportunity", .fk = "ParentId", .relationship = "ChildOpportunities" },
+            .{ .parent = "Case", .child = "Case", .fk = "ParentId", .relationship = "ChildCases" },
+        };
+    };
+    return &table.entries;
 }
 
 pub fn create_field_set_collection_value(
