@@ -14581,91 +14581,88 @@ pub const Evaluator = struct {
     // フィールドアクセス
     // -----------------------------------------------------------------------
 
-    fn eval_field_access(
+    /// Handle nested chains rooted at `ApexPages.Severity.X`, `Schema.SObjectType.X`,
+    /// `Schema.X.SObjectType`, or `Schema.X.Y` (returning an SObjectField token).
+    fn fa_try_apexpages_schema_nested(
         self: *Evaluator,
         fa: *ast.FieldAccess,
-        obj: Value,
-        current_env: *Env,
-    ) !Value {
-        if (fa.object.* == .field_access) {
-            const inner_fa = fa.object.field_access;
-            if (inner_fa.object.* == .identifier and
-                std.ascii.eqlIgnoreCase(inner_fa.object.identifier.name, "ApexPages") and
-                std.ascii.eqlIgnoreCase(inner_fa.field, "Severity"))
-            {
-                return Value{ .string = fa.field };
-            }
-            if (inner_fa.object.* == .identifier and
-                std.ascii.eqlIgnoreCase(inner_fa.object.identifier.name, "Schema"))
-            {
-                if (std.ascii.eqlIgnoreCase(inner_fa.field, "sObjectType") or
-                    std.ascii.eqlIgnoreCase(inner_fa.field, "SObjectType"))
-                {
-                    const sot = try self.arena.create(types.ObjectInstance);
-                    sot.* = .{ .class_name = "Schema.SObjectType" };
-                    try sot.fields.put(self.arena, "name", Value{ .string = fa.field });
-                    return Value{ .object = sot };
-                }
-                if (std.ascii.eqlIgnoreCase(fa.field, "SObjectType")) {
-                    const sot = try self.arena.create(types.ObjectInstance);
-                    sot.* = .{ .class_name = "Schema.SObjectType" };
-                    try sot.fields.put(self.arena, "name", Value{ .string = inner_fa.field });
-                    return Value{ .object = sot };
-                }
-                if (!std.ascii.eqlIgnoreCase(fa.field, "class")) {
-                    return try self.make_s_object_field_token(inner_fa.field, fa.field);
-                }
-            }
-        }
-        if (fa.object.* == .identifier and
-            std.mem.startsWith(u8, fa.object.identifier.name, "Schema."))
+    ) anyerror!?Value {
+        if (fa.object.* != .field_access) return null;
+        const inner_fa = fa.object.field_access;
+        if (inner_fa.object.* != .identifier) return null;
+
+        if (std.ascii.eqlIgnoreCase(inner_fa.object.identifier.name, "ApexPages") and
+            std.ascii.eqlIgnoreCase(inner_fa.field, "Severity"))
         {
-            const schema_name = fa.object.identifier.name["Schema.".len..];
-            if (std.ascii.eqlIgnoreCase(schema_name, "SObjectType")) {
-                const sot = try self.arena.create(types.ObjectInstance);
-                sot.* = .{ .class_name = "Schema.SObjectType" };
-                try sot.fields.put(self.arena, "name", Value{ .string = fa.field });
-                return Value{ .object = sot };
-            }
-            if (std.ascii.eqlIgnoreCase(fa.field, "SObjectType")) {
-                const sot = try self.arena.create(types.ObjectInstance);
-                sot.* = .{ .class_name = "Schema.SObjectType" };
-                try sot.fields.put(self.arena, "name", Value{ .string = schema_name });
-                return Value{ .object = sot };
-            }
-            if (!std.ascii.eqlIgnoreCase(fa.field, "class")) {
-                return try self.make_s_object_field_token(schema_name, fa.field);
-            }
+            return Value{ .string = fa.field };
         }
-        // SObjectType.X — global shortcut, returns Schema.SObjectType token for X.
-        if (fa.object.* == .identifier and
-            std.ascii.eqlIgnoreCase(fa.object.identifier.name, "SObjectType"))
+        if (!std.ascii.eqlIgnoreCase(inner_fa.object.identifier.name, "Schema")) return null;
+
+        if (std.ascii.eqlIgnoreCase(inner_fa.field, "sObjectType") or
+            std.ascii.eqlIgnoreCase(inner_fa.field, "SObjectType"))
         {
-            const sot = try self.arena.create(types.ObjectInstance);
-            sot.* = .{ .class_name = "Schema.SObjectType" };
-            try sot.fields.put(self.arena, "name", Value{ .string = fa.field });
-            return Value{ .object = sot };
+            return try self.make_sobject_type_token(fa.field);
         }
-        if (fa.object.* == .identifier and std.ascii.eqlIgnoreCase(
-            fa.object.identifier.name,
-            "System",
-        ) and
-            std.ascii.eqlIgnoreCase(fa.field, "Search"))
-        {
-            const search = try self.arena.create(types.ObjectInstance);
-            search.* = .{ .class_name = "Search" };
-            return Value{ .object = search };
+        if (std.ascii.eqlIgnoreCase(fa.field, "SObjectType")) {
+            return try self.make_sobject_type_token(inner_fa.field);
         }
-        // System.Label.XXX — fallback to label name string when metadata not available.
+        if (!std.ascii.eqlIgnoreCase(fa.field, "class")) {
+            return try self.make_s_object_field_token(inner_fa.field, fa.field);
+        }
+        return null;
+    }
+
+    /// Handle identifiers of the form `Schema.X` whose `.Y` access resolves
+    /// to an SObjectType/SObjectField token.
+    fn fa_try_schema_prefix_identifier(
+        self: *Evaluator,
+        fa: *ast.FieldAccess,
+    ) anyerror!?Value {
+        if (fa.object.* != .identifier) return null;
+        const ident = fa.object.identifier.name;
+        if (!std.mem.startsWith(u8, ident, "Schema.")) return null;
+        const schema_name = ident["Schema.".len..];
+        if (std.ascii.eqlIgnoreCase(schema_name, "SObjectType")) {
+            return try self.make_sobject_type_token(fa.field);
+        }
+        if (std.ascii.eqlIgnoreCase(fa.field, "SObjectType")) {
+            return try self.make_sobject_type_token(schema_name);
+        }
+        if (!std.ascii.eqlIgnoreCase(fa.field, "class")) {
+            return try self.make_s_object_field_token(schema_name, fa.field);
+        }
+        return null;
+    }
+
+    /// Global `SObjectType.X` shortcut → Schema.SObjectType { name: X }.
+    fn fa_try_sobjecttype_shortcut(
+        self: *Evaluator,
+        fa: *ast.FieldAccess,
+    ) anyerror!?Value {
+        if (fa.object.* != .identifier) return null;
+        if (!std.ascii.eqlIgnoreCase(fa.object.identifier.name, "SObjectType")) return null;
+        return try self.make_sobject_type_token(fa.field);
+    }
+
+    /// `System.Search` → a Search proxy object.
+    fn fa_try_system_search(self: *Evaluator, fa: *ast.FieldAccess) anyerror!?Value {
+        if (fa.object.* != .identifier) return null;
+        if (!std.ascii.eqlIgnoreCase(fa.object.identifier.name, "System")) return null;
+        if (!std.ascii.eqlIgnoreCase(fa.field, "Search")) return null;
+        const search = try self.arena.create(types.ObjectInstance);
+        search.* = .{ .class_name = "Search" };
+        return Value{ .object = search };
+    }
+
+    /// `System.Label.X` / `Label.X` → fallback label name string when metadata
+    /// is unavailable.
+    fn fa_try_label_identifier(self: *Evaluator, fa: *ast.FieldAccess) anyerror!?Value {
         if (fa.object.* == .field_access) {
             const inner = fa.object.field_access;
-            const is_system_label = (inner.object.* == .identifier and
-                std.ascii.eqlIgnoreCase(inner.object.identifier.name, "System") and
-                std.ascii.eqlIgnoreCase(inner.field, "Label")) or
-                (inner.object.* == .identifier and std.ascii.eqlIgnoreCase(
-                    inner.object.identifier.name,
-                    "Label",
-                ));
+            const is_system_label = inner.object.* == .identifier and
+                ((std.ascii.eqlIgnoreCase(inner.object.identifier.name, "System") and
+                    std.ascii.eqlIgnoreCase(inner.field, "Label")) or
+                    std.ascii.eqlIgnoreCase(inner.object.identifier.name, "Label"));
             if (is_system_label) {
                 return Value{ .string = try self.arena.dupe(u8, fa.field) };
             }
@@ -14675,276 +14672,329 @@ pub const Evaluator = struct {
         {
             return Value{ .string = try self.arena.dupe(u8, fa.field) };
         }
+        return null;
+    }
 
-        // Auto-unwrap list to first element for field access (SOQL single-record pattern)
-        if (obj == .list) {
-            // Empty SOQL result with field access → QueryException (only for SOQL sources)
-            if (obj.list.items.items.len == 0 and fa.object.* == .soql) {
-                const exc = try self.arena.create(types.ObjectInstance);
-                exc.* = .{ .class_name = "QueryException" };
-                try exc.fields.put(
-                    self.arena,
-                    "message",
-                    Value{ .string = "List has no rows for assignment to SObject" },
-                );
-                self.pending_exception = Value{ .object = exc };
-                return error.ApexException;
+    fn make_sobject_type_token(self: *Evaluator, name: []const u8) anyerror!Value {
+        const sot = try self.arena.create(types.ObjectInstance);
+        sot.* = .{ .class_name = "Schema.SObjectType" };
+        try sot.fields.put(self.arena, "name", Value{ .string = name });
+        return Value{ .object = sot };
+    }
+
+    /// List field access: auto-unwrap to the first SObject element (single-
+    /// record SOQL pattern), expose `.size`, and raise QueryException on empty
+    /// SOQL results.
+    fn fa_list_access(
+        self: *Evaluator,
+        fa: *ast.FieldAccess,
+        list: *types.ListValue,
+    ) anyerror!Value {
+        if (list.items.items.len == 0 and fa.object.* == .soql) {
+            const exc = try self.arena.create(types.ObjectInstance);
+            exc.* = .{ .class_name = "QueryException" };
+            try exc.fields.put(
+                self.arena,
+                "message",
+                Value{ .string = "List has no rows for assignment to SObject" },
+            );
+            self.pending_exception = Value{ .object = exc };
+            return error.ApexException;
+        }
+        if (list.items.items.len > 0) {
+            const first = list.items.items[0];
+            if (first == .sobject) {
+                return self.get_s_object_field_value_case_insensitive(
+                    first.sobject,
+                    fa.field,
+                ) orelse Value.null_val;
             }
-            if (obj.list.items.items.len > 0) {
-                const first = obj.list.items.items[0];
-                if (first == .sobject) {
-                    return self.get_s_object_field_value_case_insensitive(
-                        first.sobject,
-                        fa.field,
-                    ) orelse Value.null_val;
+        }
+        if (std.ascii.eqlIgnoreCase(fa.field, "size")) {
+            return Value{ .integer = @intCast(list.items.items.len) };
+        }
+        return Value.null_val;
+    }
+
+    /// SObject field access: case-insensitive lookup, with SObjectException
+    /// when the row was produced by stripInaccessible.
+    fn fa_sobject_access(
+        self: *Evaluator,
+        fa: *ast.FieldAccess,
+        sobj: *types.SObject,
+    ) anyerror!Value {
+        if (self.get_s_object_field_value_case_insensitive(sobj, fa.field)) |v| return v;
+        if (sobj.is_stripped) {
+            const exc = try self.arena.create(types.ObjectInstance);
+            exc.* = .{ .class_name = "SObjectException" };
+            try exc.fields.put(self.arena, "message", Value{ .string = "SObject row was retrieved via SOQL without querying the requested field: " });
+            self.pending_exception = Value{ .object = exc };
+            return error.ApexException;
+        }
+        return Value.null_val;
+    }
+
+    /// ObjectInstance field access. Checks property getters first, then
+    /// built-in proxy types (Schema.SObjectType / FieldDescribeMap /
+    /// DescribeSObjectResult), and finally a case-insensitive field lookup.
+    fn fa_object_instance_access(
+        self: *Evaluator,
+        fa: *ast.FieldAccess,
+        inst: *types.ObjectInstance,
+    ) anyerror!Value {
+        if (try self.fa_try_property_getter(fa, inst)) |v| return v;
+        if (try self.fa_try_schema_proxy_access(fa, inst)) |v| return v;
+
+        // Case-insensitive field lookup (no custom getter found).
+        for (inst.fields.keys(), inst.fields.values()) |k, v| {
+            if (std.ascii.eqlIgnoreCase(k, fa.field)) return v;
+        }
+        return Value.null_val;
+    }
+
+    /// Property getter chain (walks up the class hierarchy). Returns null when
+    /// no matching field_decl defines a getter.
+    fn fa_try_property_getter(
+        self: *Evaluator,
+        fa: *ast.FieldAccess,
+        inst: *types.ObjectInstance,
+    ) anyerror!?Value {
+        const cd = self.find_class(inst.class_name) orelse return null;
+        var cur_cd: ?*ast.ClassDecl = cd;
+        while (cur_cd) |ccd| {
+            for (ccd.members) |member| {
+                switch (member) {
+                    .field_decl => |fd| {
+                        if (!std.ascii.eqlIgnoreCase(fd.name, fa.field)) continue;
+                        const getter = fd.getter_body orelse continue;
+                        return try self.invoke_property_getter_inline(fa, inst, cd, ccd, fd, getter);
+                    },
+                    else => {},
                 }
             }
-            // List.size as property
-            if (std.ascii.eqlIgnoreCase(fa.field, "size"))
-                return Value{ .integer = @intCast(obj.list.items.items.len) };
-            return Value.null_val;
+            cur_cd = if (ccd.super_class) |sc| self.find_class(sc.name) else null;
+        }
+        return null;
+    }
+
+    /// Execute a property getter body with `this` bound to the instance. When
+    /// we are already inside this property's own getter (self-reference), fall
+    /// back to reading the backing field directly.
+    fn invoke_property_getter_inline(
+        self: *Evaluator,
+        fa: *ast.FieldAccess,
+        inst: *types.ObjectInstance,
+        owner_cd: *ast.ClassDecl,
+        declaring_cd: *ast.ClassDecl,
+        fd: *ast.FieldDecl,
+        getter: []ast.Stmt,
+    ) anyerror!Value {
+        if (self.evaluating_getter) |eg| {
+            if (std.ascii.eqlIgnoreCase(eg, fd.name)) {
+                if (fd.modifiers.is_static) {
+                    return self.read_static_backing_value(declaring_cd.name, fd.name);
+                }
+                if (inst.fields.get(fa.field)) |fv| return fv;
+                for (inst.fields.keys(), inst.fields.values()) |fk, fv| {
+                    if (std.ascii.eqlIgnoreCase(fk, fa.field)) return fv;
+                }
+                return .null_val;
+            }
+        }
+        const getter_env = self.global_env.child() catch return Value.null_val;
+        getter_env.define("this", Value{ .object = inst }) catch {};
+        // Load instance fields as local variables, but SKIP fields that have
+        // their own getter (so this.field inside THIS getter still chains
+        // through to the property getter).
+        for (inst.fields.keys(), inst.fields.values()) |fk, fv| {
+            const skip = !std.ascii.eqlIgnoreCase(fk, fd.name) and
+                fa_field_has_getter(self, owner_cd, fk);
+            if (!skip) {
+                getter_env.set(fk, fv) catch {
+                    getter_env.define(fk, fv) catch {};
+                };
+            }
+        }
+        const saved_class = self.current_class;
+        const saved_getter = self.evaluating_getter;
+        self.current_class = declaring_cd.name;
+        self.evaluating_getter = fd.name;
+        defer {
+            self.current_class = saved_class;
+            self.evaluating_getter = saved_getter;
         }
 
-        if (obj == .sobject) {
-            if (self.get_s_object_field_value_case_insensitive(
-                obj.sobject,
-                fa.field,
-            )) |value| return value;
-            // If this SObject was processed by stripInaccessible, throw SObjectException
-            if (obj.sobject.is_stripped) {
-                const exc = try self.arena.create(types.ObjectInstance);
-                exc.* = .{ .class_name = "SObjectException" };
-                try exc.fields.put(self.arena, "message", Value{ .string = "SObject row was retrieved via SOQL without querying the requested field: " });
-                self.pending_exception = Value{ .object = exc };
-                return error.ApexException;
-            }
-            return Value.null_val;
-        }
-        if (obj == .object) {
-            // Check for property getter FIRST (before returning raw field value)
-            if (self.find_class(obj.object.class_name)) |cd| {
-                var cur_cd: ?*ast.ClassDecl = cd;
-                while (cur_cd) |ccd| {
-                    for (ccd.members) |member| {
-                        switch (member) {
-                            .field_decl => |fd| {
-                                if (std.ascii.eqlIgnoreCase(fd.name, fa.field)) {
-                                    if (fd.getter_body) |getter| {
-                                        // Skip getter re-invocation if we're already inside this
-                                        // property's getter
-                                        // (self-referencing getter pattern: this.prop inside prop's
-                                        // getter = backing field)
-                                        if (self.evaluating_getter) |eg| {
-                                            if (std.ascii.eqlIgnoreCase(eg, fd.name)) {
-                                                // Return backing field value directly
-                                                if (fd.modifiers.is_static) {
-                                                    return self.read_static_backing_value(
-                                                        ccd.name,
-                                                        fd.name,
-                                                    );
-                                                }
-                                                if (obj.object.fields.get(fa.field)) |fv| return fv;
-                                                for (
-                                                    obj.object.fields.keys(),
-                                                    obj.object.fields.values(),
-                                                ) |fk, fv| {
-                                                    if (std.ascii.eqlIgnoreCase(fk, fa.field))
-                                                        return fv;
-                                                }
-                                                return .null_val;
-                                            }
-                                        }
-                                        // Execute getter body with 'this' bound to the object
-                                        const getter_env =
-                                            self.global_env.child() catch return Value.null_val;
-                                        getter_env.define(
-                                            "this",
-                                            Value{ .object = obj.object },
-                                        ) catch {};
-                                        // Load instance fields as local variables
-                                        // SKIP fields that have their own getter (to force
-                                        // property access via this.field → getter chain)
-                                        for (
-                                            obj.object.fields.keys(),
-                                            obj.object.fields.values(),
-                                        ) |fk, fv| {
-                                            var has_getter = false;
-                                            if (!std.ascii.eqlIgnoreCase(
-                                                fk,
-                                                fd.name,
-                                            )) { // Don't skip current property
-                                                var check_cd: ?*ast.ClassDecl = cd;
-                                                while (check_cd) |ccd2| {
-                                                    for (ccd2.members) |m2| {
-                                                        switch (m2) {
-                                                            .field_decl => |fd2| {
-                                                                if (std.ascii.eqlIgnoreCase(
-                                                                    fd2.name,
-                                                                    fk,
-                                                                ) and fd2.getter_body != null) {
-                                                                    has_getter = true;
-                                                                }
-                                                            },
-                                                            else => {},
-                                                        }
-                                                    }
-                                                    check_cd = if (ccd2.super_class) |sc| self.find_class(sc.name) else null;
-                                                }
-                                            }
-                                            if (!has_getter) {
-                                                getter_env.set(fk, fv) catch {
-                                                    getter_env.define(fk, fv) catch {};
-                                                };
-                                            }
-                                        }
-                                        const saved_class = self.current_class;
-                                        const saved_getter = self.evaluating_getter;
-                                        self.current_class = ccd.name;
-                                        self.evaluating_getter = fd.name;
-                                        defer {
-                                            self.current_class = saved_class;
-                                            self.evaluating_getter = saved_getter;
-                                        }
+        const result = self.exec_block(getter, getter_env) catch |err| {
+            if (err == error.StackOverflow) return Value.null_val;
+            return err;
+        };
+        return switch (result) {
+            .return_val => |v| v,
+            else => self.return_value,
+        };
+    }
 
-                                        const result = self.exec_block(
-                                            getter,
-                                            getter_env,
-                                        ) catch |err| {
-                                            if (err == error.StackOverflow) return Value.null_val;
-                                            return err;
-                                        };
-
-                                        return switch (result) {
-                                            .return_val => |v| v,
-                                            else => self.return_value,
-                                        };
-                                    }
-                                }
-                            },
-                            else => {},
-                        }
-                    }
-                    cur_cd = if (ccd.super_class) |sc| self.find_class(sc.name) else null;
+    /// Walk `cd` and its parents to check whether any field_decl with the
+    /// given name declares a getter_body.
+    fn fa_field_has_getter(self: *Evaluator, cd: *ast.ClassDecl, name: []const u8) bool {
+        var check_cd: ?*ast.ClassDecl = cd;
+        while (check_cd) |ccd2| {
+            for (ccd2.members) |m2| {
+                switch (m2) {
+                    .field_decl => |fd2| {
+                        if (std.ascii.eqlIgnoreCase(fd2.name, name) and
+                            fd2.getter_body != null) return true;
+                    },
+                    else => {},
                 }
             }
-            // Schema.SObjectTypeNamespace.Contact → Schema.SObjectType { name: "Contact" }
-            if (std.ascii.eqlIgnoreCase(obj.object.class_name, "Schema.SObjectTypeNamespace")) {
-                const sot = try self.arena.create(types.ObjectInstance);
-                sot.* = .{ .class_name = "Schema.SObjectType" };
-                try sot.fields.put(self.arena, "name", Value{ .string = fa.field });
-                return Value{ .object = sot };
-            }
-            if (std.ascii.eqlIgnoreCase(obj.object.class_name, "Schema.SObjectType") and
-                std.ascii.eqlIgnoreCase(fa.field, "fieldSets"))
-            {
-                if (obj.object.fields.get("fieldSets")) |field_sets| return field_sets;
-                const object_name = if (obj.object.fields.get("name")) |name_val|
-                    if (name_val == .string) name_val.string else "SObject"
-                else
-                    "SObject";
-                const field_sets = try builtins.create_field_set_collection_value(
-                    self.arena,
-                    self,
-                    object_name,
-                );
-                try obj.object.fields.put(self.arena, "fieldSets", field_sets);
-                return field_sets;
-            }
-            // Schema.SObjectType.<X>.fields — share builder with `getDescribe().fields` so
-            // `getMap()` and case-insensitive lookups see a populated FieldDescribeMap.
-            if (std.ascii.eqlIgnoreCase(obj.object.class_name, "Schema.SObjectType") and
-                std.ascii.eqlIgnoreCase(fa.field, "fields"))
-            {
-                if (obj.object.fields.get("fields")) |existing| return existing;
-                const object_name = if (obj.object.fields.get("name")) |name_val|
-                    if (name_val == .string) name_val.string else "SObject"
-                else
-                    "SObject";
-                var ctx = builtins.BuiltinContext{ .arena = self.arena, .stdout = &self.stdout, .pending_exception = &self.pending_exception, .see_all_data = self.see_all_data, .eval = self };
-                const fv = try builtins.create_field_describe_map_value(&ctx, object_name);
-                try obj.object.fields.put(self.arena, "fields", fv);
-                return fv;
-            }
-            // FieldDescribeMap.<fieldName> → SObjectField token for <fieldName> on the owner
-            // SObject.
-            if (std.ascii.eqlIgnoreCase(obj.object.class_name, "FieldDescribeMap")) {
-                if (std.ascii.eqlIgnoreCase(fa.field, "map")) {
-                    if (obj.object.fields.get("map")) |m| return m;
-                }
-                if (obj.object.fields.get("owner")) |owner_val| {
-                    if (owner_val == .string) {
-                        return try self.make_s_object_field_token(owner_val.string, fa.field);
-                    }
-                }
-            }
-            if ((std.ascii.eqlIgnoreCase(obj.object.class_name, "DescribeSObjectResult") or
-                std.ascii.eqlIgnoreCase(obj.object.class_name, "Schema.DescribeSObjectResult")) and
-                std.ascii.eqlIgnoreCase(fa.field, "fieldSets"))
-            {
-                if (obj.object.fields.get("fieldSets")) |field_sets| return field_sets;
-                const object_name = if (obj.object.fields.get("name")) |name_val|
-                    if (name_val == .string) name_val.string else "SObject"
-                else
-                    "SObject";
-                const field_sets = try builtins.create_field_set_collection_value(
-                    self.arena,
-                    self,
-                    object_name,
-                );
-                try obj.object.fields.put(self.arena, "fieldSets", field_sets);
-                return field_sets;
-            }
-            // Case-insensitive field lookup (no custom getter found)
-            for (obj.object.fields.keys(), obj.object.fields.values()) |k, v| {
-                if (std.ascii.eqlIgnoreCase(k, fa.field)) return v;
-            }
-            return Value.null_val;
+            check_cd = if (ccd2.super_class) |sc| self.find_class(sc.name) else null;
         }
-        if (obj == .string) {
-            if (fa.object.* == .field_access) {
-                const inner_fa = fa.object.field_access;
-                if (inner_fa.object.* == .identifier and
-                    std.ascii.eqlIgnoreCase(inner_fa.object.identifier.name, "Schema"))
-                {
-                    if (is_known_schema_enum_type(inner_fa.field)) {
-                        return Value{ .string = fa.field };
-                    }
-                    return try self.make_s_object_field_token(obj.string, fa.field);
+        return false;
+    }
+
+    /// Schema.SObjectTypeNamespace / Schema.SObjectType / FieldDescribeMap /
+    /// DescribeSObjectResult proxy field access. Returns null when the object
+    /// is not one of the recognised proxy classes.
+    fn fa_try_schema_proxy_access(
+        self: *Evaluator,
+        fa: *ast.FieldAccess,
+        inst: *types.ObjectInstance,
+    ) anyerror!?Value {
+        if (std.ascii.eqlIgnoreCase(inst.class_name, "Schema.SObjectTypeNamespace")) {
+            return try self.make_sobject_type_token(fa.field);
+        }
+        if (std.ascii.eqlIgnoreCase(inst.class_name, "Schema.SObjectType") and
+            std.ascii.eqlIgnoreCase(fa.field, "fieldSets"))
+        {
+            return try self.fa_build_field_set_collection(inst);
+        }
+        if (std.ascii.eqlIgnoreCase(inst.class_name, "Schema.SObjectType") and
+            std.ascii.eqlIgnoreCase(fa.field, "fields"))
+        {
+            if (inst.fields.get("fields")) |existing| return existing;
+            const object_name = fa_object_name_or_sobject(inst);
+            var ctx = builtins.BuiltinContext{
+                .arena = self.arena,
+                .stdout = &self.stdout,
+                .pending_exception = &self.pending_exception,
+                .see_all_data = self.see_all_data,
+                .eval = self,
+            };
+            const fv = try builtins.create_field_describe_map_value(&ctx, object_name);
+            try inst.fields.put(self.arena, "fields", fv);
+            return fv;
+        }
+        if (std.ascii.eqlIgnoreCase(inst.class_name, "FieldDescribeMap")) {
+            if (std.ascii.eqlIgnoreCase(fa.field, "map")) {
+                if (inst.fields.get("map")) |m| return m;
+            }
+            if (inst.fields.get("owner")) |owner_val| {
+                if (owner_val == .string) {
+                    return try self.make_s_object_field_token(owner_val.string, fa.field);
                 }
             }
-            if (fa.object.* == .identifier and
-                std.mem.startsWith(u8, fa.object.identifier.name, "Schema."))
+            return null;
+        }
+        if ((std.ascii.eqlIgnoreCase(inst.class_name, "DescribeSObjectResult") or
+            std.ascii.eqlIgnoreCase(inst.class_name, "Schema.DescribeSObjectResult")) and
+            std.ascii.eqlIgnoreCase(fa.field, "fieldSets"))
+        {
+            return try self.fa_build_field_set_collection(inst);
+        }
+        return null;
+    }
+
+    fn fa_build_field_set_collection(
+        self: *Evaluator,
+        inst: *types.ObjectInstance,
+    ) anyerror!Value {
+        if (inst.fields.get("fieldSets")) |field_sets| return field_sets;
+        const object_name = fa_object_name_or_sobject(inst);
+        const field_sets = try builtins.create_field_set_collection_value(
+            self.arena,
+            self,
+            object_name,
+        );
+        try inst.fields.put(self.arena, "fieldSets", field_sets);
+        return field_sets;
+    }
+
+    fn fa_object_name_or_sobject(inst: *types.ObjectInstance) []const u8 {
+        if (inst.fields.get("name")) |name_val| {
+            if (name_val == .string) return name_val.string;
+        }
+        return "SObject";
+    }
+
+    /// String field access: Schema enum/token handling, `.length`, and
+    /// enum-name-to-value lookup. Returns null when no rule matches (caller
+    /// continues with other dispatch branches).
+    fn fa_string_access(
+        self: *Evaluator,
+        fa: *ast.FieldAccess,
+        s: []const u8,
+    ) anyerror!?Value {
+        if (fa.object.* == .field_access) {
+            const inner_fa = fa.object.field_access;
+            if (inner_fa.object.* == .identifier and
+                std.ascii.eqlIgnoreCase(inner_fa.object.identifier.name, "Schema"))
             {
-                const schema_name = fa.object.identifier.name["Schema.".len..];
-                if (is_known_schema_enum_type(schema_name)) {
+                if (is_known_schema_enum_type(inner_fa.field)) {
                     return Value{ .string = fa.field };
                 }
-                if (std.ascii.eqlIgnoreCase(schema_name, "SObjectType")) {
-                    const sot = try self.arena.create(types.ObjectInstance);
-                    sot.* = .{ .class_name = "Schema.SObjectType" };
-                    try sot.fields.put(self.arena, "name", Value{ .string = fa.field });
-                    return Value{ .object = sot };
-                }
-                return try self.make_s_object_field_token(schema_name, fa.field);
+                return try self.make_s_object_field_token(s, fa.field);
             }
-            // String.length as property (shouldn't be needed but just in case)
-            if (std.ascii.eqlIgnoreCase(fa.field, "length"))
-                return Value{ .integer = @intCast(obj.string.len) };
-            // Enum value pattern: when obj is an enum name (from ClassName.EnumName),
-            // field access returns the enum value string (e.g., HttpVerb.GET → "GET")
-            var enum_iter = self.classes.iterator();
-            while (enum_iter.next()) |entry| {
-                for (entry.value_ptr.*.members) |member| {
-                    switch (member) {
-                        .enum_decl => |ed| {
-                            if (std.ascii.eqlIgnoreCase(ed.name, obj.string)) {
-                                return Value{ .string = fa.field };
-                            }
-                        },
-                        else => {},
-                    }
+        }
+        if (fa.object.* == .identifier and
+            std.mem.startsWith(u8, fa.object.identifier.name, "Schema."))
+        {
+            const schema_name = fa.object.identifier.name["Schema.".len..];
+            if (is_known_schema_enum_type(schema_name)) {
+                return Value{ .string = fa.field };
+            }
+            if (std.ascii.eqlIgnoreCase(schema_name, "SObjectType")) {
+                return try self.make_sobject_type_token(fa.field);
+            }
+            return try self.make_s_object_field_token(schema_name, fa.field);
+        }
+        if (std.ascii.eqlIgnoreCase(fa.field, "length")) {
+            return Value{ .integer = @intCast(s.len) };
+        }
+        // Enum value pattern: when obj is an enum name (from ClassName.EnumName),
+        // field access returns the enum value string (e.g., HttpVerb.GET → "GET").
+        var enum_iter = self.classes.iterator();
+        while (enum_iter.next()) |entry| {
+            for (entry.value_ptr.*.members) |member| {
+                switch (member) {
+                    .enum_decl => |ed| {
+                        if (std.ascii.eqlIgnoreCase(ed.name, s)) {
+                            return Value{ .string = fa.field };
+                        }
+                    },
+                    else => {},
                 }
             }
+        }
+        return null;
+    }
+
+    fn eval_field_access(
+        self: *Evaluator,
+        fa: *ast.FieldAccess,
+        obj: Value,
+        current_env: *Env,
+    ) !Value {
+        if (try self.fa_try_apexpages_schema_nested(fa)) |v| return v;
+        if (try self.fa_try_schema_prefix_identifier(fa)) |v| return v;
+        if (try self.fa_try_sobjecttype_shortcut(fa)) |v| return v;
+        if (try self.fa_try_system_search(fa)) |v| return v;
+        if (try self.fa_try_label_identifier(fa)) |v| return v;
+        if (obj == .list) return try self.fa_list_access(fa, obj.list);
+        if (obj == .sobject) return try self.fa_sobject_access(fa, obj.sobject);
+        if (obj == .object) return try self.fa_object_instance_access(fa, obj.object);
+        if (obj == .string) {
+            if (try self.fa_string_access(fa, obj.string)) |v| return v;
         }
 
         if (obj == .null_val and fa.object.* == .identifier) {
