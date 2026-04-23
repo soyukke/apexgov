@@ -12053,338 +12053,368 @@ pub const Evaluator = struct {
         if (try self.eval_date_like_instance_method(obj, method, args)) |v| return v;
         if (try self.eval_user_class_dispatch(obj, method, args, current_env)) |v| return v;
 
-        var bctx = builtins.BuiltinContext{ .arena = self.arena, .stdout = &self.stdout, .pending_exception = &self.pending_exception, .see_all_data = self.see_all_data, .eval = self };
+        var bctx = builtins.BuiltinContext{
+            .arena = self.arena,
+            .stdout = &self.stdout,
+            .pending_exception = &self.pending_exception,
+            .see_all_data = self.see_all_data,
+            .eval = self,
+        };
         if (try builtins.dispatch_instance(&bctx, obj, method, args)) |result| {
             return result;
         }
 
-        // SObject field access methods
         if (obj == .sobject) {
-            // getSObjects(relationship)
-            if (std.ascii.eqlIgnoreCase(method, "getSObjects") and
-                args.len > 0 and
-                args[0] == .string)
-            {
-                if (utils.sobject_get(&obj.sobject.fields, args[0].string)) |raw| {
-                    if (self.relationship_records_value(raw)) |records| return records;
-                    return raw;
-                }
-                return try self.make_empty_list();
-            }
-            // get(fieldName) - case-insensitive
-            if (std.ascii.eqlIgnoreCase(method, "get") and args.len > 0) {
-                const field_name: []const u8 = if (args[0] == .string)
-                    args[0].string
-                else if (args[0] == .object) blk: {
-                    if (args[0].object.fields.get("fieldName")) |n| {
-                        if (n == .string) break :blk n.string;
-                    }
-                    if (args[0].object.fields.get("name")) |n| {
-                        if (n == .string) break :blk n.string;
-                    }
-                    break :blk try utils.coerce_to_string(args[0], self.arena);
-                } else try utils.coerce_to_string(args[0], self.arena);
-                if (self.get_s_object_field_value_case_insensitive(
-                    obj.sobject,
-                    field_name,
-                )) |value| return value;
-
-                var get_bctx = builtins.BuiltinContext{
-                    .arena = self.arena,
-                    .stdout = &self.stdout,
-                    .pending_exception = &self.pending_exception,
-                    .see_all_data = self.see_all_data,
-                    .eval = self,
-                };
-                if (builtins.sobject_field_exists(&get_bctx, obj.sobject, field_name))
-                    return Value.null_val;
-
-                const exc = try self.arena.create(types.ObjectInstance);
-                exc.* = .{ .class_name = "System.SObjectException" };
-                try exc.fields.put(self.arena, "message", Value{ .string = try std.fmt.allocPrint(self.arena, "Invalid field {s} for {s}", .{ field_name, obj.sobject.type_name }) });
-                self.pending_exception = Value{ .object = exc };
-                return error.ApexException;
-            }
-            // getSObject(fieldName) - resolve loaded parent records or follow FK to the store
-            if (std.ascii.eqlIgnoreCase(method, "getSObject") and args.len > 0) {
-                const raw_name: []const u8 = if (args[0] == .string)
-                    args[0].string
-                else if (args[0] == .object) blk: {
-                    if (args[0].object.fields.get("fieldName")) |n| {
-                        if (n == .string) break :blk n.string;
-                    }
-                    if (args[0].object.fields.get("name")) |n| {
-                        if (n == .string) break :blk n.string;
-                    }
-                    break :blk try utils.coerce_to_string(args[0], self.arena);
-                } else try utils.coerce_to_string(args[0], self.arena);
-
-                if (self.get_s_object_field_value_case_insensitive(
-                    obj.sobject,
-                    raw_name,
-                )) |loaded| {
-                    if (loaded == .sobject) return loaded;
-                }
-
-                const relationship_name = if (std.mem.endsWith(
-                    u8,
-                    raw_name,
-                    "__c",
-                ) or std.mem.endsWith(u8, raw_name, "Id"))
-                    self.fk_to_parent_ref(raw_name)
-                else
-                    raw_name;
-                if (!std.ascii.eqlIgnoreCase(relationship_name, raw_name)) {
-                    if (self.get_s_object_field_value_case_insensitive(
-                        obj.sobject,
-                        relationship_name,
-                    )) |loaded| {
-                        if (loaded == .sobject) return loaded;
-                    }
-                }
-
-                const fk_field = if (std.mem.endsWith(
-                    u8,
-                    raw_name,
-                    "__c",
-                ) or std.mem.endsWith(u8, raw_name, "Id"))
-                    raw_name
-                else
-                    self.parent_ref_to_fk(raw_name);
-                const fk_value = self.get_s_object_field_value_case_insensitive(
-                    obj.sobject,
-                    fk_field,
-                ) orelse return Value.null_val;
-                if (fk_value != .string) return Value.null_val;
-
-                const target_type = blk: {
-                    if (self.get_field_metadata(obj.sobject.type_name, fk_field)) |meta| {
-                        if (meta.reference_to) |reference_to| break :blk reference_to;
-                    }
-                    if (self.find_record_type_by_id(fk_value.string)) |record_type| break :blk record_type;
-                    if (fk_value.string.len >= 3) {
-                        const inferred = sobject_type_from_prefix(fk_value.string[0..3]);
-                        if (!std.ascii.eqlIgnoreCase(inferred, "SObject")) break :blk inferred;
-                    }
-                    break :blk null;
-                } orelse return Value.null_val;
-
-                if (self.find_record_by_id(target_type, fk_value.string)) |record| {
-                    if (record == .sobject) return record;
-                }
-
-                const related = try self.arena.create(types.SObject);
-                related.* = .{ .type_name = target_type };
-                related.id = fk_value.string;
-                try related.fields.put(self.arena, "Id", fk_value);
-                return Value{ .sobject = related };
-            }
-            // put(fieldName, value)
-            if (std.ascii.eqlIgnoreCase(method, "put") and args.len >= 2) {
-                // put(String fieldName, value) or put(SObjectField, value)
-                const field_name: []const u8 = if (args[0] == .string)
-                    args[0].string
-                else if (args[0] == .object) blk: {
-                    // SObjectField token — extract field name from "name" or "fieldName" field
-                    if (args[0].object.fields.get("name")) |n| {
-                        if (n == .string) break :blk n.string;
-                    }
-                    if (args[0].object.fields.get("fieldName")) |n| {
-                        if (n == .string) break :blk n.string;
-                    }
-                    break :blk try utils.coerce_to_string(args[0], self.arena);
-                } else try utils.coerce_to_string(args[0], self.arena);
-                var put_bctx = builtins.BuiltinContext{ .arena = self.arena, .stdout = &self.stdout, .pending_exception = &self.pending_exception, .see_all_data = self.see_all_data, .eval = self };
-                const normalized = try builtins.normalize_s_object_field_assignment(
-                    &put_bctx,
-                    obj.sobject,
-                    field_name,
-                    args[1],
-                );
-                try utils.sobject_put(&obj.sobject.fields, self.arena, field_name, normalized);
-                // Sync Id field
-                if (std.ascii.eqlIgnoreCase(field_name, "Id") and normalized == .string) {
-                    obj.sobject.id = normalized.string;
-                }
-                return normalized;
-            }
-            // clone()
-            if (std.ascii.eqlIgnoreCase(method, "clone") or
-                std.ascii.eqlIgnoreCase(method, "deepClone"))
-            {
-                const clone = try self.arena.create(types.SObject);
-                clone.* = .{ .type_name = obj.sobject.type_name, .is_clone = true };
-                // Clone preserves Id unless first arg is false
-                const preserve_id =
-                    if (args.len >= 1 and args[0] == .boolean) args[0].boolean else true;
-                if (preserve_id and obj.sobject.id != null) {
-                    clone.id = obj.sobject.id;
-                }
-                for (obj.sobject.fields.keys(), obj.sobject.fields.values()) |k, v| {
-                    if (!preserve_id and std.ascii.eqlIgnoreCase(k, "Id")) continue;
-                    try clone.fields.put(self.arena, k, v);
-                }
-                return Value{ .sobject = clone };
-            }
-            // isClone()
-            if (std.ascii.eqlIgnoreCase(method, "isClone")) {
-                return Value{ .boolean = obj.sobject.is_clone };
-            }
-            // getSObjectType()
-            if (std.ascii.eqlIgnoreCase(method, "getSObjectType")) {
-                const sot = try self.arena.create(types.ObjectInstance);
-                sot.* = .{ .class_name = "Schema.SObjectType" };
-                try sot.fields.put(self.arena, "name", Value{ .string = obj.sobject.type_name });
-                return Value{ .object = sot };
-            }
-            // Database result methods on SObject (SaveResult, UpsertResult, etc.)
-            if (std.ascii.eqlIgnoreCase(method, "isSuccess")) {
-                return utils.sobject_get(&obj.sobject.fields, "success") orelse
-                    utils.sobject_get(
-                        &obj.sobject.fields,
-                        "isSuccess",
-                    ) orelse Value{ .boolean = true };
-            }
-            if (std.ascii.eqlIgnoreCase(method, "isCreated")) {
-                return utils.sobject_get(&obj.sobject.fields, "created") orelse
-                    utils.sobject_get(
-                        &obj.sobject.fields,
-                        "isCreated",
-                    ) orelse Value{ .boolean = false };
-            }
-            if (std.ascii.eqlIgnoreCase(method, "getErrors")) {
-                return utils.sobject_get(
-                    &obj.sobject.fields,
-                    "errors",
-                ) orelse try self.make_empty_list();
-            }
-            if (std.ascii.eqlIgnoreCase(method, "hasErrors")) {
-                if (utils.sobject_get(&obj.sobject.fields, "errors")) |errs_val| {
-                    if (errs_val == .list)
-                        return Value{ .boolean = errs_val.list.items.items.len > 0 };
-                }
-                return Value{ .boolean = false };
-            }
-            if (std.ascii.eqlIgnoreCase(method, "getId")) {
-                return utils.sobject_get(&obj.sobject.fields, "Id") orelse
-                    utils.sobject_get(&obj.sobject.fields, "id") orelse Value.null_val;
-            }
-            if (std.ascii.eqlIgnoreCase(method, "getMessage")) {
-                return self.get_s_object_field_value_case_insensitive(
-                    obj.sobject,
-                    "message",
-                ) orelse Value{ .string = "" };
-            }
-            if (std.ascii.eqlIgnoreCase(method, "getStatusCode")) {
-                return self.get_s_object_field_value_case_insensitive(
-                    obj.sobject,
-                    "statusCode",
-                ) orelse Value.null_val;
-            }
-            if (std.ascii.eqlIgnoreCase(method, "get_fields")) {
-                return self.get_s_object_field_value_case_insensitive(
-                    obj.sobject,
-                    "fields",
-                ) orelse try self.make_empty_list();
-            }
-            // getPopulatedFieldsAsMap()
-            if (std.ascii.eqlIgnoreCase(method, "getPopulatedFieldsAsMap")) {
-                const map = try self.arena.create(types.MapValue);
-                map.* = .{};
-                for (obj.sobject.fields.keys(), obj.sobject.fields.values()) |k, v| {
-                    if (v == .null_val) continue;
-                    // Synthetic bookkeeping keys stored by addError/attachments/etc. are
-                    // not real fields and should not appear in getPopulatedFieldsAsMap.
-                    if (std.ascii.eqlIgnoreCase(k, "errors")) continue;
-                    try map.entries.put(self.arena, k, v);
-                }
-                return Value{ .map = map };
-            }
-            // sobject.addError(msg) or addError(field, msg) — per Apex semantics this
-            // attaches an Error to the record's getErrors() list rather than throwing;
-            // only the enclosing DML (insert/update) converts the attached errors into
-            // a DmlException at commit time.
-            if (std.ascii.eqlIgnoreCase(method, "addError") and args.len > 0) {
-                const msg_val = if (args.len >= 2) args[1] else args[0];
-                const field_val: ?Value = if (args.len >= 2) args[0] else null;
-                const err_obj = try self.arena.create(types.ObjectInstance);
-                err_obj.* = .{ .class_name = "Database.Error" };
-                try err_obj.fields.put(self.arena, "message", msg_val);
-                try err_obj.fields.put(
-                    self.arena,
-                    "statusCode",
-                    Value{ .string = "FIELD_CUSTOM_VALIDATION_EXCEPTION" },
-                );
-                const fields_list = try self.arena.create(types.ListValue);
-                fields_list.* = .{};
-                if (field_val) |fv| {
-                    const field_name: []const u8 = switch (fv) {
-                        .string => |s| s,
-                        .object => |ob| blk: {
-                            if (ob.fields.get("fieldName")) |fn_val| if (fn_val == .string) break :blk fn_val.string;
-                            if (ob.fields.get("name")) |n_val| if (n_val == .string) break :blk n_val.string;
-                            break :blk "";
-                        },
-                        else => "",
-                    };
-                    try fields_list.items.append(self.arena, Value{ .string = field_name });
-                    try err_obj.fields.put(self.arena, "field", Value{ .string = field_name });
-                }
-                try err_obj.fields.put(self.arena, "fields", Value{ .list = fields_list });
-
-                var errors_list = if (utils.sobject_get(&obj.sobject.fields, "errors")) |existing|
-                    if (existing == .list) existing.list else blk: {
-                        const lst = try self.arena.create(types.ListValue);
-                        lst.* = .{};
-                        break :blk lst;
-                    }
-                else blk: {
-                    const lst = try self.arena.create(types.ListValue);
-                    lst.* = .{};
-                    break :blk lst;
-                };
-                try errors_list.items.append(self.arena, Value{ .object = err_obj });
-                try utils.sobject_put(
-                    &obj.sobject.fields,
-                    self.arena,
-                    "errors",
-                    Value{ .list = errors_list },
-                );
-                return Value.void_val;
-            }
+            if (try self.eval_sobject_instance_method(obj.sobject, method, args)) |v| return v;
         }
+        if (obj == .list) return self.eval_list_method(obj.list, method, args);
+        if (obj == .map) return self.eval_map_method(obj.map, method, args);
+        if (obj == .set) return self.eval_set_method(obj.set, method, args);
+        if (obj == .string) return self.eval_string_method(obj.string, method, args);
 
-        // List methods
-        if (obj == .list) {
-            return self.eval_list_method(obj.list, method, args);
-        }
-
-        // Map methods
-        if (obj == .map) {
-            return self.eval_map_method(obj.map, method, args);
-        }
-
-        // Set methods
-        if (obj == .set) {
-            return self.eval_set_method(obj.set, method, args);
-        }
-
-        // String methods
-        if (obj == .string) {
-            return self.eval_string_method(obj.string, method, args);
-        }
-
-        // ObjectInstance methods (user-defined class)
+        // ObjectInstance methods (user-defined class) — last resort fallback:
+        // when class_name resolves to a loaded class, dispatch with `this` bound.
+        // (Inner class pattern "OuterClass.InnerClass" is handled above.)
         if (obj == .object) {
-            // Try to call method on the class with `this` bound
             if (self.find_class(obj.object.class_name)) |class_decl| {
                 return self.call_instance_method(class_decl, obj.object, method, args);
             }
-            // If class not found by instance class_name, check if there's a parent class
-            // (inner class pattern: "OuterClass.InnerClass")
         }
 
         return Value.null_val;
+    }
+
+    /// Dispatcher for SObject instance methods (getSObjects, get, getSObject,
+    /// put, clone/deepClone, isClone, getSObjectType, Database result accessors,
+    /// getPopulatedFieldsAsMap, addError). Returns null when the method name
+    /// does not match any SObject builtin.
+    fn eval_sobject_instance_method(
+        self: *Evaluator,
+        sobj: *types.SObject,
+        method: []const u8,
+        args: []const Value,
+    ) anyerror!?Value {
+        if (std.ascii.eqlIgnoreCase(method, "getSObjects") and
+            args.len > 0 and args[0] == .string)
+        {
+            if (utils.sobject_get(&sobj.fields, args[0].string)) |raw| {
+                if (self.relationship_records_value(raw)) |records| return records;
+                return raw;
+            }
+            return try self.make_empty_list();
+        }
+        if (std.ascii.eqlIgnoreCase(method, "get") and args.len > 0) {
+            return try self.eval_sobject_get_method(sobj, args);
+        }
+        if (std.ascii.eqlIgnoreCase(method, "getSObject") and args.len > 0) {
+            return try self.eval_sobject_get_sobject_method(sobj, args);
+        }
+        if (std.ascii.eqlIgnoreCase(method, "put") and args.len >= 2) {
+            return try self.eval_sobject_put_method(sobj, args);
+        }
+        if (std.ascii.eqlIgnoreCase(method, "clone") or
+            std.ascii.eqlIgnoreCase(method, "deepClone"))
+        {
+            return try self.eval_sobject_clone_method(sobj, args);
+        }
+        if (std.ascii.eqlIgnoreCase(method, "isClone")) {
+            return Value{ .boolean = sobj.is_clone };
+        }
+        if (std.ascii.eqlIgnoreCase(method, "getSObjectType")) {
+            const sot = try self.arena.create(types.ObjectInstance);
+            sot.* = .{ .class_name = "Schema.SObjectType" };
+            try sot.fields.put(self.arena, "name", Value{ .string = sobj.type_name });
+            return Value{ .object = sot };
+        }
+        if (try self.eval_sobject_database_result_method(sobj, method)) |v| return v;
+        if (std.ascii.eqlIgnoreCase(method, "getPopulatedFieldsAsMap")) {
+            return try self.eval_sobject_populated_fields_as_map(sobj);
+        }
+        if (std.ascii.eqlIgnoreCase(method, "addError") and args.len > 0) {
+            try self.eval_sobject_add_error(sobj, args);
+            return Value.void_val;
+        }
+        return null;
+    }
+
+    /// Database result accessors exposed on SObject values (SaveResult,
+    /// UpsertResult, etc.). Returns null when the method is unrelated.
+    fn eval_sobject_database_result_method(
+        self: *Evaluator,
+        sobj: *types.SObject,
+        method: []const u8,
+    ) anyerror!?Value {
+        if (std.ascii.eqlIgnoreCase(method, "isSuccess")) {
+            return utils.sobject_get(&sobj.fields, "success") orelse
+                utils.sobject_get(&sobj.fields, "isSuccess") orelse
+                Value{ .boolean = true };
+        }
+        if (std.ascii.eqlIgnoreCase(method, "isCreated")) {
+            return utils.sobject_get(&sobj.fields, "created") orelse
+                utils.sobject_get(&sobj.fields, "isCreated") orelse
+                Value{ .boolean = false };
+        }
+        if (std.ascii.eqlIgnoreCase(method, "getErrors")) {
+            return utils.sobject_get(&sobj.fields, "errors") orelse
+                try self.make_empty_list();
+        }
+        if (std.ascii.eqlIgnoreCase(method, "hasErrors")) {
+            if (utils.sobject_get(&sobj.fields, "errors")) |errs_val| {
+                if (errs_val == .list) {
+                    return Value{ .boolean = errs_val.list.items.items.len > 0 };
+                }
+            }
+            return Value{ .boolean = false };
+        }
+        if (std.ascii.eqlIgnoreCase(method, "getId")) {
+            return utils.sobject_get(&sobj.fields, "Id") orelse
+                utils.sobject_get(&sobj.fields, "id") orelse Value.null_val;
+        }
+        if (std.ascii.eqlIgnoreCase(method, "getMessage")) {
+            return self.get_s_object_field_value_case_insensitive(sobj, "message") orelse
+                Value{ .string = "" };
+        }
+        if (std.ascii.eqlIgnoreCase(method, "getStatusCode")) {
+            return self.get_s_object_field_value_case_insensitive(sobj, "statusCode") orelse
+                Value.null_val;
+        }
+        if (std.ascii.eqlIgnoreCase(method, "get_fields")) {
+            return self.get_s_object_field_value_case_insensitive(sobj, "fields") orelse
+                try self.make_empty_list();
+        }
+        return null;
+    }
+
+    /// Resolve an SObjectField-like argument down to its underlying field name,
+    /// falling back to coerce_to_string.
+    fn sobject_field_name_from_arg(self: *Evaluator, arg: Value) anyerror![]const u8 {
+        return switch (arg) {
+            .string => |s| s,
+            .object => |ob| blk: {
+                if (ob.fields.get("fieldName")) |n| {
+                    if (n == .string) break :blk n.string;
+                }
+                if (ob.fields.get("name")) |n| {
+                    if (n == .string) break :blk n.string;
+                }
+                break :blk try utils.coerce_to_string(arg, self.arena);
+            },
+            else => try utils.coerce_to_string(arg, self.arena),
+        };
+    }
+
+    fn eval_sobject_get_method(
+        self: *Evaluator,
+        sobj: *types.SObject,
+        args: []const Value,
+    ) anyerror!Value {
+        const field_name = try self.sobject_field_name_from_arg(args[0]);
+        if (self.get_s_object_field_value_case_insensitive(sobj, field_name)) |value| {
+            return value;
+        }
+        var get_bctx = builtins.BuiltinContext{
+            .arena = self.arena,
+            .stdout = &self.stdout,
+            .pending_exception = &self.pending_exception,
+            .see_all_data = self.see_all_data,
+            .eval = self,
+        };
+        if (builtins.sobject_field_exists(&get_bctx, sobj, field_name)) return Value.null_val;
+        const exc = try self.arena.create(types.ObjectInstance);
+        exc.* = .{ .class_name = "System.SObjectException" };
+        try exc.fields.put(self.arena, "message", Value{ .string = try std.fmt.allocPrint(
+            self.arena,
+            "Invalid field {s} for {s}",
+            .{ field_name, sobj.type_name },
+        ) });
+        self.pending_exception = Value{ .object = exc };
+        return error.ApexException;
+    }
+
+    fn eval_sobject_get_sobject_method(
+        self: *Evaluator,
+        sobj: *types.SObject,
+        args: []const Value,
+    ) anyerror!Value {
+        const raw_name = try self.sobject_field_name_from_arg(args[0]);
+        if (self.get_s_object_field_value_case_insensitive(sobj, raw_name)) |loaded| {
+            if (loaded == .sobject) return loaded;
+        }
+
+        const relationship_name = if (std.mem.endsWith(u8, raw_name, "__c") or
+            std.mem.endsWith(u8, raw_name, "Id"))
+            self.fk_to_parent_ref(raw_name)
+        else
+            raw_name;
+        if (!std.ascii.eqlIgnoreCase(relationship_name, raw_name)) {
+            if (self.get_s_object_field_value_case_insensitive(sobj, relationship_name)) |loaded| {
+                if (loaded == .sobject) return loaded;
+            }
+        }
+
+        const fk_field = if (std.mem.endsWith(u8, raw_name, "__c") or
+            std.mem.endsWith(u8, raw_name, "Id"))
+            raw_name
+        else
+            self.parent_ref_to_fk(raw_name);
+        const fk_value = self.get_s_object_field_value_case_insensitive(sobj, fk_field) orelse
+            return Value.null_val;
+        if (fk_value != .string) return Value.null_val;
+
+        const target_type = blk: {
+            if (self.get_field_metadata(sobj.type_name, fk_field)) |meta| {
+                if (meta.reference_to) |reference_to| break :blk reference_to;
+            }
+            if (self.find_record_type_by_id(fk_value.string)) |record_type| break :blk record_type;
+            if (fk_value.string.len >= 3) {
+                const inferred = sobject_type_from_prefix(fk_value.string[0..3]);
+                if (!std.ascii.eqlIgnoreCase(inferred, "SObject")) break :blk inferred;
+            }
+            break :blk null;
+        } orelse return Value.null_val;
+
+        if (self.find_record_by_id(target_type, fk_value.string)) |record| {
+            if (record == .sobject) return record;
+        }
+
+        const related = try self.arena.create(types.SObject);
+        related.* = .{ .type_name = target_type };
+        related.id = fk_value.string;
+        try related.fields.put(self.arena, "Id", fk_value);
+        return Value{ .sobject = related };
+    }
+
+    fn eval_sobject_put_method(
+        self: *Evaluator,
+        sobj: *types.SObject,
+        args: []const Value,
+    ) anyerror!Value {
+        // put(String fieldName, value) or put(SObjectField, value). The token
+        // form exposes "name" first (unlike `get`/`getSObject` which prefer
+        // "fieldName"), matching Apex semantics for Schema.SObjectField tokens.
+        const field_name: []const u8 = if (args[0] == .string)
+            args[0].string
+        else if (args[0] == .object) blk: {
+            if (args[0].object.fields.get("name")) |n| {
+                if (n == .string) break :blk n.string;
+            }
+            if (args[0].object.fields.get("fieldName")) |n| {
+                if (n == .string) break :blk n.string;
+            }
+            break :blk try utils.coerce_to_string(args[0], self.arena);
+        } else try utils.coerce_to_string(args[0], self.arena);
+
+        var put_bctx = builtins.BuiltinContext{
+            .arena = self.arena,
+            .stdout = &self.stdout,
+            .pending_exception = &self.pending_exception,
+            .see_all_data = self.see_all_data,
+            .eval = self,
+        };
+        const normalized = try builtins.normalize_s_object_field_assignment(
+            &put_bctx,
+            sobj,
+            field_name,
+            args[1],
+        );
+        try utils.sobject_put(&sobj.fields, self.arena, field_name, normalized);
+        if (std.ascii.eqlIgnoreCase(field_name, "Id") and normalized == .string) {
+            sobj.id = normalized.string;
+        }
+        return normalized;
+    }
+
+    fn eval_sobject_clone_method(
+        self: *Evaluator,
+        sobj: *types.SObject,
+        args: []const Value,
+    ) anyerror!Value {
+        const clone = try self.arena.create(types.SObject);
+        clone.* = .{ .type_name = sobj.type_name, .is_clone = true };
+        const preserve_id =
+            if (args.len >= 1 and args[0] == .boolean) args[0].boolean else true;
+        if (preserve_id and sobj.id != null) clone.id = sobj.id;
+        for (sobj.fields.keys(), sobj.fields.values()) |k, v| {
+            if (!preserve_id and std.ascii.eqlIgnoreCase(k, "Id")) continue;
+            try clone.fields.put(self.arena, k, v);
+        }
+        return Value{ .sobject = clone };
+    }
+
+    fn eval_sobject_populated_fields_as_map(
+        self: *Evaluator,
+        sobj: *types.SObject,
+    ) anyerror!Value {
+        const map = try self.arena.create(types.MapValue);
+        map.* = .{};
+        for (sobj.fields.keys(), sobj.fields.values()) |k, v| {
+            if (v == .null_val) continue;
+            // Synthetic bookkeeping keys stored by addError/attachments/etc. are
+            // not real fields and should not appear in getPopulatedFieldsAsMap.
+            if (std.ascii.eqlIgnoreCase(k, "errors")) continue;
+            try map.entries.put(self.arena, k, v);
+        }
+        return Value{ .map = map };
+    }
+
+    /// sobject.addError(msg) or addError(field, msg) — per Apex semantics this
+    /// attaches an Error to the record's getErrors() list rather than throwing;
+    /// only the enclosing DML (insert/update) converts the attached errors into
+    /// a DmlException at commit time.
+    fn eval_sobject_add_error(
+        self: *Evaluator,
+        sobj: *types.SObject,
+        args: []const Value,
+    ) anyerror!void {
+        const msg_val = if (args.len >= 2) args[1] else args[0];
+        const field_val: ?Value = if (args.len >= 2) args[0] else null;
+        const err_obj = try self.arena.create(types.ObjectInstance);
+        err_obj.* = .{ .class_name = "Database.Error" };
+        try err_obj.fields.put(self.arena, "message", msg_val);
+        try err_obj.fields.put(
+            self.arena,
+            "statusCode",
+            Value{ .string = "FIELD_CUSTOM_VALIDATION_EXCEPTION" },
+        );
+        const fields_list = try self.arena.create(types.ListValue);
+        fields_list.* = .{};
+        if (field_val) |fv| {
+            const field_name: []const u8 = switch (fv) {
+                .string => |s| s,
+                .object => |ob| blk: {
+                    if (ob.fields.get("fieldName")) |fn_val| {
+                        if (fn_val == .string) break :blk fn_val.string;
+                    }
+                    if (ob.fields.get("name")) |n_val| {
+                        if (n_val == .string) break :blk n_val.string;
+                    }
+                    break :blk "";
+                },
+                else => "",
+            };
+            try fields_list.items.append(self.arena, Value{ .string = field_name });
+            try err_obj.fields.put(self.arena, "field", Value{ .string = field_name });
+        }
+        try err_obj.fields.put(self.arena, "fields", Value{ .list = fields_list });
+
+        var errors_list = if (utils.sobject_get(&sobj.fields, "errors")) |existing|
+            if (existing == .list) existing.list else blk: {
+                const lst = try self.arena.create(types.ListValue);
+                lst.* = .{};
+                break :blk lst;
+            }
+        else blk: {
+            const lst = try self.arena.create(types.ListValue);
+            lst.* = .{};
+            break :blk lst;
+        };
+        try errors_list.items.append(self.arena, Value{ .object = err_obj });
+        try utils.sobject_put(
+            &sobj.fields,
+            self.arena,
+            "errors",
+            Value{ .list = errors_list },
+        );
     }
 
     fn eval_list_method(
