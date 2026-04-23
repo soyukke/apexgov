@@ -5663,142 +5663,189 @@ fn dispatch_obj_schema_describe_field(
     obj: *types.ObjectInstance,
     method_name: []const u8,
 ) !?Value {
-    const object_type = if (obj.fields.get("objectType")) |ov|
-        if (ov == .string) ov.string else null
-    else
-        null;
-    const field_name = if (obj.fields.get("fieldName")) |fv|
-        if (fv == .string) fv.string else if (obj.fields.get("name")) |nv| if (nv == .string) nv.string else "" else ""
-    else if (obj.fields.get("name")) |nv|
-        if (nv == .string) nv.string else ""
-    else
-        "";
-    if (std.ascii.eqlIgnoreCase(method_name, "getDescribe")) {
+    const object_type = describe_field_object_type(obj);
+    const field_name = describe_field_name(obj);
+    if (try dispatch_sdf_describe_and_picklist(ctx, obj, method_name, object_type, field_name)) |v|
+        return v;
+    if (try dispatch_sdf_permission_methods(ctx, method_name, object_type, field_name)) |v|
+        return v;
+    if (try dispatch_sdf_flag_methods(obj, method_name, object_type, field_name)) |v| return v;
+    if (try dispatch_sdf_name_and_label_methods(obj, method_name)) |v| return v;
+    if (try dispatch_sdf_default_value(obj, method_name, object_type, field_name)) |v|
+        return v;
+    return null;
+}
+
+fn dispatch_sdf_describe_and_picklist(
+    ctx: *BuiltinContext,
+    obj: *types.ObjectInstance,
+    method_name: []const u8,
+    object_type: ?[]const u8,
+    field_name: []const u8,
+) !?Value {
+    const ci = std.ascii;
+    if (ci.eqlIgnoreCase(method_name, "getDescribe")) {
         if (object_type != null and field_name.len > 0) {
-            return try create_field_describe_result_with_type(ctx, object_type.?, field_name, null);
+            return try create_field_describe_result_with_type(
+                ctx,
+                object_type.?,
+                field_name,
+                null,
+            );
         }
         return Value{ .object = obj };
     }
-    if (std.ascii.eqlIgnoreCase(method_name, "getPicklistValues")) {
-        const list = try ctx.arena.create(types.ListValue);
-        list.* = .{};
-        if (object_type != null and field_name.len > 0) {
-            if (lookup_field_metadata(ctx, object_type.?, field_name)) |metadata| {
-                for (metadata.picklist_values) |picklist_value| {
-                    try append_picklist_entry(
-                        ctx,
-                        list,
-                        picklist_value.label,
-                        picklist_value.value,
-                    );
-                }
-            }
-            if (list.items.items.len == 0) {
-                _ = try load_picklist_from_metadata(ctx, list, object_type.?, field_name);
-            }
-            try append_picklist_values_from_store(ctx, list, object_type.?, field_name);
-        }
-        // Ensure at least one entry so that get(0) doesn't fail
-        if (list.items.items.len == 0) {
-            try append_picklist_entry(ctx, list, "Default", "Default");
-        }
-        return Value{ .list = list };
+    if (ci.eqlIgnoreCase(method_name, "getPicklistValues")) {
+        return try build_schema_field_picklist_values(ctx, object_type, field_name);
     }
-    if (std.ascii.eqlIgnoreCase(method_name, "isAccessible") or
-        std.ascii.eqlIgnoreCase(method_name, "isFilterable"))
+    return null;
+}
+
+fn build_schema_field_picklist_values(
+    ctx: *BuiltinContext,
+    object_type: ?[]const u8,
+    field_name: []const u8,
+) !Value {
+    const list = try ctx.arena.create(types.ListValue);
+    list.* = .{};
+    if (object_type != null and field_name.len > 0) {
+        if (lookup_field_metadata(ctx, object_type.?, field_name)) |metadata| {
+            for (metadata.picklist_values) |picklist_value| {
+                try append_picklist_entry(ctx, list, picklist_value.label, picklist_value.value);
+            }
+        }
+        if (list.items.items.len == 0) {
+            _ = try load_picklist_from_metadata(ctx, list, object_type.?, field_name);
+        }
+        try append_picklist_values_from_store(ctx, list, object_type.?, field_name);
+    }
+    // Ensure at least one entry so that get(0) doesn't fail
+    if (list.items.items.len == 0) {
+        try append_picklist_entry(ctx, list, "Default", "Default");
+    }
+    return Value{ .list = list };
+}
+
+fn dispatch_sdf_permission_methods(
+    ctx: *BuiltinContext,
+    method_name: []const u8,
+    object_type: ?[]const u8,
+    field_name: []const u8,
+) !?Value {
+    const ci = std.ascii;
+    if (ci.eqlIgnoreCase(method_name, "isAccessible") or
+        ci.eqlIgnoreCase(method_name, "isFilterable"))
     {
         return Value{ .boolean = resolve_field_read_permission(ctx.eval, object_type, field_name) };
     }
-    if (std.ascii.eqlIgnoreCase(method_name, "isUpdateable")) {
-        return Value{ .boolean = resolve_field_write_permission(
-            ctx.eval,
-            object_type,
-            field_name,
-            "edit",
-        ) };
+    if (ci.eqlIgnoreCase(method_name, "isUpdateable")) {
+        return Value{
+            .boolean = resolve_field_write_permission(ctx.eval, object_type, field_name, "edit"),
+        };
     }
-    if (std.ascii.eqlIgnoreCase(method_name, "isCreateable")) {
-        return Value{ .boolean = resolve_field_write_permission(
-            ctx.eval,
-            object_type,
-            field_name,
-            "create",
-        ) };
+    if (ci.eqlIgnoreCase(method_name, "isCreateable")) {
+        return Value{
+            .boolean = resolve_field_write_permission(ctx.eval, object_type, field_name, "create"),
+        };
     }
-    if (std.ascii.eqlIgnoreCase(method_name, "isAutoNumber")) return Value{ .boolean = false };
-    if (std.ascii.eqlIgnoreCase(method_name, "isNillable"))
+    return null;
+}
+
+fn dispatch_sdf_flag_methods(
+    obj: *types.ObjectInstance,
+    method_name: []const u8,
+    object_type: ?[]const u8,
+    field_name: []const u8,
+) !?Value {
+    const ci = std.ascii;
+    if (ci.eqlIgnoreCase(method_name, "isAutoNumber")) return Value{ .boolean = false };
+    if (ci.eqlIgnoreCase(method_name, "isNillable"))
         return obj.fields.get("isNillable") orelse Value{ .boolean = true };
-    if (std.ascii.eqlIgnoreCase(method_name, "isCalculated")) return Value{ .boolean = false };
-    if (std.ascii.eqlIgnoreCase(method_name, "isNameField")) {
-        if (std.ascii.eqlIgnoreCase(field_name, "Name")) return Value{ .boolean = true };
-        if (object_type) |obj_name| {
-            if (std.ascii.eqlIgnoreCase(obj_name, "Case") and
-                std.ascii.eqlIgnoreCase(field_name, "CaseNumber"))
-            {
-                return Value{ .boolean = true };
-            }
-            if (std.ascii.eqlIgnoreCase(obj_name, "Contract") and
-                std.ascii.eqlIgnoreCase(field_name, "ContractNumber"))
-            {
-                return Value{ .boolean = true };
-            }
-            if (std.ascii.eqlIgnoreCase(obj_name, "Order") and
-                std.ascii.eqlIgnoreCase(field_name, "OrderNumber"))
-            {
-                return Value{ .boolean = true };
-            }
-        }
-        return Value{ .boolean = false };
-    }
-    if (std.ascii.eqlIgnoreCase(method_name, "isCustom")) {
-        const fn_val = obj.fields.get(
-            "fieldName",
-        ) orelse obj.fields.get("name") orelse Value{ .string = "" };
+    if (ci.eqlIgnoreCase(method_name, "isCalculated")) return Value{ .boolean = false };
+    if (ci.eqlIgnoreCase(method_name, "isNameField"))
+        return Value{ .boolean = schema_field_is_name_field(object_type, field_name) };
+    if (ci.eqlIgnoreCase(method_name, "isCustom")) {
+        const fn_val = obj.fields.get("fieldName") orelse
+            obj.fields.get("name") orelse Value{ .string = "" };
         if (fn_val == .string)
             return Value{ .boolean = std.mem.endsWith(u8, fn_val.string, "__c") };
         return Value{ .boolean = false };
     }
-    if (std.ascii.eqlIgnoreCase(method_name, "getLength"))
+    return null;
+}
+
+fn schema_field_is_name_field(object_type: ?[]const u8, field_name: []const u8) bool {
+    const ci = std.ascii;
+    if (ci.eqlIgnoreCase(field_name, "Name")) return true;
+    const obj_name = object_type orelse return false;
+    if (ci.eqlIgnoreCase(obj_name, "Case") and ci.eqlIgnoreCase(field_name, "CaseNumber"))
+        return true;
+    if (ci.eqlIgnoreCase(obj_name, "Contract") and ci.eqlIgnoreCase(field_name, "ContractNumber"))
+        return true;
+    if (ci.eqlIgnoreCase(obj_name, "Order") and ci.eqlIgnoreCase(field_name, "OrderNumber"))
+        return true;
+    return false;
+}
+
+fn dispatch_sdf_name_and_label_methods(
+    obj: *types.ObjectInstance,
+    method_name: []const u8,
+) !?Value {
+    const ci = std.ascii;
+    if (ci.eqlIgnoreCase(method_name, "getLength"))
         return obj.fields.get("length") orelse Value{ .integer = 131072 };
-    if (std.ascii.eqlIgnoreCase(method_name, "getScale")) return Value{ .integer = 0 };
-    if (std.ascii.eqlIgnoreCase(method_name, "getSoapType") or
-        std.ascii.eqlIgnoreCase(method_name, "getSoaptype"))
+    if (ci.eqlIgnoreCase(method_name, "getScale")) return Value{ .integer = 0 };
+    if (ci.eqlIgnoreCase(method_name, "getSoapType") or
+        ci.eqlIgnoreCase(method_name, "getSoaptype"))
     {
         return obj.fields.get("soapType") orelse Value{ .string = "STRING" };
     }
-    if (std.ascii.eqlIgnoreCase(method_name, "getType") or
-        std.ascii.eqlIgnoreCase(method_name, "getDisplayType"))
+    if (ci.eqlIgnoreCase(method_name, "getType") or
+        ci.eqlIgnoreCase(method_name, "getDisplayType"))
     {
         return obj.fields.get("type") orelse Value{ .string = "STRING" };
     }
-    if (std.ascii.eqlIgnoreCase(method_name, "getName")) return obj.fields.get("fieldName") orelse obj.fields.get("name") orelse Value{ .string = "Field" };
-    if (std.ascii.eqlIgnoreCase(method_name, "getLocalName")) {
-        const name_val = obj.fields.get(
-            "fieldName",
-        ) orelse obj.fields.get("name") orelse Value{ .string = "Field" };
+    if (ci.eqlIgnoreCase(method_name, "getName"))
+        return obj.fields.get("fieldName") orelse
+            obj.fields.get("name") orelse Value{ .string = "Field" };
+    if (ci.eqlIgnoreCase(method_name, "getLocalName")) {
+        const name_val = obj.fields.get("fieldName") orelse
+            obj.fields.get("name") orelse Value{ .string = "Field" };
         if (name_val == .string) return Value{ .string = describe_local_name(name_val.string) };
         return name_val;
     }
-    if (std.ascii.eqlIgnoreCase(method_name, "getInlineHelpText"))
+    if (ci.eqlIgnoreCase(method_name, "getInlineHelpText"))
         return obj.fields.get("inlineHelpText") orelse Value.null_val;
-    if (std.ascii.eqlIgnoreCase(method_name, "getLabel")) return obj.fields.get("label") orelse obj.fields.get("fieldName") orelse obj.fields.get("name") orelse Value{ .string = "Field" };
-    if (std.ascii.eqlIgnoreCase(method_name, "toString")) return obj.fields.get("fieldName") orelse obj.fields.get("name") orelse Value{ .string = "Field" };
-    if (std.ascii.eqlIgnoreCase(method_name, "getDefaultValue") or
-        std.ascii.eqlIgnoreCase(method_name, "getDefaultValueFormula"))
-    {
-        // Field-meta.xml <default_value> round-trip not wired yet; resolve
-        // well-known standard-field defaults so that utility classes using
-        // `(String) Task.Status.getDescribe().getDefaultValue()` style code
-        // get sensible values instead of null.
-        if (object_type) |obj_name| {
-            if (standard_field_default(obj_name, field_name)) |default_str| {
-                return Value{ .string = default_str };
-            }
-        }
-        if (obj.fields.get("default_value")) |dv| return dv;
-        return Value.null_val;
-    }
+    if (ci.eqlIgnoreCase(method_name, "getLabel"))
+        return obj.fields.get("label") orelse
+            obj.fields.get("fieldName") orelse
+            obj.fields.get("name") orelse Value{ .string = "Field" };
+    if (ci.eqlIgnoreCase(method_name, "toString"))
+        return obj.fields.get("fieldName") orelse
+            obj.fields.get("name") orelse Value{ .string = "Field" };
     return null;
+}
+
+fn dispatch_sdf_default_value(
+    obj: *types.ObjectInstance,
+    method_name: []const u8,
+    object_type: ?[]const u8,
+    field_name: []const u8,
+) !?Value {
+    const ci = std.ascii;
+    if (!ci.eqlIgnoreCase(method_name, "getDefaultValue") and
+        !ci.eqlIgnoreCase(method_name, "getDefaultValueFormula")) return null;
+    // Field-meta.xml <default_value> round-trip not wired yet; resolve
+    // well-known standard-field defaults so that utility classes using
+    // `(String) Task.Status.getDescribe().getDefaultValue()` style code
+    // get sensible values instead of null.
+    if (object_type) |obj_name| {
+        if (standard_field_default(obj_name, field_name)) |default_str| {
+            return Value{ .string = default_str };
+        }
+    }
+    if (obj.fields.get("default_value")) |dv| return dv;
+    return Value.null_val;
 }
 
 /// Known default values for a handful of standard-object fields that are
