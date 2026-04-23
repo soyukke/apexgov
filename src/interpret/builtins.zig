@@ -29,7 +29,11 @@ pub fn current_date_string(arena: std.mem.Allocator) ![]const u8 {
     const es = std.time.epoch.EpochSeconds{ .secs = epoch_secs };
     const day = es.getEpochDay().calculateYearDay();
     const md = day.calculateMonthDay();
-    return std.fmt.allocPrint(arena, "{d}-{d:0>2}-{d:0>2}", .{ day.year, md.month.numeric(), md.day_index + 1 });
+    return std.fmt.allocPrint(
+        arena,
+        "{d}-{d:0>2}-{d:0>2}",
+        .{ day.year, md.month.numeric(), md.day_index + 1 },
+    );
 }
 
 /// Return the current datetime as "YYYY-MM-DDThh:mm:ssZ" string.
@@ -53,7 +57,11 @@ pub const BuiltinContext = struct {
     see_all_data: bool = false,
     eval: *evaluator_mod.Evaluator = undefined,
 
-    fn throw_exception(self: *BuiltinContext, class_name: []const u8, message: []const u8) anyerror!?Value {
+    fn throw_exception(
+        self: *BuiltinContext,
+        class_name: []const u8,
+        message: []const u8,
+    ) anyerror!?Value {
         const exc = try self.arena.create(types.ObjectInstance);
         exc.* = .{ .class_name = class_name };
         try exc.fields.put(self.arena, "message", Value{ .string = message });
@@ -178,7 +186,12 @@ fn parse_loose_date_time(arena: std.mem.Allocator, raw: []const u8) ?[]const u8 
 
 /// 静的メソッド呼び出しを試行する。
 /// 静的メソッド呼び出しを試行する。
-pub fn dispatch_static(ctx: *BuiltinContext, class_name: []const u8, method_name: []const u8, args: []const Value) !?Value {
+pub fn dispatch_static(
+    ctx: *BuiltinContext,
+    class_name: []const u8,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
     const ci = std.ascii;
     if (ci.eqlIgnoreCase(class_name, "System")) return dispatch_static_system(ctx, method_name, args);
     if (ci.eqlIgnoreCase(class_name, "String")) return dispatch_static_string(ctx, method_name, args);
@@ -204,7 +217,11 @@ pub fn dispatch_static(ctx: *BuiltinContext, class_name: []const u8, method_name
             // Generate a deterministic pseudo-UUID based on a counter
             const id = ctx.eval.next_id;
             ctx.eval.next_id += 1;
-            const uuid_str = try std.fmt.allocPrint(ctx.arena, "{x:0>8}-0000-4000-8000-{x:0>12}", .{ id, id });
+            const uuid_str = try std.fmt.allocPrint(
+                ctx.arena,
+                "{x:0>8}-0000-4000-8000-{x:0>12}",
+                .{ id, id },
+            );
             const uuid_obj = try ctx.arena.create(types.ObjectInstance);
             uuid_obj.* = .{ .class_name = "UUID" };
             try uuid_obj.fields.put(ctx.arena, "value", Value{ .string = uuid_str });
@@ -257,7 +274,10 @@ pub fn dispatch_static(ctx: *BuiltinContext, class_name: []const u8, method_name
     if (ci.eqlIgnoreCase(class_name, "AccessLevel")) return Value{ .string = method_name };
     if (std.mem.startsWith(u8, class_name, "ConnectApi") or ci.eqlIgnoreCase(class_name, "ConnectApi")) {
         if (ctx.see_all_data) return Value.null_val;
-        return ctx.throw_exception("UnsupportedOperationException", "ConnectApi is not supported in data-siloed tests");
+        return ctx.throw_exception(
+            "UnsupportedOperationException",
+            "ConnectApi is not supported in data-siloed tests",
+        );
     }
     if (ci.eqlIgnoreCase(class_name, "FeatureManagement")) return dispatch_static_feature_management(ctx, method_name, args);
     if (ci.eqlIgnoreCase(class_name, "Limits")) return dispatch_static_limits(ctx, method_name);
@@ -364,7 +384,11 @@ pub fn dispatch_static(ctx: *BuiltinContext, class_name: []const u8, method_name
             } else if (args[0] == .string) args[0].string else "SObject";
             const prefix = builtins_key_prefix_for_name(sobj_name);
             ctx.eval.next_id += 1;
-            const id_str = try std.fmt.allocPrint(ctx.arena, "{s}{x:0>12}", .{ prefix, ctx.eval.next_id });
+            const id_str = try std.fmt.allocPrint(
+                ctx.arena,
+                "{s}{x:0>12}",
+                .{ prefix, ctx.eval.next_id },
+            );
             return Value{ .string = id_str };
         }
     }
@@ -419,7 +443,11 @@ fn builtins_key_prefix_for_name(name: []const u8) []const u8 {
 // Static dispatch handlers — one per Apex class
 // ---------------------------------------------------------------------------
 
-fn dispatch_static_system(ctx: *BuiltinContext, method_name: []const u8, args: []const Value) !?Value {
+fn dispatch_static_system(
+    ctx: *BuiltinContext,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
     if (std.ascii.eqlIgnoreCase(method_name, "debug")) {
         const msg = if (args.len >= 2) try utils.coerce_to_string(args[1], ctx.arena) else if (args.len > 0) try utils.coerce_to_string(args[0], ctx.arena) else "";
         try ctx.stdout.appendSlice(ctx.arena, msg);
@@ -463,7 +491,11 @@ fn dispatch_static_system(ctx: *BuiltinContext, method_name: []const u8, args: [
     return null;
 }
 
-fn dispatch_static_string(ctx: *BuiltinContext, method_name: []const u8, args: []const Value) !?Value {
+fn dispatch_static_string(
+    ctx: *BuiltinContext,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
     if (std.ascii.eqlIgnoreCase(method_name, "escapeSingleQuotes")) {
         if (args.len > 0 and args[0] == .string) return args[0];
         return Value{ .string = "" };
@@ -513,7 +545,10 @@ fn dispatch_static_string(ctx: *BuiltinContext, method_name: []const u8, args: [
                         const idx_str = fmt_str[i + 1 .. close];
                         if (std.fmt.parseInt(usize, idx_str, 10)) |idx| {
                             if (idx < items.len) {
-                                const val_str: []const u8 = utils.coerce_to_string(items[idx], ctx.arena) catch "null";
+                                const val_str: []const u8 = utils.coerce_to_string(
+                                    items[idx],
+                                    ctx.arena,
+                                ) catch "null";
                                 result.appendSlice(ctx.arena, val_str) catch {};
                                 i = close + 1;
                                 continue;
@@ -602,7 +637,11 @@ fn dispatch_static_id(ctx: *BuiltinContext, method_name: []const u8, args: []con
                     suffix[chunk_idx] = checksum_chars[mask];
                 }
 
-                break :blk Value{ .string = try std.fmt.allocPrint(ctx.arena, "{s}{s}", .{ s, suffix[0..] }) };
+                break :blk Value{ .string = try std.fmt.allocPrint(
+                    ctx.arena,
+                    "{s}{s}",
+                    .{ s, suffix[0..] },
+                ) };
             },
             else => Value.null_val,
         };
@@ -610,11 +649,18 @@ fn dispatch_static_id(ctx: *BuiltinContext, method_name: []const u8, args: []con
     return null;
 }
 
-fn dispatch_static_integer(ctx: *BuiltinContext, method_name: []const u8, args: []const Value) !?Value {
+fn dispatch_static_integer(
+    ctx: *BuiltinContext,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
     if (std.ascii.eqlIgnoreCase(method_name, "valueOf") and args.len > 0) {
         return switch (args[0]) {
             .string => |s| Value{ .integer = std.fmt.parseInt(i64, s, 10) catch {
-                return ctx.throw_exception("System.TypeException", try std.fmt.allocPrint(ctx.arena, "Invalid integer: {s}", .{s}));
+                return ctx.throw_exception(
+                    "System.TypeException",
+                    try std.fmt.allocPrint(ctx.arena, "Invalid integer: {s}", .{s}),
+                );
             } },
             .integer => args[0],
             .long => |l| Value{ .integer = l },
@@ -626,11 +672,18 @@ fn dispatch_static_integer(ctx: *BuiltinContext, method_name: []const u8, args: 
     return Value.null_val;
 }
 
-fn dispatch_static_long(ctx: *BuiltinContext, method_name: []const u8, args: []const Value) !?Value {
+fn dispatch_static_long(
+    ctx: *BuiltinContext,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
     if (std.ascii.eqlIgnoreCase(method_name, "valueOf") and args.len > 0) {
         return switch (args[0]) {
             .string => |s| Value{ .long = std.fmt.parseInt(i64, s, 10) catch {
-                return ctx.throw_exception("System.TypeException", try std.fmt.allocPrint(ctx.arena, "Invalid long: {s}", .{s}));
+                return ctx.throw_exception(
+                    "System.TypeException",
+                    try std.fmt.allocPrint(ctx.arena, "Invalid long: {s}", .{s}),
+                );
             } },
             .integer => |i| Value{ .long = i },
             .long => args[0],
@@ -654,7 +707,11 @@ fn dispatch_static_boolean(method_name: []const u8, args: []const Value) !?Value
     return Value{ .boolean = false };
 }
 
-fn dispatch_static_decimal(ctx: *BuiltinContext, method_name: []const u8, args: []const Value) !?Value {
+fn dispatch_static_decimal(
+    ctx: *BuiltinContext,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
     if (std.ascii.eqlIgnoreCase(method_name, "valueOf") and args.len > 0) {
         return switch (args[0]) {
             .null_val => Value.null_val,
@@ -669,7 +726,10 @@ fn dispatch_static_decimal(ctx: *BuiltinContext, method_name: []const u8, args: 
                     } else |_| {}
                 }
                 const parsed = std.fmt.parseFloat(f64, s) catch {
-                    return ctx.throw_exception("System.TypeException", try std.fmt.allocPrint(ctx.arena, "Invalid decimal: {s}", .{s}));
+                    return ctx.throw_exception(
+                        "System.TypeException",
+                        try std.fmt.allocPrint(ctx.arena, "Invalid decimal: {s}", .{s}),
+                    );
                 };
                 break :blk Value{ .double = parsed };
             },
@@ -682,13 +742,20 @@ fn dispatch_static_decimal(ctx: *BuiltinContext, method_name: []const u8, args: 
     return Value{ .double = 0.0 };
 }
 
-fn dispatch_static_double_class(ctx: *BuiltinContext, method_name: []const u8, args: []const Value) !?Value {
+fn dispatch_static_double_class(
+    ctx: *BuiltinContext,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
     if (std.ascii.eqlIgnoreCase(method_name, "valueOf") and args.len > 0) {
         return switch (args[0]) {
             .null_val => Value.null_val,
             .string => |s| blk: {
                 const parsed = std.fmt.parseFloat(f64, s) catch {
-                    return ctx.throw_exception("System.TypeException", try std.fmt.allocPrint(ctx.arena, "Invalid double: {s}", .{s}));
+                    return ctx.throw_exception(
+                        "System.TypeException",
+                        try std.fmt.allocPrint(ctx.arena, "Invalid double: {s}", .{s}),
+                    );
                 };
                 break :blk Value{ .double = parsed };
             },
@@ -701,7 +768,11 @@ fn dispatch_static_double_class(ctx: *BuiltinContext, method_name: []const u8, a
     return Value{ .double = 0.0 };
 }
 
-fn dispatch_static_date(ctx: *BuiltinContext, method_name: []const u8, args: []const Value) !?Value {
+fn dispatch_static_date(
+    ctx: *BuiltinContext,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
     if (std.ascii.eqlIgnoreCase(method_name, "today")) return try make_date_value(ctx.arena, try current_date_string(ctx.arena));
     if (std.ascii.eqlIgnoreCase(method_name, "newInstance")) {
         if (args.len >= 3) {
@@ -788,7 +859,11 @@ fn dispatch_static_math(method_name: []const u8, args: []const Value) !?Value {
     return Value{ .double = 0 };
 }
 
-fn dispatch_static_time(ctx: *BuiltinContext, method_name: []const u8, args: []const Value) !?Value {
+fn dispatch_static_time(
+    ctx: *BuiltinContext,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
     if (std.ascii.eqlIgnoreCase(method_name, "newInstance")) {
         const clamp = struct {
             fn run(v: i64, max: i64) u32 {
@@ -801,7 +876,11 @@ fn dispatch_static_time(ctx: *BuiltinContext, method_name: []const u8, args: []c
         const m = clamp(if (args.len > 1 and args[1] == .integer) args[1].integer else 0, 59);
         const s = clamp(if (args.len > 2 and args[2] == .integer) args[2].integer else 0, 59);
         const ms = clamp(if (args.len > 3 and args[3] == .integer) args[3].integer else 0, 999);
-        const time_str = try std.fmt.allocPrint(ctx.arena, "{d:0>2}:{d:0>2}:{d:0>2}.{d:0>3}", .{ h, m, s, ms });
+        const time_str = try std.fmt.allocPrint(
+            ctx.arena,
+            "{d:0>2}:{d:0>2}:{d:0>2}.{d:0>3}",
+            .{ h, m, s, ms },
+        );
         const obj = try ctx.arena.create(types.ObjectInstance);
         obj.* = .{ .class_name = "Time" };
         try obj.fields.put(ctx.arena, "value", Value{ .string = time_str });
@@ -814,7 +893,11 @@ fn dispatch_static_time(ctx: *BuiltinContext, method_name: []const u8, args: []c
     return Value.null_val;
 }
 
-fn dispatch_static_time_zone(ctx: *BuiltinContext, method_name: []const u8, args: []const Value) !?Value {
+fn dispatch_static_time_zone(
+    ctx: *BuiltinContext,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
     _ = ctx;
     if (std.ascii.eqlIgnoreCase(method_name, "getTimeZone")) {
         if (args.len > 0 and args[0] == .string) return Value{ .string = args[0].string };
@@ -823,7 +906,11 @@ fn dispatch_static_time_zone(ctx: *BuiltinContext, method_name: []const u8, args
     return Value.null_val;
 }
 
-fn dispatch_static_date_time(ctx: *BuiltinContext, method_name: []const u8, args: []const Value) !?Value {
+fn dispatch_static_date_time(
+    ctx: *BuiltinContext,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
     const fromEpochMillis = struct {
         fn convert(ctx2: *BuiltinContext, ms: i64) !Value {
             const total_secs = @divTrunc(ms, 1000);
@@ -868,7 +955,10 @@ fn dispatch_static_date_time(ctx: *BuiltinContext, method_name: []const u8, args
                 else => "00:00:00",
             };
             const hhmmss = if (time_val.len >= 8) time_val[0..8] else "00:00:00";
-            return try make_datetime_value(ctx.arena, try std.fmt.allocPrint(ctx.arena, "{s}T{s}Z", .{ date_val, hhmmss }));
+            return try make_datetime_value(
+                ctx.arena,
+                try std.fmt.allocPrint(ctx.arena, "{s}T{s}Z", .{ date_val, hhmmss }),
+            );
         }
         if (args.len >= 6) {
             const y = numericAsI64.from(args[0], 2026);
@@ -912,7 +1002,10 @@ fn dispatch_static_date_time(ctx: *BuiltinContext, method_name: []const u8, args
                 else => {},
             }
             if (extract_date_string(args[0])) |s| {
-                const normalized = try normalize_date_time_value_of_input(ctx.arena, s) orelse return error.ApexException;
+                const normalized = try normalize_date_time_value_of_input(
+                    ctx.arena,
+                    s,
+                ) orelse return error.ApexException;
                 return try make_datetime_value(ctx.arena, normalized);
             }
         }
@@ -921,14 +1014,21 @@ fn dispatch_static_date_time(ctx: *BuiltinContext, method_name: []const u8, args
     return Value.null_val;
 }
 
-fn dispatch_static_json(ctx: *BuiltinContext, method_name: []const u8, args: []const Value) !?Value {
+fn dispatch_static_json(
+    ctx: *BuiltinContext,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
     if (std.ascii.eqlIgnoreCase(method_name, "serialize") or std.ascii.eqlIgnoreCase(method_name, "serializePretty")) {
         if (args.len > 0) {
             if (args[0] == .object and
                 (std.ascii.eqlIgnoreCase(args[0].object.class_name, "Schema.SObjectField") or
                     std.ascii.eqlIgnoreCase(args[0].object.class_name, "SObjectField")))
             {
-                return ctx.throw_exception("System.JSONException", "Apex Type unsupported in JSON: Schema.SObjectField");
+                return ctx.throw_exception(
+                    "System.JSONException",
+                    "Apex Type unsupported in JSON: Schema.SObjectField",
+                );
             }
             return Value{ .string = try utils.to_json(args[0], ctx.arena) };
         }
@@ -946,7 +1046,10 @@ fn dispatch_static_json(ctx: *BuiltinContext, method_name: []const u8, args: []c
             const trimmed = std.mem.trim(u8, json_str, " \t\r\n");
             if (trimmed.len > 0 and trimmed[0] == '[') {
                 if (trimmed[trimmed.len - 1] != ']') {
-                    return ctx.throw_exception("System.JSONException", "Unexpected end-of-input while parsing JSON");
+                    return ctx.throw_exception(
+                        "System.JSONException",
+                        "Unexpected end-of-input while parsing JSON",
+                    );
                 }
                 const list = try ctx.arena.create(types.ListValue);
                 list.* = .{};
@@ -975,7 +1078,10 @@ fn dispatch_static_json(ctx: *BuiltinContext, method_name: []const u8, args: []c
                         const elem = std.mem.trim(u8, trimmed[elem_start..ai], " \t\r\n,");
                         if (elem.len > 0 and elem[0] == '"') {
                             if (elem.len >= 2 and elem[elem.len - 1] == '"') {
-                                try list.items.append(ctx.arena, Value{ .string = elem[1 .. elem.len - 1] });
+                                try list.items.append(
+                                    ctx.arena,
+                                    Value{ .string = elem[1 .. elem.len - 1] },
+                                );
                             }
                         }
                         elem_start = ai + 1;
@@ -1013,11 +1119,19 @@ fn dispatch_static_json(ctx: *BuiltinContext, method_name: []const u8, args: []c
                             if (val_start < json_str.len) {
                                 if (json_str[val_start] == '"') {
                                     if (find_json_string_end_alloc(json_str, val_start + 1, ctx.arena)) |res| {
-                                        try map.entries.put(ctx.arena, key, Value{ .string = res.value });
+                                        try map.entries.put(
+                                            ctx.arena,
+                                            key,
+                                            Value{ .string = res.value },
+                                        );
                                         pos = res.end + 1;
                                         continue;
                                     } else if (std.mem.indexOfPos(u8, json_str, val_start + 1, "\"")) |val_end| {
-                                        try map.entries.put(ctx.arena, key, Value{ .string = json_str[val_start + 1 .. val_end] });
+                                        try map.entries.put(
+                                            ctx.arena,
+                                            key,
+                                            Value{ .string = json_str[val_start + 1 .. val_end] },
+                                        );
                                         pos = val_end + 1;
                                         continue;
                                     }
@@ -1056,7 +1170,11 @@ fn dispatch_static_json(ctx: *BuiltinContext, method_name: []const u8, args: []c
                                         } else if (ch == '}' or ch == ']') {
                                             seg_depth -= 1;
                                         } else if (ch == ',' and seg_depth == 0) {
-                                            const seg_trimmed = std.mem.trim(u8, arr_content[seg_start..ei], " \t\r\n");
+                                            const seg_trimmed = std.mem.trim(
+                                                u8,
+                                                arr_content[seg_start..ei],
+                                                " \t\r\n",
+                                            );
                                             if (seg_trimmed.len > 0) {
                                                 const seg_args = [_]Value{Value{ .string = seg_trimmed }};
                                                 if (try dispatch_static_json(ctx, "deserializeUntyped", &seg_args)) |v| {
@@ -1067,7 +1185,11 @@ fn dispatch_static_json(ctx: *BuiltinContext, method_name: []const u8, args: []c
                                         }
                                     }
                                     if (seg_start < arr_content.len) {
-                                        const seg_trimmed = std.mem.trim(u8, arr_content[seg_start..], " \t\r\n");
+                                        const seg_trimmed = std.mem.trim(
+                                            u8,
+                                            arr_content[seg_start..],
+                                            " \t\r\n",
+                                        );
                                         if (seg_trimmed.len > 0) {
                                             const seg_args = [_]Value{Value{ .string = seg_trimmed }};
                                             if (try dispatch_static_json(ctx, "deserializeUntyped", &seg_args)) |v| {
@@ -1102,20 +1224,44 @@ fn dispatch_static_json(ctx: *BuiltinContext, method_name: []const u8, args: []c
                                 } else {
                                     var val_end = val_start;
                                     while (val_end < json_str.len and json_str[val_end] != ',' and json_str[val_end] != '}' and json_str[val_end] != '\n') val_end += 1;
-                                    const val_str = std.mem.trim(u8, json_str[val_start..val_end], " \t\r\n");
+                                    const val_str = std.mem.trim(
+                                        u8,
+                                        json_str[val_start..val_end],
+                                        " \t\r\n",
+                                    );
                                     if (std.ascii.eqlIgnoreCase(val_str, "true")) {
-                                        try map.entries.put(ctx.arena, key, Value{ .boolean = true });
+                                        try map.entries.put(
+                                            ctx.arena,
+                                            key,
+                                            Value{ .boolean = true },
+                                        );
                                     } else if (std.ascii.eqlIgnoreCase(val_str, "false")) {
-                                        try map.entries.put(ctx.arena, key, Value{ .boolean = false });
+                                        try map.entries.put(
+                                            ctx.arena,
+                                            key,
+                                            Value{ .boolean = false },
+                                        );
                                     } else if (std.ascii.eqlIgnoreCase(val_str, "null")) {
                                         try map.entries.put(ctx.arena, key, Value.null_val);
                                     } else if (std.fmt.parseInt(i64, val_str, 10)) |num| {
-                                        try map.entries.put(ctx.arena, key, Value{ .integer = num });
+                                        try map.entries.put(
+                                            ctx.arena,
+                                            key,
+                                            Value{ .integer = num },
+                                        );
                                     } else |_| {
                                         if (std.fmt.parseFloat(f64, val_str)) |fnum| {
-                                            try map.entries.put(ctx.arena, key, Value{ .double = fnum });
+                                            try map.entries.put(
+                                                ctx.arena,
+                                                key,
+                                                Value{ .double = fnum },
+                                            );
                                         } else |_| {
-                                            try map.entries.put(ctx.arena, key, Value{ .string = val_str });
+                                            try map.entries.put(
+                                                ctx.arena,
+                                                key,
+                                                Value{ .string = val_str },
+                                            );
                                         }
                                     }
                                     pos = val_end;
@@ -1134,7 +1280,11 @@ fn dispatch_static_json(ctx: *BuiltinContext, method_name: []const u8, args: []c
     return null;
 }
 
-fn ensure_object_list_field(ctx: *BuiltinContext, obj: *types.ObjectInstance, field_name: []const u8) !*types.ListValue {
+fn ensure_object_list_field(
+    ctx: *BuiltinContext,
+    obj: *types.ObjectInstance,
+    field_name: []const u8,
+) !*types.ListValue {
     if (obj.fields.get(field_name)) |existing| {
         if (existing == .list) return existing.list;
     }
@@ -1176,7 +1326,11 @@ fn json_generator_current_count(obj: *types.ObjectInstance) i64 {
     return 0;
 }
 
-fn json_generator_set_current_count(ctx: *BuiltinContext, obj: *types.ObjectInstance, count: i64) !void {
+fn json_generator_set_current_count(
+    ctx: *BuiltinContext,
+    obj: *types.ObjectInstance,
+    count: i64,
+) !void {
     const counts = try ensure_object_list_field(ctx, obj, "__ctx_counts__");
     if (counts.items.items.len == 0) return;
     counts.items.items[counts.items.items.len - 1] = Value{ .integer = count };
@@ -1189,11 +1343,19 @@ fn json_generator_is_expecting_value(obj: *types.ObjectInstance) bool {
     return false;
 }
 
-fn json_generator_set_expecting_value(ctx: *BuiltinContext, obj: *types.ObjectInstance, expecting: bool) !void {
+fn json_generator_set_expecting_value(
+    ctx: *BuiltinContext,
+    obj: *types.ObjectInstance,
+    expecting: bool,
+) !void {
     try obj.fields.put(ctx.arena, "__expecting_value__", Value{ .boolean = expecting });
 }
 
-fn json_generator_push_context(ctx: *BuiltinContext, obj: *types.ObjectInstance, context_type: []const u8) !void {
+fn json_generator_push_context(
+    ctx: *BuiltinContext,
+    obj: *types.ObjectInstance,
+    context_type: []const u8,
+) !void {
     const context_types = try ensure_object_list_field(ctx, obj, "__ctx_types__");
     const context_counts = try ensure_object_list_field(ctx, obj, "__ctx_counts__");
     try context_types.items.append(ctx.arena, Value{ .string = context_type });
@@ -1228,12 +1390,21 @@ fn json_generator_before_value(ctx: *BuiltinContext, obj: *types.ObjectInstance)
     }
 }
 
-fn json_generator_write_raw_value(ctx: *BuiltinContext, obj: *types.ObjectInstance, raw: []const u8) !void {
+fn json_generator_write_raw_value(
+    ctx: *BuiltinContext,
+    obj: *types.ObjectInstance,
+    raw: []const u8,
+) !void {
     try json_generator_before_value(ctx, obj);
     try json_generator_append(ctx, obj, raw);
 }
 
-fn dispatch_obj_json_generator(ctx: *BuiltinContext, obj: *types.ObjectInstance, method_name: []const u8, args: []const Value) !?Value {
+fn dispatch_obj_json_generator(
+    ctx: *BuiltinContext,
+    obj: *types.ObjectInstance,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
     if (std.ascii.eqlIgnoreCase(method_name, "getAsString")) {
         return Value{ .string = json_generator_output(obj) };
     }
@@ -1261,11 +1432,17 @@ fn dispatch_obj_json_generator(ctx: *BuiltinContext, obj: *types.ObjectInstance,
     }
     if (std.ascii.eqlIgnoreCase(method_name, "writeFieldName")) {
         if (args.len == 0 or args[0] == .null_val) {
-            _ = try ctx.throw_exception("JSONException", "Can not write a field name, expecting a value");
+            _ = try ctx.throw_exception(
+                "JSONException",
+                "Can not write a field name, expecting a value",
+            );
             return error.ApexException;
         }
         if (!std.ascii.eqlIgnoreCase(json_generator_current_context_type(obj) orelse "", "object") or json_generator_is_expecting_value(obj)) {
-            _ = try ctx.throw_exception("JSONException", "Can not write a field name, expecting a value");
+            _ = try ctx.throw_exception(
+                "JSONException",
+                "Can not write a field name, expecting a value",
+            );
             return error.ApexException;
         }
         const count = json_generator_current_count(obj);
@@ -1381,7 +1558,11 @@ fn dispatch_static_user_info(ctx: *BuiltinContext, method_name: []const u8) !?Va
     return Value{ .string = "" };
 }
 
-fn dispatch_static_feature_management(ctx: *BuiltinContext, method_name: []const u8, args: []const Value) !?Value {
+fn dispatch_static_feature_management(
+    ctx: *BuiltinContext,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
     if (!std.ascii.eqlIgnoreCase(method_name, "checkPermission")) return Value{ .boolean = false };
     if (args.len == 0 or args[0] != .string) return Value{ .boolean = false };
 
@@ -1393,9 +1574,15 @@ fn dispatch_static_feature_management(ctx: *BuiltinContext, method_name: []const
     if (ctx.eval.store.get("PermissionSetAssignment")) |psa_records| {
         for (psa_records.items) |psa| {
             if (psa != .sobject) continue;
-            const assignee_id = utils.sobject_get(&psa.sobject.fields, "AssigneeId") orelse continue;
+            const assignee_id = utils.sobject_get(
+                &psa.sobject.fields,
+                "AssigneeId",
+            ) orelse continue;
             if (assignee_id != .string or !std.ascii.eqlIgnoreCase(assignee_id.string, ctx.eval.current_user_id)) continue;
-            const permission_set_id = utils.sobject_get(&psa.sobject.fields, "PermissionSetId") orelse continue;
+            const permission_set_id = utils.sobject_get(
+                &psa.sobject.fields,
+                "PermissionSetId",
+            ) orelse continue;
             if (permission_set_id != .string) continue;
             if (assigned_permission_set_count < assigned_permission_set_ids.len) {
                 assigned_permission_set_ids[assigned_permission_set_count] = permission_set_id.string;
@@ -1438,7 +1625,10 @@ fn dispatch_static_feature_management(ctx: *BuiltinContext, method_name: []const
         for (sea_records.items) |sea| {
             if (sea != .sobject) continue;
             const parent_id = utils.sobject_get(&sea.sobject.fields, "ParentId") orelse continue;
-            const setup_entity_id = utils.sobject_get(&sea.sobject.fields, "SetupEntityId") orelse continue;
+            const setup_entity_id = utils.sobject_get(
+                &sea.sobject.fields,
+                "SetupEntityId",
+            ) orelse continue;
             if (parent_id != .string or setup_entity_id != .string) continue;
 
             var parent_matches = false;
@@ -1454,7 +1644,10 @@ fn dispatch_static_feature_management(ctx: *BuiltinContext, method_name: []const
                 for (cp_records.items) |cp| {
                     if (cp != .sobject or cp.sobject.id == null) continue;
                     if (!std.ascii.eqlIgnoreCase(cp.sobject.id.?, setup_entity_id.string)) continue;
-                    const developer_name = utils.sobject_get(&cp.sobject.fields, "DeveloperName") orelse continue;
+                    const developer_name = utils.sobject_get(
+                        &cp.sobject.fields,
+                        "DeveloperName",
+                    ) orelse continue;
                     if (developer_name == .string and std.ascii.eqlIgnoreCase(developer_name.string, permission_name)) {
                         return Value{ .boolean = true };
                     }
@@ -1466,7 +1659,11 @@ fn dispatch_static_feature_management(ctx: *BuiltinContext, method_name: []const
     return Value{ .boolean = false };
 }
 
-fn dispatch_static_logging_level(ctx: *BuiltinContext, method_name: []const u8, args: []const Value) !?Value {
+fn dispatch_static_logging_level(
+    ctx: *BuiltinContext,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
     if (std.ascii.eqlIgnoreCase(method_name, "valueOf") and args.len > 0 and args[0] == .string) {
         const valid_levels = [_][]const u8{ "INTERNAL", "FINEST", "FINER", "FINE", "DEBUG", "INFO", "WARN", "ERROR", "NONE" };
         for (valid_levels) |level| {
@@ -1499,7 +1696,11 @@ fn dispatch_static_rest_context(ctx: *BuiltinContext, method_name: []const u8) !
     return Value.null_val;
 }
 
-fn dispatch_static_schema(ctx: *BuiltinContext, method_name: []const u8, args: []const Value) !?Value {
+fn dispatch_static_schema(
+    ctx: *BuiltinContext,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
     if (std.ascii.eqlIgnoreCase(method_name, "getGlobalDescribe")) {
         const map = try ctx.arena.create(types.MapValue);
         map.* = .{};
@@ -1593,7 +1794,10 @@ fn dispatch_static_schema(ctx: *BuiltinContext, method_name: []const u8, args: [
                 }
             }
             if (!found) {
-                return ctx.throw_exception("System.InvalidParameterValueException", try std.fmt.allocPrint(ctx.arena, "Invalid entity: {s}", .{obj_name}));
+                return ctx.throw_exception(
+                    "System.InvalidParameterValueException",
+                    try std.fmt.allocPrint(ctx.arena, "Invalid entity: {s}", .{obj_name}),
+                );
             }
             const desc = try create_describe_result(ctx, obj_name);
             try list.items.append(ctx.arena, desc);
@@ -1612,7 +1816,11 @@ fn dispatch_static_schema(ctx: *BuiltinContext, method_name: []const u8, args: [
     return Value.null_val;
 }
 
-fn dispatch_static_security(ctx: *BuiltinContext, method_name: []const u8, args: []const Value) !?Value {
+fn dispatch_static_security(
+    ctx: *BuiltinContext,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
     if (std.ascii.eqlIgnoreCase(method_name, "stripInaccessible")) {
         const obj = try ctx.arena.create(types.ObjectInstance);
         obj.* = .{ .class_name = "SObjectAccessDecision" };
@@ -1647,14 +1855,27 @@ fn dispatch_static_security(ctx: *BuiltinContext, method_name: []const u8, args:
         if (input_records == .list) {
             for (input_records.list.items.items) |item| {
                 if (item != .sobject) continue;
-                for (item.sobject.fields.keys(), item.sobject.fields.values()) |field_name, field_value| {
+                for (
+                    item.sobject.fields.keys(),
+                    item.sobject.fields.values(),
+                ) |field_name, field_value| {
                     if (std.ascii.eqlIgnoreCase(field_name, "Id")) continue;
                     const should_keep = if (std.ascii.eqlIgnoreCase(access_type, "READABLE"))
                         resolve_field_read_permission(ctx.eval, item.sobject.type_name, field_name)
                     else if (std.ascii.eqlIgnoreCase(access_type, "CREATABLE"))
-                        resolve_field_write_permission(ctx.eval, item.sobject.type_name, field_name, "create")
+                        resolve_field_write_permission(
+                            ctx.eval,
+                            item.sobject.type_name,
+                            field_name,
+                            "create",
+                        )
                     else if (std.ascii.eqlIgnoreCase(access_type, "UPDATABLE") or std.ascii.eqlIgnoreCase(access_type, "UPSERTABLE"))
-                        resolve_field_write_permission(ctx.eval, item.sobject.type_name, field_name, "edit")
+                        resolve_field_write_permission(
+                            ctx.eval,
+                            item.sobject.type_name,
+                            field_name,
+                            "edit",
+                        )
                     else
                         true;
                     const should_record_removed_field = if (std.ascii.eqlIgnoreCase(access_type, "READABLE"))
@@ -1677,7 +1898,10 @@ fn dispatch_static_security(ctx: *BuiltinContext, method_name: []const u8, args:
                     clone.* = .{ .type_name = item.sobject.type_name };
                     clone.id = item.sobject.id;
                     clone.is_stripped = std.ascii.eqlIgnoreCase(access_type, "READABLE");
-                    for (item.sobject.fields.keys(), item.sobject.fields.values()) |field_name, field_value| {
+                    for (
+                        item.sobject.fields.keys(),
+                        item.sobject.fields.values(),
+                    ) |field_name, field_value| {
                         if (rm_map.entries.get(field_name) == null) try clone.fields.put(ctx.arena, field_name, field_value);
                     }
                     try stripped.items.append(ctx.arena, Value{ .sobject = clone });
@@ -1744,7 +1968,11 @@ fn find_stored_record_by_id(eval: *evaluator_mod.Evaluator, record_id: []const u
     return null;
 }
 
-fn build_database_error_value(ctx: *BuiltinContext, status_code: []const u8, message: []const u8) !Value {
+fn build_database_error_value(
+    ctx: *BuiltinContext,
+    status_code: []const u8,
+    message: []const u8,
+) !Value {
     const err = try ctx.arena.create(types.ObjectInstance);
     err.* = .{ .class_name = "Database.Error" };
     try err.fields.put(ctx.arena, "statusCode", Value{ .string = status_code });
@@ -1755,20 +1983,33 @@ fn build_database_error_value(ctx: *BuiltinContext, status_code: []const u8, mes
     return Value{ .object = err };
 }
 
-fn build_approval_result(ctx: *BuiltinContext, class_name: []const u8, is_success: bool, status_code: ?[]const u8, message: ?[]const u8) !Value {
+fn build_approval_result(
+    ctx: *BuiltinContext,
+    class_name: []const u8,
+    is_success: bool,
+    status_code: ?[]const u8,
+    message: ?[]const u8,
+) !Value {
     const result = try ctx.arena.create(types.ObjectInstance);
     result.* = .{ .class_name = class_name };
     try result.fields.put(ctx.arena, "success", Value{ .boolean = is_success });
     const errors = try ctx.arena.create(types.ListValue);
     errors.* = .{};
     if (!is_success and status_code != null and message != null) {
-        try errors.items.append(ctx.arena, try build_database_error_value(ctx, status_code.?, message.?));
+        try errors.items.append(
+            ctx.arena,
+            try build_database_error_value(ctx, status_code.?, message.?),
+        );
     }
     try result.fields.put(ctx.arena, "errors", Value{ .list = errors });
     return Value{ .object = result };
 }
 
-fn dispatch_static_approval(ctx: *BuiltinContext, method_name: []const u8, args: []const Value) !?Value {
+fn dispatch_static_approval(
+    ctx: *BuiltinContext,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
     if (args.len == 0 or args[0] != .string) {
         if (std.ascii.eqlIgnoreCase(method_name, "isLocked")) return Value{ .boolean = false };
         if (std.ascii.eqlIgnoreCase(method_name, "lock")) return try build_approval_result(ctx, "Approval.LockResult", false, "INVALID_CROSS_REFERENCE_KEY", "Record not found");
@@ -1781,7 +2022,10 @@ fn dispatch_static_approval(ctx: *BuiltinContext, method_name: []const u8, args:
 
     if (std.ascii.eqlIgnoreCase(method_name, "isLocked")) {
         if (record) |matched| {
-            const is_locked = utils.sobject_get(&matched.fields, "__isLocked") orelse Value{ .boolean = false };
+            const is_locked = utils.sobject_get(
+                &matched.fields,
+                "__isLocked",
+            ) orelse Value{ .boolean = false };
             return if (is_locked == .boolean) is_locked else Value{ .boolean = false };
         }
         return Value{ .boolean = false };
@@ -1792,7 +2036,13 @@ fn dispatch_static_approval(ctx: *BuiltinContext, method_name: []const u8, args:
             try matched.fields.put(ctx.arena, "__isLocked", Value{ .boolean = true });
             return try build_approval_result(ctx, "Approval.LockResult", true, null, null);
         }
-        return try build_approval_result(ctx, "Approval.LockResult", false, "INVALID_CROSS_REFERENCE_KEY", "Record not found");
+        return try build_approval_result(
+            ctx,
+            "Approval.LockResult",
+            false,
+            "INVALID_CROSS_REFERENCE_KEY",
+            "Record not found",
+        );
     }
 
     if (std.ascii.eqlIgnoreCase(method_name, "unlock")) {
@@ -1800,7 +2050,13 @@ fn dispatch_static_approval(ctx: *BuiltinContext, method_name: []const u8, args:
             try matched.fields.put(ctx.arena, "__isLocked", Value{ .boolean = false });
             return try build_approval_result(ctx, "Approval.UnlockResult", true, null, null);
         }
-        return try build_approval_result(ctx, "Approval.UnlockResult", false, "INVALID_CROSS_REFERENCE_KEY", "Record not found");
+        return try build_approval_result(
+            ctx,
+            "Approval.UnlockResult",
+            false,
+            "INVALID_CROSS_REFERENCE_KEY",
+            "Record not found",
+        );
     }
 
     return null;
@@ -1822,7 +2078,11 @@ fn parse_date_time_to_epoch_millis(s: []const u8) ?i64 {
     return (days_from_epoch * 86400 + h * 3600 + mi * 60 + sec) * 1000;
 }
 
-fn dispatch_static_business_hours(ctx: *BuiltinContext, method_name: []const u8, args: []const Value) !?Value {
+fn dispatch_static_business_hours(
+    ctx: *BuiltinContext,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
     _ = ctx;
     if (std.ascii.eqlIgnoreCase(method_name, "diff") and args.len >= 3) {
         const start = extract_date_string(args[1]) orelse return Value{ .long = 0 };
@@ -1844,7 +2104,11 @@ fn dispatch_static_data_weave(ctx: *BuiltinContext, args: []const Value) !?Value
     return null;
 }
 
-fn dispatch_static_pattern(ctx: *BuiltinContext, method_name: []const u8, args: []const Value) !?Value {
+fn dispatch_static_pattern(
+    ctx: *BuiltinContext,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
     if (std.ascii.eqlIgnoreCase(method_name, "compile") and args.len > 0 and args[0] == .string) {
         const obj = try ctx.arena.create(types.ObjectInstance);
         obj.* = .{ .class_name = "Pattern" };
@@ -1874,7 +2138,11 @@ fn dispatch_static_pattern(ctx: *BuiltinContext, method_name: []const u8, args: 
 /// Experience Cloud / Communities gate: `Schema.Network` is treated as "not present" so
 /// common runtime feature checks (`Type.forName('Schema.Network') != null`) stay valid for
 /// orgs without Experience Cloud enabled — matches the current NebulaLogger test expectations.
-fn schema_s_object_type_value(ctx: *BuiltinContext, lookup_name: []const u8, inner_name: []const u8) ?Value {
+fn schema_s_object_type_value(
+    ctx: *BuiltinContext,
+    lookup_name: []const u8,
+    inner_name: []const u8,
+) ?Value {
     if (!std.ascii.eqlIgnoreCase(lookup_name, "Schema")) return null;
     if (std.ascii.eqlIgnoreCase(inner_name, "Network")) return null;
     if (!ctx.eval.is_s_object_type_name_public(inner_name)) return null;
@@ -1885,7 +2153,11 @@ fn schema_s_object_type_value(ctx: *BuiltinContext, lookup_name: []const u8, inn
     return Value{ .object = obj };
 }
 
-fn dispatch_static_type(ctx: *BuiltinContext, method_name: []const u8, args: []const Value) !?Value {
+fn dispatch_static_type(
+    ctx: *BuiltinContext,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
     if (std.ascii.eqlIgnoreCase(method_name, "forName") and args.len > 0 and args[0] == .string) {
         const requested = args[0].string;
         if (std.ascii.startsWithIgnoreCase(requested, "Map") or
@@ -1984,7 +2256,11 @@ fn is_resolvable_type_name(ctx: *BuiltinContext, name: []const u8) bool {
     return false;
 }
 
-fn dispatch_static_crypto(ctx: *BuiltinContext, method_name: []const u8, args: []const Value) !?Value {
+fn dispatch_static_crypto(
+    ctx: *BuiltinContext,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
     if (std.ascii.eqlIgnoreCase(method_name, "generateDigest")) {
         const data_bytes = if (args.len >= 2) blob_to_bytes(args[1]) else "data";
         var hash: [32]u8 = undefined;
@@ -2048,7 +2324,11 @@ fn dispatch_static_crypto(ctx: *BuiltinContext, method_name: []const u8, args: [
         var mac: [32]u8 = undefined;
         std.crypto.auth.hmac.sha2.HmacSha256.create(&mac, data_bytes, key_bytes);
         const computed_hex = try bytes_to_hex_alloc(ctx.arena, &mac);
-        return Value{ .boolean = std.mem.eql(u8, computed_hex, expected_bytes) or std.mem.eql(u8, expected_bytes, "") };
+        return Value{ .boolean = std.mem.eql(
+            u8,
+            computed_hex,
+            expected_bytes,
+        ) or std.mem.eql(u8, expected_bytes, "") };
     }
     if (std.ascii.eqlIgnoreCase(method_name, "verify")) return Value{ .boolean = true };
     if (std.ascii.eqlIgnoreCase(method_name, "getRandomInteger") or std.ascii.eqlIgnoreCase(method_name, "getRandomLong")) {
@@ -2060,7 +2340,11 @@ fn dispatch_static_crypto(ctx: *BuiltinContext, method_name: []const u8, args: [
     return Value.null_val;
 }
 
-fn dispatch_static_blob(ctx: *BuiltinContext, method_name: []const u8, args: []const Value) !?Value {
+fn dispatch_static_blob(
+    ctx: *BuiltinContext,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
     if (std.ascii.eqlIgnoreCase(method_name, "valueOf")) {
         if (args.len > 0 and args[0] == .string) {
             const blob = try ctx.arena.create(types.ObjectInstance);
@@ -2083,7 +2367,11 @@ fn dispatch_static_blob(ctx: *BuiltinContext, method_name: []const u8, args: []c
     return Value.null_val;
 }
 
-fn dispatch_static_encoding_util(ctx: *BuiltinContext, method_name: []const u8, args: []const Value) !?Value {
+fn dispatch_static_encoding_util(
+    ctx: *BuiltinContext,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
     if (std.ascii.eqlIgnoreCase(method_name, "urlEncode") and args.len > 0 and args[0] == .string) {
         // application/x-www-form-urlencoded: unreserved letters/digits and -_.*
         // pass through, spaces become '+', everything else is percent-encoded.
@@ -2130,7 +2418,11 @@ fn dispatch_static_encoding_util(ctx: *BuiltinContext, method_name: []const u8, 
     return Value{ .string = "" };
 }
 
-fn dispatch_static_messaging(ctx: *BuiltinContext, method_name: []const u8, args: []const Value) !?Value {
+fn dispatch_static_messaging(
+    ctx: *BuiltinContext,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
     if (std.ascii.eqlIgnoreCase(method_name, "reserveSingleEmailCapacity")) {
         const requested: i64 = if (args.len > 0) switch (args[0]) {
             .integer => |i| i,
@@ -2177,7 +2469,11 @@ fn set_created_date_for_record(ctx: *BuiltinContext, args: []const Value) !Value
             if (record != .sobject) continue;
             if (record.sobject.id) |candidate_id| {
                 if (std.ascii.eqlIgnoreCase(candidate_id, record_id)) {
-                    try record.sobject.fields.put(ctx.arena, "CreatedDate", Value{ .string = created_date });
+                    try record.sobject.fields.put(
+                        ctx.arena,
+                        "CreatedDate",
+                        Value{ .string = created_date },
+                    );
                     return .void_val;
                 }
             }
@@ -2186,7 +2482,11 @@ fn set_created_date_for_record(ctx: *BuiltinContext, args: []const Value) !Value
     return .void_val;
 }
 
-fn dispatch_static_test(ctx: *BuiltinContext, method_name: []const u8, args: []const Value) !?Value {
+fn dispatch_static_test(
+    ctx: *BuiltinContext,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
     if (std.ascii.eqlIgnoreCase(method_name, "isRunningTest")) return Value{ .boolean = true };
     if (std.ascii.eqlIgnoreCase(method_name, "startTest")) {
         // Reset Limits counters (Salesforce resets governor limits at Test.startTest)
@@ -2232,7 +2532,11 @@ fn dispatch_static_http(ctx: *BuiltinContext, method_name: []const u8) !?Value {
 ///   branch of the if/else, and to make `nonTriggerRecordClassShouldThrow…`
 ///   reach the getTriggerRecord cast (where the TypeException rethrow in
 ///   FormulaFilter.getTriggerRecord produces INVALID_SUBTYPE).
-fn dispatch_static_formula(ctx: *BuiltinContext, method_name: []const u8, _: []const Value) !?Value {
+fn dispatch_static_formula(
+    ctx: *BuiltinContext,
+    method_name: []const u8,
+    _: []const Value,
+) !?Value {
     if (std.ascii.eqlIgnoreCase(method_name, "builder")) {
         const builder = try ctx.arena.create(types.ObjectInstance);
         builder.* = .{ .class_name = "Formula.FormulaBuilder" };
@@ -2244,7 +2548,12 @@ fn dispatch_static_formula(ctx: *BuiltinContext, method_name: []const u8, _: []c
 /// Formula.builder() fluent chain. All configurators return the same builder
 /// object (so any caller order works) and `build()` materialises a
 /// FormulaEval.FormulaInstance carrying the configured formula string.
-fn dispatch_obj_formula_builder(ctx: *BuiltinContext, obj: *types.ObjectInstance, method_name: []const u8, args: []const Value) !?Value {
+fn dispatch_obj_formula_builder(
+    ctx: *BuiltinContext,
+    obj: *types.ObjectInstance,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
     const ci = std.ascii;
     // All "with*" configurators store their argument and return the builder.
     const configurators = [_][]const u8{
@@ -2336,7 +2645,12 @@ fn is_recognisable_formula(src: []const u8) bool {
 /// record matches or no records match. Anything else falls through to a
 /// boolean-false result, matching the "treat null/unsupported as false"
 /// expectation of FormulaFilter callers.
-fn dispatch_obj_formula_instance(_: *BuiltinContext, obj: *types.ObjectInstance, method_name: []const u8, args: []const Value) !?Value {
+fn dispatch_obj_formula_instance(
+    _: *BuiltinContext,
+    obj: *types.ObjectInstance,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
     const ci = std.ascii;
     if (ci.eqlIgnoreCase(method_name, "evaluate")) {
         if (args.len == 0) return Value{ .boolean = false };
@@ -2453,7 +2767,11 @@ fn sobject_field_case_insensitive(sob: *types.SObject, field_name: []const u8) ?
     return null;
 }
 
-fn dispatch_static_can_the_user(ctx: *BuiltinContext, method_name: []const u8, args: []const Value) !?Value {
+fn dispatch_static_can_the_user(
+    ctx: *BuiltinContext,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
     if (std.ascii.eqlIgnoreCase(method_name, "read") or std.ascii.eqlIgnoreCase(method_name, "flsAccessible")) {
         const sobject_type = get_s_object_type_from_args(args);
         if (sobject_type) |sot| return Value{ .boolean = resolve_object_crud_permission(ctx.eval, sot, "read") };
@@ -2471,7 +2789,12 @@ fn dispatch_static_can_the_user(ctx: *BuiltinContext, method_name: []const u8, a
     }
     if (std.ascii.eqlIgnoreCase(method_name, "flsUpdatable")) {
         if (args.len >= 2 and args[1] == .string) {
-            return Value{ .boolean = resolve_field_write_permission(ctx.eval, null, args[1].string, "edit") };
+            return Value{ .boolean = resolve_field_write_permission(
+                ctx.eval,
+                null,
+                args[1].string,
+                "edit",
+            ) };
         }
         return Value{ .boolean = true };
     }
@@ -2480,7 +2803,11 @@ fn dispatch_static_can_the_user(ctx: *BuiltinContext, method_name: []const u8, a
         map.* = .{};
         if (args.len >= 2 and args[1] == .set) {
             for (args[1].set.entries.keys()) |field_name| {
-                try map.entries.put(ctx.arena, field_name, Value{ .boolean = resolve_field_read_permission(ctx.eval, null, field_name) });
+                try map.entries.put(
+                    ctx.arena,
+                    field_name,
+                    Value{ .boolean = resolve_field_read_permission(ctx.eval, null, field_name) },
+                );
             }
         }
         return Value{ .map = map };
@@ -2498,7 +2825,11 @@ fn dispatch_static_can_the_user(ctx: *BuiltinContext, method_name: []const u8, a
     return null;
 }
 
-fn dispatch_static_apex_pages(ctx: *BuiltinContext, method_name: []const u8, args: []const Value) !?Value {
+fn dispatch_static_apex_pages(
+    ctx: *BuiltinContext,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
     if (std.ascii.eqlIgnoreCase(method_name, "addMessages") or std.ascii.eqlIgnoreCase(method_name, "addMessage")) {
         if (args.len > 0) {
             const msg_text = blk: {
@@ -2621,7 +2952,11 @@ fn dispatch_static_url(ctx: *BuiltinContext, method_name: []const u8) !?Value {
     return Value.null_val;
 }
 
-fn lookup_field_metadata(ctx: *BuiltinContext, object_type: []const u8, field_name: []const u8) ?evaluator_mod.FieldMetadata {
+fn lookup_field_metadata(
+    ctx: *BuiltinContext,
+    object_type: []const u8,
+    field_name: []const u8,
+) ?evaluator_mod.FieldMetadata {
     const type_meta = ctx.eval.field_metadata.get(object_type) orelse return null;
     if (type_meta.get(field_name)) |meta| return meta;
     var iter = type_meta.iterator();
@@ -2631,7 +2966,11 @@ fn lookup_field_metadata(ctx: *BuiltinContext, object_type: []const u8, field_na
     return null;
 }
 
-fn lookup_eval_field_metadata(eval: *evaluator_mod.Evaluator, object_type: []const u8, field_name: []const u8) ?evaluator_mod.FieldMetadata {
+fn lookup_eval_field_metadata(
+    eval: *evaluator_mod.Evaluator,
+    object_type: []const u8,
+    field_name: []const u8,
+) ?evaluator_mod.FieldMetadata {
     const type_meta = eval.field_metadata.get(object_type) orelse return null;
     if (type_meta.get(field_name)) |meta| return meta;
     var iter = type_meta.iterator();
@@ -2764,7 +3103,11 @@ fn default_describe_label_plural(arena: std.mem.Allocator, obj_name: []const u8)
     return try std.fmt.allocPrint(arena, "{s}s", .{local_name});
 }
 
-fn create_s_object_field_token_value(arena: std.mem.Allocator, object_type: []const u8, field_name: []const u8) !Value {
+fn create_s_object_field_token_value(
+    arena: std.mem.Allocator,
+    object_type: []const u8,
+    field_name: []const u8,
+) !Value {
     const token = try arena.create(types.ObjectInstance);
     token.* = .{ .class_name = "Schema.SObjectField" };
     try token.fields.put(arena, "objectType", Value{ .string = object_type });
@@ -2782,7 +3125,11 @@ fn append_child_relationship_value(
 ) !void {
     const child_rel = try ctx.arena.create(types.ObjectInstance);
     child_rel.* = .{ .class_name = "Schema.ChildRelationship" };
-    try child_rel.fields.put(ctx.arena, "field", try create_s_object_field_token_value(ctx.arena, child_type, fk_field));
+    try child_rel.fields.put(
+        ctx.arena,
+        "field",
+        try create_s_object_field_token_value(ctx.arena, child_type, fk_field),
+    );
     try child_rel.fields.put(ctx.arena, "relationshipName", Value{ .string = relationship_name });
 
     const child_type_token = try ctx.arena.create(types.ObjectInstance);
@@ -2800,7 +3147,13 @@ fn create_child_relationships_value(ctx: *BuiltinContext, parent_type: []const u
     for (ctx.eval.child_relationships.keys(), ctx.eval.child_relationships.values()) |key, rel| {
         const sep = std.mem.indexOfScalar(u8, key, '|') orelse continue;
         if (!std.ascii.eqlIgnoreCase(key[0..sep], parent_type)) continue;
-        try append_child_relationship_value(ctx, list, rel.child_type, rel.fk_field, key[sep + 1 ..]);
+        try append_child_relationship_value(
+            ctx,
+            list,
+            rel.child_type,
+            rel.fk_field,
+            key[sep + 1 ..],
+        );
     }
 
     const standard = [_]struct { parent: []const u8, child: []const u8, fk: []const u8, relationship: []const u8 }{
@@ -2862,7 +3215,11 @@ fn create_child_relationships_value(ctx: *BuiltinContext, parent_type: []const u
     return Value{ .list = list };
 }
 
-pub fn create_field_set_collection_value(arena: std.mem.Allocator, eval: *evaluator_mod.Evaluator, obj_name: []const u8) !Value {
+pub fn create_field_set_collection_value(
+    arena: std.mem.Allocator,
+    eval: *evaluator_mod.Evaluator,
+    obj_name: []const u8,
+) !Value {
     const collection = try arena.create(types.ObjectInstance);
     collection.* = .{ .class_name = "Schema.FieldSetCollection" };
     const map = try arena.create(types.MapValue);
@@ -2874,7 +3231,11 @@ pub fn create_field_set_collection_value(arena: std.mem.Allocator, eval: *evalua
             field_set.* = .{ .class_name = "Schema.FieldSet" };
             try field_set.fields.put(arena, "name", Value{ .string = field_set_meta.name });
             try field_set.fields.put(arena, "label", Value{ .string = field_set_meta.label });
-            try field_set.fields.put(arena, "nameSpace", Value{ .string = field_set_meta.namespace });
+            try field_set.fields.put(
+                arena,
+                "nameSpace",
+                Value{ .string = field_set_meta.namespace },
+            );
 
             const members = try arena.create(types.ListValue);
             members.* = .{};
@@ -2885,10 +3246,22 @@ pub fn create_field_set_collection_value(arena: std.mem.Allocator, eval: *evalua
                     meta.label orelse default_field_label(member_meta.field_path)
                 else
                     default_field_label(member_meta.field_path);
-                try member.fields.put(arena, "fieldPath", Value{ .string = member_meta.field_path });
+                try member.fields.put(
+                    arena,
+                    "fieldPath",
+                    Value{ .string = member_meta.field_path },
+                );
                 try member.fields.put(arena, "label", Value{ .string = member_label });
-                try member.fields.put(arena, "required", Value{ .boolean = member_meta.is_required });
-                try member.fields.put(arena, "sObjectField", try create_s_object_field_token_value(arena, obj_name, member_meta.field_path));
+                try member.fields.put(
+                    arena,
+                    "required",
+                    Value{ .boolean = member_meta.is_required },
+                );
+                try member.fields.put(
+                    arena,
+                    "sObjectField",
+                    try create_s_object_field_token_value(arena, obj_name, member_meta.field_path),
+                );
                 try members.items.append(arena, Value{ .object = member });
             }
             try field_set.fields.put(arena, "fields", Value{ .list = members });
@@ -2922,13 +3295,21 @@ pub fn create_field_describe_map_value(ctx: *BuiltinContext, obj_name: []const u
         "CreatedBy", "LastModifiedBy", "SystemModstamp",
     }) |field_name| {
         if (std.ascii.eqlIgnoreCase(field_name, "Name") and !has_implicit_name_field(obj_name)) continue;
-        try fields_kv.entries.put(ctx.arena, field_name, try create_s_object_field_token_value(ctx.arena, obj_name, field_name));
+        try fields_kv.entries.put(
+            ctx.arena,
+            field_name,
+            try create_s_object_field_token_value(ctx.arena, obj_name, field_name),
+        );
     }
     if (ctx.eval.field_types.get(obj_name)) |type_map| {
         for (type_map.keys(), type_map.values()) |fname, ftype| {
             _ = ftype;
             if (!fields_kv.entries.contains(fname)) {
-                try fields_kv.entries.put(ctx.arena, fname, try create_s_object_field_token_value(ctx.arena, obj_name, fname));
+                try fields_kv.entries.put(
+                    ctx.arena,
+                    fname,
+                    try create_s_object_field_token_value(ctx.arena, obj_name, fname),
+                );
             }
         }
     }
@@ -2948,10 +3329,26 @@ fn create_describe_result(ctx: *BuiltinContext, obj_name: []const u8) !Value {
     desc.* = .{ .class_name = "DescribeSObjectResult" };
     const is_custom = has_custom_object_suffix(obj_name);
     try desc.fields.put(ctx.arena, "name", Value{ .string = obj_name });
-    try desc.fields.put(ctx.arena, "isAccessible", Value{ .boolean = resolve_object_crud_permission(ctx.eval, obj_name, "read") });
-    try desc.fields.put(ctx.arena, "isCreateable", Value{ .boolean = resolve_object_crud_permission(ctx.eval, obj_name, "create") });
-    try desc.fields.put(ctx.arena, "isUpdateable", Value{ .boolean = resolve_object_crud_permission(ctx.eval, obj_name, "edit") });
-    try desc.fields.put(ctx.arena, "isDeletable", Value{ .boolean = resolve_object_crud_permission(ctx.eval, obj_name, "delete") });
+    try desc.fields.put(
+        ctx.arena,
+        "isAccessible",
+        Value{ .boolean = resolve_object_crud_permission(ctx.eval, obj_name, "read") },
+    );
+    try desc.fields.put(
+        ctx.arena,
+        "isCreateable",
+        Value{ .boolean = resolve_object_crud_permission(ctx.eval, obj_name, "create") },
+    );
+    try desc.fields.put(
+        ctx.arena,
+        "isUpdateable",
+        Value{ .boolean = resolve_object_crud_permission(ctx.eval, obj_name, "edit") },
+    );
+    try desc.fields.put(
+        ctx.arena,
+        "isDeletable",
+        Value{ .boolean = resolve_object_crud_permission(ctx.eval, obj_name, "delete") },
+    );
     try desc.fields.put(ctx.arena, "isQueryable", Value{ .boolean = true });
     try desc.fields.put(ctx.arena, "isSearchable", Value{ .boolean = true });
 
@@ -2963,25 +3360,46 @@ fn create_describe_result(ctx: *BuiltinContext, obj_name: []const u8) !Value {
     const entity_label_plural: []const u8 = ctx.eval.object_label_plurals.get(obj_name) orelse try default_describe_label_plural(ctx.arena, obj_name);
     try desc.fields.put(ctx.arena, "label", Value{ .string = entity_label });
     try desc.fields.put(ctx.arena, "labelPlural", Value{ .string = entity_label_plural });
-    try desc.fields.put(ctx.arena, "fieldSets", try create_field_set_collection_value(ctx.arena, ctx.eval, obj_name));
+    try desc.fields.put(
+        ctx.arena,
+        "fieldSets",
+        try create_field_set_collection_value(ctx.arena, ctx.eval, obj_name),
+    );
 
     // isCustom: custom objects/events/metadata/big objects use __x-style suffixes
     try desc.fields.put(ctx.arena, "isCustom", Value{ .boolean = is_custom });
     // isCustomSetting: Hierarchy/List custom settings are declared in object-meta.xml via <customSettingsType>.
     // We detect them by scanning object-meta.xml files at load time into custom_setting_types.
-    const is_custom_setting = std.mem.endsWith(u8, obj_name, "__c") and ctx.eval.custom_setting_types.get(obj_name) != null;
+    const is_custom_setting = std.mem.endsWith(
+        u8,
+        obj_name,
+        "__c",
+    ) and ctx.eval.custom_setting_types.get(obj_name) != null;
     try desc.fields.put(ctx.arena, "isCustomSetting", Value{ .boolean = is_custom_setting });
 
     const record_type_artifacts = try build_record_type_info_artifacts(ctx, obj_name);
     try desc.fields.put(ctx.arena, "recordTypeInfos", record_type_artifacts.list);
     try desc.fields.put(ctx.arena, "recordTypeInfosById", record_type_artifacts.by_id);
     try desc.fields.put(ctx.arena, "recordTypeInfosByName", record_type_artifacts.by_name);
-    try desc.fields.put(ctx.arena, "recordTypeInfosByDeveloperName", record_type_artifacts.by_dev_name);
+    try desc.fields.put(
+        ctx.arena,
+        "recordTypeInfosByDeveloperName",
+        record_type_artifacts.by_dev_name,
+    );
 
     return Value{ .object = desc };
 }
 
-fn create_record_type_info(ctx: *BuiltinContext, name: []const u8, dev_name: []const u8, rt_id: []const u8, is_master: bool, is_active: bool, is_available: bool, is_default: bool) !Value {
+fn create_record_type_info(
+    ctx: *BuiltinContext,
+    name: []const u8,
+    dev_name: []const u8,
+    rt_id: []const u8,
+    is_master: bool,
+    is_active: bool,
+    is_available: bool,
+    is_default: bool,
+) !Value {
     const rti = try ctx.arena.create(types.ObjectInstance);
     rti.* = .{ .class_name = "Schema.RecordTypeInfo" };
     try rti.fields.put(ctx.arena, "name", Value{ .string = name });
@@ -3001,7 +3419,10 @@ const RecordTypeInfoArtifacts = struct {
     by_dev_name: Value,
 };
 
-fn build_record_type_info_artifacts(ctx: *BuiltinContext, obj_name: []const u8) !RecordTypeInfoArtifacts {
+fn build_record_type_info_artifacts(
+    ctx: *BuiltinContext,
+    obj_name: []const u8,
+) !RecordTypeInfoArtifacts {
     const rt_list = try ctx.arena.create(types.ListValue);
     rt_list.* = .{};
     const rt_by_id_map = try ctx.arena.create(types.MapValue);
@@ -3024,7 +3445,16 @@ fn build_record_type_info_artifacts(ctx: *BuiltinContext, obj_name: []const u8) 
     }
 
     const master_rt_id = try std.fmt.allocPrint(ctx.arena, "0120000000000{d:0>2}AAA", .{obj_idx});
-    const master_rt = try create_record_type_info(ctx, "Master", "Master", master_rt_id, true, true, true, true);
+    const master_rt = try create_record_type_info(
+        ctx,
+        "Master",
+        "Master",
+        master_rt_id,
+        true,
+        true,
+        true,
+        true,
+    );
     try rt_list.items.append(ctx.arena, master_rt);
     try rt_by_id_map.entries.put(ctx.arena, master_rt_id, master_rt);
     try rt_by_name_map.entries.put(ctx.arena, "Master", master_rt);
@@ -3033,7 +3463,16 @@ fn build_record_type_info_artifacts(ctx: *BuiltinContext, obj_name: []const u8) 
     try rt_by_dev_name_map.entries.put(ctx.arena, "master", master_rt);
 
     const def_rt_id = try std.fmt.allocPrint(ctx.arena, "0120000000001{d:0>2}AAA", .{obj_idx});
-    const default_rt = try create_record_type_info(ctx, "Default", "Default", def_rt_id, false, true, true, false);
+    const default_rt = try create_record_type_info(
+        ctx,
+        "Default",
+        "Default",
+        def_rt_id,
+        false,
+        true,
+        true,
+        false,
+    );
     try rt_list.items.append(ctx.arena, default_rt);
     try rt_by_id_map.entries.put(ctx.arena, def_rt_id, default_rt);
     try rt_by_name_map.entries.put(ctx.arena, "Default", default_rt);
@@ -3049,11 +3488,19 @@ fn build_record_type_info_artifacts(ctx: *BuiltinContext, obj_name: []const u8) 
     };
 }
 
-pub fn create_field_describe_result(ctx: *BuiltinContext, object_type: []const u8, field_name: []const u8) !Value {
+pub fn create_field_describe_result(
+    ctx: *BuiltinContext,
+    object_type: []const u8,
+    field_name: []const u8,
+) !Value {
     return create_field_describe_result_with_type(ctx, object_type, field_name, null);
 }
 
-pub fn sobject_field_exists(ctx: *BuiltinContext, sob: *types.SObject, field_name: []const u8) bool {
+pub fn sobject_field_exists(
+    ctx: *BuiltinContext,
+    sob: *types.SObject,
+    field_name: []const u8,
+) bool {
     for (sob.fields.keys()) |known_field| {
         if (std.ascii.eqlIgnoreCase(known_field, field_name)) return true;
     }
@@ -3076,12 +3523,25 @@ pub fn sobject_field_exists(ctx: *BuiltinContext, sob: *types.SObject, field_nam
     return false;
 }
 
-fn add_describe_field_if_missing(ctx: *BuiltinContext, fields_kv: *types.MapValue, object_type: []const u8, field_name: []const u8) !void {
+fn add_describe_field_if_missing(
+    ctx: *BuiltinContext,
+    fields_kv: *types.MapValue,
+    object_type: []const u8,
+    field_name: []const u8,
+) !void {
     if (fields_kv.entries.contains(field_name)) return;
-    try fields_kv.entries.put(ctx.arena, field_name, try create_s_object_field_token_value(ctx.arena, object_type, field_name));
+    try fields_kv.entries.put(
+        ctx.arena,
+        field_name,
+        try create_s_object_field_token_value(ctx.arena, object_type, field_name),
+    );
 }
 
-fn add_known_describe_fields(ctx: *BuiltinContext, fields_kv: *types.MapValue, object_type: []const u8) !void {
+fn add_known_describe_fields(
+    ctx: *BuiltinContext,
+    fields_kv: *types.MapValue,
+    object_type: []const u8,
+) !void {
     if (std.ascii.eqlIgnoreCase(object_type, "Account")) {
         for ([_][]const u8{
             "ParentId",           "AccountNumber",     "Phone",
@@ -3183,7 +3643,12 @@ fn add_known_describe_fields(ctx: *BuiltinContext, fields_kv: *types.MapValue, o
     }
 }
 
-fn add_describe_fields_from_record(ctx: *BuiltinContext, fields_kv: *types.MapValue, object_type: []const u8, record: Value) !void {
+fn add_describe_fields_from_record(
+    ctx: *BuiltinContext,
+    fields_kv: *types.MapValue,
+    object_type: []const u8,
+    record: Value,
+) !void {
     if (record != .sobject or !std.ascii.eqlIgnoreCase(record.sobject.type_name, object_type)) return;
     for (record.sobject.fields.keys(), record.sobject.fields.values()) |field_name, field_value| {
         if (std.mem.indexOfScalar(u8, field_name, '.') != null) continue;
@@ -3192,7 +3657,11 @@ fn add_describe_fields_from_record(ctx: *BuiltinContext, fields_kv: *types.MapVa
     }
 }
 
-fn add_describe_fields_from_store(ctx: *BuiltinContext, fields_kv: *types.MapValue, object_type: []const u8) !void {
+fn add_describe_fields_from_store(
+    ctx: *BuiltinContext,
+    fields_kv: *types.MapValue,
+    object_type: []const u8,
+) !void {
     if (ctx.eval.store.get(object_type)) |records| {
         for (records.items) |record| {
             try add_describe_fields_from_record(ctx, fields_kv, object_type, record);
@@ -3208,7 +3677,11 @@ fn add_describe_fields_from_store(ctx: *BuiltinContext, fields_kv: *types.MapVal
 /// Canonicalize a field name into its API form.
 /// Priority: field-meta.xml-derived types (exact key) → well-known per-object lists
 /// → upper-first fallback. Always returns a non-empty slice.
-fn canonical_field_api_name(ctx: *BuiltinContext, object_type: []const u8, field_name: []const u8) []const u8 {
+fn canonical_field_api_name(
+    ctx: *BuiltinContext,
+    object_type: []const u8,
+    field_name: []const u8,
+) []const u8 {
     if (ctx.eval.field_types.get(object_type)) |type_map| {
         for (type_map.keys()) |known| {
             if (std.ascii.eqlIgnoreCase(known, field_name)) return known;
@@ -3265,22 +3738,39 @@ fn canonical_field_api_name(ctx: *BuiltinContext, object_type: []const u8, field
     return field_name;
 }
 
-fn create_field_describe_result_with_type(ctx: *BuiltinContext, object_type: []const u8, field_name: []const u8, field_type: ?[]const u8) !Value {
+fn create_field_describe_result_with_type(
+    ctx: *BuiltinContext,
+    object_type: []const u8,
+    field_name: []const u8,
+    field_type: ?[]const u8,
+) !Value {
     const fdr = try ctx.arena.create(types.ObjectInstance);
     fdr.* = .{ .class_name = "DescribeFieldResult" };
     const canonical_name: []const u8 = canonical_field_api_name(ctx, object_type, field_name);
     const metadata = lookup_field_metadata(ctx, object_type, canonical_name);
     try fdr.fields.put(ctx.arena, "name", Value{ .string = canonical_name });
-    try fdr.fields.put(ctx.arena, "localName", Value{ .string = describe_local_name(canonical_name) });
+    try fdr.fields.put(
+        ctx.arena,
+        "localName",
+        Value{ .string = describe_local_name(canonical_name) },
+    );
     try fdr.fields.put(ctx.arena, "label", Value{ .string = if (metadata) |meta| meta.label orelse default_field_label(field_name) else default_field_label(field_name) });
     try fdr.fields.put(ctx.arena, "inlineHelpText", Value.null_val);
     try fdr.fields.put(ctx.arena, "objectType", Value{ .string = object_type });
-    try fdr.fields.put(ctx.arena, "isAccessible", Value{ .boolean = resolve_field_read_permission(ctx.eval, object_type, field_name) });
+    try fdr.fields.put(
+        ctx.arena,
+        "isAccessible",
+        Value{ .boolean = resolve_field_read_permission(ctx.eval, object_type, field_name) },
+    );
     // Id and system fields are not updateable/createable
     const is_sys_field = is_system_field(field_name);
     try fdr.fields.put(ctx.arena, "isUpdateable", Value{ .boolean = !is_sys_field and resolve_field_write_permission(ctx.eval, object_type, field_name, "edit") });
     try fdr.fields.put(ctx.arena, "isCreateable", Value{ .boolean = !is_sys_field and resolve_field_write_permission(ctx.eval, object_type, field_name, "create") });
-    try fdr.fields.put(ctx.arena, "isFilterable", Value{ .boolean = resolve_field_read_permission(ctx.eval, object_type, field_name) });
+    try fdr.fields.put(
+        ctx.arena,
+        "isFilterable",
+        Value{ .boolean = resolve_field_read_permission(ctx.eval, object_type, field_name) },
+    );
     // Set field length based on field type
     const length: i64 = if (metadata != null and metadata.?.length != null)
         metadata.?.length.?
@@ -3303,7 +3793,11 @@ fn create_field_describe_result_with_type(ctx: *BuiltinContext, object_type: []c
     };
     const ft: []const u8 = map_xml_type_to_display_type(raw_ft);
     try fdr.fields.put(ctx.arena, "type", Value{ .string = ft });
-    try fdr.fields.put(ctx.arena, "isSortable", Value{ .boolean = !std.ascii.eqlIgnoreCase(ft, "TEXTAREA") });
+    try fdr.fields.put(
+        ctx.arena,
+        "isSortable",
+        Value{ .boolean = !std.ascii.eqlIgnoreCase(ft, "TEXTAREA") },
+    );
     if (std.ascii.eqlIgnoreCase(ft, "REFERENCE")) {
         if (try default_relationship_name(ctx.arena, field_name)) |relationship_name| {
             try fdr.fields.put(ctx.arena, "relationshipName", Value{ .string = relationship_name });
@@ -3454,7 +3948,11 @@ fn infer_standard_picklist_type(object_type: []const u8, field_name: []const u8)
     return null;
 }
 
-pub fn get_s_object_field_display_type(ctx: *BuiltinContext, sob: *types.SObject, field_name: []const u8) []const u8 {
+pub fn get_s_object_field_display_type(
+    ctx: *BuiltinContext,
+    sob: *types.SObject,
+    field_name: []const u8,
+) []const u8 {
     if (ctx.eval.field_types.get(sob.type_name)) |type_map| {
         for (type_map.keys(), type_map.values()) |known_field_name, raw_type| {
             if (std.ascii.eqlIgnoreCase(known_field_name, field_name)) {
@@ -3465,7 +3963,12 @@ pub fn get_s_object_field_display_type(ctx: *BuiltinContext, sob: *types.SObject
     return map_xml_type_to_display_type(infer_field_type_for_object(sob.type_name, field_name));
 }
 
-pub fn normalize_s_object_field_assignment(ctx: *BuiltinContext, sob: *types.SObject, field_name: []const u8, value: Value) !Value {
+pub fn normalize_s_object_field_assignment(
+    ctx: *BuiltinContext,
+    sob: *types.SObject,
+    field_name: []const u8,
+    value: Value,
+) !Value {
     if (value == .null_val) return value;
 
     const display_type = get_s_object_field_display_type(ctx, sob, field_name);
@@ -3583,7 +4086,12 @@ fn dispatch_database(ctx: *BuiltinContext, method_name: []const u8, args: []cons
 }
 
 /// インスタンスメソッド呼び出しを試行する。
-pub fn dispatch_instance(ctx: *BuiltinContext, receiver: Value, method_name: []const u8, args: []const Value) !?Value {
+pub fn dispatch_instance(
+    ctx: *BuiltinContext,
+    receiver: Value,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
     switch (receiver) {
         .string => |s| return dispatch_string_instance(ctx, s, method_name, args),
         .list => |list| return dispatch_list_instance(ctx, list, method_name, args),
@@ -3598,7 +4106,12 @@ pub fn dispatch_instance(ctx: *BuiltinContext, receiver: Value, method_name: []c
     }
 }
 
-fn dispatch_string_instance(ctx: *BuiltinContext, s: []const u8, method_name: []const u8, args: []const Value) !?Value {
+fn dispatch_string_instance(
+    ctx: *BuiltinContext,
+    s: []const u8,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
     _ = ctx;
     _ = args;
     if (std.ascii.eqlIgnoreCase(method_name, "length")) return Value{ .integer = @intCast(s.len) };
@@ -3606,7 +4119,12 @@ fn dispatch_string_instance(ctx: *BuiltinContext, s: []const u8, method_name: []
 }
 
 /// Double / Decimal インスタンスメソッド: setScale, doubleValue, intValue, round, abs 等
-fn dispatch_double_instance(ctx: *BuiltinContext, d: f64, method_name: []const u8, args: []const Value) !?Value {
+fn dispatch_double_instance(
+    ctx: *BuiltinContext,
+    d: f64,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
     // setScale(scale) / setScale(scale, RoundingMode) — 小数点以下桁数を丸める (Decimal)
     if (std.ascii.eqlIgnoreCase(method_name, "setScale")) {
         if (args.len > 0) {
@@ -3692,24 +4210,44 @@ fn dispatch_double_instance(ctx: *BuiltinContext, d: f64, method_name: []const u
 }
 
 /// List メソッドは evaluator.eval_list_method (完全版) で処理されるため、ここでは null を返す。
-fn dispatch_list_instance(ctx: *BuiltinContext, list: *types.ListValue, method_name: []const u8, args: []const Value) !?Value {
+fn dispatch_list_instance(
+    ctx: *BuiltinContext,
+    list: *types.ListValue,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
     _ = .{ ctx, list, method_name, args };
     return null;
 }
 
 /// Map メソッドは evaluator.eval_map_method (完全版) で処理されるため、ここでは null を返す。
-fn dispatch_map_instance(ctx: *BuiltinContext, map: *types.MapValue, method_name: []const u8, args: []const Value) !?Value {
+fn dispatch_map_instance(
+    ctx: *BuiltinContext,
+    map: *types.MapValue,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
     _ = .{ ctx, map, method_name, args };
     return null;
 }
 
 /// Set メソッドは evaluator.eval_set_method (完全版) で処理されるため、ここでは null を返す。
-fn dispatch_set_instance(ctx: *BuiltinContext, set: *types.SetValue, method_name: []const u8, args: []const Value) !?Value {
+fn dispatch_set_instance(
+    ctx: *BuiltinContext,
+    set: *types.SetValue,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
     _ = .{ ctx, set, method_name, args };
     return null;
 }
 
-fn dispatch_object_instance(ctx: *BuiltinContext, obj: *types.ObjectInstance, method_name: []const u8, args: []const Value) !?Value {
+fn dispatch_object_instance(
+    ctx: *BuiltinContext,
+    obj: *types.ObjectInstance,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
     const ci = std.ascii;
     const cn = obj.class_name;
 
@@ -3726,7 +4264,11 @@ fn dispatch_object_instance(ctx: *BuiltinContext, obj: *types.ObjectInstance, me
             if (pos >= items_val.list.items.items.len) {
                 const exc = try ctx.arena.create(types.ObjectInstance);
                 exc.* = .{ .class_name = "System.NoSuchElementException" };
-                try exc.fields.put(ctx.arena, "message", Value{ .string = "Iterator has no more elements" });
+                try exc.fields.put(
+                    ctx.arena,
+                    "message",
+                    Value{ .string = "Iterator has no more elements" },
+                );
                 ctx.eval.pending_exception = Value{ .object = exc };
                 return error.ApexException;
             }
@@ -3983,7 +4525,11 @@ fn dispatch_object_instance(ctx: *BuiltinContext, obj: *types.ObjectInstance, me
                     try err_obj.fields.put(ctx.arena, "code", Value{ .string = "INVALID_TYPE" });
                     const action_name: Value = obj.fields.get("name") orelse Value{ .string = "" };
                     const msg = if (action_name == .string)
-                        try std.fmt.allocPrint(ctx.arena, "No action with name {s} found.", .{action_name.string})
+                        try std.fmt.allocPrint(
+                            ctx.arena,
+                            "No action with name {s} found.",
+                            .{action_name.string},
+                        )
                     else
                         try std.fmt.allocPrint(ctx.arena, "No action found.", .{});
                     try err_obj.fields.put(ctx.arena, "message", Value{ .string = msg });
@@ -4027,7 +4573,12 @@ fn dispatch_object_instance(ctx: *BuiltinContext, obj: *types.ObjectInstance, me
     return dispatch_obj_common(ctx, obj, method_name, args);
 }
 
-fn dispatch_obj_common(ctx: *BuiltinContext, obj: *types.ObjectInstance, method_name: []const u8, args: []const Value) !?Value {
+fn dispatch_obj_common(
+    ctx: *BuiltinContext,
+    obj: *types.ObjectInstance,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
     // EventBus.PublishResult.getEventUuids
     if (std.ascii.eqlIgnoreCase(method_name, "getEventUuids")) {
         if (obj.fields.get("eventUuids")) |uuids| return uuids;
@@ -4072,7 +4623,11 @@ fn dispatch_obj_common(ctx: *BuiltinContext, obj: *types.ObjectInstance, method_
             };
             for (system_exceptions) |se| {
                 if (std.ascii.eqlIgnoreCase(cn, se)) {
-                    return Value{ .string = try std.fmt.allocPrint(ctx.arena, "System.{s}", .{cn}) };
+                    return Value{ .string = try std.fmt.allocPrint(
+                        ctx.arena,
+                        "System.{s}",
+                        .{cn},
+                    ) };
                 }
             }
         }
@@ -4115,7 +4670,12 @@ fn dispatch_obj_common(ctx: *BuiltinContext, obj: *types.ObjectInstance, method_
             const object_type_val = obj.fields.get("objectType") orelse Value.null_val;
             const field_name_val = obj.fields.get("fieldName") orelse obj.fields.get("name") orelse Value.null_val;
             if (object_type_val == .string and field_name_val == .string) {
-                return try create_field_describe_result_with_type(ctx, object_type_val.string, field_name_val.string, null);
+                return try create_field_describe_result_with_type(
+                    ctx,
+                    object_type_val.string,
+                    field_name_val.string,
+                    null,
+                );
             }
             return Value{ .object = obj };
         }
@@ -4163,12 +4723,21 @@ fn dispatch_obj_common(ctx: *BuiltinContext, obj: *types.ObjectInstance, method_
 // Object instance class-specific handlers
 // ---------------------------------------------------------------------------
 
-fn dispatch_obj_pattern(ctx: *BuiltinContext, obj: *types.ObjectInstance, method_name: []const u8, args: []const Value) !?Value {
+fn dispatch_obj_pattern(
+    ctx: *BuiltinContext,
+    obj: *types.ObjectInstance,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
     if (std.ascii.eqlIgnoreCase(method_name, "matcher") and args.len > 0 and args[0] == .string) {
         const matcher = try ctx.arena.create(types.ObjectInstance);
         matcher.* = .{ .class_name = "Matcher" };
         try matcher.fields.put(ctx.arena, "input", args[0]);
-        try matcher.fields.put(ctx.arena, "pattern", obj.fields.get("pattern") orelse Value{ .string = "" });
+        try matcher.fields.put(
+            ctx.arena,
+            "pattern",
+            obj.fields.get("pattern") orelse Value{ .string = "" },
+        );
         try matcher.fields.put(ctx.arena, "pos", Value{ .integer = 0 });
         const matches = try ctx.arena.create(types.ListValue);
         matches.* = .{};
@@ -4192,12 +4761,22 @@ fn dispatch_obj_pattern(ctx: *BuiltinContext, obj: *types.ObjectInstance, method
                             } else {
                                 try match_groups.items.append(ctx.arena, Value.null_val);
                             }
-                            try group_starts.items.append(ctx.arena, Value{ .integer = @intCast(span.start) });
-                            try group_ends.items.append(ctx.arena, Value{ .integer = @intCast(span.end) });
+                            try group_starts.items.append(
+                                ctx.arena,
+                                Value{ .integer = @intCast(span.start) },
+                            );
+                            try group_ends.items.append(
+                                ctx.arena,
+                                Value{ .integer = @intCast(span.end) },
+                            );
                         } else if (gi > 0) break;
                     }
                     try match_obj.fields.put(ctx.arena, "groups", Value{ .list = match_groups });
-                    try match_obj.fields.put(ctx.arena, "groupStarts", Value{ .list = group_starts });
+                    try match_obj.fields.put(
+                        ctx.arena,
+                        "groupStarts",
+                        Value{ .list = group_starts },
+                    );
                     try match_obj.fields.put(ctx.arena, "groupEnds", Value{ .list = group_ends });
                     try matches.items.append(ctx.arena, Value{ .object = match_obj });
                 }
@@ -4237,7 +4816,12 @@ fn count_capturing_groups(pattern: []const u8) i64 {
     return count;
 }
 
-fn dispatch_obj_matcher(ctx: *BuiltinContext, obj: *types.ObjectInstance, method_name: []const u8, args: []const Value) !?Value {
+fn dispatch_obj_matcher(
+    ctx: *BuiltinContext,
+    obj: *types.ObjectInstance,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
     if (std.ascii.eqlIgnoreCase(method_name, "find")) {
         const matches = obj.fields.get("matches") orelse return Value{ .boolean = false };
         if (matches != .list) return Value{ .boolean = false };
@@ -4309,7 +4893,12 @@ fn dispatch_obj_matcher(ctx: *BuiltinContext, obj: *types.ObjectInstance, method
     return null;
 }
 
-fn dispatch_obj_event_bus(ctx: *BuiltinContext, obj: *types.ObjectInstance, method_name: []const u8, args: []const Value) !?Value {
+fn dispatch_obj_event_bus(
+    ctx: *BuiltinContext,
+    obj: *types.ObjectInstance,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
     _ = args;
     if (std.ascii.eqlIgnoreCase(method_name, "deliver")) return .void_val;
     if (std.ascii.eqlIgnoreCase(method_name, "fail")) {
@@ -4326,7 +4915,12 @@ fn dispatch_obj_event_bus(ctx: *BuiltinContext, obj: *types.ObjectInstance, meth
             }
             try fail_result.fields.put(ctx.arena, "eventUuids", Value{ .list = uuid_list });
             if (ctx.eval.find_class_public(callback.class_name)) |cb_class| {
-                _ = ctx.eval.call_instance_method_public(cb_class, callback, "onFailure", &.{Value{ .object = fail_result }}) catch {};
+                _ = ctx.eval.call_instance_method_public(
+                    cb_class,
+                    callback,
+                    "onFailure",
+                    &.{Value{ .object = fail_result }},
+                ) catch {};
             }
             ctx.eval.pending_event_callback = null;
         }
@@ -4336,11 +4930,19 @@ fn dispatch_obj_event_bus(ctx: *BuiltinContext, obj: *types.ObjectInstance, meth
     return null;
 }
 
-fn dispatch_obj_data_weave_script(ctx: *BuiltinContext, obj: *types.ObjectInstance, method_name: []const u8, args: []const Value) !?Value {
+fn dispatch_obj_data_weave_script(
+    ctx: *BuiltinContext,
+    obj: *types.ObjectInstance,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
     if (!std.ascii.eqlIgnoreCase(method_name, "execute")) return null;
     const script_name = if (obj.fields.get("scriptName")) |sn| (if (sn == .string) sn.string else "") else "";
     if (std.ascii.indexOfIgnoreCase(script_name, "excelOutput") != null) {
-        return ctx.throw_exception("DataWeaveScriptException", "Unknown content type `application/xlsx`");
+        return ctx.throw_exception(
+            "DataWeaveScriptException",
+            "Unknown content type `application/xlsx`",
+        );
     }
     if (std.ascii.indexOfIgnoreCase(script_name, "error") != null) {
         return ctx.throw_exception("DataWeaveScriptException", "Division by zero");
@@ -4356,11 +4958,23 @@ fn dispatch_obj_data_weave_script(ctx: *BuiltinContext, obj: *types.ObjectInstan
         const csv_json = try handle_csv_to_json(ctx, args, script_name);
         try result_obj.fields.put(ctx.arena, "value", Value{ .string = csv_json });
     } else if (std.ascii.indexOfIgnoreCase(script_name, "csvToContacts") != null) {
-        try result_obj.fields.put(ctx.arena, "value", try handle_csv_to_typed_records(ctx, args, script_name, "Contact"));
+        try result_obj.fields.put(
+            ctx.arena,
+            "value",
+            try handle_csv_to_typed_records(ctx, args, script_name, "Contact"),
+        );
     } else if (std.ascii.indexOfIgnoreCase(script_name, "jsonToContacts") != null) {
-        try result_obj.fields.put(ctx.arena, "value", try handle_json_to_typed_records(ctx, args, "Contact"));
+        try result_obj.fields.put(
+            ctx.arena,
+            "value",
+            try handle_json_to_typed_records(ctx, args, "Contact"),
+        );
     } else if (std.ascii.indexOfIgnoreCase(script_name, "csvToApexObject") != null) {
-        try result_obj.fields.put(ctx.arena, "value", try handle_csv_to_typed_records(ctx, args, script_name, "CsvData"));
+        try result_obj.fields.put(
+            ctx.arena,
+            "value",
+            try handle_csv_to_typed_records(ctx, args, script_name, "CsvData"),
+        );
     } else if (std.ascii.indexOfIgnoreCase(script_name, "pluralize") != null) {
         const pluralized = try handle_pluralize(ctx, args);
         try result_obj.fields.put(ctx.arena, "value", Value{ .string = pluralized });
@@ -4384,7 +4998,11 @@ fn dispatch_obj_data_weave_script(ctx: *BuiltinContext, obj: *types.ObjectInstan
     return Value{ .object = result_obj };
 }
 
-fn dispatch_obj_schema_describe_field(ctx: *BuiltinContext, obj: *types.ObjectInstance, method_name: []const u8) !?Value {
+fn dispatch_obj_schema_describe_field(
+    ctx: *BuiltinContext,
+    obj: *types.ObjectInstance,
+    method_name: []const u8,
+) !?Value {
     const object_type = if (obj.fields.get("objectType")) |ov|
         if (ov == .string) ov.string else null
     else
@@ -4407,7 +5025,12 @@ fn dispatch_obj_schema_describe_field(ctx: *BuiltinContext, obj: *types.ObjectIn
         if (object_type != null and field_name.len > 0) {
             if (lookup_field_metadata(ctx, object_type.?, field_name)) |metadata| {
                 for (metadata.picklist_values) |picklist_value| {
-                    try append_picklist_entry(ctx, list, picklist_value.label, picklist_value.value);
+                    try append_picklist_entry(
+                        ctx,
+                        list,
+                        picklist_value.label,
+                        picklist_value.value,
+                    );
                 }
             }
             if (list.items.items.len == 0) {
@@ -4425,10 +5048,20 @@ fn dispatch_obj_schema_describe_field(ctx: *BuiltinContext, obj: *types.ObjectIn
         return Value{ .boolean = resolve_field_read_permission(ctx.eval, object_type, field_name) };
     }
     if (std.ascii.eqlIgnoreCase(method_name, "isUpdateable")) {
-        return Value{ .boolean = resolve_field_write_permission(ctx.eval, object_type, field_name, "edit") };
+        return Value{ .boolean = resolve_field_write_permission(
+            ctx.eval,
+            object_type,
+            field_name,
+            "edit",
+        ) };
     }
     if (std.ascii.eqlIgnoreCase(method_name, "isCreateable")) {
-        return Value{ .boolean = resolve_field_write_permission(ctx.eval, object_type, field_name, "create") };
+        return Value{ .boolean = resolve_field_write_permission(
+            ctx.eval,
+            object_type,
+            field_name,
+            "create",
+        ) };
     }
     if (std.ascii.eqlIgnoreCase(method_name, "isAutoNumber")) return Value{ .boolean = false };
     if (std.ascii.eqlIgnoreCase(method_name, "isNillable")) return obj.fields.get("isNillable") orelse Value{ .boolean = true };
@@ -4519,7 +5152,12 @@ fn ensure_headers_map(ctx: *BuiltinContext, obj: *types.ObjectInstance) !*types.
     return headers;
 }
 
-fn dispatch_obj_http(ctx: *BuiltinContext, obj: *types.ObjectInstance, method_name: []const u8, args: []const Value) !?Value {
+fn dispatch_obj_http(
+    ctx: *BuiltinContext,
+    obj: *types.ObjectInstance,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
     if (std.ascii.eqlIgnoreCase(method_name, "getStatusCode")) return obj.fields.get("statusCode") orelse Value{ .integer = 200 };
     if (std.ascii.eqlIgnoreCase(method_name, "getBody")) return obj.fields.get("body") orelse Value{ .string = "{}" };
     if (std.ascii.eqlIgnoreCase(method_name, "getCompressed")) return obj.fields.get("compressed") orelse Value{ .boolean = false };
@@ -4567,7 +5205,10 @@ fn dispatch_obj_http(ctx: *BuiltinContext, obj: *types.ObjectInstance, method_na
         return Value{ .list = list };
     }
     if (std.ascii.eqlIgnoreCase(method_name, "setMethod") or std.ascii.eqlIgnoreCase(method_name, "setEndpoint") or
-        std.ascii.eqlIgnoreCase(method_name, "setHeader") or std.ascii.eqlIgnoreCase(method_name, "setTimeout"))
+        std.ascii.eqlIgnoreCase(
+            method_name,
+            "setHeader",
+        ) or std.ascii.eqlIgnoreCase(method_name, "setTimeout"))
     {
         if (std.ascii.eqlIgnoreCase(method_name, "setEndpoint") and args.len > 0) try obj.fields.put(ctx.arena, "endpoint", args[0]);
         if (std.ascii.eqlIgnoreCase(method_name, "setMethod") and args.len > 0) try obj.fields.put(ctx.arena, "method", args[0]);
@@ -4587,7 +5228,12 @@ fn dispatch_obj_http(ctx: *BuiltinContext, obj: *types.ObjectInstance, method_na
     return null;
 }
 
-fn dispatch_obj_page_reference(ctx: *BuiltinContext, obj: *types.ObjectInstance, method_name: []const u8, args: []const Value) !?Value {
+fn dispatch_obj_page_reference(
+    ctx: *BuiltinContext,
+    obj: *types.ObjectInstance,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
     if (std.ascii.eqlIgnoreCase(method_name, "getUrl")) {
         const base_url = if (obj.fields.get("url")) |url_val|
             if (url_val == .string) url_val.string else ""
@@ -4598,8 +5244,15 @@ fn dispatch_obj_page_reference(ctx: *BuiltinContext, obj: *types.ObjectInstance,
 
         var buf = std.ArrayListUnmanaged(u8).empty;
         try buf.appendSlice(ctx.arena, base_url);
-        try buf.append(ctx.arena, if (std.mem.indexOfScalar(u8, base_url, '?') == null) '?' else '&');
-        for (params_val.map.entries.keys(), params_val.map.entries.values(), 0..) |key, value, idx| {
+        try buf.append(
+            ctx.arena,
+            if (std.mem.indexOfScalar(u8, base_url, '?') == null) '?' else '&',
+        );
+        for (
+            params_val.map.entries.keys(),
+            params_val.map.entries.values(),
+            0..,
+        ) |key, value, idx| {
             if (idx > 0) try buf.append(ctx.arena, '&');
             try buf.appendSlice(ctx.arena, key);
             try buf.append(ctx.arena, '=');
@@ -4632,7 +5285,11 @@ fn dispatch_obj_apex_pages_message(obj: *types.ObjectInstance, method_name: []co
     return null;
 }
 
-fn dispatch_obj_standard_controller(ctx: *BuiltinContext, obj: *types.ObjectInstance, method_name: []const u8) !?Value {
+fn dispatch_obj_standard_controller(
+    ctx: *BuiltinContext,
+    obj: *types.ObjectInstance,
+    method_name: []const u8,
+) !?Value {
     if (std.ascii.eqlIgnoreCase(method_name, "getRecord")) return obj.fields.get("record") orelse Value.null_val;
     if (std.ascii.eqlIgnoreCase(method_name, "getId")) {
         if (obj.fields.get("record")) |rec| {
@@ -4649,7 +5306,12 @@ fn dispatch_obj_standard_controller(ctx: *BuiltinContext, obj: *types.ObjectInst
     return null;
 }
 
-fn dispatch_obj_standard_set_controller(ctx: *BuiltinContext, obj: *types.ObjectInstance, method_name: []const u8, args: []const Value) !?Value {
+fn dispatch_obj_standard_set_controller(
+    ctx: *BuiltinContext,
+    obj: *types.ObjectInstance,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
     if (std.ascii.eqlIgnoreCase(method_name, "getPageSize")) return obj.fields.get("pageSize") orelse Value{ .integer = 20 };
     if (std.ascii.eqlIgnoreCase(method_name, "setPageSize") and args.len > 0) {
         try obj.fields.put(ctx.arena, "pageSize", args[0]);
@@ -4680,14 +5342,21 @@ fn dispatch_obj_standard_set_controller(ctx: *BuiltinContext, obj: *types.Object
         return Value{ .integer = 0 };
     }
     if (std.ascii.eqlIgnoreCase(method_name, "first") or std.ascii.eqlIgnoreCase(method_name, "last") or
-        std.ascii.eqlIgnoreCase(method_name, "next") or std.ascii.eqlIgnoreCase(method_name, "previous"))
+        std.ascii.eqlIgnoreCase(
+            method_name,
+            "next",
+        ) or std.ascii.eqlIgnoreCase(method_name, "previous"))
         return Value.void_val;
     if (std.ascii.eqlIgnoreCase(method_name, "getHasNext") or std.ascii.eqlIgnoreCase(method_name, "getHasPrevious"))
         return Value{ .boolean = false };
     return null;
 }
 
-fn dispatch_obj_type(ctx: *BuiltinContext, obj: *types.ObjectInstance, method_name: []const u8) !?Value {
+fn dispatch_obj_type(
+    ctx: *BuiltinContext,
+    obj: *types.ObjectInstance,
+    method_name: []const u8,
+) !?Value {
     if (std.ascii.eqlIgnoreCase(method_name, "newInstance")) {
         const type_name = if (obj.fields.get("name")) |n| n.string else "Object";
         if (std.ascii.startsWithIgnoreCase(type_name, "Map")) {
@@ -4711,7 +5380,12 @@ fn dispatch_obj_type(ctx: *BuiltinContext, obj: *types.ObjectInstance, method_na
     return null;
 }
 
-fn dispatch_obj_cache_partition(ctx: *BuiltinContext, obj: *types.ObjectInstance, method_name: []const u8, args: []const Value) !?Value {
+fn dispatch_obj_cache_partition(
+    ctx: *BuiltinContext,
+    obj: *types.ObjectInstance,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
     const cache_map = if (obj.fields.get("_cache")) |cm| if (cm == .map) cm.map else null else null;
     if (std.ascii.eqlIgnoreCase(method_name, "put") and args.len >= 2) {
         if (cache_map) |cm| {
@@ -4731,14 +5405,26 @@ fn dispatch_obj_cache_partition(ctx: *BuiltinContext, obj: *types.ObjectInstance
                     }
                     break :blk builder_type.object.class_name;
                 } else "";
-                const cache_key = try std.fmt.allocPrint(ctx.arena, "{s}:{s}", .{ builder_name, key });
+                const cache_key = try std.fmt.allocPrint(
+                    ctx.arena,
+                    "{s}:{s}",
+                    .{ builder_name, key },
+                );
                 if (cm.entries.get(cache_key)) |cached| return cached;
                 if (builder_name.len > 0) {
                     const class_name = if (std.mem.startsWith(u8, builder_name, "Type:")) builder_name[5..] else builder_name;
                     const resolved_class_name = ctx.eval.resolve_full_class_name_public(class_name);
-                    const resolved_cache_key = try std.fmt.allocPrint(ctx.arena, "{s}:{s}", .{ resolved_class_name, key });
+                    const resolved_cache_key = try std.fmt.allocPrint(
+                        ctx.arena,
+                        "{s}:{s}",
+                        .{ resolved_class_name, key },
+                    );
                     if (cm.entries.get(resolved_cache_key)) |cached| return cached;
-                    const result = ctx.eval.call_instance_method_by_name(resolved_class_name, "doLoad", &.{Value{ .string = key }}) catch Value.null_val;
+                    const result = ctx.eval.call_instance_method_by_name(
+                        resolved_class_name,
+                        "doLoad",
+                        &.{Value{ .string = key }},
+                    ) catch Value.null_val;
                     if (result != .null_val) {
                         try cm.entries.put(ctx.arena, resolved_cache_key, result);
                         try cm.entries.put(ctx.arena, cache_key, result);
@@ -4753,9 +5439,17 @@ fn dispatch_obj_cache_partition(ctx: *BuiltinContext, obj: *types.ObjectInstance
                         else
                             entry.key_ptr.*;
                         if (!std.ascii.eqlIgnoreCase(simple_name, class_name)) continue;
-                        const fallback_cache_key = try std.fmt.allocPrint(ctx.arena, "{s}:{s}", .{ entry.key_ptr.*, key });
+                        const fallback_cache_key = try std.fmt.allocPrint(
+                            ctx.arena,
+                            "{s}:{s}",
+                            .{ entry.key_ptr.*, key },
+                        );
                         if (cm.entries.get(fallback_cache_key)) |cached| return cached;
-                        const fallback_result = ctx.eval.call_instance_method_by_name(entry.key_ptr.*, "doLoad", &.{Value{ .string = key }}) catch Value.null_val;
+                        const fallback_result = ctx.eval.call_instance_method_by_name(
+                            entry.key_ptr.*,
+                            "doLoad",
+                            &.{Value{ .string = key }},
+                        ) catch Value.null_val;
                         if (fallback_result == .null_val) continue;
                         try cm.entries.put(ctx.arena, fallback_cache_key, fallback_result);
                         try cm.entries.put(ctx.arena, resolved_cache_key, fallback_result);
@@ -4788,7 +5482,11 @@ fn dispatch_obj_cache_partition(ctx: *BuiltinContext, obj: *types.ObjectInstance
                     }
                     break :blk args[0].object.class_name;
                 } else try utils.coerce_to_string(args[0], ctx.arena);
-                const cache_key = try std.fmt.allocPrint(ctx.arena, "{s}:{s}", .{ builder_name, args[1].string });
+                const cache_key = try std.fmt.allocPrint(
+                    ctx.arena,
+                    "{s}:{s}",
+                    .{ builder_name, args[1].string },
+                );
                 _ = cm.entries.orderedRemove(cache_key);
             } else {
                 const key = try utils.coerce_to_string(args[0], ctx.arena);
@@ -4816,7 +5514,12 @@ fn dispatch_obj_cache_partition(ctx: *BuiltinContext, obj: *types.ObjectInstance
     return null;
 }
 
-fn dispatch_obj_flow_interview(ctx: *BuiltinContext, obj: *types.ObjectInstance, method_name: []const u8, args: []const Value) !?Value {
+fn dispatch_obj_flow_interview(
+    ctx: *BuiltinContext,
+    obj: *types.ObjectInstance,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
     if (std.ascii.eqlIgnoreCase(method_name, "start")) {
         const flow_name = if (obj.fields.get("flowName")) |fv| if (fv == .string) fv.string else "" else "";
         if (std.ascii.eqlIgnoreCase(flow_name, "MockLoggerSObjectHandlerPlugin") or
@@ -4836,7 +5539,11 @@ fn dispatch_obj_flow_interview(ctx: *BuiltinContext, obj: *types.ObjectInstance,
     return null;
 }
 
-fn dispatch_obj_describe_s_object(ctx: *BuiltinContext, obj: *types.ObjectInstance, method_name: []const u8) !?Value {
+fn dispatch_obj_describe_s_object(
+    ctx: *BuiltinContext,
+    obj: *types.ObjectInstance,
+    method_name: []const u8,
+) !?Value {
     const desc_name = if (obj.fields.get("name")) |n| n.string else "";
     if (std.ascii.eqlIgnoreCase(method_name, "isAccessible")) return obj.fields.get("isAccessible") orelse Value{ .boolean = resolve_object_crud_permission(ctx.eval, desc_name, "read") };
     if (std.ascii.eqlIgnoreCase(method_name, "isCreateable")) return obj.fields.get("isCreateable") orelse Value{ .boolean = resolve_object_crud_permission(ctx.eval, desc_name, "create") };
@@ -4863,7 +5570,11 @@ fn dispatch_obj_describe_s_object(ctx: *BuiltinContext, obj: *types.ObjectInstan
     if (std.ascii.eqlIgnoreCase(method_name, "getSObjectType")) {
         const sot = try ctx.arena.create(types.ObjectInstance);
         sot.* = .{ .class_name = "Schema.SObjectType" };
-        try sot.fields.put(ctx.arena, "name", obj.fields.get("name") orelse Value{ .string = "Object" });
+        try sot.fields.put(
+            ctx.arena,
+            "name",
+            obj.fields.get("name") orelse Value{ .string = "Object" },
+        );
         return Value{ .object = sot };
     }
     if (std.ascii.eqlIgnoreCase(method_name, "getLabel")) return obj.fields.get("label") orelse obj.fields.get("name") orelse Value{ .string = "Object" };
@@ -4911,7 +5622,12 @@ fn dispatch_obj_record_type_info(obj: *types.ObjectInstance, method_name: []cons
     return null;
 }
 
-fn dispatch_obj_select_option(ctx: *BuiltinContext, obj: *types.ObjectInstance, method_name: []const u8, args: []const Value) !?Value {
+fn dispatch_obj_select_option(
+    ctx: *BuiltinContext,
+    obj: *types.ObjectInstance,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
     if (std.ascii.eqlIgnoreCase(method_name, "getValue")) return obj.fields.get("value") orelse Value{ .string = "" };
     if (std.ascii.eqlIgnoreCase(method_name, "getLabel")) return obj.fields.get("label") orelse Value{ .string = "" };
     if (std.ascii.eqlIgnoreCase(method_name, "isDisabled")) return obj.fields.get("disabled") orelse Value{ .boolean = false };
@@ -4930,7 +5646,11 @@ fn dispatch_obj_select_option(ctx: *BuiltinContext, obj: *types.ObjectInstance, 
     return null;
 }
 
-fn dispatch_obj_describe_field_result(ctx: *BuiltinContext, obj: *types.ObjectInstance, method_name: []const u8) !?Value {
+fn dispatch_obj_describe_field_result(
+    ctx: *BuiltinContext,
+    obj: *types.ObjectInstance,
+    method_name: []const u8,
+) !?Value {
     const object_type = if (obj.fields.get("objectType")) |ov|
         if (ov == .string) ov.string else null
     else
@@ -4979,7 +5699,11 @@ fn dispatch_obj_describe_field_result(ctx: *BuiltinContext, obj: *types.ObjectIn
                         if (metadata.reference_to) |reference_to| {
                             const token = try ctx.arena.create(types.ObjectInstance);
                             token.* = .{ .class_name = "Schema.SObjectType" };
-                            try token.fields.put(ctx.arena, "name", Value{ .string = reference_to });
+                            try token.fields.put(
+                                ctx.arena,
+                                "name",
+                                Value{ .string = reference_to },
+                            );
                             try list.items.append(ctx.arena, Value{ .object = token });
                         }
                     } else if (standard_reference_target_for_field_name(field_name_val.string)) |reference_to| {
@@ -5000,7 +5724,12 @@ fn dispatch_obj_describe_field_result(ctx: *BuiltinContext, obj: *types.ObjectIn
             const object_type_val = obj.fields.get("objectType") orelse Value.null_val;
             const field_name_val = obj.fields.get("fieldName") orelse obj.fields.get("name") orelse Value.null_val;
             if (object_type_val == .string and field_name_val == .string) {
-                return try create_field_describe_result_with_type(ctx, object_type_val.string, field_name_val.string, null);
+                return try create_field_describe_result_with_type(
+                    ctx,
+                    object_type_val.string,
+                    field_name_val.string,
+                    null,
+                );
             }
         }
         return Value{ .object = obj };
@@ -5043,7 +5772,12 @@ fn dispatch_obj_describe_field_result(ctx: *BuiltinContext, obj: *types.ObjectIn
     return null;
 }
 
-fn dispatch_obj_s_object_type(ctx: *BuiltinContext, obj: *types.ObjectInstance, method_name: []const u8, args: []const Value) !?Value {
+fn dispatch_obj_s_object_type(
+    ctx: *BuiltinContext,
+    obj: *types.ObjectInstance,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
     if (std.ascii.eqlIgnoreCase(method_name, "getDescribe")) {
         const name = if (obj.fields.get("name")) |n| n.string else "Object";
         return try create_describe_result(ctx, name);
@@ -5072,7 +5806,10 @@ fn dispatch_obj_s_object_type(ctx: *BuiltinContext, obj: *types.ObjectInstance, 
         }
     }
     if (std.ascii.eqlIgnoreCase(method_name, "isAccessible") or std.ascii.eqlIgnoreCase(method_name, "isCreateable") or
-        std.ascii.eqlIgnoreCase(method_name, "isUpdateable") or std.ascii.eqlIgnoreCase(method_name, "isDeletable"))
+        std.ascii.eqlIgnoreCase(
+            method_name,
+            "isUpdateable",
+        ) or std.ascii.eqlIgnoreCase(method_name, "isDeletable"))
     {
         const sobj_name = if (obj.fields.get("name")) |n| n.string else "Object";
         const operation = if (std.ascii.eqlIgnoreCase(method_name, "isAccessible"))
@@ -5097,7 +5834,11 @@ fn dispatch_obj_s_object_type(ctx: *BuiltinContext, obj: *types.ObjectInstance, 
         }
         if (args.len >= 2 and args[1] == .boolean and args[1].boolean) {
             if (std.mem.endsWith(u8, name, "__e")) {
-                try new_sob.fields.put(ctx.arena, "EventUuid", Value{ .string = "evt-00000001-0000-0000-0000-000000000001" });
+                try new_sob.fields.put(
+                    ctx.arena,
+                    "EventUuid",
+                    Value{ .string = "evt-00000001-0000-0000-0000-000000000001" },
+                );
             }
             if (ctx.eval.field_defaults.get(name)) |defaults| {
                 for (defaults.keys(), defaults.values()) |field_name, default_val| {
@@ -5110,7 +5851,11 @@ fn dispatch_obj_s_object_type(ctx: *BuiltinContext, obj: *types.ObjectInstance, 
     return null;
 }
 
-fn dispatch_obj_s_object_access_decision(ctx: *BuiltinContext, obj: *types.ObjectInstance, method_name: []const u8) !?Value {
+fn dispatch_obj_s_object_access_decision(
+    ctx: *BuiltinContext,
+    obj: *types.ObjectInstance,
+    method_name: []const u8,
+) !?Value {
     if (std.ascii.eqlIgnoreCase(method_name, "getRecords")) {
         return obj.fields.get("records") orelse blk: {
             const list = try ctx.arena.create(types.ListValue);
@@ -5128,7 +5873,12 @@ fn dispatch_obj_s_object_access_decision(ctx: *BuiltinContext, obj: *types.Objec
     return null;
 }
 
-fn dispatch_s_object_instance(ctx: *BuiltinContext, sob: *types.SObject, method_name: []const u8, args: []const Value) !?Value {
+fn dispatch_s_object_instance(
+    ctx: *BuiltinContext,
+    sob: *types.SObject,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
     if (std.ascii.eqlIgnoreCase(method_name, "getSObjectType")) {
         // Return a Schema.SObjectType object that supports getDescribe()
         const sot = try ctx.arena.create(types.ObjectInstance);
@@ -5175,7 +5925,11 @@ fn dispatch_s_object_instance(ctx: *BuiltinContext, sob: *types.SObject, method_
         const err_obj = try ctx.arena.create(types.ObjectInstance);
         err_obj.* = .{ .class_name = "Database.Error" };
         try err_obj.fields.put(ctx.arena, "message", msg_val);
-        try err_obj.fields.put(ctx.arena, "statusCode", Value{ .string = "FIELD_CUSTOM_VALIDATION_EXCEPTION" });
+        try err_obj.fields.put(
+            ctx.arena,
+            "statusCode",
+            Value{ .string = "FIELD_CUSTOM_VALIDATION_EXCEPTION" },
+        );
         const fields_list = try ctx.arena.create(types.ListValue);
         fields_list.* = .{};
         if (field_val) |fv| {
@@ -5224,7 +5978,11 @@ fn dispatch_s_object_instance(ctx: *BuiltinContext, sob: *types.SObject, method_
         }
         // If stripped SObject, throw SObjectException for missing relationship
         if (sob.is_stripped) {
-            const msg = try std.fmt.allocPrint(ctx.arena, "SObject row was retrieved via SOQL without querying the requested field: {s}", .{args[0].string});
+            const msg = try std.fmt.allocPrint(
+                ctx.arena,
+                "SObject row was retrieved via SOQL without querying the requested field: {s}",
+                .{args[0].string},
+            );
             return ctx.throw_exception("SObjectException", msg);
         }
         return Value.null_val;
@@ -5236,11 +5994,20 @@ fn dispatch_s_object_instance(ctx: *BuiltinContext, sob: *types.SObject, method_
         if (sobject_field_exists(ctx, sob, args[0].string)) {
             return Value.null_val;
         }
-        const msg = try std.fmt.allocPrint(ctx.arena, "Invalid field {s} for {s}", .{ args[0].string, sob.type_name });
+        const msg = try std.fmt.allocPrint(
+            ctx.arena,
+            "Invalid field {s} for {s}",
+            .{ args[0].string, sob.type_name },
+        );
         return ctx.throw_exception("System.SObjectException", msg);
     }
     if (std.ascii.eqlIgnoreCase(method_name, "put") and args.len >= 2 and args[0] == .string) {
-        const normalized = try normalize_s_object_field_assignment(ctx, sob, args[0].string, args[1]);
+        const normalized = try normalize_s_object_field_assignment(
+            ctx,
+            sob,
+            args[0].string,
+            args[1],
+        );
         try utils.sobject_put(&sob.fields, ctx.arena, args[0].string, normalized);
         if (std.ascii.eqlIgnoreCase(args[0].string, "Id") and normalized == .string) {
             sob.id = normalized.string;
@@ -5336,7 +6103,10 @@ fn collect_assigned_permission_set_ids(eval: *evaluator_mod.Evaluator, out: *[64
     if (eval.store.get("PermissionSetAssignment")) |psa_records| {
         for (psa_records.items) |psa| {
             if (psa != .sobject) continue;
-            const assignee_id = utils.sobject_get(&psa.sobject.fields, "AssigneeId") orelse continue;
+            const assignee_id = utils.sobject_get(
+                &psa.sobject.fields,
+                "AssigneeId",
+            ) orelse continue;
             if (assignee_id != .string or !std.ascii.eqlIgnoreCase(assignee_id.string, eval.current_user_id)) continue;
             if (utils.sobject_get(&psa.sobject.fields, "PermissionSetId")) |permission_set_id| {
                 if (permission_set_id == .string) {
@@ -5359,9 +6129,15 @@ fn collect_assigned_permission_set_ids(eval: *evaluator_mod.Evaluator, out: *[64
                 if (eval.store.get("PermissionSetGroupComponent")) |components| {
                     for (components.items) |component| {
                         if (component != .sobject) continue;
-                        const group_id = utils.sobject_get(&component.sobject.fields, "PermissionSetGroupId") orelse continue;
+                        const group_id = utils.sobject_get(
+                            &component.sobject.fields,
+                            "PermissionSetGroupId",
+                        ) orelse continue;
                         if (group_id != .string or !std.ascii.eqlIgnoreCase(group_id.string, permission_set_group_id.string)) continue;
-                        const component_set_id = utils.sobject_get(&component.sobject.fields, "PermissionSetId") orelse continue;
+                        const component_set_id = utils.sobject_get(
+                            &component.sobject.fields,
+                            "PermissionSetId",
+                        ) orelse continue;
                         if (component_set_id != .string) continue;
 
                         var already_added = false;
@@ -5388,7 +6164,10 @@ fn has_assigned_permission_set(eval: *evaluator_mod.Evaluator) bool {
     return collect_assigned_permission_set_ids(eval, &assigned_ids) > 0;
 }
 
-fn collect_assigned_permission_set_names(eval: *evaluator_mod.Evaluator, out: *[64][]const u8) usize {
+fn collect_assigned_permission_set_names(
+    eval: *evaluator_mod.Evaluator,
+    out: *[64][]const u8,
+) usize {
     var assigned_ids: [64][]const u8 = undefined;
     const assigned_count = collect_assigned_permission_set_ids(eval, &assigned_ids);
     if (assigned_count == 0) return 0;
@@ -5481,7 +6260,11 @@ fn permission_name_mentions_object(permission_name: []const u8, object_type: []c
     return false;
 }
 
-fn permission_name_mentions_field(permission_name: []const u8, object_type: ?[]const u8, field_name: []const u8) bool {
+fn permission_name_mentions_field(
+    permission_name: []const u8,
+    object_type: ?[]const u8,
+    field_name: []const u8,
+) bool {
     if (lower_contains(permission_name, field_name)) return true;
 
     var snake_buf: [128]u8 = undefined;
@@ -5499,7 +6282,11 @@ fn permission_name_mentions_field(permission_name: []const u8, object_type: ?[]c
     return false;
 }
 
-fn permission_name_allows_object_operation(permission_name: []const u8, object_type: []const u8, operation: []const u8) bool {
+fn permission_name_allows_object_operation(
+    permission_name: []const u8,
+    object_type: []const u8,
+    operation: []const u8,
+) bool {
     if (!permission_name_mentions_object(permission_name, object_type)) return false;
 
     if (std.ascii.eqlIgnoreCase(operation, "read")) {
@@ -5518,7 +6305,12 @@ fn permission_name_allows_object_operation(permission_name: []const u8, object_t
     return false;
 }
 
-fn permission_name_allows_field_operation(permission_name: []const u8, object_type: ?[]const u8, field_name: []const u8, operation: []const u8) bool {
+fn permission_name_allows_field_operation(
+    permission_name: []const u8,
+    object_type: ?[]const u8,
+    field_name: []const u8,
+    operation: []const u8,
+) bool {
     const obj_name = object_type orelse return false;
     if (!permission_name_allows_object_operation(permission_name, obj_name, operation)) return false;
 
@@ -5547,7 +6339,11 @@ fn current_profile_name(eval: *evaluator_mod.Evaluator) ?[]const u8 {
     return "System Administrator";
 }
 
-fn restricted_profile_allows_object_operation(eval: *evaluator_mod.Evaluator, sobject_type: []const u8, operation: []const u8) bool {
+fn restricted_profile_allows_object_operation(
+    eval: *evaluator_mod.Evaluator,
+    sobject_type: []const u8,
+    operation: []const u8,
+) bool {
     const profile_name = current_profile_name(eval) orelse return false;
     if (std.ascii.indexOfIgnoreCase(profile_name, "Marketing") == null) return false;
 
@@ -5583,7 +6379,10 @@ fn relationship_read_target(field_name: []const u8) ?[]const u8 {
     return null;
 }
 
-fn permission_record_matches_assigned_set(eval: *evaluator_mod.Evaluator, parent_id_value: ?Value) bool {
+fn permission_record_matches_assigned_set(
+    eval: *evaluator_mod.Evaluator,
+    parent_id_value: ?Value,
+) bool {
     if (parent_id_value == null) return true;
     if (parent_id_value.? != .string) return false;
 
@@ -5597,7 +6396,11 @@ fn permission_record_matches_assigned_set(eval: *evaluator_mod.Evaluator, parent
     return false;
 }
 
-fn field_permission_matches(object_type: ?[]const u8, permission_field: []const u8, field_name: []const u8) bool {
+fn field_permission_matches(
+    object_type: ?[]const u8,
+    permission_field: []const u8,
+    field_name: []const u8,
+) bool {
     const fp_field_name = if (std.mem.lastIndexOfScalar(u8, permission_field, '.')) |dot|
         permission_field[dot + 1 ..]
     else
@@ -5614,7 +6417,12 @@ fn field_permission_matches(object_type: ?[]const u8, permission_field: []const 
 
 /// Check a specific permission (PermissionsRead/PermissionsEdit) for a field in FieldPermissions store.
 /// Returns null when no matching FieldPermissions record exists for the current user context.
-fn check_field_permission(eval: *evaluator_mod.Evaluator, object_type: ?[]const u8, field_name: []const u8, perm_field: []const u8) ?bool {
+fn check_field_permission(
+    eval: *evaluator_mod.Evaluator,
+    object_type: ?[]const u8,
+    field_name: []const u8,
+    perm_field: []const u8,
+) ?bool {
     const fp_records = eval.store.get("FieldPermissions") orelse return null;
     var matched_any = false;
     var granted = false;
@@ -5638,7 +6446,12 @@ fn check_field_permission(eval: *evaluator_mod.Evaluator, object_type: ?[]const 
 /// Strategy (in priority order):
 /// 1. Check assigned FieldPermissions records in store
 /// 2. Fallback: heuristic based on assigned PermissionSet names containing the field name
-fn is_field_allowed_by_perm_sets(eval: *evaluator_mod.Evaluator, object_type: ?[]const u8, field_name: []const u8, operation: []const u8) bool {
+fn is_field_allowed_by_perm_sets(
+    eval: *evaluator_mod.Evaluator,
+    object_type: ?[]const u8,
+    field_name: []const u8,
+    operation: []const u8,
+) bool {
     const perm_field = if (std.ascii.eqlIgnoreCase(operation, "create"))
         "PermissionsCreate"
     else if (std.ascii.eqlIgnoreCase(operation, "edit") or std.ascii.eqlIgnoreCase(operation, "update"))
@@ -5677,7 +6490,11 @@ fn get_s_object_type_from_args(args: []const Value) ?[]const u8 {
 }
 
 /// Lookup ObjectPermissions in the store for a given SObject type and operation
-fn lookup_object_permission(eval: *evaluator_mod.Evaluator, sobject_type: []const u8, operation: []const u8) ?bool {
+fn lookup_object_permission(
+    eval: *evaluator_mod.Evaluator,
+    sobject_type: []const u8,
+    operation: []const u8,
+) ?bool {
     const op_records = eval.store.get("ObjectPermissions") orelse return null;
     var matched_any = false;
     var granted = false;
@@ -5713,15 +6530,27 @@ fn default_object_crud_access(eval: *evaluator_mod.Evaluator, sobject_type: []co
     return true;
 }
 
-pub fn resolve_object_crud_permission_public(eval: *evaluator_mod.Evaluator, sobject_type: []const u8, operation: []const u8) bool {
+pub fn resolve_object_crud_permission_public(
+    eval: *evaluator_mod.Evaluator,
+    sobject_type: []const u8,
+    operation: []const u8,
+) bool {
     return resolve_object_crud_permission(eval, sobject_type, operation);
 }
 
-pub fn resolve_field_read_permission_public(eval: *evaluator_mod.Evaluator, object_type: []const u8, field_name: []const u8) bool {
+pub fn resolve_field_read_permission_public(
+    eval: *evaluator_mod.Evaluator,
+    object_type: []const u8,
+    field_name: []const u8,
+) bool {
     return resolve_field_read_permission(eval, object_type, field_name);
 }
 
-fn resolve_object_crud_permission(eval: *evaluator_mod.Evaluator, sobject_type: []const u8, operation: []const u8) bool {
+fn resolve_object_crud_permission(
+    eval: *evaluator_mod.Evaluator,
+    sobject_type: []const u8,
+    operation: []const u8,
+) bool {
     var allowed = default_object_crud_access(eval, sobject_type);
     if (lookup_object_permission(eval, sobject_type, operation)) |perm| {
         allowed = allowed or perm;
@@ -5737,7 +6566,11 @@ fn resolve_object_crud_permission(eval: *evaluator_mod.Evaluator, sobject_type: 
     return allowed;
 }
 
-fn resolve_field_read_permission(eval: *evaluator_mod.Evaluator, object_type: ?[]const u8, field_name: []const u8) bool {
+fn resolve_field_read_permission(
+    eval: *evaluator_mod.Evaluator,
+    object_type: ?[]const u8,
+    field_name: []const u8,
+) bool {
     if (is_id_field(field_name)) return true;
     if (object_type) |obj_name| {
         if (!resolve_object_crud_permission(eval, obj_name, "read")) return false;
@@ -5755,7 +6588,12 @@ fn resolve_field_read_permission(eval: *evaluator_mod.Evaluator, object_type: ?[
     return true;
 }
 
-fn resolve_field_write_permission(eval: *evaluator_mod.Evaluator, object_type: ?[]const u8, field_name: []const u8, operation: []const u8) bool {
+fn resolve_field_write_permission(
+    eval: *evaluator_mod.Evaluator,
+    object_type: ?[]const u8,
+    field_name: []const u8,
+    operation: []const u8,
+) bool {
     if (is_system_field(field_name)) return false;
     if (object_type) |obj_name| {
         if (!resolve_object_crud_permission(eval, obj_name, operation)) return false;
@@ -5959,7 +6797,11 @@ fn handle_reserved_keywords(ctx: *BuiltinContext, args: []const Value) ![]const 
 }
 
 /// Handle DataWeave CSV to JSON conversion
-fn handle_csv_to_json(ctx: *BuiltinContext, args: []const Value, script_name: []const u8) ![]const u8 {
+fn handle_csv_to_json(
+    ctx: *BuiltinContext,
+    args: []const Value,
+    script_name: []const u8,
+) ![]const u8 {
     // Extract input data (CSV string or records)
     var csv_str: []const u8 = "";
     var separator: u8 = ',';
@@ -6026,7 +6868,11 @@ fn handle_csv_to_json(ctx: *BuiltinContext, args: []const Value, script_name: []
     // Parse CSV fields from a row, handling quoted fields
     // Returns a list of field values
     const parseCsvFields = struct {
-        fn parse(arena: std.mem.Allocator, row: []const u8, sep: u8) !std.ArrayListUnmanaged([]const u8) {
+        fn parse(
+            arena: std.mem.Allocator,
+            row: []const u8,
+            sep: u8,
+        ) !std.ArrayListUnmanaged([]const u8) {
             var fields: std.ArrayListUnmanaged([]const u8) = .empty;
             var ci: usize = 0;
             while (ci <= row.len) {
@@ -6161,7 +7007,10 @@ fn extract_data_weave_input_string(args: []const Value, field_name: []const u8) 
     return null;
 }
 
-fn map_lookup_case_insensitive_string(map: *types.MapValue, aliases: []const []const u8) ?[]const u8 {
+fn map_lookup_case_insensitive_string(
+    map: *types.MapValue,
+    aliases: []const []const u8,
+) ?[]const u8 {
     for (aliases) |alias| {
         if (map.entries.get(alias)) |value| {
             if (value == .string) return value.string;
@@ -6200,17 +7049,30 @@ fn build_typed_data_weave_record(
     return Value{ .object = instance };
 }
 
-fn convert_parsed_data_weave_rows(ctx: *BuiltinContext, parsed: Value, output_class: []const u8) !Value {
+fn convert_parsed_data_weave_rows(
+    ctx: *BuiltinContext,
+    parsed: Value,
+    output_class: []const u8,
+) !Value {
     const list = try ctx.arena.create(types.ListValue);
     list.* = .{};
     if (parsed != .list) return Value{ .list = list };
 
     for (parsed.list.items.items) |row| {
         if (row != .map) continue;
-        const first_name = map_lookup_case_insensitive_string(row.map, &.{ "FirstName", "first_name" }) orelse "";
-        const last_name = map_lookup_case_insensitive_string(row.map, &.{ "LastName", "last_name" }) orelse "";
+        const first_name = map_lookup_case_insensitive_string(
+            row.map,
+            &.{ "FirstName", "first_name" },
+        ) orelse "";
+        const last_name = map_lookup_case_insensitive_string(
+            row.map,
+            &.{ "LastName", "last_name" },
+        ) orelse "";
         const email = map_lookup_case_insensitive_string(row.map, &.{ "Email", "email" }) orelse "";
-        try list.items.append(ctx.arena, try build_typed_data_weave_record(ctx, output_class, first_name, last_name, email));
+        try list.items.append(
+            ctx.arena,
+            try build_typed_data_weave_record(ctx, output_class, first_name, last_name, email),
+        );
     }
     return Value{ .list = list };
 }
@@ -6226,8 +7088,15 @@ fn handle_csv_to_typed_records(
     return convert_parsed_data_weave_rows(ctx, parsed, output_class);
 }
 
-fn handle_json_to_typed_records(ctx: *BuiltinContext, args: []const Value, output_class: []const u8) !Value {
-    const input_json = extract_data_weave_input_string(args, "records") orelse return try convert_parsed_data_weave_rows(ctx, Value.null_val, output_class);
+fn handle_json_to_typed_records(
+    ctx: *BuiltinContext,
+    args: []const Value,
+    output_class: []const u8,
+) !Value {
+    const input_json = extract_data_weave_input_string(
+        args,
+        "records",
+    ) orelse return try convert_parsed_data_weave_rows(ctx, Value.null_val, output_class);
     const parsed = (try dispatch_static_json(ctx, "deserializeUntyped", &.{Value{ .string = input_json }})) orelse Value.null_val;
     return convert_parsed_data_weave_rows(ctx, parsed, output_class);
 }
@@ -6276,7 +7145,11 @@ fn handle_json_date_format(ctx: *BuiltinContext, args: []const Value) ![]const u
                         const month_name = if (month_num >= 1 and month_num <= 12) month_names[month_num - 1] else "January";
                         const hour12: u8 = if (hour24 == 0) 12 else if (hour24 > 12) hour24 - 12 else hour24;
                         const am_pm: []const u8 = if (hour24 < 12) "AM" else "PM";
-                        break :blk try std.fmt.allocPrint(ctx.arena, "{d:0>2}:{s}:{s} {s}, {s} {s}, {s}", .{ hour12, minute, second, am_pm, month_name, day, year });
+                        break :blk try std.fmt.allocPrint(
+                            ctx.arena,
+                            "{d:0>2}:{s}:{s} {s}, {s} {s}, {s}",
+                            .{ hour12, minute, second, am_pm, month_name, day, year },
+                        );
                     }
                     break :blk raw_date;
                 };
@@ -6390,7 +7263,11 @@ fn find_json_string_end(json: []const u8, start: usize) ?struct { end: usize, va
     return find_json_string_end_alloc(json, start, null);
 }
 
-fn find_json_string_end_alloc(json: []const u8, start: usize, arena_opt: ?std.mem.Allocator) ?struct { end: usize, value: []const u8 } {
+fn find_json_string_end_alloc(
+    json: []const u8,
+    start: usize,
+    arena_opt: ?std.mem.Allocator,
+) ?struct { end: usize, value: []const u8 } {
     var i = start;
     var needs_unescape = false;
     while (i < json.len) {
@@ -6449,7 +7326,12 @@ test "String.length instance method" {
 
 /// SFDX メタデータ XML からピックリスト値を読み取る。
 /// source_paths (e.g. ".../main/default/classes") から "../../objects/<SObjectType>/fields/<FieldName>.field-meta.xml" を探す。
-fn append_picklist_entry(ctx: *BuiltinContext, list: *types.ListValue, label: []const u8, value: []const u8) !void {
+fn append_picklist_entry(
+    ctx: *BuiltinContext,
+    list: *types.ListValue,
+    label: []const u8,
+    value: []const u8,
+) !void {
     for (list.items.items) |existing| {
         if (existing != .object) continue;
         const existing_value = existing.object.fields.get("value") orelse existing.object.fields.get("label") orelse Value.null_val;
@@ -6464,7 +7346,12 @@ fn append_picklist_entry(ctx: *BuiltinContext, list: *types.ListValue, label: []
     try list.items.append(ctx.arena, Value{ .object = pe });
 }
 
-fn append_picklist_values_from_store(ctx: *BuiltinContext, list: *types.ListValue, object_type: []const u8, field_name: []const u8) !void {
+fn append_picklist_values_from_store(
+    ctx: *BuiltinContext,
+    list: *types.ListValue,
+    object_type: []const u8,
+    field_name: []const u8,
+) !void {
     var store_iter = ctx.eval.store.iterator();
     while (store_iter.next()) |entry| {
         if (!std.ascii.eqlIgnoreCase(entry.key_ptr.*, object_type)) continue;
@@ -6477,7 +7364,12 @@ fn append_picklist_values_from_store(ctx: *BuiltinContext, list: *types.ListValu
     }
 }
 
-fn load_picklist_from_metadata(ctx: *BuiltinContext, list: *types.ListValue, obj_type: []const u8, field_name: []const u8) !bool {
+fn load_picklist_from_metadata(
+    ctx: *BuiltinContext,
+    list: *types.ListValue,
+    obj_type: []const u8,
+    field_name: []const u8,
+) !bool {
     const initial_len = list.items.items.len;
     for (ctx.eval.source_paths) |path| {
         // Try multiple path patterns to find the field-meta.xml
@@ -6485,7 +7377,10 @@ fn load_picklist_from_metadata(ctx: *BuiltinContext, list: *types.ListValue, obj
             // Pattern 1: path is "classes" dir → sibling "objects" dir
             try std.fs.path.join(ctx.arena, &.{ std.fs.path.dirname(path) orelse ".", "objects", obj_type, "fields", field_name }),
             // Pattern 2: path is package root (e.g. "cc-base-app") → "main/default/objects/..."
-            try std.fs.path.join(ctx.arena, &.{ path, "main", "default", "objects", obj_type, "fields", field_name }),
+            try std.fs.path.join(
+                ctx.arena,
+                &.{ path, "main", "default", "objects", obj_type, "fields", field_name },
+            ),
             // Pattern 3: path itself contains objects
             try std.fs.path.join(ctx.arena, &.{ path, "objects", obj_type, "fields", field_name }),
         };
@@ -6510,7 +7405,11 @@ fn load_picklist_from_metadata(ctx: *BuiltinContext, list: *types.ListValue, obj
 
 /// field-meta.xml を読み込んでパースする。成功したら true を返す。
 fn try_load_field_meta(ctx: *BuiltinContext, list: *types.ListValue, meta_path: []const u8) !bool {
-    const xml_path = std.fmt.allocPrint(ctx.arena, "{s}.field-meta.xml", .{meta_path}) catch return false;
+    const xml_path = std.fmt.allocPrint(
+        ctx.arena,
+        "{s}.field-meta.xml",
+        .{meta_path},
+    ) catch return false;
     const content = std.Io.Dir.cwd().readFileAlloc(ctx.eval.io, xml_path, ctx.arena, .limited(512 * 1024)) catch return false;
     try parse_picklist_xml(ctx, list, content);
     return list.items.items.len > 0;

@@ -41,7 +41,10 @@ pub fn parse(tokens: []const Token, arena: @import("std").mem.Allocator) ![]Decl
 }
 
 /// 診断情報付きでパースする（LSP 向け）。
-pub fn parse_with_diagnostics(tokens: []const Token, arena: @import("std").mem.Allocator) !ParseResult {
+pub fn parse_with_diagnostics(
+    tokens: []const Token,
+    arena: @import("std").mem.Allocator,
+) !ParseResult {
     return parser.parse_with_diagnostics(tokens, arena);
 }
 

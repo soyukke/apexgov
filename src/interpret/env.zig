@@ -26,7 +26,12 @@ pub const Env = struct {
         try self.bindings.put(self.arena, name, value);
     }
 
-    pub fn define_typed(self: *Env, name: []const u8, value: Value, declared_type: ?[]const u8) !void {
+    pub fn define_typed(
+        self: *Env,
+        name: []const u8,
+        value: Value,
+        declared_type: ?[]const u8,
+    ) !void {
         try self.bindings.put(self.arena, name, value);
         if (declared_type) |type_name| {
             try self.declared_types.put(self.arena, name, type_name);

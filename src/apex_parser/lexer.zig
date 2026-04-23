@@ -161,7 +161,11 @@ const Lexer = struct {
                 depth -= 1;
                 if (depth == 0) {
                     self.advance();
-                    return self.make_token_at(.soql_literal, self.source[start..self.pos], start_loc);
+                    return self.make_token_at(
+                        .soql_literal,
+                        self.source[start..self.pos],
+                        start_loc,
+                    );
                 }
             }
             // skip line comments inside SOQL (e.g. // comment with 'quotes')
@@ -397,7 +401,12 @@ const Lexer = struct {
         return .{ .kind = kind, .lexeme = lexeme, .loc = self.loc() };
     }
 
-    fn make_token_at(_: *const Lexer, kind: TokenKind, lexeme: []const u8, token_loc: SourceLoc) Token {
+    fn make_token_at(
+        _: *const Lexer,
+        kind: TokenKind,
+        lexeme: []const u8,
+        token_loc: SourceLoc,
+    ) Token {
         return .{ .kind = kind, .lexeme = lexeme, .loc = token_loc };
     }
 };

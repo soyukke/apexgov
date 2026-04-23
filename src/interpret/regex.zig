@@ -114,7 +114,12 @@ pub fn matches(arena: std.mem.Allocator, pattern: []const u8, input: []const u8)
 
 /// パターンにマッチする全ての部分文字列を replacement で置換。
 /// replacement 内の `$1`..`$9` はキャプチャグループに展開される。
-pub fn replace_all(arena: std.mem.Allocator, pattern: []const u8, input: []const u8, replacement: []const u8) ![]const u8 {
+pub fn replace_all(
+    arena: std.mem.Allocator,
+    pattern: []const u8,
+    input: []const u8,
+    replacement: []const u8,
+) ![]const u8 {
     const all_matches = try find_all(arena, pattern, input);
     if (all_matches.len == 0) return input;
 
@@ -184,7 +189,10 @@ fn preprocess_pattern(arena: std.mem.Allocator, pattern: []const u8) ![]const u8
 
 fn is_regex_escape_char(c: u8) bool {
     return switch (c) {
-        's', 'd', 'w', 'S', 'D', 'W', '*', '.', '+', '?', '(', ')', '[', ']', '{', '}', '|', '^', '$' => true,
+        's', 'd', 'w', 'S', 'D', 'W' => true,
+        '*', '.', '+', '?' => true,
+        '(', ')', '[', ']', '{', '}' => true,
+        '|', '^', '$' => true,
         else => false,
     };
 }
@@ -332,7 +340,15 @@ fn match_at(
                                     // General path: verify shrunken input still matches.
                                     var next_end: usize = alt_end - 1;
                                     const sub_input = input[0..next_end];
-                                    const sub_match = match_at(a, 0, sub_input, ip, groups, depth + 1, inner_base);
+                                    const sub_match = match_at(
+                                        a,
+                                        0,
+                                        sub_input,
+                                        ip,
+                                        groups,
+                                        depth + 1,
+                                        inner_base,
+                                    );
                                     if (sub_match) |e| {
                                         next_end = e;
                                     } else {
@@ -350,7 +366,20 @@ fn match_at(
                 }
                 return null;
             }
-            return match_quantified_group(pat, pp, group_end, rest_start, quant, input, ip, groups, grp_idx, depth, group_base, inner_base);
+            return match_quantified_group(
+                pat,
+                pp,
+                group_end,
+                rest_start,
+                quant,
+                input,
+                ip,
+                groups,
+                grp_idx,
+                depth,
+                group_base,
+                inner_base,
+            );
         }
 
         // Backreference: \1..\9 — match the same text as captured by group N
@@ -854,11 +883,20 @@ test "replace_all with backreferences" {
 
     const a = arena.allocator();
     // Simple replacement without backreferences
-    try std.testing.expectEqualStrings("hello planet", try replace_all(a, "world", "hello world", "planet"));
+    try std.testing.expectEqualStrings(
+        "hello planet",
+        try replace_all(a, "world", "hello world", "planet"),
+    );
     // Backreference $1
-    try std.testing.expectEqualStrings("(abc) (def)", try replace_all(a, "(\\w+)", "abc def", "($1)"));
+    try std.testing.expectEqualStrings(
+        "(abc) (def)",
+        try replace_all(a, "(\\w+)", "abc def", "($1)"),
+    );
     // SSN-like pattern: mask first two groups
-    try std.testing.expectEqualStrings("XXX-XX-1234", try replace_all(a, "(\\d{3})-(\\d{2})-(\\d{4})", "123-45-1234", "XXX-XX-$3"));
+    try std.testing.expectEqualStrings(
+        "XXX-XX-1234",
+        try replace_all(a, "(\\d{3})-(\\d{2})-(\\d{4})", "123-45-1234", "XXX-XX-$3"),
+    );
     // No match → return original
     try std.testing.expectEqualStrings("hello", try replace_all(a, "\\d+", "hello", "NUM"));
 }
@@ -868,7 +906,10 @@ test "replace_all supports non-greedy quantifiers" {
     defer arena.deinit();
 
     const a = arena.allocator();
-    try std.testing.expectEqualStrings("x<>b<>c", try replace_all(a, "a.+?z", "xa123zba456zc", "<>"));
+    try std.testing.expectEqualStrings(
+        "x<>b<>c",
+        try replace_all(a, "a.+?z", "xa123zba456zc", "<>"),
+    );
     try std.testing.expectEqualStrings(
         "\nClass.CallableLogger_Tests.test: line 10, column 1",
         try replace_all(
@@ -935,13 +976,25 @@ test "SSN regex replace_all" {
     const a = arena.allocator();
     const ssn_pat = "(^|[^0-9A-Za-z])(\\d{3})[- ]?(\\d{2})[- ]?(\\d{4})(?=[^0-9A-Za-z]|$)";
     // Basic SSN: 123-45-6789 → XXX-XX-6789
-    try std.testing.expectEqualStrings("XXX-XX-6789", try replace_all(a, ssn_pat, "123-45-6789", "$1XXX-XX-$4"));
+    try std.testing.expectEqualStrings(
+        "XXX-XX-6789",
+        try replace_all(a, ssn_pat, "123-45-6789", "$1XXX-XX-$4"),
+    );
     // SSN in context
-    try std.testing.expectEqualStrings("xyz XXX-XX-6789.", try replace_all(a, ssn_pat, "xyz 123-45-6789.", "$1XXX-XX-$4"));
+    try std.testing.expectEqualStrings(
+        "xyz XXX-XX-6789.",
+        try replace_all(a, ssn_pat, "xyz 123-45-6789.", "$1XXX-XX-$4"),
+    );
     // No dashes: 123456789 → XXX-XX-6789
-    try std.testing.expectEqualStrings("XXX-XX-6789", try replace_all(a, ssn_pat, "123456789", "$1XXX-XX-$4"));
+    try std.testing.expectEqualStrings(
+        "XXX-XX-6789",
+        try replace_all(a, ssn_pat, "123456789", "$1XXX-XX-$4"),
+    );
     // False positive: alphanumeric before → should NOT match
-    try std.testing.expectEqualStrings("abc123456789", try replace_all(a, ssn_pat, "abc123456789", "$1XXX-XX-$4"));
+    try std.testing.expectEqualStrings(
+        "abc123456789",
+        try replace_all(a, ssn_pat, "abc123456789", "$1XXX-XX-$4"),
+    );
 }
 
 test "negative lookbehind (?<!...)" {

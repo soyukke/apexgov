@@ -62,7 +62,10 @@ const Parser = struct {
             if (self.check(.class_kw)) {
                 try decls.append(self.arena, .{ .class_decl = try self.parse_class_decl(mods, try annotations.toOwnedSlice(self.arena)) });
             } else if (self.check(.interface_kw)) {
-                try decls.append(self.arena, .{ .interface_decl = try self.parse_interface_decl(mods) });
+                try decls.append(
+                    self.arena,
+                    .{ .interface_decl = try self.parse_interface_decl(mods) },
+                );
             } else if (self.check(.enum_kw)) {
                 try decls.append(self.arena, .{ .enum_decl = try self.parse_enum_decl(mods) });
             } else if (self.check(.trigger_kw)) {
@@ -75,7 +78,11 @@ const Parser = struct {
         return decls.toOwnedSlice(self.arena);
     }
 
-    fn parse_class_decl(self: *Parser, mods: ast.Modifiers, annotations: [][]const u8) anyerror!*ast.ClassDecl {
+    fn parse_class_decl(
+        self: *Parser,
+        mods: ast.Modifiers,
+        annotations: [][]const u8,
+    ) anyerror!*ast.ClassDecl {
         const loc = self.current_loc();
         self.pos += 1; // skip 'class'
         const name = try self.expect_identifier();
@@ -288,7 +295,10 @@ const Parser = struct {
             if (self.check(.class_kw)) {
                 try members.append(self.arena, .{ .class_decl = try self.parse_class_decl(mods, try annotations.toOwnedSlice(self.arena)) });
             } else if (self.check(.interface_kw)) {
-                try members.append(self.arena, .{ .interface_decl = try self.parse_interface_decl(mods) });
+                try members.append(
+                    self.arena,
+                    .{ .interface_decl = try self.parse_interface_decl(mods) },
+                );
             } else if (self.check(.enum_kw)) {
                 try members.append(self.arena, .{ .enum_decl = try self.parse_enum_decl(mods) });
             } else if (self.check(.lbrace)) {
@@ -299,14 +309,24 @@ const Parser = struct {
                 try members.append(self.arena, .{ .static_init = body });
             } else {
                 // method or field: Type name ( ... ) { ... } or Type name ;/=
-                const member = try self.parse_method_or_field(mods, try annotations.toOwnedSlice(self.arena));
+                const member = try self.parse_method_or_field(
+                    mods,
+                    try annotations.toOwnedSlice(self.arena),
+                );
                 try members.append(self.arena, member);
             }
         }
         return members.toOwnedSlice(self.arena);
     }
 
-    fn parse_method_body(self: *Parser, mods: ast.Modifiers, type_ref: TypeRef, name: []const u8, annotations: [][]const u8, loc: SourceLoc) anyerror!ast.Decl {
+    fn parse_method_body(
+        self: *Parser,
+        mods: ast.Modifiers,
+        type_ref: TypeRef,
+        name: []const u8,
+        annotations: [][]const u8,
+        loc: SourceLoc,
+    ) anyerror!ast.Decl {
         const params = try self.parse_params();
         try self.expect(.rparen);
         var body: []ast.Stmt = &.{};
@@ -376,7 +396,11 @@ const Parser = struct {
         _ = self.match_kind(.semicolon);
     }
 
-    fn parse_method_or_field(self: *Parser, mods: ast.Modifiers, annotations: [][]const u8) anyerror!ast.Decl {
+    fn parse_method_or_field(
+        self: *Parser,
+        mods: ast.Modifiers,
+        annotations: [][]const u8,
+    ) anyerror!ast.Decl {
         const loc = self.current_loc();
 
         // Check for constructor: ClassName(

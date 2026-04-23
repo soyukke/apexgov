@@ -52,9 +52,25 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, source: []const u8, opts: Options
     if (opts.source_paths.len > 0) {
         eval.source_paths = opts.source_paths;
         for (opts.source_paths) |path| {
-            collect_field_defaults(arena.allocator(), io, path, &eval.field_defaults, &eval.field_types, &eval.field_metadata, &eval.child_relationships) catch {};
+            collect_field_defaults(
+                arena.allocator(),
+                io,
+                path,
+                &eval.field_defaults,
+                &eval.field_types,
+                &eval.field_metadata,
+                &eval.child_relationships,
+            ) catch {};
             collect_field_sets(arena.allocator(), io, path, &eval.field_sets) catch {};
-            collect_custom_setting_types(arena.allocator(), io, path, &eval.custom_setting_types, &eval.custom_setting_kinds, &eval.object_labels, &eval.object_label_plurals) catch {};
+            collect_custom_setting_types(
+                arena.allocator(),
+                io,
+                path,
+                &eval.custom_setting_types,
+                &eval.custom_setting_kinds,
+                &eval.object_labels,
+                &eval.object_label_plurals,
+            ) catch {};
         }
     }
     try eval.load_decls(decls);
@@ -183,7 +199,12 @@ fn find_sample_app_fixture_path(alloc: std.mem.Allocator, io: std.Io) ![]const u
 }
 
 /// ディレクトリ内の全 .cls ファイルを読み込み、@isTest メソッドを実行する。
-pub fn run_test_suite(gpa: std.mem.Allocator, io: std.Io, paths: []const []const u8, writer: anytype) !TestSuiteResult {
+pub fn run_test_suite(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    paths: []const []const u8,
+    writer: anytype,
+) !TestSuiteResult {
     return run_tests_filtered(gpa, io, paths, null, null, writer);
 }
 
@@ -241,9 +262,25 @@ fn load_metadata_for_path(
     path: []const u8,
     eval: *evaluator.Evaluator,
 ) void {
-    collect_field_defaults(parse_alloc, io, path, &eval.field_defaults, &eval.field_types, &eval.field_metadata, &eval.child_relationships) catch {};
+    collect_field_defaults(
+        parse_alloc,
+        io,
+        path,
+        &eval.field_defaults,
+        &eval.field_types,
+        &eval.field_metadata,
+        &eval.child_relationships,
+    ) catch {};
     collect_field_sets(parse_alloc, io, path, &eval.field_sets) catch {};
-    collect_custom_setting_types(parse_alloc, io, path, &eval.custom_setting_types, &eval.custom_setting_kinds, &eval.object_labels, &eval.object_label_plurals) catch {};
+    collect_custom_setting_types(
+        parse_alloc,
+        io,
+        path,
+        &eval.custom_setting_types,
+        &eval.custom_setting_kinds,
+        &eval.object_labels,
+        &eval.object_label_plurals,
+    ) catch {};
 }
 
 fn load_all_metadata(
@@ -298,7 +335,11 @@ fn find_test_setup_method(class_decl: *ast.ClassDecl) ?*ast.MethodDecl {
     return null;
 }
 
-fn seed_test_evaluator(test_eval: *evaluator.Evaluator, src: *const evaluator.Evaluator, parse_alloc: std.mem.Allocator) void {
+fn seed_test_evaluator(
+    test_eval: *evaluator.Evaluator,
+    src: *const evaluator.Evaluator,
+    parse_alloc: std.mem.Allocator,
+) void {
     test_eval.classes = src.classes;
     test_eval.class_arena = parse_alloc;
     test_eval.triggers = src.triggers;
@@ -425,7 +466,15 @@ fn run_one_test_method(ctx: TestMethodCtx, md: *ast.MethodDecl, writer: anytype)
     reset_limits(&test_eval);
 
     const result = test_eval.call_method(ctx.class_name, md.name, &.{});
-    try record_test_outcome(ctx.parse_alloc, writer, ctx.suite, &test_eval, ctx.class_name, md, result);
+    try record_test_outcome(
+        ctx.parse_alloc,
+        writer,
+        ctx.suite,
+        &test_eval,
+        ctx.class_name,
+        md,
+        result,
+    );
 }
 
 fn run_tests_filtered(
@@ -507,7 +556,10 @@ fn run_tests_filtered(
 fn is_test_class(cd: *ast.ClassDecl) bool {
     for (cd.annotations) |ann| {
         if (std.ascii.eqlIgnoreCase(ann, "@isTest") or std.ascii.eqlIgnoreCase(ann, "@IsTest") or
-            std.ascii.startsWithIgnoreCase(ann, "@isTest(") or std.ascii.startsWithIgnoreCase(ann, "@test("))
+            std.ascii.startsWithIgnoreCase(
+                ann,
+                "@isTest(",
+            ) or std.ascii.startsWithIgnoreCase(ann, "@test("))
         {
             return true;
         }
@@ -538,7 +590,12 @@ fn is_test_method(md: *ast.MethodDecl) bool {
     return false;
 }
 
-fn collect_cls_files(alloc: std.mem.Allocator, io: std.Io, path: []const u8, files: *std.ArrayListUnmanaged(SourceFile)) !void {
+fn collect_cls_files(
+    alloc: std.mem.Allocator,
+    io: std.Io,
+    path: []const u8,
+    files: *std.ArrayListUnmanaged(SourceFile),
+) !void {
     // Try as single .cls/.trigger file first
     if (std.mem.endsWith(u8, path, ".cls") or std.mem.endsWith(u8, path, ".trigger")) {
         const content = std.Io.Dir.cwd().readFileAlloc(io, path, alloc, .limited(10 * 1024 * 1024)) catch return;
@@ -659,16 +716,28 @@ fn collect_field_defaults(
             metadata.formula = decode_xml_text(alloc, formula, false) catch null;
         }
         if (extract_xml_tag_value(content, "formulaTreatBlanksAs")) |blank_mode| {
-            metadata.formula_blank_as_zero = std.ascii.eqlIgnoreCase(std.mem.trim(u8, blank_mode, " \t\n\r"), "BlankAsZero");
+            metadata.formula_blank_as_zero = std.ascii.eqlIgnoreCase(
+                std.mem.trim(u8, blank_mode, " \t\n\r"),
+                "BlankAsZero",
+            );
         }
         if (extract_xml_tag_value(content, "summarizedField")) |summarized_field| {
-            metadata.summarized_field = alloc.dupe(u8, std.mem.trim(u8, summarized_field, " \t\n\r")) catch null;
+            metadata.summarized_field = alloc.dupe(
+                u8,
+                std.mem.trim(u8, summarized_field, " \t\n\r"),
+            ) catch null;
         }
         if (extract_xml_tag_value(content, "summaryForeignKey")) |summary_foreign_key| {
-            metadata.summary_foreign_key = alloc.dupe(u8, std.mem.trim(u8, summary_foreign_key, " \t\n\r")) catch null;
+            metadata.summary_foreign_key = alloc.dupe(
+                u8,
+                std.mem.trim(u8, summary_foreign_key, " \t\n\r"),
+            ) catch null;
         }
         if (extract_xml_tag_value(content, "summaryOperation")) |summary_operation| {
-            metadata.summary_operation = alloc.dupe(u8, std.mem.trim(u8, summary_operation, " \t\n\r")) catch null;
+            metadata.summary_operation = alloc.dupe(
+                u8,
+                std.mem.trim(u8, summary_operation, " \t\n\r"),
+            ) catch null;
         }
         metadata.summary_filters = parse_summary_filters(alloc, content) catch &.{};
         metadata.picklist_values = parse_picklist_values(alloc, content) catch &.{};
@@ -689,17 +758,38 @@ fn collect_field_defaults(
         if (std.mem.indexOf(u8, content, "<referenceTo>")) |rs| {
             const r_start = rs + "<referenceTo>".len;
             if (std.mem.indexOfPos(u8, content, r_start, "</referenceTo>")) |re| {
-                metadata.reference_to = alloc.dupe(u8, std.mem.trim(u8, content[r_start..re], " \t\n\r")) catch null;
+                metadata.reference_to = alloc.dupe(
+                    u8,
+                    std.mem.trim(u8, content[r_start..re], " \t\n\r"),
+                ) catch null;
                 if (std.mem.indexOf(u8, content, "<relationshipName>")) |ns| {
                     const n_start = ns + "<relationshipName>".len;
                     if (std.mem.indexOfPos(u8, content, n_start, "</relationshipName>")) |ne| {
                         const parent_type = std.mem.trim(u8, content[r_start..re], " \t\n\r");
                         const relationship_name = std.mem.trim(u8, content[n_start..ne], " \t\n\r");
-                        put_child_relationship(alloc, child_relationships, parent_type, relationship_name, type_name, field_name) catch {};
+                        put_child_relationship(
+                            alloc,
+                            child_relationships,
+                            parent_type,
+                            relationship_name,
+                            type_name,
+                            field_name,
+                        ) catch {};
                         if (!std.mem.endsWith(u8, relationship_name, "__r")) {
-                            const rel_with_suffix = std.fmt.allocPrint(alloc, "{s}__r", .{relationship_name}) catch "";
+                            const rel_with_suffix = std.fmt.allocPrint(
+                                alloc,
+                                "{s}__r",
+                                .{relationship_name},
+                            ) catch "";
                             if (rel_with_suffix.len > 0) {
-                                put_child_relationship(alloc, child_relationships, parent_type, rel_with_suffix, type_name, field_name) catch {};
+                                put_child_relationship(
+                                    alloc,
+                                    child_relationships,
+                                    parent_type,
+                                    rel_with_suffix,
+                                    type_name,
+                                    field_name,
+                                ) catch {};
                             }
                         }
                     }
@@ -769,10 +859,18 @@ fn collect_field_defaults(
 }
 
 fn extract_xml_tag_value(content: []const u8, tag_name: []const u8) ?[]const u8 {
-    const start_tag = std.fmt.allocPrint(std.heap.page_allocator, "<{s}>", .{tag_name}) catch return null;
+    const start_tag = std.fmt.allocPrint(
+        std.heap.page_allocator,
+        "<{s}>",
+        .{tag_name},
+    ) catch return null;
     defer std.heap.page_allocator.free(start_tag);
 
-    const end_tag = std.fmt.allocPrint(std.heap.page_allocator, "</{s}>", .{tag_name}) catch return null;
+    const end_tag = std.fmt.allocPrint(
+        std.heap.page_allocator,
+        "</{s}>",
+        .{tag_name},
+    ) catch return null;
     defer std.heap.page_allocator.free(end_tag);
 
     const start_idx = std.mem.indexOf(u8, content, start_tag) orelse return null;
@@ -781,12 +879,20 @@ fn extract_xml_tag_value(content: []const u8, tag_name: []const u8) ?[]const u8 
     return content[value_start..end_idx];
 }
 
-fn parse_summary_filters(alloc: std.mem.Allocator, content: []const u8) ![]const evaluator.SummaryFilter {
+fn parse_summary_filters(
+    alloc: std.mem.Allocator,
+    content: []const u8,
+) ![]const evaluator.SummaryFilter {
     var filters = std.ArrayListUnmanaged(evaluator.SummaryFilter).empty;
     var search_start: usize = 0;
     while (std.mem.indexOfPos(u8, content, search_start, "<summaryFilterItems>")) |block_start_idx| {
         const block_start = block_start_idx + "<summaryFilterItems>".len;
-        const block_end = std.mem.indexOfPos(u8, content, block_start, "</summaryFilterItems>") orelse break;
+        const block_end = std.mem.indexOfPos(
+            u8,
+            content,
+            block_start,
+            "</summaryFilterItems>",
+        ) orelse break;
         const block = content[block_start..block_end];
         const field = extract_xml_tag_value(block, "field") orelse {
             search_start = block_end + "</summaryFilterItems>".len;
@@ -810,7 +916,10 @@ fn parse_summary_filters(alloc: std.mem.Allocator, content: []const u8) ![]const
     return try alloc.dupe(evaluator.SummaryFilter, filters.items);
 }
 
-fn parse_picklist_values(alloc: std.mem.Allocator, content: []const u8) ![]const evaluator.PicklistValueMetadata {
+fn parse_picklist_values(
+    alloc: std.mem.Allocator,
+    content: []const u8,
+) ![]const evaluator.PicklistValueMetadata {
     var values = std.ArrayListUnmanaged(evaluator.PicklistValueMetadata).empty;
     var search_start: usize = 0;
     while (std.mem.indexOfPos(u8, content, search_start, "<value>")) |block_start_idx| {
@@ -824,7 +933,10 @@ fn parse_picklist_values(alloc: std.mem.Allocator, content: []const u8) ![]const
         const raw_value = extract_xml_tag_value(block, "fullName") orelse raw_label;
         const is_default = blk: {
             if (extract_xml_tag_value(block, "default")) |raw_default| {
-                break :blk std.ascii.eqlIgnoreCase(std.mem.trim(u8, raw_default, " \t\n\r"), "true");
+                break :blk std.ascii.eqlIgnoreCase(
+                    std.mem.trim(u8, raw_default, " \t\n\r"),
+                    "true",
+                );
             }
             break :blk false;
         };
@@ -979,7 +1091,12 @@ fn collect_field_sets(
         var search_start: usize = 0;
         while (std.mem.indexOfPos(u8, content, search_start, "<displayedFields>")) |block_start_idx| {
             const block_start = block_start_idx + "<displayedFields>".len;
-            const block_end = std.mem.indexOfPos(u8, content, block_start, "</displayedFields>") orelse break;
+            const block_end = std.mem.indexOfPos(
+                u8,
+                content,
+                block_start,
+                "</displayedFields>",
+            ) orelse break;
             const block = content[block_start..block_end];
 
             const field_start_idx = std.mem.indexOf(u8, block, "<field>") orelse {
@@ -1026,7 +1143,11 @@ fn collect_field_sets(
 
 /// XML エンティティをデコードし、Apex 文字列リテラルのクォートを除去する。
 /// e.g., "&apos;FINEST&apos;" → "FINEST", "&amp;test" → "&test"
-fn decode_xml_text(alloc: std.mem.Allocator, raw: []const u8, strip_outer_quotes: bool) ![]const u8 {
+fn decode_xml_text(
+    alloc: std.mem.Allocator,
+    raw: []const u8,
+    strip_outer_quotes: bool,
+) ![]const u8 {
     // First pass: decode XML entities
     var buf: std.ArrayListUnmanaged(u8) = .empty;
     var i: usize = 0;
@@ -1643,7 +1764,10 @@ test "E2E: JSON parser tokens can be streamed into a generator" {
     });
     defer result.deinit();
 
-    try std.testing.expectEqualStrings("[{\"Name\":\"Acme\",\"Count\":\"2\",\"Flag\":\"true\",\"Missing\":null}]", result.value.string);
+    try std.testing.expectEqualStrings(
+        "[{\"Name\":\"Acme\",\"Count\":\"2\",\"Flag\":\"true\",\"Missing\":null}]",
+        result.value.string,
+    );
 }
 
 test "E2E: streamed JSON child relationship injection round-trips for typed and generic access" {
@@ -2701,7 +2825,10 @@ test "E2E: stripInaccessible READABLE skips root CRUD enforcement when disabled"
     });
     defer result.deinit();
 
-    try std.testing.expectEqualStrings("{\"attributes\":{\"type\":\"Thing__c\"},\"Id\":\"a00000000000001AAA\"}", result.value.string);
+    try std.testing.expectEqualStrings(
+        "{\"attributes\":{\"type\":\"Thing__c\"},\"Id\":\"a00000000000001AAA\"}",
+        result.value.string,
+    );
 }
 
 test "E2E: stripInaccessible READABLE enforces root CRUD by default" {
@@ -3027,7 +3154,10 @@ test "E2E: synthetic automated-process User query works when the User store is n
     });
     defer result.deinit();
 
-    try std.testing.expectEqualStrings("autoproc:autoproc@example.com:AutomatedProcess", result.value.string);
+    try std.testing.expectEqualStrings(
+        "autoproc:autoproc@example.com:AutomatedProcess",
+        result.value.string,
+    );
 }
 
 test "E2E: UserInfo getters reflect the current runAs user" {
@@ -3059,7 +3189,10 @@ test "E2E: UserInfo getters reflect the current runAs user" {
     });
     defer result.deinit();
 
-    try std.testing.expectEqualStrings("casey.runner@example.com:Casey:Runner:Asia/Tokyo", result.value.string);
+    try std.testing.expectEqualStrings(
+        "casey.runner@example.com:Casey:Runner:Asia/Tokyo",
+        result.value.string,
+    );
 }
 
 test "E2E: User query by UserInfo username resolves the current user when other users exist" {
@@ -4429,7 +4562,10 @@ test "E2E: constructor overloads prefer declared-variable hint over name-only sc
     });
     defer result.deinit();
 
-    try std.testing.expectEqualStrings("string-enum-bool:Account.Name:A:false", result.value.string);
+    try std.testing.expectEqualStrings(
+        "string-enum-bool:Account.Name:A:false",
+        result.value.string,
+    );
 }
 
 test "E2E: ternary with enum literals carries hint into overload resolution" {
@@ -6392,7 +6528,10 @@ test "E2E: JSON round-trip into SObject preserves setup object fields when addin
     });
     defer result.deinit();
 
-    try std.testing.expectEqualStrings("ApexClass:SomeClass:body:2026-04-01T00:00:00Z", result.value.string);
+    try std.testing.expectEqualStrings(
+        "ApexClass:SomeClass:body:2026-04-01T00:00:00Z",
+        result.value.string,
+    );
 }
 
 test "E2E: JSON read-only round-trip preserves typed ApexClass property access" {
@@ -6417,7 +6556,10 @@ test "E2E: JSON read-only round-trip preserves typed ApexClass property access" 
     });
     defer result.deinit();
 
-    try std.testing.expectEqualStrings("true:SomeClass:body:2026-04-01T00:00:00Z", result.value.string);
+    try std.testing.expectEqualStrings(
+        "true:SomeClass:body:2026-04-01T00:00:00Z",
+        result.value.string,
+    );
 }
 
 test "E2E: Map<Schema.SObjectField, Object> preserves setup field tokens through keySet/get" {
@@ -6440,7 +6582,10 @@ test "E2E: Map<Schema.SObjectField, Object> preserves setup field tokens through
     });
     defer result.deinit();
 
-    try std.testing.expectEqualStrings("LastModifiedDate:2026-04-01T00:00:00Z", result.value.string);
+    try std.testing.expectEqualStrings(
+        "LastModifiedDate:2026-04-01T00:00:00Z",
+        result.value.string,
+    );
 }
 
 test "E2E: helper-style read-only field setter preserves ApexClass Name" {
@@ -6475,7 +6620,10 @@ test "E2E: helper-style read-only field setter preserves ApexClass Name" {
     });
     defer result.deinit();
 
-    try std.testing.expectEqualStrings("true:SomeClass:body:2026-04-01T00:00:00Z", result.value.string);
+    try std.testing.expectEqualStrings(
+        "true:SomeClass:body:2026-04-01T00:00:00Z",
+        result.value.string,
+    );
 }
 
 test "E2E: helper-style read-only field setter preserves comma-containing setup fields" {
@@ -6512,7 +6660,10 @@ test "E2E: helper-style read-only field setter preserves comma-containing setup 
     });
     defer result.deinit();
 
-    try std.testing.expectEqualStrings("true:SomeClass:Wow, look at this code for a mock version of apex class SomeClass", result.value.string);
+    try std.testing.expectEqualStrings(
+        "true:SomeClass:Wow, look at this code for a mock version of apex class SomeClass",
+        result.value.string,
+    );
 }
 
 test "E2E: qualified Schema setup objects ignore same-named user classes" {
@@ -6573,7 +6724,10 @@ test "E2E: qualified Schema setup objects ignore same-named user classes" {
     });
     defer result.deinit();
 
-    try std.testing.expectEqualStrings("ApexClass:SomeClass:mock body:2026-04-01T00:00:00Z", result.value.string);
+    try std.testing.expectEqualStrings(
+        "ApexClass:SomeClass:mock body:2026-04-01T00:00:00Z",
+        result.value.string,
+    );
 }
 
 test "E2E: qualified inner class literals preserve outer class names" {
@@ -6597,7 +6751,10 @@ test "E2E: qualified inner class literals preserve outer class names" {
     });
     defer result.deinit();
 
-    try std.testing.expectEqualStrings("OuterNameHost.InnerNameTarget|OuterNameHost.InnerNameTarget", result.value.string);
+    try std.testing.expectEqualStrings(
+        "OuterNameHost.InnerNameTarget|OuterNameHost.InnerNameTarget",
+        result.value.string,
+    );
 }
 
 test "E2E: Type.forName(newInstance) preserves qualified inner class identity across duplicates" {
@@ -8000,8 +8157,14 @@ test "run_test_suite keeps repo-root metadata loading scoped to the requested re
     defer tmp_dir.cleanup();
 
     try tmp_dir.dir.createDirPath(std.testing.io, "repos/app-a/force-app/main/default/classes");
-    try tmp_dir.dir.createDirPath(std.testing.io, "repos/app-a/force-app/main/default/objects/Widget__c");
-    try tmp_dir.dir.createDirPath(std.testing.io, "repos/app-b/force-app/main/default/objects/Widget__c/fields");
+    try tmp_dir.dir.createDirPath(
+        std.testing.io,
+        "repos/app-a/force-app/main/default/objects/Widget__c",
+    );
+    try tmp_dir.dir.createDirPath(
+        std.testing.io,
+        "repos/app-b/force-app/main/default/objects/Widget__c/fields",
+    );
 
     try tmp_dir.dir.writeFile(std.testing.io, .{
         .sub_path = "repos/app-a/force-app/main/default/classes/WidgetRepoTest.cls",
@@ -8712,7 +8875,10 @@ test "E2E: implicit standard Name fields are treated as required" {
     });
     defer result.deinit();
 
-    try std.testing.expectEqualStrings("true:{\"attributes\":{\"type\":\"Campaign\"},\"Name\":\"Name value\"}", result.value.string);
+    try std.testing.expectEqualStrings(
+        "true:{\"attributes\":{\"type\":\"Campaign\"},\"Name\":\"Name value\"}",
+        result.value.string,
+    );
 }
 
 test "E2E: fieldSets metadata is available on SObjectType and DescribeSObjectResult" {
@@ -8766,7 +8932,10 @@ test "E2E: fieldSets metadata is available on SObjectType and DescribeSObjectRes
     });
     defer result.deinit();
 
-    try std.testing.expectEqualStrings("1:true:Related List Defaults:2:Name:Name", result.value.string);
+    try std.testing.expectEqualStrings(
+        "1:true:Related List Defaults:2:Name:Name",
+        result.value.string,
+    );
 }
 
 test "E2E: SObjectType record type info methods delegate to describe metadata" {
@@ -9066,7 +9235,10 @@ test "E2E: VisualEditor picklist rows can be built from fieldSets metadata" {
     });
     defer result.deinit();
 
-    try std.testing.expectEqualStrings("Related List Defaults:1:Related_List_Defaults", result.value.string);
+    try std.testing.expectEqualStrings(
+        "Related List Defaults:1:Related_List_Defaults",
+        result.value.string,
+    );
 }
 
 test "E2E: field set members expose lookup labels and relationship describe metadata" {
@@ -9127,7 +9299,10 @@ test "E2E: field set members expose lookup labels and relationship describe meta
     });
     defer result.deinit();
 
-    try std.testing.expectEqualStrings("Parent:Parent:Parent__r:true:1:reference", result.value.string);
+    try std.testing.expectEqualStrings(
+        "Parent:Parent:Parent__r:true:1:reference",
+        result.value.string,
+    );
 }
 
 test "E2E: getPopulatedFieldsAsMap excludes selected null fields" {
@@ -9352,7 +9527,10 @@ test "E2E: JSON round-trip through SObject.class preserves Apex metadata fields"
     });
     defer result.deinit();
 
-    try std.testing.expectEqualStrings("ExampleClass:public class ExampleClass {}:true:ApexClass", result.value.string);
+    try std.testing.expectEqualStrings(
+        "ExampleClass:public class ExampleClass {}:true:ApexClass",
+        result.value.string,
+    );
 }
 
 test "E2E: casted Apex metadata from SObject round-trip keeps concrete sobject type" {
@@ -9377,7 +9555,10 @@ test "E2E: casted Apex metadata from SObject round-trip keeps concrete sobject t
     });
     defer result.deinit();
 
-    try std.testing.expectEqualStrings("ApexClass:ApexClass:public class ExampleClass {}", result.value.string);
+    try std.testing.expectEqualStrings(
+        "ApexClass:ApexClass:public class ExampleClass {}",
+        result.value.string,
+    );
 }
 
 test "E2E: JSON serialize on field tokens throws and callers can fall back to toString" {
@@ -11264,7 +11445,10 @@ test "E2E: instance method on null receiver throws NullPointerException" {
     });
     defer result.deinit();
 
-    try std.testing.expectEqualStrings("Attempt to de-reference a null object", result.value.string);
+    try std.testing.expectEqualStrings(
+        "Attempt to de-reference a null object",
+        result.value.string,
+    );
 }
 
 test "E2E: for-each on null collection throws NullPointerException" {
@@ -11289,7 +11473,10 @@ test "E2E: for-each on null collection throws NullPointerException" {
     });
     defer result.deinit();
 
-    try std.testing.expectEqualStrings("Attempt to de-reference a null object", result.value.string);
+    try std.testing.expectEqualStrings(
+        "Attempt to de-reference a null object",
+        result.value.string,
+    );
 }
 
 test "E2E: list index access throws ListException when out of bounds" {
@@ -12175,7 +12362,10 @@ test "E2E: JSON-deserialized DML errors expose message status and fields" {
     });
     defer result.deinit();
 
-    try std.testing.expectEqualStrings("FIELD_CUSTOM_VALIDATION_EXCEPTION:Could not save...:Name,Industry", result.value.string);
+    try std.testing.expectEqualStrings(
+        "FIELD_CUSTOM_VALIDATION_EXCEPTION:Could not save...:Name,Industry",
+        result.value.string,
+    );
 }
 
 test "E2E: direct chained access on JSON-deserialized DML errors keeps getter semantics" {
@@ -13636,7 +13826,10 @@ test "E2E: multi-level dotted class literal returns non-null Type" {
     // does not name a loaded class (mirrors Apex's "flow doesn't exist"
     // runtime behaviour). The generic Outer.Middle.Inner chain keeps its
     // full path.
-    try std.testing.expectEqualStrings("Flow.Interview.MyFlow|Outer.Middle.Inner|Flow.Interview", result.value.string);
+    try std.testing.expectEqualStrings(
+        "Flow.Interview.MyFlow|Outer.Middle.Inner|Flow.Interview",
+        result.value.string,
+    );
 }
 
 test "E2E: Invocable.Action.Result JSON round-trip exposes getters" {
@@ -13747,7 +13940,10 @@ test "E2E: standard-field describe exposes known default values" {
     });
     defer result.deinit();
 
-    try std.testing.expectEqualStrings("Not Started|Medium|Open - Not Contacted", result.value.string);
+    try std.testing.expectEqualStrings(
+        "Not Started|Medium|Open - Not Contacted",
+        result.value.string,
+    );
 }
 
 test "E2E: Invocable.Action.createCustomAction reports missing flow failures" {
@@ -13937,7 +14133,10 @@ test "E2E: sobject.Field.addError(msg) attaches error to the field" {
     });
     defer result.deinit();
 
-    try std.testing.expectEqualStrings("true|You must provide an Account|AccountId", result.value.string);
+    try std.testing.expectEqualStrings(
+        "true|You must provide an Account|AccountId",
+        result.value.string,
+    );
 }
 
 test "E2E: System.Location.newInstance + getDistance match real-platform values" {
