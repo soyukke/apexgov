@@ -3733,95 +3733,123 @@ pub const Evaluator = struct {
         obj: *types.SObject,
         only_present: bool,
     ) !?[]const u8 {
+        if (validate_builtin_required_fields(obj, only_present)) |msg| return msg;
+        return try self.validate_metadata_required_fields(obj, only_present);
+    }
+
+    /// Built-in SObject type required-field rules (Account.Name / Contact.LastName /
+    /// Opportunity.Name / ContentVersion.PathOnClient & VersionData). Returns
+    /// the exact REQUIRED_FIELD_MISSING message or null when everything checks
+    /// out.
+    fn validate_builtin_required_fields(
+        obj: *types.SObject,
+        only_present: bool,
+    ) ?[]const u8 {
         const type_name = obj.type_name;
         if (std.ascii.eqlIgnoreCase(type_name, "Account")) {
-            const name_val = utils.sobject_get(&obj.fields, "Name");
-            // Insert: field must exist and be non-null/non-empty
-            // Update: field must not be explicitly set to null/empty
-            if (name_val == null) {
-                if (!only_present)
-                    return "REQUIRED_FIELD_MISSING: Required fields are missing: [Name]";
-            } else if (name_val.? == .null_val) {
-                return "REQUIRED_FIELD_MISSING: Required fields are missing: [Name]";
-            } else if (name_val.? == .string and name_val.?.string.len == 0) {
-                return "REQUIRED_FIELD_MISSING: Required fields are missing: [Name]";
-            }
+            if (missing_required_value(obj, "Name", only_present, true)) |msg| return msg;
         }
         if (std.ascii.eqlIgnoreCase(type_name, "Contact")) {
-            const name_val = utils.sobject_get(&obj.fields, "LastName");
-            if (name_val == null) {
-                if (!only_present)
-                    return "REQUIRED_FIELD_MISSING: Required fields are missing: [LastName]";
-            } else if (name_val.? == .null_val) {
-                return "REQUIRED_FIELD_MISSING: Required fields are missing: [LastName]";
-            }
+            if (missing_required_value(obj, "LastName", only_present, false)) |msg| return msg;
         }
         if (std.ascii.eqlIgnoreCase(type_name, "Opportunity")) {
-            const name_val = utils.sobject_get(&obj.fields, "Name");
-            if (name_val == null) {
-                if (!only_present)
-                    return "REQUIRED_FIELD_MISSING: Required fields are missing: [Name]";
-            } else if (name_val.? == .null_val) {
-                return "REQUIRED_FIELD_MISSING: Required fields are missing: [Name]";
-            }
+            if (missing_required_value(obj, "Name", only_present, false)) |msg| return msg;
         }
         if (std.ascii.eqlIgnoreCase(type_name, "ContentVersion")) {
-            // PathOnClient is required and must be non-empty
-            const poc_val = utils.sobject_get(&obj.fields, "PathOnClient");
-            if (poc_val == null or poc_val.? == .null_val) {
-                return "REQUIRED_FIELD_MISSING: Required fields are missing: [PathOnClient]";
-            }
-            if (poc_val.? == .string and poc_val.?.string.len == 0) {
-                return "REQUIRED_FIELD_MISSING: Required fields are missing: [PathOnClient]";
-            }
-            // VersionData is required and must not be an empty Blob
-            const vd_val = utils.sobject_get(&obj.fields, "VersionData");
-            if (vd_val == null or vd_val.? == .null_val) {
-                return "REQUIRED_FIELD_MISSING: Required fields are missing: [VersionData]";
-            }
-            if (vd_val.? == .object) {
-                // Check if Blob has empty value
-                if (utils.sobject_get(&vd_val.?.object.fields, "value")) |inner| {
-                    if (inner == .string and inner.string.len == 0) {
-                        return "REQUIRED_FIELD_MISSING: Required fields are missing: [VersionData]";
-                    }
+            if (validate_content_version_required(obj)) |msg| return msg;
+        }
+        return null;
+    }
+
+    /// Check a single required field. When `also_empty_string` is set, a
+    /// present zero-length string counts as missing (Account.Name semantics).
+    fn missing_required_value(
+        obj: *types.SObject,
+        field_name: []const u8,
+        only_present: bool,
+        also_empty_string: bool,
+    ) ?[]const u8 {
+        const val = utils.sobject_get(&obj.fields, field_name);
+        if (val == null) {
+            if (!only_present) return builtin_required_message(field_name);
+            return null;
+        }
+        if (val.? == .null_val) return builtin_required_message(field_name);
+        if (also_empty_string and val.? == .string and val.?.string.len == 0) {
+            return builtin_required_message(field_name);
+        }
+        return null;
+    }
+
+    fn builtin_required_message(field_name: []const u8) []const u8 {
+        if (std.ascii.eqlIgnoreCase(field_name, "Name")) {
+            return "REQUIRED_FIELD_MISSING: Required fields are missing: [Name]";
+        }
+        if (std.ascii.eqlIgnoreCase(field_name, "LastName")) {
+            return "REQUIRED_FIELD_MISSING: Required fields are missing: [LastName]";
+        }
+        // Fall back to a generic literal — only Name/LastName reach here today,
+        // and we preserve the exact platform messages via the specialised
+        // branches above.
+        return "REQUIRED_FIELD_MISSING";
+    }
+
+    /// ContentVersion requires both PathOnClient (non-empty string) and
+    /// VersionData (non-empty Blob).
+    fn validate_content_version_required(obj: *types.SObject) ?[]const u8 {
+        const poc_val = utils.sobject_get(&obj.fields, "PathOnClient");
+        if (poc_val == null or poc_val.? == .null_val) {
+            return "REQUIRED_FIELD_MISSING: Required fields are missing: [PathOnClient]";
+        }
+        if (poc_val.? == .string and poc_val.?.string.len == 0) {
+            return "REQUIRED_FIELD_MISSING: Required fields are missing: [PathOnClient]";
+        }
+        const vd_val = utils.sobject_get(&obj.fields, "VersionData");
+        if (vd_val == null or vd_val.? == .null_val) {
+            return "REQUIRED_FIELD_MISSING: Required fields are missing: [VersionData]";
+        }
+        if (vd_val.? == .object) {
+            if (utils.sobject_get(&vd_val.?.object.fields, "value")) |inner| {
+                if (inner == .string and inner.string.len == 0) {
+                    return "REQUIRED_FIELD_MISSING: Required fields are missing: [VersionData]";
                 }
             }
         }
-        if (self.field_metadata.get(type_name)) |field_map| {
-            var iter = field_map.iterator();
-            while (iter.next()) |entry| {
-                const field_name = entry.key_ptr.*;
-                const meta = entry.value_ptr.*;
-                if (!meta.is_required) continue;
+        return null;
+    }
 
-                const field_val = utils.sobject_get(&obj.fields, field_name);
-                if (field_val == null) {
-                    if (!only_present) {
-                        return try std.fmt.allocPrint(
-                            self.arena,
-                            "REQUIRED_FIELD_MISSING: Required fields are missing: [{s}]",
-                            .{field_name},
-                        );
-                    }
-                    continue;
-                }
-                if (field_val.? == .null_val) {
+    /// Walk the loaded field metadata for `obj.type_name` and flag any
+    /// user-marked `is_required` field that is missing/null/blank.
+    fn validate_metadata_required_fields(
+        self: *Evaluator,
+        obj: *types.SObject,
+        only_present: bool,
+    ) !?[]const u8 {
+        const field_map = self.field_metadata.get(obj.type_name) orelse return null;
+        var iter = field_map.iterator();
+        while (iter.next()) |entry| {
+            const field_name = entry.key_ptr.*;
+            if (!entry.value_ptr.*.is_required) continue;
+            const field_val = utils.sobject_get(&obj.fields, field_name);
+            if (field_val == null) {
+                if (!only_present) {
                     return try std.fmt.allocPrint(
                         self.arena,
                         "REQUIRED_FIELD_MISSING: Required fields are missing: [{s}]",
                         .{field_name},
                     );
                 }
-                if (field_val.? == .string and
-                    std.mem.trim(u8, field_val.?.string, " \t\r\n").len == 0)
-                {
-                    return try std.fmt.allocPrint(
-                        self.arena,
-                        "REQUIRED_FIELD_MISSING: Required fields are missing: [{s}]",
-                        .{field_name},
-                    );
-                }
+                continue;
+            }
+            if (field_val.? == .null_val or
+                (field_val.? == .string and
+                    std.mem.trim(u8, field_val.?.string, " \t\r\n").len == 0))
+            {
+                return try std.fmt.allocPrint(
+                    self.arena,
+                    "REQUIRED_FIELD_MISSING: Required fields are missing: [{s}]",
+                    .{field_name},
+                );
             }
         }
         return null;
