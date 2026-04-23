@@ -2462,7 +2462,9 @@ fn dispatch_static_event_bus(method_name: []const u8) !?Value {
 fn set_created_date_for_record(ctx: *BuiltinContext, args: []const Value) !Value {
     if (args.len < 2) return .void_val;
     const record_id = try utils.coerce_to_string(args[0], ctx.arena);
-    const created_date = extract_date_string(args[1]) orelse try utils.coerce_to_string(args[1], ctx.arena);
+    const created_date = extract_date_string(
+        args[1],
+    ) orelse try utils.coerce_to_string(args[1], ctx.arena);
 
     var store_iter = ctx.eval.store.iterator();
     while (store_iter.next()) |entry| {
@@ -3070,7 +3072,9 @@ fn default_field_is_nillable(object_type: []const u8, field_name: []const u8) bo
     return true;
 }
 
-fn split_qualified_metadata_name(name: []const u8) struct { namespace: []const u8, local_name: []const u8 } {
+fn split_qualified_metadata_name(
+    name: []const u8,
+) struct { namespace: []const u8, local_name: []const u8 } {
     if (std.mem.indexOf(u8, name, "__")) |idx| {
         const suffix = name[idx..];
         if (!std.mem.eql(u8, suffix, "__c") and
@@ -3358,7 +3362,9 @@ fn create_describe_result(ctx: *BuiltinContext, obj_name: []const u8) !Value {
 
     const local_name = describe_local_name(obj_name);
     const entity_label: []const u8 = ctx.eval.object_labels.get(obj_name) orelse local_name;
-    const entity_label_plural: []const u8 = ctx.eval.object_label_plurals.get(obj_name) orelse try default_describe_label_plural(ctx.arena, obj_name);
+    const entity_label_plural: []const u8 = ctx.eval.object_label_plurals.get(
+        obj_name,
+    ) orelse try default_describe_label_plural(ctx.arena, obj_name);
     try desc.fields.put(ctx.arena, "label", Value{ .string = entity_label });
     try desc.fields.put(ctx.arena, "labelPlural", Value{ .string = entity_label_plural });
     try desc.fields.put(
@@ -4642,7 +4648,9 @@ fn dispatch_obj_common(
         return Value{ .boolean = ctx.eval.values_equal_public(Value{ .object = obj }, args[0]) };
     }
     if (std.ascii.eqlIgnoreCase(method_name, "toString")) {
-        return obj.fields.get("value") orelse Value{ .string = try utils.coerce_to_string(Value{ .object = obj }, ctx.arena) };
+        return obj.fields.get(
+            "value",
+        ) orelse Value{ .string = try utils.coerce_to_string(Value{ .object = obj }, ctx.arena) };
     }
 
     // DML result methods (SaveResult, UpsertResult, etc.)
@@ -4670,7 +4678,9 @@ fn dispatch_obj_common(
             std.ascii.eqlIgnoreCase(obj.class_name, "SObjectField"))
         {
             const object_type_val = obj.fields.get("objectType") orelse Value.null_val;
-            const field_name_val = obj.fields.get("fieldName") orelse obj.fields.get("name") orelse Value.null_val;
+            const field_name_val = obj.fields.get(
+                "fieldName",
+            ) orelse obj.fields.get("name") orelse Value.null_val;
             if (object_type_val == .string and field_name_val == .string) {
                 return try create_field_describe_result_with_type(
                     ctx,
@@ -5078,7 +5088,9 @@ fn dispatch_obj_schema_describe_field(
         return Value{ .boolean = false };
     }
     if (std.ascii.eqlIgnoreCase(method_name, "isCustom")) {
-        const fn_val = obj.fields.get("fieldName") orelse obj.fields.get("name") orelse Value{ .string = "" };
+        const fn_val = obj.fields.get(
+            "fieldName",
+        ) orelse obj.fields.get("name") orelse Value{ .string = "" };
         if (fn_val == .string) return Value{ .boolean = std.mem.endsWith(u8, fn_val.string, "__c") };
         return Value{ .boolean = false };
     }
@@ -5088,7 +5100,9 @@ fn dispatch_obj_schema_describe_field(
     if (std.ascii.eqlIgnoreCase(method_name, "getType") or std.ascii.eqlIgnoreCase(method_name, "getDisplayType")) return obj.fields.get("type") orelse Value{ .string = "STRING" };
     if (std.ascii.eqlIgnoreCase(method_name, "getName")) return obj.fields.get("fieldName") orelse obj.fields.get("name") orelse Value{ .string = "Field" };
     if (std.ascii.eqlIgnoreCase(method_name, "getLocalName")) {
-        const name_val = obj.fields.get("fieldName") orelse obj.fields.get("name") orelse Value{ .string = "Field" };
+        const name_val = obj.fields.get(
+            "fieldName",
+        ) orelse obj.fields.get("name") orelse Value{ .string = "Field" };
         if (name_val == .string) return Value{ .string = describe_local_name(name_val.string) };
         return name_val;
     }
@@ -5556,10 +5570,14 @@ fn dispatch_obj_describe_s_object(
         // Apex's behaviour by returning the same result as isDeletable so that
         // domain frameworks (fflib_SObjectDomain etc.) gate handleAfterUndelete
         // correctly.
-        return obj.fields.get("isUndeletable") orelse Value{ .boolean = resolve_object_crud_permission(ctx.eval, desc_name, "delete") };
+        return obj.fields.get(
+            "isUndeletable",
+        ) orelse Value{ .boolean = resolve_object_crud_permission(ctx.eval, desc_name, "delete") };
     }
     if (std.ascii.eqlIgnoreCase(method_name, "isMergeable")) {
-        return obj.fields.get("isMergeable") orelse Value{ .boolean = resolve_object_crud_permission(ctx.eval, desc_name, "delete") };
+        return obj.fields.get(
+            "isMergeable",
+        ) orelse Value{ .boolean = resolve_object_crud_permission(ctx.eval, desc_name, "delete") };
     }
     if (std.ascii.eqlIgnoreCase(method_name, "isQueryable")) return Value{ .boolean = true };
     if (std.ascii.eqlIgnoreCase(method_name, "isSearchable")) return Value{ .boolean = true };
@@ -5695,7 +5713,9 @@ fn dispatch_obj_describe_field_result(
         list.* = .{};
         if (obj.fields.get("objectType")) |object_type_val| {
             if (object_type_val == .string) {
-                const field_name_val = obj.fields.get("fieldName") orelse obj.fields.get("name") orelse Value{ .string = "" };
+                const field_name_val = obj.fields.get(
+                    "fieldName",
+                ) orelse obj.fields.get("name") orelse Value{ .string = "" };
                 if (field_name_val == .string) {
                     if (lookup_field_metadata(ctx, object_type_val.string, field_name_val.string)) |metadata| {
                         if (metadata.reference_to) |reference_to| {
@@ -5724,7 +5744,9 @@ fn dispatch_obj_describe_field_result(
             std.ascii.eqlIgnoreCase(obj.class_name, "SObjectField"))
         {
             const object_type_val = obj.fields.get("objectType") orelse Value.null_val;
-            const field_name_val = obj.fields.get("fieldName") orelse obj.fields.get("name") orelse Value.null_val;
+            const field_name_val = obj.fields.get(
+                "fieldName",
+            ) orelse obj.fields.get("name") orelse Value.null_val;
             if (object_type_val == .string and field_name_val == .string) {
                 return try create_field_describe_result_with_type(
                     ctx,
@@ -7340,7 +7362,9 @@ fn append_picklist_entry(
 ) !void {
     for (list.items.items) |existing| {
         if (existing != .object) continue;
-        const existing_value = existing.object.fields.get("value") orelse existing.object.fields.get("label") orelse Value.null_val;
+        const existing_value = existing.object.fields.get(
+            "value",
+        ) orelse existing.object.fields.get("label") orelse Value.null_val;
         if (existing_value == .string and std.ascii.eqlIgnoreCase(existing_value.string, value)) return;
     }
 

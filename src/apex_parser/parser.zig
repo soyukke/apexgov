@@ -777,7 +777,9 @@ const Parser = struct {
         try self.expect(.rbrace);
 
         const stmt = try self.arena.create(ast.SwitchStmt);
-        stmt.* = .{ .subject = subject, .when_clauses = try clauses.toOwnedSlice(self.arena), .loc = loc };
+        stmt.* = .{ .subject = subject, .when_clauses = try clauses.toOwnedSlice(
+            self.arena,
+        ), .loc = loc };
         return .{ .switch_stmt = stmt };
     }
 
@@ -812,7 +814,9 @@ const Parser = struct {
         }
 
         const stmt = try self.arena.create(ast.TryStmt);
-        stmt.* = .{ .body = body, .catches = try catches.toOwnedSlice(self.arena), .finally_body = finally_body, .loc = loc };
+        stmt.* = .{ .body = body, .catches = try catches.toOwnedSlice(
+            self.arena,
+        ), .finally_body = finally_body, .loc = loc };
         return .{ .try_stmt = stmt };
     }
 
@@ -1486,7 +1490,9 @@ const Parser = struct {
             var arr_args: std.ArrayListUnmanaged(ast.Expr) = .empty;
             try arr_args.append(self.arena, size_expr.*);
             const node = try self.arena.create(ast.NewExpr);
-            node.* = .{ .type_name = type_name, .args = try arr_args.toOwnedSlice(self.arena), .loc = loc };
+            node.* = .{ .type_name = type_name, .args = try arr_args.toOwnedSlice(
+                self.arena,
+            ), .loc = loc };
             const result = try self.arena.create(ast.Expr);
             result.* = .{ .new_expr = node };
             return result;

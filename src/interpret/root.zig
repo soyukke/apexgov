@@ -647,7 +647,9 @@ fn collect_field_defaults(
     path: []const u8,
     field_defaults: *std.StringArrayHashMapUnmanaged(std.StringArrayHashMapUnmanaged(Value)),
     field_types: *std.StringArrayHashMapUnmanaged(std.StringArrayHashMapUnmanaged([]const u8)),
-    field_metadata: *std.StringArrayHashMapUnmanaged(std.StringArrayHashMapUnmanaged(evaluator.FieldMetadata)),
+    field_metadata: *std.StringArrayHashMapUnmanaged(
+        std.StringArrayHashMapUnmanaged(evaluator.FieldMetadata),
+    ),
     child_relationships: *std.StringArrayHashMapUnmanaged(evaluator.CustomChildRelationship),
 ) !void {
     var dir = std.Io.Dir.cwd().openDir(io, path, .{ .iterate = true }) catch return;
@@ -1033,7 +1035,9 @@ fn collect_custom_setting_types(
     }
 }
 
-fn split_namespaced_metadata_name(name: []const u8) struct { namespace: []const u8, local_name: []const u8 } {
+fn split_namespaced_metadata_name(
+    name: []const u8,
+) struct { namespace: []const u8, local_name: []const u8 } {
     if (std.mem.indexOf(u8, name, "__")) |idx| {
         return .{
             .namespace = name[0..idx],
@@ -1049,7 +1053,9 @@ fn collect_field_sets(
     alloc: std.mem.Allocator,
     io: std.Io,
     path: []const u8,
-    field_sets: *std.StringArrayHashMapUnmanaged(std.StringArrayHashMapUnmanaged(evaluator.FieldSetMetadata)),
+    field_sets: *std.StringArrayHashMapUnmanaged(
+        std.StringArrayHashMapUnmanaged(evaluator.FieldSetMetadata),
+    ),
 ) !void {
     var dir = std.Io.Dir.cwd().openDir(io, path, .{ .iterate = true }) catch return;
     defer dir.close(io);

@@ -130,11 +130,17 @@ pub const Evaluator = struct {
     // Source paths for metadata lookup (e.g., picklist values from field-meta.xml)
     source_paths: []const []const u8 = &.{},
     // SObject field default values from field-meta.xml (type_name → field_name → default Value)
-    field_defaults: std.StringArrayHashMapUnmanaged(std.StringArrayHashMapUnmanaged(Value)) = .empty,
+    field_defaults: std.StringArrayHashMapUnmanaged(
+        std.StringArrayHashMapUnmanaged(Value),
+    ) = .empty,
     /// field-meta.xml から読み取ったフィールド型情報。field_types[TypeName][FieldName] = "DateTime" 等。
-    field_types: std.StringArrayHashMapUnmanaged(std.StringArrayHashMapUnmanaged([]const u8)) = .empty,
+    field_types: std.StringArrayHashMapUnmanaged(
+        std.StringArrayHashMapUnmanaged([]const u8),
+    ) = .empty,
     /// field-meta.xml から読み取ったフィールド制約・参照先。field_metadata[TypeName][FieldName] = metadata。
-    field_metadata: std.StringArrayHashMapUnmanaged(std.StringArrayHashMapUnmanaged(FieldMetadata)) = .empty,
+    field_metadata: std.StringArrayHashMapUnmanaged(
+        std.StringArrayHashMapUnmanaged(FieldMetadata),
+    ) = .empty,
     /// field-meta.xml から読み取った child relationship 情報。key = lowercase("{parent}|{relationship}").
     child_relationships: std.StringArrayHashMapUnmanaged(CustomChildRelationship) = .empty,
     /// object-meta.xml で `<customSettingsType>` が指定されている Custom Setting オブジェクト名の集合。
@@ -147,7 +153,9 @@ pub const Evaluator = struct {
     object_label_plurals: std.StringArrayHashMapUnmanaged([]const u8) = .empty,
     /// fieldSet-meta.xml から読み取った field set 情報。field_sets[TypeName][QualifiedFieldSetName] =
     /// metadata。
-    field_sets: std.StringArrayHashMapUnmanaged(std.StringArrayHashMapUnmanaged(FieldSetMetadata)) = .empty,
+    field_sets: std.StringArrayHashMapUnmanaged(
+        std.StringArrayHashMapUnmanaged(FieldSetMetadata),
+    ) = .empty,
     // System.Limits counters
     limits_dml: u32 = 0,
     limits_dml_rows: u32 = 0,
@@ -1483,7 +1491,9 @@ pub const Evaluator = struct {
                                         else
                                             Value.null_val;
                                         static_index += 1;
-                                        const local_value = init_env.get(fd.name) orelse Value.null_val;
+                                        const local_value = init_env.get(
+                                            fd.name,
+                                        ) orelse Value.null_val;
                                         const global_value = self.global_env.get(key) orelse Value.null_val;
                                         const writeback_value = if (!utils.value_eql(local_value, original_value))
                                             local_value
@@ -1547,7 +1557,9 @@ pub const Evaluator = struct {
                         }
                         return err;
                     };
-                    return .{ .success = true, .id = self_eval.sobject_id_for_result(item.sobject) };
+                    return .{ .success = true, .id = self_eval.sobject_id_for_result(
+                        item.sobject,
+                    ) };
                 }
             }.run;
 
@@ -3773,7 +3785,9 @@ pub const Evaluator = struct {
             // we must snapshot keys/values first to avoid iterator invalidation
             // when put() triggers a grow.
             if (found_rec) |stored| {
-                const now_str = builtins.current_date_time_string(self.arena) catch "2026-01-01T00:00:00Z";
+                const now_str = builtins.current_date_time_string(
+                    self.arena,
+                ) catch "2026-01-01T00:00:00Z";
                 obj.fields.put(self.arena, "LastModifiedDate", Value{ .string = now_str }) catch {};
                 obj.fields.put(
                     self.arena,
@@ -5375,7 +5389,9 @@ pub const Evaluator = struct {
             try sob.fields.put(self.arena, "Id", Value{ .string = id });
             try sob.fields.put(self.arena, "Name", Value{ .string = name_val });
             // Try to load actual static resource from source_paths
-            const body = self.load_static_resource_body(name_val) orelse "mock static resource body";
+            const body = self.load_static_resource_body(
+                name_val,
+            ) orelse "mock static resource body";
             try sob.fields.put(self.arena, "Body", Value{ .string = body });
             return Value{ .sobject = sob };
         }
@@ -6765,7 +6781,9 @@ pub const Evaluator = struct {
             if (non_wildcard_len == 0) return true;
             const starts_wild = pattern.len > 0 and pattern[0] == '%';
             const ends_wild = pattern.len > 0 and pattern[pattern.len - 1] == '%';
-            const inner = pattern[@intFromBool(starts_wild) .. pattern.len - @intFromBool(ends_wild)];
+            const inner = pattern[@intFromBool(
+                starts_wild,
+            ) .. pattern.len - @intFromBool(ends_wild)];
             if (starts_wild and ends_wild) {
                 return std.ascii.indexOfIgnoreCase(field_val.string, inner) != null;
             } else if (starts_wild) {
@@ -6849,7 +6867,9 @@ pub const Evaluator = struct {
                             idx_str,
                             10,
                         ) catch break :blk current_env.get(base_name);
-                        const arr_val = current_env.get(arr_name) orelse break :blk @as(?Value, null);
+                        const arr_val = current_env.get(
+                            arr_name,
+                        ) orelse break :blk @as(?Value, null);
                         if (arr_val == .list and idx < arr_val.list.items.items.len) {
                             break :blk @as(?Value, arr_val.list.items.items[idx]);
                         }
@@ -8293,7 +8313,9 @@ pub const Evaluator = struct {
                 if (current_env.get("this")) |this_check| {
                     if (this_check == .object) {
                         const already_in_instance_getter = if (self.evaluating_getter) |eg| std.ascii.eqlIgnoreCase(eg, id.name) else false;
-                        const shadowed_by_typed_local = current_env.get_declared_type(id.name) != null;
+                        const shadowed_by_typed_local = current_env.get_declared_type(
+                            id.name,
+                        ) != null;
                         if (!already_in_instance_getter and !shadowed_by_typed_local) {
                             if (self.find_class(this_check.object.class_name)) |this_cd| {
                                 var scan_cd: ?*ast.ClassDecl = this_cd;
@@ -8304,9 +8326,13 @@ pub const Evaluator = struct {
                                                 if (std.ascii.eqlIgnoreCase(pfd.name, id.name) and pfd.getter_body != null) {
                                                     // Evaluate as this.propertyName → triggers
                                                     // getter
-                                                    const this_expr_node = try self.arena.create(ast.Expr);
+                                                    const this_expr_node = try self.arena.create(
+                                                        ast.Expr,
+                                                    );
                                                     this_expr_node.* = .this_expr;
-                                                    const fa_node = try self.arena.create(ast.FieldAccess);
+                                                    const fa_node = try self.arena.create(
+                                                        ast.FieldAccess,
+                                                    );
                                                     fa_node.* = .{ .object = this_expr_node, .field = id.name, .null_safe = false };
                                                     const fa_expr = try self.arena.create(ast.Expr);
                                                     fa_expr.* = .{ .field_access = fa_node };
@@ -8507,7 +8533,9 @@ pub const Evaluator = struct {
                 // Try as instance method on `this` first
                 if (current_env.get("this")) |this_val| {
                     if (this_val == .object) {
-                        const actual_decl: ?*ast.ClassDecl = self.find_class(this_val.object.class_name);
+                        const actual_decl: ?*ast.ClassDecl = self.find_class(
+                            this_val.object.class_name,
+                        );
                         const dispatch_decl = blk: {
                             if (self.current_class) |current_class_name| {
                                 if (self.find_class(current_class_name)) |owner_decl| break :blk owner_decl;
@@ -9325,7 +9353,9 @@ pub const Evaluator = struct {
 
                     if (self.find_class(target_name)) |class_decl| {
                         if (self.find_method_in_hierarchy(null, class_decl, mc.method, arg_count)) |method_decl| {
-                            return strip_type_namespace(self.render_type_ref(method_decl.return_type));
+                            return strip_type_namespace(
+                                self.render_type_ref(method_decl.return_type),
+                            );
                         }
                     }
 
@@ -9333,7 +9363,9 @@ pub const Evaluator = struct {
                         const base_type = type_base_name(instance_type);
                         if (self.find_class(base_type)) |class_decl| {
                             if (self.find_method_in_hierarchy(null, class_decl, mc.method, arg_count)) |method_decl| {
-                                return strip_type_namespace(self.render_type_ref(method_decl.return_type));
+                                return strip_type_namespace(
+                                    self.render_type_ref(method_decl.return_type),
+                                );
                             }
                         }
                     }
@@ -9349,7 +9381,9 @@ pub const Evaluator = struct {
                         ) catch return null;
                         if (self.find_class(qualified_name)) |class_decl| {
                             if (self.find_method_in_hierarchy(null, class_decl, mc.method, arg_count)) |method_decl| {
-                                return strip_type_namespace(self.render_type_ref(method_decl.return_type));
+                                return strip_type_namespace(
+                                    self.render_type_ref(method_decl.return_type),
+                                );
                             }
                         }
                     }
@@ -9736,7 +9770,9 @@ pub const Evaluator = struct {
 
                                     if (setter_env.get("this")) |this_val| {
                                         if (this_val == .object and this_val.object == obj.object) {
-                                            var field_keys: std.ArrayListUnmanaged([]const u8) = .empty;
+                                            var field_keys: std.ArrayListUnmanaged(
+                                                []const u8,
+                                            ) = .empty;
                                             for (obj.object.fields.keys()) |k| field_keys.append(self.arena, k) catch {};
                                             for (field_keys.items) |k| {
                                                 if (setter_env.get(k)) |updated| {
@@ -10769,7 +10805,9 @@ pub const Evaluator = struct {
 
             if (connect_api_class_name_equals(class_name, "InlineImageSegmentInput")) {
                 const image = try self.connect_api_create_object("ConnectApi.InlineImageSegment");
-                const thumbnails = try self.connect_api_create_object("ConnectApi.InlineImageThumbnails");
+                const thumbnails = try self.connect_api_create_object(
+                    "ConnectApi.InlineImageThumbnails",
+                );
                 if (utils.sobject_get(&segment_input.object.fields, "fileId")) |file_id| {
                     try thumbnails.fields.put(self.arena, "fileId", file_id);
                 }
@@ -10957,7 +10995,9 @@ pub const Evaluator = struct {
                 subject_id = args[1];
                 const text_segments = try self.arena.create(types.ListValue);
                 text_segments.* = .{};
-                const text_segment = try self.connect_api_create_object("ConnectApi.TextSegmentInput");
+                const text_segment = try self.connect_api_create_object(
+                    "ConnectApi.TextSegmentInput",
+                );
                 const text_value = switch (args[3]) {
                     .string => args[3].string,
                     else => try utils.coerce_to_string(args[3], self.arena),
@@ -13226,7 +13266,9 @@ pub const Evaluator = struct {
         }
         // isSameDay(otherDate) — Date/DateTime が同じ日かどうか
         if (std.ascii.eqlIgnoreCase(method, "isSameDay") and args.len > 0) {
-            const other_str = builtins.extract_date_string(args[0]) orelse (if (args[0] == .string) args[0].string else "");
+            const other_str = builtins.extract_date_string(
+                args[0],
+            ) orelse (if (args[0] == .string) args[0].string else "");
             const dt = parse_iso_date(s) orelse return Value{ .boolean = false };
             const odt = parse_iso_date(other_str) orelse return Value{ .boolean = false };
             return Value{ .boolean = dt.y == odt.y and dt.m == odt.m and dt.d == odt.d };
@@ -14462,7 +14504,9 @@ pub const Evaluator = struct {
                             .class_decl => |inner_cd| {
                                 if (std.ascii.eqlIgnoreCase(inner_cd.name, inner_name)) {
                                     if (std.ascii.eqlIgnoreCase(fa.field, "class")) {
-                                        const type_obj = try self.arena.create(types.ObjectInstance);
+                                        const type_obj = try self.arena.create(
+                                            types.ObjectInstance,
+                                        );
                                         type_obj.* = .{ .class_name = "Type" };
                                         const fq_name = try std.fmt.allocPrint(
                                             self.arena,
@@ -14824,7 +14868,9 @@ pub const Evaluator = struct {
     }
 
     /// ISO 日付文字列 (YYYY-MM-DD or YYYY-MM-DDTHH:MM:SSZ) をパースする。
-    fn parse_iso_date(s: []const u8) ?struct { y: i32, m: u8, d: u8, h: u8, mi: u8, sec: u8, has_time: bool } {
+    fn parse_iso_date(
+        s: []const u8,
+    ) ?struct { y: i32, m: u8, d: u8, h: u8, mi: u8, sec: u8, has_time: bool } {
         if (s.len < 10 or s[4] != '-' or s[7] != '-') return null;
         const y = std.fmt.parseInt(i32, s[0..4], 10) catch return null;
         const m = std.fmt.parseInt(u8, s[5..7], 10) catch return null;
@@ -17011,7 +17057,9 @@ pub const Evaluator = struct {
                     std.ascii.eqlIgnoreCase(obj.class_name, "Schema.SObjectField") or
                     std.ascii.eqlIgnoreCase(obj.class_name, "SObjectField"))
                 {
-                    const name_value = obj.fields.get("name") orelse obj.fields.get("fieldName") orelse Value.null_val;
+                    const name_value = obj.fields.get(
+                        "name",
+                    ) orelse obj.fields.get("fieldName") orelse Value.null_val;
                     if (name_value == .string) break :blk self.string_hash_code(name_value.string);
                 }
 
