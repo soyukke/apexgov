@@ -1614,85 +1614,121 @@ fn dispatch_obj_json_generator(
     method_name: []const u8,
     args: []const Value,
 ) !?Value {
-    if (std.ascii.eqlIgnoreCase(method_name, "getAsString")) {
+    const ci = std.ascii;
+    if (ci.eqlIgnoreCase(method_name, "getAsString"))
         return Value{ .string = json_generator_output(obj) };
-    }
-    if (std.ascii.eqlIgnoreCase(method_name, "writeStartObject")) {
-        try json_generator_before_value(ctx, obj);
-        try json_generator_append(ctx, obj, "{");
-        try json_generator_push_context(ctx, obj, "object");
-        return Value.void_val;
-    }
-    if (std.ascii.eqlIgnoreCase(method_name, "writeEndObject")) {
-        try json_generator_append(ctx, obj, "}");
-        json_generator_pop_context(obj);
-        return Value.void_val;
-    }
-    if (std.ascii.eqlIgnoreCase(method_name, "writeStartArray")) {
-        try json_generator_before_value(ctx, obj);
-        try json_generator_append(ctx, obj, "[");
-        try json_generator_push_context(ctx, obj, "array");
-        return Value.void_val;
-    }
-    if (std.ascii.eqlIgnoreCase(method_name, "writeEndArray")) {
-        try json_generator_append(ctx, obj, "]");
-        json_generator_pop_context(obj);
-        return Value.void_val;
-    }
-    if (std.ascii.eqlIgnoreCase(method_name, "writeFieldName")) {
-        if (args.len == 0 or args[0] == .null_val) {
-            _ = try ctx.throw_exception(
-                "JSONException",
-                "Can not write a field name, expecting a value",
-            );
-            return error.ApexException;
-        }
-        if (!std.ascii.eqlIgnoreCase(
-            json_generator_current_context_type(obj) orelse "",
-            "object",
-        ) or json_generator_is_expecting_value(obj)) {
-            _ = try ctx.throw_exception(
-                "JSONException",
-                "Can not write a field name, expecting a value",
-            );
-            return error.ApexException;
-        }
-        const count = json_generator_current_count(obj);
-        if (count > 0) try json_generator_append(ctx, obj, ",");
-        const name_value = if (args[0] == .string) args[0] else Value{ .string = try utils.coerce_to_string(args[0], ctx.arena) };
-        try json_generator_append(ctx, obj, try utils.to_json(name_value, ctx.arena));
-        try json_generator_append(ctx, obj, ":");
-        try json_generator_set_current_count(ctx, obj, count + 1);
-        try json_generator_set_expecting_value(ctx, obj, true);
-        return Value.void_val;
-    }
-    if (std.ascii.eqlIgnoreCase(method_name, "writeString")) {
-        if (args.len == 0) return Value.void_val;
-        const string_value = if (args[0] == .string) args[0] else Value{ .string = try utils.coerce_to_string(args[0], ctx.arena) };
-        try json_generator_write_raw_value(ctx, obj, try utils.to_json(string_value, ctx.arena));
-        return Value.void_val;
-    }
-    if (std.ascii.eqlIgnoreCase(method_name, "writeNull")) {
+    if (ci.eqlIgnoreCase(method_name, "writeStartObject"))
+        return try json_gen_write_container_open(ctx, obj, "{", "object");
+    if (ci.eqlIgnoreCase(method_name, "writeEndObject"))
+        return try json_gen_write_container_close(ctx, obj, "}");
+    if (ci.eqlIgnoreCase(method_name, "writeStartArray"))
+        return try json_gen_write_container_open(ctx, obj, "[", "array");
+    if (ci.eqlIgnoreCase(method_name, "writeEndArray"))
+        return try json_gen_write_container_close(ctx, obj, "]");
+    if (ci.eqlIgnoreCase(method_name, "writeFieldName"))
+        return try json_gen_write_field_name(ctx, obj, args);
+    if (ci.eqlIgnoreCase(method_name, "writeString"))
+        return try json_gen_write_string(ctx, obj, args);
+    if (ci.eqlIgnoreCase(method_name, "writeNull")) {
         try json_generator_write_raw_value(ctx, obj, "null");
         return Value.void_val;
     }
-    if (std.ascii.eqlIgnoreCase(method_name, "writeNumberField") and args.len >= 2) {
-        _ = try dispatch_obj_json_generator(ctx, obj, "writeFieldName", args[0..1]);
-        const raw = switch (args[1]) {
-            .integer => |i| try std.fmt.allocPrint(ctx.arena, "{d}", .{i}),
-            .double => |d| try std.fmt.allocPrint(ctx.arena, "{d}", .{d}),
-            else => try utils.coerce_to_string(args[1], ctx.arena),
-        };
-        try json_generator_write_raw_value(ctx, obj, raw);
-        return Value.void_val;
-    }
-    if (std.ascii.eqlIgnoreCase(method_name, "writeBooleanField") and args.len >= 2) {
-        _ = try dispatch_obj_json_generator(ctx, obj, "writeFieldName", args[0..1]);
-        const raw = if (args[1] == .boolean and args[1].boolean) "true" else "false";
-        try json_generator_write_raw_value(ctx, obj, raw);
-        return Value.void_val;
-    }
+    if (ci.eqlIgnoreCase(method_name, "writeNumberField") and args.len >= 2)
+        return try json_gen_write_number_field(ctx, obj, args);
+    if (ci.eqlIgnoreCase(method_name, "writeBooleanField") and args.len >= 2)
+        return try json_gen_write_boolean_field(ctx, obj, args);
     return null;
+}
+
+fn json_gen_write_container_open(
+    ctx: *BuiltinContext,
+    obj: *types.ObjectInstance,
+    open_char: []const u8,
+    context_type: []const u8,
+) !Value {
+    try json_generator_before_value(ctx, obj);
+    try json_generator_append(ctx, obj, open_char);
+    try json_generator_push_context(ctx, obj, context_type);
+    return Value.void_val;
+}
+
+fn json_gen_write_container_close(
+    ctx: *BuiltinContext,
+    obj: *types.ObjectInstance,
+    close_char: []const u8,
+) !Value {
+    try json_generator_append(ctx, obj, close_char);
+    json_generator_pop_context(obj);
+    return Value.void_val;
+}
+
+fn json_gen_write_field_name(
+    ctx: *BuiltinContext,
+    obj: *types.ObjectInstance,
+    args: []const Value,
+) !Value {
+    if (args.len == 0 or args[0] == .null_val) {
+        _ = try ctx.throw_exception(
+            "JSONException",
+            "Can not write a field name, expecting a value",
+        );
+        return error.ApexException;
+    }
+    if (!std.ascii.eqlIgnoreCase(
+        json_generator_current_context_type(obj) orelse "",
+        "object",
+    ) or json_generator_is_expecting_value(obj)) {
+        _ = try ctx.throw_exception(
+            "JSONException",
+            "Can not write a field name, expecting a value",
+        );
+        return error.ApexException;
+    }
+    const count = json_generator_current_count(obj);
+    if (count > 0) try json_generator_append(ctx, obj, ",");
+    const name_value = if (args[0] == .string) args[0] else Value{ .string = try utils.coerce_to_string(args[0], ctx.arena) };
+    try json_generator_append(ctx, obj, try utils.to_json(name_value, ctx.arena));
+    try json_generator_append(ctx, obj, ":");
+    try json_generator_set_current_count(ctx, obj, count + 1);
+    try json_generator_set_expecting_value(ctx, obj, true);
+    return Value.void_val;
+}
+
+fn json_gen_write_string(
+    ctx: *BuiltinContext,
+    obj: *types.ObjectInstance,
+    args: []const Value,
+) !Value {
+    if (args.len == 0) return Value.void_val;
+    const string_value = if (args[0] == .string) args[0] else Value{ .string = try utils.coerce_to_string(args[0], ctx.arena) };
+    try json_generator_write_raw_value(ctx, obj, try utils.to_json(string_value, ctx.arena));
+    return Value.void_val;
+}
+
+fn json_gen_write_number_field(
+    ctx: *BuiltinContext,
+    obj: *types.ObjectInstance,
+    args: []const Value,
+) anyerror!Value {
+    _ = try dispatch_obj_json_generator(ctx, obj, "writeFieldName", args[0..1]);
+    const raw = switch (args[1]) {
+        .integer => |i| try std.fmt.allocPrint(ctx.arena, "{d}", .{i}),
+        .double => |d| try std.fmt.allocPrint(ctx.arena, "{d}", .{d}),
+        else => try utils.coerce_to_string(args[1], ctx.arena),
+    };
+    try json_generator_write_raw_value(ctx, obj, raw);
+    return Value.void_val;
+}
+
+fn json_gen_write_boolean_field(
+    ctx: *BuiltinContext,
+    obj: *types.ObjectInstance,
+    args: []const Value,
+) anyerror!Value {
+    _ = try dispatch_obj_json_generator(ctx, obj, "writeFieldName", args[0..1]);
+    const raw = if (args[1] == .boolean and args[1].boolean) "true" else "false";
+    try json_generator_write_raw_value(ctx, obj, raw);
+    return Value.void_val;
 }
 
 fn dispatch_static_user_info(ctx: *BuiltinContext, method_name: []const u8) !?Value {
