@@ -8283,17 +8283,10 @@ pub const Evaluator = struct {
         const child_type = summary_fk[0..dot_idx];
         const fk_field = summary_fk[dot_idx + 1 ..];
 
-        const parent_id = sob.id orelse blk: {
-            if (utils.sobject_get(&sob.fields, "Id")) |id_val| {
-                if (id_val == .string) break :blk id_val.string;
-            }
-            break :blk null;
-        };
-        if (parent_id == null) {
+        const parent_id = resolve_sobject_id(sob) orelse {
             if (std.ascii.eqlIgnoreCase(summary_operation, "count")) return Value{ .integer = 0 };
             return Value.null_val;
-        }
-
+        };
         const child_records = self.store.get(child_type) orelse {
             if (std.ascii.eqlIgnoreCase(summary_operation, "count")) return Value{ .integer = 0 };
             return Value.null_val;
@@ -8301,11 +8294,50 @@ pub const Evaluator = struct {
 
         var count: i64 = 0;
         var aggregate: ?Value = null;
+        self.accumulate_pre_delta_children(
+            child_records.items,
+            child_type,
+            fk_field,
+            parent_id,
+            metadata,
+            new_records,
+            old_records,
+            &count,
+            &aggregate,
+        );
+        if (old_records) |previous_records| {
+            self.accumulate_deleted_children(
+                previous_records.items,
+                child_type,
+                fk_field,
+                parent_id,
+                metadata,
+                &count,
+                &aggregate,
+            );
+        }
+        if (std.ascii.eqlIgnoreCase(summary_operation, "count")) return Value{ .integer = count };
+        return aggregate orelse Value.null_val;
+    }
 
-        for (child_records.items) |record| {
+    /// Accumulate summary contributions for every record that existed before
+    /// the current delta (old snapshot when available, current store row
+    /// otherwise — skipping rows that were just inserted).
+    fn accumulate_pre_delta_children(
+        self: *Evaluator,
+        child_records: []const Value,
+        child_type: []const u8,
+        fk_field: []const u8,
+        parent_id: []const u8,
+        metadata: FieldMetadata,
+        new_records: []const Value,
+        old_records: ?std.ArrayListUnmanaged(Value),
+        count: *i64,
+        aggregate: *?Value,
+    ) void {
+        for (child_records) |record| {
             if (record != .sobject or record.sobject.id == null) continue;
             const record_id = record.sobject.id.?;
-
             if (old_records) |previous_records| {
                 if (self.find_s_object_by_id_in_values(
                     previous_records.items,
@@ -8315,65 +8347,78 @@ pub const Evaluator = struct {
                         old_child,
                         child_type,
                         fk_field,
-                        parent_id.?,
+                        parent_id,
                         metadata,
                     )) {
                         self.accumulate_summary_value(
                             old_child,
                             child_type,
                             metadata,
-                            &count,
-                            &aggregate,
+                            count,
+                            aggregate,
                         );
                     }
                     continue;
                 }
             }
-
-            const inserted_now = self.find_s_object_by_id_in_values(new_records, record_id) != null;
-            if (inserted_now) continue;
-
+            if (self.find_s_object_by_id_in_values(new_records, record_id) != null) continue;
             if (self.summary_record_matches(
                 record.sobject,
                 child_type,
                 fk_field,
-                parent_id.?,
+                parent_id,
                 metadata,
             )) {
                 self.accumulate_summary_value(
                     record.sobject,
                     child_type,
                     metadata,
-                    &count,
-                    &aggregate,
+                    count,
+                    aggregate,
                 );
             }
         }
+    }
 
-        if (old_records) |previous_records| {
-            for (previous_records.items) |record| {
-                if (record != .sobject or record.sobject.id == null) continue;
-                if (self.find_record_in_store(child_type, record.sobject.id.?)) |_| continue;
-                if (self.summary_record_matches(
+    /// Accumulate contributions from records present in the old snapshot but
+    /// already gone from the store (effectively pre-delete rows).
+    fn accumulate_deleted_children(
+        self: *Evaluator,
+        previous_records: []const Value,
+        child_type: []const u8,
+        fk_field: []const u8,
+        parent_id: []const u8,
+        metadata: FieldMetadata,
+        count: *i64,
+        aggregate: *?Value,
+    ) void {
+        for (previous_records) |record| {
+            if (record != .sobject or record.sobject.id == null) continue;
+            if (self.find_record_in_store(child_type, record.sobject.id.?)) |_| continue;
+            if (self.summary_record_matches(
+                record.sobject,
+                child_type,
+                fk_field,
+                parent_id,
+                metadata,
+            )) {
+                self.accumulate_summary_value(
                     record.sobject,
                     child_type,
-                    fk_field,
-                    parent_id.?,
                     metadata,
-                )) {
-                    self.accumulate_summary_value(
-                        record.sobject,
-                        child_type,
-                        metadata,
-                        &count,
-                        &aggregate,
-                    );
-                }
+                    count,
+                    aggregate,
+                );
             }
         }
+    }
 
-        if (std.ascii.eqlIgnoreCase(summary_operation, "count")) return Value{ .integer = count };
-        return aggregate orelse Value.null_val;
+    fn resolve_sobject_id(sob: *types.SObject) ?[]const u8 {
+        if (sob.id) |id| return id;
+        if (utils.sobject_get(&sob.fields, "Id")) |id_val| {
+            if (id_val == .string) return id_val.string;
+        }
+        return null;
     }
 
     fn compute_summary_field_value(
