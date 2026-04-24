@@ -171,6 +171,17 @@ pub const Evaluator = struct {
     field_sets: std.StringArrayHashMapUnmanaged(
         std.StringArrayHashMapUnmanaged(FieldSetMetadata),
     ) = .empty,
+    /// class name (lowercase simple/FQ inner name) -> outer class name.
+    outer_class_by_inner_name: std.StringArrayHashMapUnmanaged([]const u8) = .empty,
+    class_lookup_cache_built: bool = false,
+    static_field_owner_cache: std.StringArrayHashMapUnmanaged(?FieldLookup) = .empty,
+    /// Parsed Custom Metadata records loaded once from source paths.
+    custom_metadata_records: std.StringArrayHashMapUnmanaged(
+        std.ArrayListUnmanaged(Value),
+    ) = .empty,
+    custom_metadata_indexed_files: std.StringArrayHashMapUnmanaged(void) = .empty,
+    custom_metadata_paths_indexed: bool = false,
+    custom_metadata_loaded_types: std.StringArrayHashMapUnmanaged(void) = .empty,
     // System.Limits counters
     limits_dml: u32 = 0,
     limits_dml_rows: u32 = 0,
@@ -246,6 +257,8 @@ pub const Evaluator = struct {
         self.stdout = .empty;
         self.store = .empty;
         self.static_inited = .empty;
+        self.static_field_owner_cache = .empty;
+        self.custom_metadata_loaded_types = .empty;
         self.next_id = 1;
         self.bypasses = .empty;
         self.pending_exception = null;
@@ -1335,7 +1348,7 @@ pub const Evaluator = struct {
 
         const scope_class = blk: {
             if (current_env) |env| {
-                if (env.get("this")) |this_val| {
+                if (env.get_this()) |this_val| {
                     if (this_val == .object) break :blk this_val.object.class_name;
                 }
             }
@@ -2945,6 +2958,9 @@ pub const Evaluator = struct {
         if (std.ascii.eqlIgnoreCase(type_name, "Account")) return .{ '0', '0', '1' };
         if (std.ascii.eqlIgnoreCase(type_name, "Contact")) return .{ '0', '0', '3' };
         if (std.ascii.eqlIgnoreCase(type_name, "Opportunity")) return .{ '0', '0', '6' };
+        if (std.ascii.eqlIgnoreCase(type_name, "OpportunityContactRole"))
+            return .{ '0', '0', 'K' };
+        if (std.ascii.eqlIgnoreCase(type_name, "OpportunityStage")) return .{ '0', '1', 'J' };
         if (std.ascii.eqlIgnoreCase(type_name, "Lead")) return .{ '0', '0', 'Q' };
         if (std.ascii.eqlIgnoreCase(type_name, "Case")) return .{ '5', '0', '0' };
         if (std.ascii.eqlIgnoreCase(type_name, "Task")) return .{ '0', '0', 'T' };
@@ -5310,15 +5326,109 @@ pub const Evaluator = struct {
         }
         if (std.ascii.eqlIgnoreCase(from_type, "RecordType")) {
             try self.seed_record_type_store();
-            if (self.store.get("RecordType")) |rt_records| {
-                for (rt_records.items) |record| {
-                    if (self.matches_where(record, soql, current_env) and record == .sobject) {
-                        const copy = try self.clone_s_object(record.sobject);
-                        try records.append(self.arena, Value{ .sobject = copy });
-                    }
-                }
+            try self.append_matching_store_records("RecordType", soql, current_env, records);
+            return;
+        }
+        if (std.ascii.eqlIgnoreCase(from_type, "OpportunityStage")) {
+            try self.seed_opportunity_stage_store();
+            try self.append_matching_store_records("OpportunityStage", soql, current_env, records);
+        }
+    }
+
+    fn append_matching_store_records(
+        self: *Evaluator,
+        store_type: []const u8,
+        soql: []const u8,
+        current_env: *Env,
+        records: *std.ArrayListUnmanaged(Value),
+    ) !void {
+        const store_records = self.store.get(store_type) orelse return;
+        for (store_records.items) |record| {
+            if (self.matches_where(record, soql, current_env) and record == .sobject) {
+                const copy = try self.clone_s_object(record.sobject);
+                try records.append(self.arena, Value{ .sobject = copy });
             }
         }
+    }
+
+    fn seed_opportunity_stage_store(self: *Evaluator) !void {
+        const gop = try self.store.getOrPut(self.arena, "OpportunityStage");
+        if (!gop.found_existing) gop.value_ptr.* = .empty;
+        if (gop.value_ptr.items.len > 0) return;
+
+        const stages = [_]struct {
+            name: []const u8,
+            sort_order: i64,
+            probability: i64,
+            is_closed: bool,
+            is_won: bool,
+            forecast: []const u8,
+        }{
+            .{
+                .name = "Prospecting",
+                .sort_order = 1,
+                .probability = 10,
+                .is_closed = false,
+                .is_won = false,
+                .forecast = "Pipeline",
+            },
+            .{
+                .name = "Pledged",
+                .sort_order = 2,
+                .probability = 50,
+                .is_closed = false,
+                .is_won = false,
+                .forecast = "Pipeline",
+            },
+            .{
+                .name = "Closed Won",
+                .sort_order = 3,
+                .probability = 100,
+                .is_closed = true,
+                .is_won = true,
+                .forecast = "Closed",
+            },
+            .{
+                .name = "Closed Lost",
+                .sort_order = 4,
+                .probability = 0,
+                .is_closed = true,
+                .is_won = false,
+                .forecast = "Omitted",
+            },
+        };
+
+        for (stages) |stage| try self.append_opportunity_stage(gop.value_ptr, stage);
+    }
+
+    fn append_opportunity_stage(
+        self: *Evaluator,
+        records: *std.ArrayListUnmanaged(Value),
+        stage: anytype,
+    ) !void {
+        const row = try self.arena.create(types.SObject);
+        row.* = .{ .type_name = "OpportunityStage" };
+        const id = try self.alloc_id_for_type("OpportunityStage");
+        row.id = id;
+        try row.fields.put(self.arena, "Id", Value{ .string = id });
+        try row.fields.put(self.arena, "MasterLabel", Value{ .string = stage.name });
+        try row.fields.put(self.arena, "ApiName", Value{ .string = stage.name });
+        try row.fields.put(self.arena, "SortOrder", Value{ .integer = stage.sort_order });
+        try row.fields.put(
+            self.arena,
+            "DefaultProbability",
+            Value{ .integer = stage.probability },
+        );
+        try row.fields.put(self.arena, "IsActive", Value{ .boolean = true });
+        try row.fields.put(self.arena, "IsClosed", Value{ .boolean = stage.is_closed });
+        try row.fields.put(self.arena, "IsWon", Value{ .boolean = stage.is_won });
+        try row.fields.put(self.arena, "ForecastCategory", Value{ .string = stage.forecast });
+        try row.fields.put(
+            self.arena,
+            "ForecastCategoryName",
+            Value{ .string = stage.forecast },
+        );
+        try records.append(self.arena, Value{ .sobject = row });
     }
 
     fn append_seeded_store_record(
@@ -5425,6 +5535,7 @@ pub const Evaluator = struct {
         "Account",
         "Contact",
         "Opportunity",
+        "OpportunityContactRole",
         "Case",
         "Lead",
         "Task",
@@ -5458,6 +5569,8 @@ pub const Evaluator = struct {
         "UserRecordAccess",
         "AuthSession",
         "LoginHistory",
+        "OpportunityStage",
+        "SObject",
         "TaskStatus",
         "BusinessHours",
         "FeedItem",
@@ -5475,6 +5588,8 @@ pub const Evaluator = struct {
         "Pricebook2",
         "PricebookEntry",
         "OpportunityLineItem",
+        "OpportunityContactRole",
+        "OpportunityStage",
         "Quote",
         "QuoteLineItem",
         "PermissionSetLicense",
@@ -6401,7 +6516,7 @@ pub const Evaluator = struct {
             }
         }
 
-        if (current_env.get("this")) |tv| {
+        if (current_env.get_this()) |tv| {
             if (tv == .object) {
                 const this_cn = tv.object.class_name;
                 self.ensure_static_init(this_cn);
@@ -6633,6 +6748,18 @@ pub const Evaluator = struct {
         return id;
     }
 
+    fn alloc_id_for_type(self: *Evaluator, type_name: []const u8) ![]const u8 {
+        const key_prefix = sobject_key_prefix(type_name);
+        const id = try std.fmt.allocPrint(
+            self.arena,
+            "{s}{d:0>15}",
+            .{ &key_prefix, self.next_id },
+        );
+        self.next_id += 1;
+        try self.id_type_map.put(self.arena, id, type_name);
+        return id;
+    }
+
     /// Load a StaticResource body from the file system.
     /// Searches source_paths for staticresources/<name>.json, .csv, .xml, or .resource.
     fn load_static_resource_body(self: *Evaluator, name: []const u8) ?[]const u8 {
@@ -6718,6 +6845,23 @@ pub const Evaluator = struct {
     /// Parses files matching `customMetadata/<TypeName>.<RecordName>.md-meta.xml` and
     /// populates the store with SObject records containing the field values.
     fn load_custom_metadata_from_files(self: *Evaluator, mdt_type: []const u8) !void {
+        const loaded_key = try ascii_lower_alloc(self.arena, mdt_type);
+        const loaded_gop = try self.custom_metadata_loaded_types.getOrPut(self.arena, loaded_key);
+        if (loaded_gop.found_existing) {
+            self.arena.free(loaded_key);
+            return;
+        }
+
+        if (self.custom_metadata_records.get(mdt_type)) |cached_records| {
+            try self.clone_custom_metadata_records_into_store(mdt_type, cached_records.items);
+            return;
+        }
+        if (self.custom_metadata_paths_indexed) return;
+
+        try self.load_custom_metadata_from_source_paths(mdt_type);
+    }
+
+    fn load_custom_metadata_from_source_paths(self: *Evaluator, mdt_type: []const u8) !void {
         // Strip __mdt suffix to get the base type name for file matching
         const base_name = if (std.mem.endsWith(u8, mdt_type, "__mdt"))
             mdt_type[0 .. mdt_type.len - 5]
@@ -6776,6 +6920,75 @@ pub const Evaluator = struct {
                     }
                 }
             }
+        }
+    }
+
+    pub fn index_custom_metadata_from_path(self: *Evaluator, path: []const u8) !void {
+        var dir = try std.Io.Dir.cwd().openDir(self.io, path, .{ .iterate = true });
+        defer dir.close(self.io);
+
+        var walker = try dir.walk(self.arena);
+        defer walker.deinit();
+
+        while (try walker.next(self.io)) |entry| {
+            if (entry.kind != .file) continue;
+            if (!std.mem.endsWith(u8, entry.path, ".md-meta.xml")) continue;
+            const cm_pos = std.mem.indexOf(u8, entry.path, "customMetadata/") orelse continue;
+            const after_cm = entry.path[cm_pos + "customMetadata/".len ..];
+            const first_dot = std.mem.indexOfScalar(u8, after_cm, '.') orelse continue;
+            const type_base = after_cm[0..first_dot];
+            const after_dot = after_cm[first_dot + 1 ..];
+            const dev_end = std.mem.indexOfScalar(u8, after_dot, '.') orelse after_dot.len;
+            try self.index_custom_metadata_file(path, entry.path, type_base, after_dot[0..dev_end]);
+        }
+        self.custom_metadata_paths_indexed = true;
+    }
+
+    fn index_custom_metadata_file(
+        self: *Evaluator,
+        base_path: []const u8,
+        entry_path: []const u8,
+        type_base: []const u8,
+        dev_name_raw: []const u8,
+    ) !void {
+        const full_path = try std.fmt.allocPrint(self.arena, "{s}/{s}", .{ base_path, entry_path });
+        const file_key = try ascii_lower_alloc(self.arena, full_path);
+        const indexed_gop = try self.custom_metadata_indexed_files.getOrPut(self.arena, file_key);
+        if (indexed_gop.found_existing) {
+            self.arena.free(file_key);
+            return;
+        }
+
+        const mdt_type = if (std.mem.endsWith(u8, type_base, "__mdt"))
+            try self.arena.dupe(u8, type_base)
+        else
+            try std.fmt.allocPrint(self.arena, "{s}__mdt", .{type_base});
+        const content = try std.Io.Dir.cwd().readFileAlloc(
+            self.io,
+            full_path,
+            self.arena,
+            .limited(1024 * 1024),
+        );
+        const sob = (try self.parse_custom_metadata_xml(mdt_type, content)) orelse return;
+        const dev_name = try self.arena.dupe(u8, dev_name_raw);
+        try sob.fields.put(self.arena, "DeveloperName", Value{ .string = dev_name });
+
+        const gop = try self.custom_metadata_records.getOrPut(self.arena, mdt_type);
+        if (!gop.found_existing) gop.value_ptr.* = .empty;
+        try gop.value_ptr.append(self.arena, Value{ .sobject = sob });
+    }
+
+    fn clone_custom_metadata_records_into_store(
+        self: *Evaluator,
+        mdt_type: []const u8,
+        cached_records: []const Value,
+    ) !void {
+        const gop = try self.store.getOrPut(self.arena, mdt_type);
+        if (!gop.found_existing) gop.value_ptr.* = .empty;
+        for (cached_records) |record| {
+            if (record != .sobject) continue;
+            const copy = try self.clone_s_object(record.sobject);
+            try gop.value_ptr.append(self.arena, Value{ .sobject = copy });
         }
     }
 
@@ -9420,7 +9633,7 @@ pub const Evaluator = struct {
     }
 
     fn resolve_bare_static_value(self: *Evaluator, current_env: *Env, name: []const u8) ?Value {
-        if (current_env.get("this")) |this_val| {
+        if (current_env.get_this()) |this_val| {
             if (this_val == .object) {
                 const this_cn = this_val.object.class_name;
                 if (self.resolve_static_field_value_on_class(this_cn, name)) |val| return val;
@@ -9547,7 +9760,7 @@ pub const Evaluator = struct {
             .string_literal => |v| .{ .string = v },
             .boolean_literal => |v| .{ .boolean = v },
             .null_literal => .null_val,
-            .this_expr, .super_expr => current_env.get("this") orelse .null_val,
+            .this_expr, .super_expr => current_env.get_this() orelse .null_val,
             .identifier => |id| self.eval_identifier_expr(id, current_env),
             .binary => |bin| self.eval_binary_expr(bin, current_env),
             .unary => |un| self.eval_unary_expr(un, current_env),
@@ -9582,7 +9795,7 @@ pub const Evaluator = struct {
         if (current_env.get(id_name)) |val| {
             if (val != .null_val) return val;
         }
-        if (current_env.get("this")) |this_live| {
+        if (current_env.get_this()) |this_live| {
             if (this_live == .object) {
                 if (utils.sobject_get(&this_live.object.fields, id_name)) |live| {
                     if (live != .null_val) {
@@ -9630,7 +9843,7 @@ pub const Evaluator = struct {
         id_name: []const u8,
         current_env: *Env,
     ) anyerror!?Value {
-        const this_check = current_env.get("this") orelse return null;
+        const this_check = current_env.get_this() orelse return null;
         if (this_check != .object) return null;
         const already_in_instance_getter = if (self.evaluating_getter) |eg|
             std.ascii.eqlIgnoreCase(eg, id_name)
@@ -9686,7 +9899,7 @@ pub const Evaluator = struct {
         id_name: []const u8,
         current_env: *Env,
     ) ?Value {
-        if (current_env.get("this")) |this_val| {
+        if (current_env.get_this()) |this_val| {
             if (this_val == .object) {
                 const this_cn = this_val.object.class_name;
                 const key =
@@ -9731,7 +9944,7 @@ pub const Evaluator = struct {
         current_env: *Env,
     ) ?Value {
         const check_classes = [_]?[]const u8{
-            if (current_env.get("this")) |tv|
+            if (current_env.get_this()) |tv|
                 (if (tv == .object) tv.object.class_name else null)
             else
                 null,
@@ -9824,7 +10037,7 @@ pub const Evaluator = struct {
         if (try self.eval_static_or_loaded_call_expr(call.callee, args.items)) |result| {
             return result;
         }
-        if (current_env.get("this")) |this_val| {
+        if (current_env.get_this()) |this_val| {
             if (this_val == .object or this_val == .sobject or this_val == .string or
                 this_val == .list or this_val == .map or this_val == .set)
             {
@@ -9841,7 +10054,7 @@ pub const Evaluator = struct {
         current_env: *Env,
     ) anyerror!?Value {
         if (std.mem.eql(u8, call.callee, "super")) {
-            if (current_env.get("this")) |this_val| {
+            if (current_env.get_this()) |this_val| {
                 if (this_val == .object) {
                     const ctor_class = if (self.current_constructor_class) |cc|
                         self.find_class(cc)
@@ -9859,7 +10072,7 @@ pub const Evaluator = struct {
             return Value.void_val;
         }
         if (!std.mem.eql(u8, call.callee, "this")) return null;
-        if (current_env.get("this")) |this_val| {
+        if (current_env.get_this()) |this_val| {
             if (this_val == .object) {
                 const ctor_class_name = if (self.current_constructor_class) |cc|
                     cc
@@ -9879,7 +10092,7 @@ pub const Evaluator = struct {
         args: []const Value,
         current_env: *Env,
     ) anyerror!?Value {
-        const this_val = current_env.get("this") orelse return null;
+        const this_val = current_env.get_this() orelse return null;
         if (this_val != .object) return null;
         const actual_decl: ?*ast.ClassDecl = self.find_class(this_val.object.class_name);
         const dispatch_decl = blk: {
@@ -10580,7 +10793,7 @@ pub const Evaluator = struct {
         switch (target.*) {
             .identifier => |id| {
                 if (current_env.get_declared_type(id.name)) |type_name| return type_name;
-                if (current_env.get("this")) |this_val| {
+                if (current_env.get_this()) |this_val| {
                     if (this_val == .object) {
                         if (self.find_declared_field_type(
                             this_val.object.class_name,
@@ -10614,7 +10827,7 @@ pub const Evaluator = struct {
         current_env: *Env,
     ) ?[]const u8 {
         if (fa.object.* == .this_expr) {
-            if (current_env.get("this")) |this_val| {
+            if (current_env.get_this()) |this_val| {
                 if (this_val == .object) {
                     return self.find_declared_field_type(
                         this_val.object.class_name,
@@ -10988,7 +11201,7 @@ pub const Evaluator = struct {
                 found_static = self.assign_existing_static_field(class_name, id_name, final_val);
             }
             if (!found_static) {
-                if (current_env.get("this")) |this_val| {
+                if (current_env.get_this()) |this_val| {
                     if (this_val == .object) {
                         found_static = self.assign_existing_static_field(
                             this_val.object.class_name,
@@ -11008,7 +11221,7 @@ pub const Evaluator = struct {
         final_val: Value,
         current_env: *Env,
     ) !void {
-        const this_val = current_env.get("this") orelse return;
+        const this_val = current_env.get_this() orelse return;
         if (this_val != .object) return;
         if (self.should_update_this_field(this_val.object, id_name)) {
             try this_val.object.fields.put(self.arena, id_name, final_val);
@@ -11035,7 +11248,7 @@ pub const Evaluator = struct {
         final_val: Value,
         current_env: *Env,
     ) void {
-        if (current_env.get("this") != null) return;
+        if (current_env.get_this() != null) return;
         if (self.current_class) |class_name| {
             _ = self.assign_existing_static_field(class_name, id_name, final_val);
         }
@@ -11047,24 +11260,77 @@ pub const Evaluator = struct {
         field_name: []const u8,
         value: Value,
     ) bool {
+        const owner = self.find_static_field_owner(class_name, field_name) orelse return false;
         const static_key = std.fmt.allocPrint(
             self.arena,
             "{s}.{s}",
-            .{ class_name, field_name },
+            .{ owner.owner_name, owner.field_decl.name },
         ) catch "";
-        if (self.global_env.get(static_key) != null) {
-            self.global_env.set(static_key, value) catch {};
+        if (self.global_env.bindings.getIndex(static_key)) |idx| {
+            self.global_env.bindings.values()[idx] = value;
             return true;
         }
-        const outer_name = self.find_outer_class_name(class_name) orelse return false;
-        const outer_key = std.fmt.allocPrint(
-            self.arena,
-            "{s}.{s}",
-            .{ outer_name, field_name },
-        ) catch "";
-        if (self.global_env.get(outer_key) == null) return false;
-        self.global_env.set(outer_key, value) catch {};
+        self.global_env.define(static_key, value) catch return false;
         return true;
+    }
+
+    fn find_static_field_owner(
+        self: *Evaluator,
+        class_name: []const u8,
+        field_name: []const u8,
+    ) ?FieldLookup {
+        var stack_key: [512]u8 = undefined;
+        const key_len = class_name.len + 1 + field_name.len;
+        if (key_len <= stack_key.len) {
+            const lookup_key =
+                static_field_cache_key_into(stack_key[0..key_len], class_name, field_name);
+            if (self.static_field_owner_cache.get(lookup_key)) |cached| return cached;
+        }
+
+        const result = self.find_static_field_owner_uncached(class_name, field_name);
+        const cache_key = self.static_field_cache_key(class_name, field_name) catch return result;
+        const gop = self.static_field_owner_cache.getOrPut(
+            self.arena,
+            cache_key,
+        ) catch return result;
+        if (gop.found_existing) return gop.value_ptr.*;
+        gop.value_ptr.* = result;
+        return result;
+    }
+
+    fn find_static_field_owner_uncached(
+        self: *Evaluator,
+        class_name: []const u8,
+        field_name: []const u8,
+    ) ?FieldLookup {
+        if (self.find_field_decl_with_owner(class_name, field_name)) |lookup| {
+            if (lookup.field_decl.modifiers.is_static) return lookup;
+        }
+        const outer_name = self.find_outer_class_name(class_name) orelse return null;
+        if (self.find_field_decl_with_owner(outer_name, field_name)) |lookup| {
+            if (lookup.field_decl.modifiers.is_static) return lookup;
+        }
+        return null;
+    }
+
+    fn static_field_cache_key(
+        self: *Evaluator,
+        class_name: []const u8,
+        field_name: []const u8,
+    ) ![]const u8 {
+        const key = try self.arena.alloc(u8, class_name.len + 1 + field_name.len);
+        return static_field_cache_key_into(key, class_name, field_name);
+    }
+
+    fn static_field_cache_key_into(
+        key: []u8,
+        class_name: []const u8,
+        field_name: []const u8,
+    ) []const u8 {
+        _ = ascii_lower_into(key[0..class_name.len], class_name);
+        key[class_name.len] = '.';
+        _ = ascii_lower_into(key[class_name.len + 1 ..], field_name);
+        return key;
     }
 
     fn eval_field_assignment(
@@ -11224,7 +11490,7 @@ pub const Evaluator = struct {
         object: *types.ObjectInstance,
         setter_env: *Env,
     ) !void {
-        const this_val = setter_env.get("this") orelse return;
+        const this_val = setter_env.get_this() orelse return;
         if (this_val == .object and this_val.object == object) {
             var field_keys: std.ArrayListUnmanaged([]const u8) = .empty;
             for (object.fields.keys()) |key| field_keys.append(self.arena, key) catch {};
@@ -11413,7 +11679,7 @@ pub const Evaluator = struct {
         args: []const Value,
     ) anyerror!?Value {
         if (mc.object.* != .super_expr) return null;
-        if (current_env.get("this")) |this_val| {
+        if (current_env.get_this()) |this_val| {
             if (this_val == .object) {
                 if (self.current_class) |current_class_name| {
                     if (self.find_class(current_class_name)) |current_decl| {
@@ -11857,7 +12123,7 @@ pub const Evaluator = struct {
         class_name: []const u8,
         current_env: *Env,
     ) ?Value {
-        const this_val = current_env.get("this") orelse return null;
+        const this_val = current_env.get_this() orelse return null;
         if (this_val != .object) return null;
 
         const this_class_name = this_val.object.class_name;
@@ -13348,7 +13614,7 @@ pub const Evaluator = struct {
         obj: *types.ObjectInstance,
         current_env: *Env,
     ) ?*ast.ClassDecl {
-        if (current_env.get("this")) |this_val| {
+        if (current_env.get_this()) |this_val| {
             if (this_val == .object and this_val.object == obj) {
                 if (self.current_class) |current_class_name| {
                     if (self.find_class(current_class_name)) |owner_decl| return owner_decl;
@@ -20096,7 +20362,7 @@ pub const Evaluator = struct {
         method_env: *Env,
         instance: *types.ObjectInstance,
     ) void {
-        const this_val = method_env.get("this") orelse return;
+        const this_val = method_env.get_this() orelse return;
         if (this_val != .object) return;
         const updated = this_val.object;
         if (updated == instance) return;
@@ -21384,12 +21650,64 @@ pub const Evaluator = struct {
         return null;
     }
 
+    pub fn build_class_lookup_cache(self: *Evaluator, alloc: std.mem.Allocator) !void {
+        if (self.class_lookup_cache_built) return;
+        var iter = self.classes.iterator();
+        while (iter.next()) |entry| {
+            const outer_name = entry.key_ptr.*;
+            if (std.mem.indexOfScalar(u8, outer_name, '.') != null) continue;
+            for (entry.value_ptr.*.members) |member| {
+                switch (member) {
+                    .class_decl => |inner_cd| {
+                        try self.put_outer_class_cache_entry(alloc, inner_cd.name, outer_name);
+                        const fq = try std.fmt.allocPrint(
+                            alloc,
+                            "{s}.{s}",
+                            .{ outer_name, inner_cd.name },
+                        );
+                        try self.put_outer_class_cache_entry(alloc, fq, outer_name);
+                    },
+                    else => {},
+                }
+            }
+        }
+        self.class_lookup_cache_built = true;
+    }
+
+    fn put_outer_class_cache_entry(
+        self: *Evaluator,
+        alloc: std.mem.Allocator,
+        name: []const u8,
+        outer_name: []const u8,
+    ) !void {
+        const key = try ascii_lower_alloc(alloc, name);
+        const gop = try self.outer_class_by_inner_name.getOrPut(alloc, key);
+        if (gop.found_existing) {
+            alloc.free(key);
+            return;
+        }
+        gop.value_ptr.* = outer_name;
+    }
+
     /// Find the outer (enclosing) class name for a given inner class.
     /// Returns null if the class is not an inner class.
     /// Accepts either simple inner class name ("Inner") or FQ form ("Outer.Inner");
     /// when FQ is passed and the prefix matches an outer class, returns it directly.
     fn find_outer_class_name(self: *Evaluator, inner_class_name: []const u8) ?[]const u8 {
-        // Fast path: FQ form "Outer.Inner" returns a registered top-level prefix.
+        var stack_buf: [256]u8 = undefined;
+        if (inner_class_name.len <= stack_buf.len) {
+            const key = ascii_lower_into(stack_buf[0..], inner_class_name);
+            if (self.outer_class_by_inner_name.get(key)) |outer_name| return outer_name;
+        } else {
+            const key = ascii_lower_alloc(self.arena, inner_class_name) catch return null;
+            defer self.arena.free(key);
+
+            if (self.outer_class_by_inner_name.get(key)) |outer_name| return outer_name;
+        }
+        if (self.class_lookup_cache_built) return null;
+
+        // Fallback preserves direct Evaluator tests and any caller that registers
+        // classes without first building the lookup cache.
         if (std.mem.lastIndexOfScalar(u8, inner_class_name, '.')) |di| {
             const outer = inner_class_name[0..di];
             if (self.find_class(outer)) |_| return outer;
@@ -21400,7 +21718,6 @@ pub const Evaluator = struct {
             inner_class_name;
         var iter = self.classes.iterator();
         while (iter.next()) |entry| {
-            // Skip fully-qualified names; only top-level class entries own inner classes.
             if (std.mem.indexOfScalar(u8, entry.key_ptr.*, '.') != null) continue;
             for (entry.value_ptr.*.members) |member| {
                 switch (member) {
@@ -22852,6 +23169,16 @@ pub const Evaluator = struct {
 // ---------------------------------------------------------------------------
 // 静的ヘルパー
 // ---------------------------------------------------------------------------
+
+fn ascii_lower_alloc(alloc: std.mem.Allocator, value: []const u8) ![]const u8 {
+    const out = try alloc.alloc(u8, value.len);
+    return ascii_lower_into(out, value);
+}
+
+fn ascii_lower_into(out: []u8, value: []const u8) []const u8 {
+    for (value, 0..) |ch, i| out[i] = std.ascii.toLower(ch);
+    return out[0..value.len];
+}
 
 /// Apex-compatible `String.split(regex)` implementation backed by the interpret regex engine.
 /// `split_limit` mirrors the `split(regex, limit)` overload: when set and > 1, only that many

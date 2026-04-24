@@ -678,6 +678,11 @@ fn dispatch_static_string_format(ctx: *BuiltinContext, args: []const Value) !Val
         var result = std.ArrayListUnmanaged(u8).empty;
         var i: usize = 0;
         while (i < fmt_str.len) {
+            if (fmt_str[i] == '\'' and i + 1 < fmt_str.len and fmt_str[i + 1] == '\'') {
+                try result.append(ctx.arena, '\'');
+                i += 2;
+                continue;
+            }
             if (fmt_str[i] == '{' and i + 1 < fmt_str.len) {
                 if (std.mem.indexOfScalarPos(u8, fmt_str, i + 1, '}')) |close| {
                     const idx_str = fmt_str[i + 1 .. close];
@@ -2060,6 +2065,7 @@ const schema_global_describe_known_types = [_][]const u8{
     "OpportunityLineItem",
     "CampaignMember",
     "OpportunityContactRole",
+    "OpportunityStage",
     "AccountContactRole",
     "AccountTeamMember",
     "OpportunityTeamMember",
@@ -2101,6 +2107,8 @@ const schema_describe_s_objects_known_types = [_][]const u8{
     "account",
     "contact",
     "opportunity",
+    "opportunitycontactrole",
+    "opportunitystage",
     "task",
     "lead",
     "case",
@@ -4332,6 +4340,14 @@ const known_describe_field_sets = [_]struct { object: []const u8, fields: []cons
         "IsPrivate",        "IsWon",                "IsClosed",   "ExpectedRevenue",
         "ForecastCategory", "ForecastCategoryName", "NextStep",
     } },
+    .{ .object = "OpportunityContactRole", .fields = &.{
+        "OpportunityId", "ContactId", "Role", "IsPrimary",
+    } },
+    .{ .object = "OpportunityStage", .fields = &.{
+        "MasterLabel",        "ApiName",          "SortOrder",
+        "IsActive",           "IsClosed",         "IsWon",
+        "DefaultProbability", "ForecastCategory", "ForecastCategoryName",
+    } },
     .{ .object = "User", .fields = &.{
         "Username",       "Email",             "FirstName",    "LastName",
         "ProfileId",      "Alias",             "UserType",     "IsActive",
@@ -4396,6 +4412,15 @@ const canonical_describe_field_sets = [_]struct { object: []const u8, fields: []
         "Id",        "Name",       "AccountId",   "StageName",
         "CloseDate", "Amount",     "OwnerId",     "Probability",
         "Type",      "LeadSource", "Description", "IsPrivate",
+    } },
+    .{ .object = "OpportunityContactRole", .fields = &.{
+        "Id", "OpportunityId", "ContactId", "Role", "IsPrimary",
+    } },
+    .{ .object = "OpportunityStage", .fields = &.{
+        "Id",                   "MasterLabel",        "ApiName",
+        "SortOrder",            "IsActive",           "IsClosed",
+        "IsWon",                "DefaultProbability", "ForecastCategory",
+        "ForecastCategoryName",
     } },
     .{ .object = "Task", .fields = &.{
         "Id",     "Subject", "ActivityDate", "Priority",

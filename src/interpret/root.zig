@@ -280,6 +280,7 @@ fn run_tests_filtered(
         "interpret: registered {d} class(es), {d} trigger(s), {d} parse error(s)\n",
         .{ eval.classes.count(), eval.triggers.count(), load_stats.parse_errors },
     );
+    try eval.build_class_lookup_cache(parse_alloc);
 
     load_test_metadata(parse_alloc, io, paths, &eval);
     const classes_with_statics = try collect_classes_with_static_fields(parse_alloc, &eval);
@@ -390,6 +391,7 @@ fn load_test_metadata_path(
         &eval.object_labels,
         &eval.object_label_plurals,
     ) catch {};
+    eval.index_custom_metadata_from_path(path) catch {};
 }
 
 fn collect_classes_with_static_fields(
@@ -517,7 +519,7 @@ fn run_test_method(
     writer: anytype,
 ) !void {
     suite.total += 1;
-    _ = test_arena.reset(.retain_capacity);
+    _ = test_arena.reset(.{ .retain_with_limit = 128 * 1024 * 1024 });
     var test_eval = evaluator.Evaluator.init(test_arena.allocator(), io) catch return;
     copy_test_eval_context(&test_eval, base_eval, parse_alloc);
     configure_test_method(
@@ -545,6 +547,8 @@ fn copy_test_eval_context(
     test_eval.classes = base_eval.classes;
     test_eval.class_arena = parse_alloc;
     test_eval.triggers = base_eval.triggers;
+    test_eval.outer_class_by_inner_name = base_eval.outer_class_by_inner_name;
+    test_eval.class_lookup_cache_built = base_eval.class_lookup_cache_built;
     test_eval.class_sources = base_eval.class_sources;
     test_eval.trigger_sources = base_eval.trigger_sources;
     test_eval.source_paths = base_eval.source_paths;
@@ -557,6 +561,8 @@ fn copy_test_eval_context(
     test_eval.object_labels = base_eval.object_labels;
     test_eval.object_label_plurals = base_eval.object_label_plurals;
     test_eval.field_sets = base_eval.field_sets;
+    test_eval.custom_metadata_records = base_eval.custom_metadata_records;
+    test_eval.custom_metadata_paths_indexed = base_eval.custom_metadata_paths_indexed;
 }
 
 fn configure_test_method(
@@ -7592,6 +7598,29 @@ test "E2E: SObjectType keySet preserves keys in loop bodies" {
     defer result.deinit();
 
     try std.testing.expectEqualStrings("User:testuser@example.com", result.value.string);
+}
+
+test "E2E: String.format unescapes doubled single quotes" {
+    const source =
+        \\public class StringFormatSingleQuoteTest {
+        \\    public static String test() {
+        \\        return String.format(
+        \\            'SELECT Id FROM Account WHERE Id > \'\'{0}\'\' LIMIT {1}',
+        \\            new List<String>{ '001000000000001', '10' }
+        \\        );
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "StringFormatSingleQuoteTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings(
+        "SELECT Id FROM Account WHERE Id > '001000000000001' LIMIT 10",
+        result.value.string,
+    );
 }
 
 test "E2E: EmailMessage display field selection prefers Subject when Name is absent" {

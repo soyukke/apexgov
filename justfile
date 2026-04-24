@@ -77,6 +77,90 @@ bench REPO: build-fast
     /usr/bin/time -l ./zig-out/bin/apexgov interpret test "$repo_path" 2>&1 | tee -a "$log"
     echo "Log: $log"
 
+# 非 git 管理のローカル target file を時間上限付きで直列実行する。
+# usage: just bench-local .local-fixtures/interpret-experimental-targets.txt 180
+bench-local TARGETS=".local-fixtures/interpret-experimental-targets.txt" SECONDS="180": build-fast
+    #!/usr/bin/env bash
+    set -euo pipefail
+    targets="{{TARGETS}}"
+    seconds="{{SECONDS}}"
+    if [[ ! -f "$targets" ]]; then
+        echo "Missing $targets — create it with one repo name per line" >&2
+        exit 1
+    fi
+    mkdir -p tmp
+    ts=$(date +%Y%m%d-%H%M%S)
+    summary="tmp/bench-local-$ts.summary"
+    fmt='%-32s %8s %8s %8s %10s\n'
+    {
+        printf "$fmt" REPO PASSED FAILED ERROR STATUS
+        printf '%s\n' "--------------------------------------------------------------------------"
+    } | tee "$summary"
+    kill_tree() {
+        local root="$1"
+        local children child
+        children=$(pgrep -P "$root" 2>/dev/null || true)
+        for child in $children; do
+            kill_tree "$child"
+        done
+        kill -TERM "$root" 2>/dev/null || true
+    }
+    while IFS= read -r repo || [[ -n "$repo" ]]; do
+        repo="${repo%%#*}"
+        repo="${repo// /}"
+        repo="${repo//$'\t'/}"
+        [[ -z "$repo" ]] && continue
+        repo_path=".local-fixtures/apex/repos/$repo"
+        log="tmp/bench-local-$repo-$ts.log"
+        if [[ ! -d "$repo_path" ]]; then
+            printf "$fmt" "$repo" MISSING - - - | tee -a "$summary"
+            continue
+        fi
+        (
+            /usr/bin/time -l ./zig-out/bin/apexgov interpret test "$repo_path"
+        ) > "$log" 2>&1 &
+        pid=$!
+        rc=0
+        for _ in $(seq 1 "$seconds"); do
+            if ! kill -0 "$pid" 2>/dev/null; then
+                wait "$pid" || rc=$?
+                break
+            fi
+            sleep 1
+        done
+        if kill -0 "$pid" 2>/dev/null; then
+            kill_tree "$pid"
+            wait "$pid" 2>/dev/null || true
+            rc=124
+        fi
+        pass=$(grep -c '^\[PASS\]' "$log" || true)
+        fail=$(grep -c '^\[FAIL\]' "$log" || true)
+        error=$(grep -c '^\[ERROR\]' "$log" || true)
+        results_line=$(grep -E '^--- Results:' "$log" | tail -1 || true)
+        status=$([[ -n "$results_line" ]] && echo "done" || echo "timeout")
+        if [[ "$rc" != "0" && "$status" == "done" ]]; then
+            status="failed"
+        fi
+        printf "$fmt" "$repo" "$pass" "$fail" "$error" "$status" | tee -a "$summary"
+    done < "$targets"
+    echo "Summary: $summary"
+
+# 単一 repo の単一テスト/クラスを切り出して改善するためのショートカット。
+# usage: just test-local SomeRepo SomeTestClass someMethod
+test-local REPO CLASS METHOD="": build-fast
+    #!/usr/bin/env bash
+    set -euo pipefail
+    repo_path=".local-fixtures/apex/repos/{{REPO}}"
+    if [[ ! -d "$repo_path" ]]; then
+        echo "Repo not found: $repo_path" >&2
+        exit 1
+    fi
+    if [[ -n "{{METHOD}}" ]]; then
+        ./zig-out/bin/apexgov interpret test --class "{{CLASS}}" --method "{{METHOD}}" "$repo_path"
+    else
+        ./zig-out/bin/apexgov interpret test --class "{{CLASS}}" "$repo_path"
+    fi
+
 # .local-fixtures/interpret-targets.txt のリストを直列実行し、サマリーを出力
 # (1 行 1 リポジトリ名、空行と # コメントは無視)
 bench-all: build-fast
