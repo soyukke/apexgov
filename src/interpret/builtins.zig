@@ -8040,7 +8040,9 @@ fn permission_name_allows_field_operation(
     operation: []const u8,
 ) bool {
     const obj_name = object_type orelse return false;
-    if (!permission_name_allows_object_operation(permission_name, obj_name, operation)) return false;
+    if (!permission_name_allows_object_operation(permission_name, obj_name, operation)) {
+        return false;
+    }
 
     if (lower_contains(permission_name, "all_fields")) {
         if (lower_contains(permission_name, "except") and
@@ -8069,15 +8071,16 @@ fn current_profile_name(eval: *evaluator_mod.Evaluator) ?[]const u8 {
     return "System Administrator";
 }
 
-fn restricted_profile_allows_object_operation(eval: *evaluator_mod.Evaluator, sobject_type: []const u8, operation: []const u8) bool {
+fn restricted_profile_allows_object_operation(
+    eval: *evaluator_mod.Evaluator,
+    sobject_type: []const u8,
+    operation: []const u8,
+) bool {
     const profile_name = current_profile_name(eval) orelse return false;
     if (std.ascii.indexOfIgnoreCase(profile_name, "Marketing") == null) return false;
 
     if (std.ascii.eqlIgnoreCase(sobject_type, "Account")) {
-        return std.ascii.eqlIgnoreCase(operation, "read") or
-            std.ascii.eqlIgnoreCase(operation, "create") or
-            std.ascii.eqlIgnoreCase(operation, "edit") or
-            std.ascii.eqlIgnoreCase(operation, "update");
+        return type_matches_any(operation, &.{ "read", "create", "edit", "update" });
     }
 
     return false;
@@ -8085,11 +8088,13 @@ fn restricted_profile_allows_object_operation(eval: *evaluator_mod.Evaluator, so
 
 fn restricted_core_field_allowed(object_type: ?[]const u8, field_name: []const u8) bool {
     _ = object_type;
-    return std.ascii.eqlIgnoreCase(field_name, "Name") or
-        std.ascii.eqlIgnoreCase(field_name, "FirstName") or
-        std.ascii.eqlIgnoreCase(field_name, "LastName") or
-        std.ascii.eqlIgnoreCase(field_name, "CaseNumber") or
-        std.ascii.eqlIgnoreCase(field_name, "Company");
+    return type_matches_any(field_name, &.{
+        "Name",
+        "FirstName",
+        "LastName",
+        "CaseNumber",
+        "Company",
+    });
 }
 
 fn relationship_read_target(field_name: []const u8) ?[]const u8 {
@@ -8105,7 +8110,10 @@ fn relationship_read_target(field_name: []const u8) ?[]const u8 {
     return null;
 }
 
-fn permission_record_matches_assigned_set(eval: *evaluator_mod.Evaluator, parent_id_value: ?Value) bool {
+fn permission_record_matches_assigned_set(
+    eval: *evaluator_mod.Evaluator,
+    parent_id_value: ?Value,
+) bool {
     if (parent_id_value == null) return true;
     if (parent_id_value.? != .string) return false;
 
@@ -8119,7 +8127,11 @@ fn permission_record_matches_assigned_set(eval: *evaluator_mod.Evaluator, parent
     return false;
 }
 
-fn field_permission_matches(object_type: ?[]const u8, permission_field: []const u8, field_name: []const u8) bool {
+fn field_permission_matches(
+    object_type: ?[]const u8,
+    permission_field: []const u8,
+    field_name: []const u8,
+) bool {
     const fp_field_name = if (std.mem.lastIndexOfScalar(u8, permission_field, '.')) |dot|
         permission_field[dot + 1 ..]
     else
@@ -8134,18 +8146,27 @@ fn field_permission_matches(object_type: ?[]const u8, permission_field: []const 
     return true;
 }
 
-/// Check a specific permission (PermissionsRead/PermissionsEdit) for a field in FieldPermissions store.
-/// Returns null when no matching FieldPermissions record exists for the current user context.
-fn check_field_permission(eval: *evaluator_mod.Evaluator, object_type: ?[]const u8, field_name: []const u8, perm_field: []const u8) ?bool {
+/// Check a specific permission in FieldPermissions store.
+fn check_field_permission(
+    eval: *evaluator_mod.Evaluator,
+    object_type: ?[]const u8,
+    field_name: []const u8,
+    perm_field: []const u8,
+) ?bool {
     const fp_records = eval.store.get("FieldPermissions") orelse return null;
     var matched_any = false;
     var granted = false;
     for (fp_records.items) |fp| {
         if (fp != .sobject) continue;
-        if (!permission_record_matches_assigned_set(eval, utils.sobject_get(&fp.sobject.fields, "ParentId"))) continue;
+        const parent_id = utils.sobject_get(&fp.sobject.fields, "ParentId");
+        if (!permission_record_matches_assigned_set(eval, parent_id)) continue;
 
         const fp_field = utils.sobject_get(&fp.sobject.fields, "Field") orelse continue;
-        if (fp_field != .string or !field_permission_matches(object_type, fp_field.string, field_name)) continue;
+        if (fp_field != .string or
+            !field_permission_matches(object_type, fp_field.string, field_name))
+        {
+            continue;
+        }
 
         matched_any = true;
         const perm_val = utils.sobject_get(&fp.sobject.fields, perm_field) orelse continue;
@@ -8160,13 +8181,13 @@ fn check_field_permission(eval: *evaluator_mod.Evaluator, object_type: ?[]const 
 /// Strategy (in priority order):
 /// 1. Check assigned FieldPermissions records in store
 /// 2. Fallback: heuristic based on assigned PermissionSet names containing the field name
-fn is_field_allowed_by_perm_sets(eval: *evaluator_mod.Evaluator, object_type: ?[]const u8, field_name: []const u8, operation: []const u8) bool {
-    const perm_field = if (std.ascii.eqlIgnoreCase(operation, "create"))
-        "PermissionsCreate"
-    else if (std.ascii.eqlIgnoreCase(operation, "edit") or std.ascii.eqlIgnoreCase(operation, "update"))
-        "PermissionsEdit"
-    else
-        "PermissionsRead";
+fn is_field_allowed_by_perm_sets(
+    eval: *evaluator_mod.Evaluator,
+    object_type: ?[]const u8,
+    field_name: []const u8,
+    operation: []const u8,
+) bool {
+    const perm_field = field_permission_column(operation);
     if (check_field_permission(eval, object_type, field_name, perm_field)) |perm| return perm;
 
     var assigned_names: [64][]const u8 = undefined;
@@ -8174,10 +8195,21 @@ fn is_field_allowed_by_perm_sets(eval: *evaluator_mod.Evaluator, object_type: ?[
     if (assigned_count == 0) return false;
 
     for (assigned_names[0..assigned_count]) |permission_name| {
-        if (permission_name_allows_field_operation(permission_name, object_type, field_name, operation)) return true;
+        if (permission_name_allows_field_operation(
+            permission_name,
+            object_type,
+            field_name,
+            operation,
+        )) return true;
     }
 
     return false;
+}
+
+fn field_permission_column(operation: []const u8) []const u8 {
+    if (std.ascii.eqlIgnoreCase(operation, "create")) return "PermissionsCreate";
+    if (type_matches_any(operation, &.{ "edit", "update" })) return "PermissionsEdit";
+    return "PermissionsRead";
 }
 
 // ---------------------------------------------------------------------------
@@ -8198,28 +8230,24 @@ fn get_s_object_type_from_args(args: []const Value) ?[]const u8 {
     return null;
 }
 
-/// Lookup ObjectPermissions in the store for a given SObject type and operation
-fn lookup_object_permission(eval: *evaluator_mod.Evaluator, sobject_type: []const u8, operation: []const u8) ?bool {
+/// Lookup ObjectPermissions in the store.
+fn lookup_object_permission(
+    eval: *evaluator_mod.Evaluator,
+    sobject_type: []const u8,
+    operation: []const u8,
+) ?bool {
     const op_records = eval.store.get("ObjectPermissions") orelse return null;
     var matched_any = false;
     var granted = false;
     for (op_records.items) |item| {
         if (item != .sobject) continue;
-        if (!permission_record_matches_assigned_set(eval, utils.sobject_get(&item.sobject.fields, "ParentId"))) continue;
+        const parent_id = utils.sobject_get(&item.sobject.fields, "ParentId");
+        if (!permission_record_matches_assigned_set(eval, parent_id)) continue;
         const sot_val = utils.sobject_get(&item.sobject.fields, "SobjectType") orelse continue;
         if (sot_val != .string) continue;
         if (!std.ascii.eqlIgnoreCase(sot_val.string, sobject_type)) continue;
 
-        const perm_field = if (std.ascii.eqlIgnoreCase(operation, "create"))
-            "PermissionsCreate"
-        else if (std.ascii.eqlIgnoreCase(operation, "edit"))
-            "PermissionsEdit"
-        else if (std.ascii.eqlIgnoreCase(operation, "destroy") or std.ascii.eqlIgnoreCase(operation, "delete"))
-            "PermissionsDelete"
-        else if (std.ascii.eqlIgnoreCase(operation, "read"))
-            "PermissionsRead"
-        else
-            "PermissionsRead";
+        const perm_field = object_permission_column(operation);
 
         matched_any = true;
         const perm_val = utils.sobject_get(&item.sobject.fields, perm_field) orelse continue;
@@ -8229,21 +8257,46 @@ fn lookup_object_permission(eval: *evaluator_mod.Evaluator, sobject_type: []cons
     return granted;
 }
 
+fn object_permission_column(operation: []const u8) []const u8 {
+    if (std.ascii.eqlIgnoreCase(operation, "create")) return "PermissionsCreate";
+    if (std.ascii.eqlIgnoreCase(operation, "edit")) return "PermissionsEdit";
+    if (type_matches_any(operation, &.{ "destroy", "delete" })) {
+        return "PermissionsDelete";
+    }
+    return "PermissionsRead";
+}
+
 fn default_object_crud_access(eval: *evaluator_mod.Evaluator, sobject_type: []const u8) bool {
     if (eval.is_restricted_user) return false;
-    if (eval.is_standard_user and (eval.is_setup_object(sobject_type) or has_custom_object_suffix(sobject_type))) return false;
+    if (eval.is_standard_user and
+        (eval.is_setup_object(sobject_type) or has_custom_object_suffix(sobject_type)))
+    {
+        return false;
+    }
     return true;
 }
 
-pub fn resolve_object_crud_permission_public(eval: *evaluator_mod.Evaluator, sobject_type: []const u8, operation: []const u8) bool {
+pub fn resolve_object_crud_permission_public(
+    eval: *evaluator_mod.Evaluator,
+    sobject_type: []const u8,
+    operation: []const u8,
+) bool {
     return resolve_object_crud_permission(eval, sobject_type, operation);
 }
 
-pub fn resolve_field_read_permission_public(eval: *evaluator_mod.Evaluator, object_type: []const u8, field_name: []const u8) bool {
+pub fn resolve_field_read_permission_public(
+    eval: *evaluator_mod.Evaluator,
+    object_type: []const u8,
+    field_name: []const u8,
+) bool {
     return resolve_field_read_permission(eval, object_type, field_name);
 }
 
-fn resolve_object_crud_permission(eval: *evaluator_mod.Evaluator, sobject_type: []const u8, operation: []const u8) bool {
+fn resolve_object_crud_permission(
+    eval: *evaluator_mod.Evaluator,
+    sobject_type: []const u8,
+    operation: []const u8,
+) bool {
     var allowed = default_object_crud_access(eval, sobject_type);
     if (lookup_object_permission(eval, sobject_type, operation)) |perm| {
         allowed = allowed or perm;
@@ -8252,7 +8305,11 @@ fn resolve_object_crud_permission(eval: *evaluator_mod.Evaluator, sobject_type: 
         var assigned_names: [64][]const u8 = undefined;
         const assigned_count = collect_assigned_permission_set_names(eval, &assigned_names);
         for (assigned_names[0..assigned_count]) |permission_name| {
-            if (permission_name_allows_object_operation(permission_name, sobject_type, operation)) return true;
+            if (permission_name_allows_object_operation(
+                permission_name,
+                sobject_type,
+                operation,
+            )) return true;
         }
         if (restricted_profile_allows_object_operation(eval, sobject_type, operation)) return true;
     }
@@ -8395,7 +8452,11 @@ fn handle_pluralize(ctx: *BuiltinContext, args: []const Value) ![]const u8 {
 /// 1) 既知マッピング (box→boxes, person→people 等) にあればそれを使う、
 /// 2) なければ末尾が s/x/ch/sh なら `+es`、それ以外は `+s`。
 /// `mappings` は anonymous struct の slice なので `anytype` で受ける。
-fn pluralize_word(arena: std.mem.Allocator, word: []const u8, mappings: anytype) ![]const u8 {
+fn pluralize_word(
+    arena: std.mem.Allocator,
+    word: []const u8,
+    mappings: anytype,
+) ![]const u8 {
     for (mappings) |m| {
         if (std.ascii.eqlIgnoreCase(word, m.singular)) return m.plural;
     }
@@ -8477,8 +8538,22 @@ fn handle_reserved_keywords(ctx: *BuiltinContext, args: []const Value) ![]const 
     return result.items;
 }
 
+fn data_weave_payload_field(obj: *types.ObjectInstance) ?Value {
+    return obj.fields.get("records") orelse
+        obj.fields.get("payload") orelse
+        obj.fields.get("csvData");
+}
+
+fn data_weave_payload_key(key: []const u8) bool {
+    return type_matches_any(key, &.{ "records", "payload", "csvData" });
+}
+
 /// Handle DataWeave CSV to JSON conversion
-fn handle_csv_to_json(ctx: *BuiltinContext, args: []const Value, script_name: []const u8) ![]const u8 {
+fn handle_csv_to_json(
+    ctx: *BuiltinContext,
+    args: []const Value,
+    script_name: []const u8,
+) ![]const u8 {
     // Extract input data (CSV string or records)
     var csv_str: []const u8 = "";
     var separator: u8 = ',';
@@ -8496,7 +8571,7 @@ fn handle_csv_to_json(ctx: *BuiltinContext, args: []const Value, script_name: []
 
     if (args.len > 0) {
         if (args[0] == .object) {
-            if (args[0].object.fields.get("records") orelse args[0].object.fields.get("payload") orelse args[0].object.fields.get("csvData")) |records| {
+            if (data_weave_payload_field(args[0].object)) |records| {
                 if (records == .string) csv_str = records.string;
             }
             if (args[0].object.fields.get("separator")) |sep| {
@@ -8504,11 +8579,12 @@ fn handle_csv_to_json(ctx: *BuiltinContext, args: []const Value, script_name: []
             }
         } else if (args[0] == .map) {
             for (args[0].map.entries.keys(), args[0].map.entries.values()) |k, v| {
-                if ((std.ascii.eqlIgnoreCase(k, "records") or std.ascii.eqlIgnoreCase(k, "payload") or
-                    std.ascii.eqlIgnoreCase(k, "csvData")) and v == .string)
-                {
+                if (data_weave_payload_key(k) and v == .string) {
                     csv_str = v.string;
-                } else if (std.ascii.eqlIgnoreCase(k, "separator") and v == .string and v.string.len > 0) {
+                } else if (std.ascii.eqlIgnoreCase(k, "separator") and
+                    v == .string and
+                    v.string.len > 0)
+                {
                     separator = v.string[0];
                 }
             }
@@ -8518,7 +8594,9 @@ fn handle_csv_to_json(ctx: *BuiltinContext, args: []const Value, script_name: []
     if (csv_str.len == 0) return "[]";
 
     const normalized_csv = blk: {
-        if (std.mem.indexOf(u8, csv_str, "\\n") == null and std.mem.indexOf(u8, csv_str, "\\r") == null) {
+        if (std.mem.indexOf(u8, csv_str, "\\n") == null and
+            std.mem.indexOf(u8, csv_str, "\\r") == null)
+        {
             break :blk csv_str;
         }
         var buf: std.ArrayListUnmanaged(u8) = .empty;
