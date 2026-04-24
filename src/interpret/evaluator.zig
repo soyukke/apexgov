@@ -22270,13 +22270,18 @@ pub const Evaluator = struct {
         return Value{ .object = obj };
     }
 
-    fn parse_json_user_class_object_value(self: *Evaluator, trimmed: []const u8, type_hint: []const u8) ?Value {
+    fn parse_json_user_class_object_value(
+        self: *Evaluator,
+        trimmed: []const u8,
+        type_hint: []const u8,
+    ) ?Value {
         const obj = self.init_json_user_class_object(type_hint) catch return null;
         var cursor: usize = 1;
         while (true) {
             switch (next_json_object_field(trimmed, cursor)) {
                 .field => |field| {
-                    const field_type_hint = self.json_user_class_field_type_hint(type_hint, field.key);
+                    const field_type_hint =
+                        self.json_user_class_field_type_hint(type_hint, field.key);
                     if (field.value.len > 0) {
                         if (self.parse_json_value(field.value, field_type_hint)) |v| {
                             obj.fields.put(self.arena, field.key, v) catch {};
@@ -22305,7 +22310,11 @@ pub const Evaluator = struct {
         return obj;
     }
 
-    fn json_user_class_field_type_hint(self: *Evaluator, type_hint: []const u8, key_name: []const u8) []const u8 {
+    fn json_user_class_field_type_hint(
+        self: *Evaluator,
+        type_hint: []const u8,
+        key_name: []const u8,
+    ) []const u8 {
         if (self.find_class(type_hint)) |cd| {
             for (cd.members) |member| {
                 switch (member) {
@@ -22325,7 +22334,11 @@ pub const Evaluator = struct {
         return "Object";
     }
 
-    fn find_user_class_list_field_type(self: *Evaluator, type_hint: []const u8, key_name: []const u8) ?[]const u8 {
+    fn find_user_class_list_field_type(
+        self: *Evaluator,
+        type_hint: []const u8,
+        key_name: []const u8,
+    ) ?[]const u8 {
         for (self.class_sources.keys(), self.class_sources.values()) |k, src| {
             if (!std.ascii.eqlIgnoreCase(k, type_hint)) continue;
             if (self.find_field_array_type(src, key_name)) |elem| {
@@ -22337,7 +22350,11 @@ pub const Evaluator = struct {
         return null;
     }
 
-    fn parse_json_s_object_value(self: *Evaluator, trimmed: []const u8, type_hint: []const u8) ?Value {
+    fn parse_json_s_object_value(
+        self: *Evaluator,
+        trimmed: []const u8,
+        type_hint: []const u8,
+    ) ?Value {
         const sob = self.arena.create(types.SObject) catch return null;
         var resolved_type = type_hint;
         sob.* = .{ .type_name = resolved_type };
@@ -22380,7 +22397,12 @@ pub const Evaluator = struct {
         self.apply_json_s_object_literal_field(sob, key, value_str);
     }
 
-    fn apply_json_s_object_string_field(self: *Evaluator, sob: *types.SObject, key: []const u8, value_str: []const u8) void {
+    fn apply_json_s_object_string_field(
+        self: *Evaluator,
+        sob: *types.SObject,
+        key: []const u8,
+        value_str: []const u8,
+    ) void {
         const val_str = if (value_str.len >= 2) value_str[1 .. value_str.len - 1] else "";
         if (std.mem.eql(u8, key, "attributes")) return;
         if (std.ascii.eqlIgnoreCase(key, "Id")) {
@@ -22388,7 +22410,11 @@ pub const Evaluator = struct {
             sob.fields.put(self.arena, "Id", Value{ .string = val_str }) catch {};
             return;
         }
-        const normalized = self.normalize_parsed_json_s_object_field(sob, key, Value{ .string = val_str });
+        const normalized = self.normalize_parsed_json_s_object_field(
+            sob,
+            key,
+            Value{ .string = val_str },
+        );
         sob.fields.put(self.arena, key, normalized) catch {};
     }
 
@@ -22427,45 +22453,63 @@ pub const Evaluator = struct {
         return null;
     }
 
-    fn apply_json_s_object_literal_field(self: *Evaluator, sob: *types.SObject, key: []const u8, value_str: []const u8) void {
+    fn apply_json_s_object_literal_field(
+        self: *Evaluator,
+        sob: *types.SObject,
+        key: []const u8,
+        value_str: []const u8,
+    ) void {
         if (std.mem.eql(u8, value_str, "null")) {
             sob.fields.put(self.arena, key, Value.null_val) catch {};
             return;
         }
         if (std.mem.eql(u8, value_str, "true")) {
-            const normalized = self.normalize_parsed_json_s_object_field(sob, key, Value{ .boolean = true });
-            sob.fields.put(self.arena, key, normalized) catch {};
+            self.put_normalized_json_s_object_field(sob, key, Value{ .boolean = true });
             return;
         }
         if (std.mem.eql(u8, value_str, "false")) {
-            const normalized = self.normalize_parsed_json_s_object_field(sob, key, Value{ .boolean = false });
-            sob.fields.put(self.arena, key, normalized) catch {};
+            self.put_normalized_json_s_object_field(sob, key, Value{ .boolean = false });
             return;
         }
         if (std.fmt.parseInt(i64, value_str, 10)) |n| {
-            const normalized = self.normalize_parsed_json_s_object_field(sob, key, Value{ .integer = n });
-            sob.fields.put(self.arena, key, normalized) catch {};
+            self.put_normalized_json_s_object_field(sob, key, Value{ .integer = n });
             return;
         } else |_| {}
         if (std.fmt.parseFloat(f64, value_str)) |f| {
-            const normalized = self.normalize_parsed_json_s_object_field(sob, key, Value{ .double = f });
-            sob.fields.put(self.arena, key, normalized) catch {};
+            self.put_normalized_json_s_object_field(sob, key, Value{ .double = f });
             return;
         } else |_| {}
-        const normalized = self.normalize_parsed_json_s_object_field(sob, key, Value{ .string = value_str });
+        self.put_normalized_json_s_object_field(sob, key, Value{ .string = value_str });
+    }
+
+    fn put_normalized_json_s_object_field(
+        self: *Evaluator,
+        sob: *types.SObject,
+        key: []const u8,
+        value: Value,
+    ) void {
+        const normalized = self.normalize_parsed_json_s_object_field(sob, key, value);
         sob.fields.put(self.arena, key, normalized) catch {};
     }
 
-    fn parse_json_scalar_value(self: *Evaluator, trimmed: []const u8, type_hint: []const u8) ?Value {
+    fn parse_json_scalar_value(
+        self: *Evaluator,
+        trimmed: []const u8,
+        type_hint: []const u8,
+    ) ?Value {
         if (trimmed[0] == '"') {
             if (std.mem.lastIndexOfScalar(u8, trimmed, '"')) |end| {
                 if (end > 0) {
                     const str_val = trimmed[1..end];
                     if (std.ascii.eqlIgnoreCase(type_hint, "Date")) {
-                        return builtins.make_date_value(self.arena, str_val) catch Value{ .string = str_val };
+                        return builtins.make_date_value(self.arena, str_val) catch
+                            Value{ .string = str_val };
                     }
-                    if (std.ascii.eqlIgnoreCase(type_hint, "DateTime") or std.ascii.eqlIgnoreCase(type_hint, "Datetime")) {
-                        return builtins.make_datetime_value(self.arena, str_val) catch Value{ .string = str_val };
+                    if (std.ascii.eqlIgnoreCase(type_hint, "DateTime") or
+                        std.ascii.eqlIgnoreCase(type_hint, "Datetime"))
+                    {
+                        return builtins.make_datetime_value(self.arena, str_val) catch
+                            Value{ .string = str_val };
                     }
                     return Value{ .string = str_val };
                 }
@@ -22475,8 +22519,12 @@ pub const Evaluator = struct {
         if (std.mem.eql(u8, trimmed, "null")) return Value.null_val;
         if (std.mem.eql(u8, trimmed, "true")) return Value{ .boolean = true };
         if (std.mem.eql(u8, trimmed, "false")) return Value{ .boolean = false };
-        if (std.fmt.parseInt(i64, trimmed, 10) catch null) |n| return Value{ .integer = n };
-        if (std.fmt.parseFloat(f64, trimmed) catch null) |f| return Value{ .double = f };
+        if (std.fmt.parseInt(i64, trimmed, 10) catch null) |n| {
+            return Value{ .integer = n };
+        }
+        if (std.fmt.parseFloat(f64, trimmed) catch null) |f| {
+            return Value{ .double = f };
+        }
         return null;
     }
 
@@ -22565,6 +22613,104 @@ pub const Evaluator = struct {
         return i + 1;
     }
 
+    const known_s_object_type_names = [_][]const u8{
+        "Account",
+        "Contact",
+        "Opportunity",
+        "Case",
+        "Lead",
+        "Task",
+        "Event",
+        "Campaign",
+        "User",
+        "ContentVersion",
+        "ContentDocument",
+        "ContentDocumentLink",
+        "ContentDistribution",
+        "PermissionSet",
+        "PermissionSetAssignment",
+        "ObjectPermissions",
+        "Profile",
+        "Organization",
+        "ApexClass",
+        "StaticResource",
+        "FieldPermissions",
+        "PermissionSetGroup",
+        "PlatformCachePartition",
+        "CronTrigger",
+        "AsyncApexJob",
+        "EntityDefinition",
+        "FieldDefinition",
+        "AggregateResult",
+        "RecordType",
+        "DuplicateRule",
+        "DuplicateRecordSet",
+        "DuplicateRecordItem",
+        "UserRecordAccess",
+        "AuthSession",
+        "LoginHistory",
+        "TaskStatus",
+        "BusinessHours",
+        "FeedItem",
+        "CollaborationGroup",
+        "UserRole",
+        "GroupMember",
+        "Group",
+        "Attachment",
+        "Note",
+        "EmailMessage",
+        "CaseComment",
+        "Solution",
+        "Contract",
+        "Product2",
+        "Pricebook2",
+        "PricebookEntry",
+        "OpportunityLineItem",
+        "Quote",
+        "QuoteLineItem",
+        "PermissionSetLicense",
+        "EmailTemplate",
+        "Folder",
+        "Document",
+        "CampaignMember",
+        "CampaignMemberStatus",
+        "EmailMessageRelation",
+        "OrgWideEmailAddress",
+        "PermissionSetLicenseAssign",
+        "ServiceResource",
+        "AssignedResource",
+        "ServiceTerritory",
+        "ServiceTerritoryMember",
+        "ApexTrigger",
+        "CustomPermission",
+        "FlowDefinitionView",
+        "FlowVersionView",
+        "ApexEmailNotification",
+        "Network",
+        "Topic",
+        "OmniProcess",
+        "SObject",
+        "BatchApexErrorEvent",
+        "AsyncOperationEvent",
+        "AsyncOperationStatus",
+        "EventBusSubscriber",
+        "LeadStatus",
+        "UserPreference",
+        "UserLogin",
+        "LoginIp",
+        "AccountShare",
+        "OpportunityShare",
+        "CaseShare",
+        "LeadShare",
+        "ContactShare",
+        "CampaignShare",
+        "ContractShare",
+        "ProductShare",
+        "AssetShare",
+        "OrderShare",
+        "QuoteShare",
+    };
+
     /// Determine whether a type name represents a Salesforce SObject type.
     fn is_s_object_type_name(self: *Evaluator, name: []const u8) bool {
         // Custom suffixes: __c, __e, __mdt, __b
@@ -22573,25 +22719,7 @@ pub const Evaluator = struct {
             return true;
         // Present in the data store
         if (self.store.get(name) != null) return true;
-        // Known standard SObject types
-        const known = [_][]const u8{
-            "Account",                 "Contact",                "Opportunity",         "Case",                   "Lead",                 "Task",                 "Event",
-            "Campaign",                "User",                   "ContentVersion",      "ContentDocument",        "ContentDocumentLink",  "ContentDistribution",  "PermissionSet",
-            "PermissionSetAssignment", "ObjectPermissions",      "Profile",             "Organization",           "ApexClass",            "StaticResource",       "FieldPermissions",
-            "PermissionSetGroup",      "PlatformCachePartition", "CronTrigger",         "AsyncApexJob",           "EntityDefinition",     "FieldDefinition",      "AggregateResult",
-            "RecordType",              "DuplicateRule",          "DuplicateRecordSet",  "DuplicateRecordItem",    "UserRecordAccess",     "AuthSession",          "LoginHistory",
-            "TaskStatus",              "BusinessHours",          "FeedItem",            "CollaborationGroup",     "UserRole",             "GroupMember",          "Group",
-            "Attachment",              "Note",                   "EmailMessage",        "CaseComment",            "Solution",             "Contract",             "Product2",
-            "Pricebook2",              "PricebookEntry",         "OpportunityLineItem", "Quote",                  "QuoteLineItem",        "PermissionSetLicense", "EmailTemplate",
-            "Folder",                  "Document",               "CampaignMember",      "CampaignMemberStatus",   "EmailMessageRelation", "OrgWideEmailAddress",  "PermissionSetLicenseAssign",
-            "ServiceResource",         "AssignedResource",       "ServiceTerritory",    "ServiceTerritoryMember", "ApexTrigger",          "CustomPermission",     "FlowDefinitionView",
-            "FlowVersionView",         "ApexEmailNotification",  "Network",             "Topic",                  "OmniProcess",          "SObject",              "BatchApexErrorEvent",
-            "AsyncOperationEvent",     "AsyncOperationStatus",   "EventBusSubscriber",  "LeadStatus",             "UserPreference",       "UserLogin",            "LoginIp",
-            // Standard object-Share sharing tables.
-            "AccountShare",            "OpportunityShare",       "CaseShare",           "LeadShare",              "ContactShare",         "CampaignShare",        "ContractShare",
-            "ProductShare",            "AssetShare",             "OrderShare",          "QuoteShare",
-        };
-        for (known) |kt| {
+        for (known_s_object_type_names) |kt| {
             if (std.ascii.eqlIgnoreCase(name, kt)) return true;
         }
         return false;
