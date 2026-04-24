@@ -15108,13 +15108,19 @@ pub const Evaluator = struct {
             std.ascii.eqlIgnoreCase(method, "millisecondGmt"))
         {
             const dt = parse_iso_date(s) orelse return Value{ .integer = 0 };
-            if (std.ascii.eqlIgnoreCase(method, "hour") or std.ascii.eqlIgnoreCase(method, "hourGmt")) {
+            if (std.ascii.eqlIgnoreCase(method, "hour") or
+                std.ascii.eqlIgnoreCase(method, "hourGmt"))
+            {
                 return Value{ .integer = dt.h };
             }
-            if (std.ascii.eqlIgnoreCase(method, "minute") or std.ascii.eqlIgnoreCase(method, "minuteGmt")) {
+            if (std.ascii.eqlIgnoreCase(method, "minute") or
+                std.ascii.eqlIgnoreCase(method, "minuteGmt"))
+            {
                 return Value{ .integer = dt.mi };
             }
-            if (std.ascii.eqlIgnoreCase(method, "second") or std.ascii.eqlIgnoreCase(method, "secondGmt")) {
+            if (std.ascii.eqlIgnoreCase(method, "second") or
+                std.ascii.eqlIgnoreCase(method, "secondGmt"))
+            {
                 return Value{ .integer = dt.sec };
             }
             return Value{ .integer = 0 };
@@ -15130,7 +15136,8 @@ pub const Evaluator = struct {
         }
         if (std.ascii.eqlIgnoreCase(method, "dayOfYear")) {
             const dt = parse_iso_date(s) orelse return Value.null_val;
-            const is_leap = @mod(dt.y, 4) == 0 and (@mod(dt.y, 100) != 0 or @mod(dt.y, 400) == 0);
+            const is_leap = @mod(dt.y, 4) == 0 and
+                (@mod(dt.y, 100) != 0 or @mod(dt.y, 400) == 0);
             var doy: i32 = @as(i32, day_of_year(dt.m, dt.d));
             if (is_leap and dt.m > 2) doy += 1;
             return Value{ .integer = doy };
@@ -15162,10 +15169,13 @@ pub const Evaluator = struct {
             const other_str = other_date_string_arg(s, args[0]);
             const a = parse_iso_date(s) orelse return Value.null_val;
             const b = parse_iso_date(other_str) orelse return Value.null_val;
-            const diff = (@as(i64, b.y) - @as(i64, a.y)) * 12 + (@as(i64, b.m) - @as(i64, a.m));
+            const diff = (@as(i64, b.y) - @as(i64, a.y)) * 12 +
+                (@as(i64, b.m) - @as(i64, a.m));
             return Value{ .integer = diff };
         }
-        if (std.ascii.eqlIgnoreCase(method, "formatGMT") or std.ascii.eqlIgnoreCase(method, "formatGmt")) {
+        if (std.ascii.eqlIgnoreCase(method, "formatGMT") or
+            std.ascii.eqlIgnoreCase(method, "formatGmt"))
+        {
             if (args.len > 0 and args[0] == .string) {
                 return try self.format_date_time_pattern(s, args[0].string);
             }
@@ -15203,8 +15213,16 @@ pub const Evaluator = struct {
             "November",
             "December",
         };
-        const month_name = if (month_num >= 1 and month_num <= 12) month_names[month_num - 1] else "January";
-        const hour12: u8 = if (hour24 == 0) 12 else if (hour24 > 12) hour24 - 12 else hour24;
+        const month_name = if (month_num >= 1 and month_num <= 12)
+            month_names[month_num - 1]
+        else
+            "January";
+        const hour12: u8 = if (hour24 == 0)
+            12
+        else if (hour24 > 12)
+            hour24 - 12
+        else
+            hour24;
         const am_pm: []const u8 = if (hour24 < 12) "AM" else "PM";
         return Value{ .string = try std.fmt.allocPrint(
             self.arena,
@@ -15233,11 +15251,12 @@ pub const Evaluator = struct {
                 }
                 const exc = try self.arena.create(types.ObjectInstance);
                 exc.* = .{ .class_name = "System.NoSuchElementException" };
-                try exc.fields.put(self.arena, "message", Value{ .string = try std.fmt.allocPrint(
+                const message = try std.fmt.allocPrint(
                     self.arena,
                     "No enum constant {s}.{s}",
                     .{ s, raw_value },
-                ) });
+                );
+                try exc.fields.put(self.arena, "message", Value{ .string = message });
                 self.pending_exception = Value{ .object = exc };
                 return error.ApexException;
             }
@@ -15280,21 +15299,41 @@ pub const Evaluator = struct {
         method: []const u8,
         args: []const Value,
     ) !?Value {
-        if (std.ascii.eqlIgnoreCase(method, "substringAfter") and args.len > 0 and args[0] == .string) {
+        if (std.ascii.eqlIgnoreCase(method, "substringAfter") and
+            args.len > 0 and
+            args[0] == .string)
+        {
             const sep = args[0].string;
             if (std.mem.indexOf(u8, s, sep)) |idx| {
                 return Value{ .string = s[idx + sep.len ..] };
             }
             return Value{ .string = "" };
         }
-        if (std.ascii.eqlIgnoreCase(method, "substringBefore") and args.len > 0 and args[0] == .string) {
+        if (std.ascii.eqlIgnoreCase(method, "substringBefore") and
+            args.len > 0 and
+            args[0] == .string)
+        {
             const sep = args[0].string;
             if (std.mem.indexOf(u8, s, sep)) |idx| {
                 return Value{ .string = s[0..idx] };
             }
             return Value{ .string = s };
         }
-        if (std.ascii.eqlIgnoreCase(method, "substringAfterLast") and args.len > 0 and args[0] == .string) {
+        if (eval_string_substring_suffix_methods(s, method, args)) |result| {
+            return result;
+        }
+        return null;
+    }
+
+    fn eval_string_substring_suffix_methods(
+        s: []const u8,
+        method: []const u8,
+        args: []const Value,
+    ) ?Value {
+        if (std.ascii.eqlIgnoreCase(method, "substringAfterLast") and
+            args.len > 0 and
+            args[0] == .string)
+        {
             const sep = args[0].string;
             if (sep.len == 0) return Value{ .string = "" };
             var last_idx: ?usize = null;
@@ -15305,7 +15344,10 @@ pub const Evaluator = struct {
             if (last_idx) |idx| return Value{ .string = s[idx + sep.len ..] };
             return Value{ .string = "" };
         }
-        if (std.ascii.eqlIgnoreCase(method, "substringBeforeLast") and args.len > 0 and args[0] == .string) {
+        if (std.ascii.eqlIgnoreCase(method, "substringBeforeLast") and
+            args.len > 0 and
+            args[0] == .string)
+        {
             const sep = args[0].string;
             if (sep.len == 0) return Value{ .string = s };
             var last_idx: ?usize = null;
@@ -15316,7 +15358,10 @@ pub const Evaluator = struct {
             if (last_idx) |idx| return Value{ .string = s[0..idx] };
             return Value{ .string = s };
         }
-        if (std.ascii.eqlIgnoreCase(method, "countMatches") and args.len > 0 and args[0] == .string) {
+        if (std.ascii.eqlIgnoreCase(method, "countMatches") and
+            args.len > 0 and
+            args[0] == .string)
+        {
             const sep = args[0].string;
             if (sep.len == 0) return Value{ .integer = 0 };
             var count: i64 = 0;
@@ -15348,12 +15393,18 @@ pub const Evaluator = struct {
             for (s, 0..) |ch, i| reversed[s.len - 1 - i] = ch;
             return Value{ .string = reversed };
         }
-        if (std.ascii.eqlIgnoreCase(method, "charAt") and args.len > 0 and args[0] == .integer) {
+        if (std.ascii.eqlIgnoreCase(method, "charAt") and
+            args.len > 0 and
+            args[0] == .integer)
+        {
             const idx: usize = @intCast(@max(args[0].integer, 0));
             if (idx < s.len) return Value{ .integer = @intCast(s[idx]) };
             return Value{ .integer = 0 };
         }
-        if (std.ascii.eqlIgnoreCase(method, "compareTo") and args.len > 0 and args[0] == .string) {
+        if (std.ascii.eqlIgnoreCase(method, "compareTo") and
+            args.len > 0 and
+            args[0] == .string)
+        {
             const other = args[0].string;
             const len = @min(s.len, other.len);
             for (0..len) |i| {
@@ -15364,13 +15415,22 @@ pub const Evaluator = struct {
             if (s.len > other.len) return Value{ .integer = 1 };
             return Value{ .integer = 0 };
         }
-        if (std.ascii.eqlIgnoreCase(method, "startsWithIgnoreCase") and args.len > 0 and args[0] == .string) {
+        if (std.ascii.eqlIgnoreCase(method, "startsWithIgnoreCase") and
+            args.len > 0 and
+            args[0] == .string)
+        {
             return Value{ .boolean = std.ascii.startsWithIgnoreCase(s, args[0].string) };
         }
-        if (std.ascii.eqlIgnoreCase(method, "endsWithIgnoreCase") and args.len > 0 and args[0] == .string) {
+        if (std.ascii.eqlIgnoreCase(method, "endsWithIgnoreCase") and
+            args.len > 0 and
+            args[0] == .string)
+        {
             return Value{ .boolean = std.ascii.endsWithIgnoreCase(s, args[0].string) };
         }
-        if (std.ascii.eqlIgnoreCase(method, "remove") and args.len > 0 and args[0] == .string) {
+        if (std.ascii.eqlIgnoreCase(method, "remove") and
+            args.len > 0 and
+            args[0] == .string)
+        {
             const result = try std.mem.replaceOwned(u8, self.arena, s, args[0].string, "");
             return Value{ .string = result };
         }
@@ -15391,7 +15451,10 @@ pub const Evaluator = struct {
         var store_iter = self.store.iterator();
         while (store_iter.next()) |entry| {
             for (entry.value_ptr.items) |rec| {
-                if (rec == .sobject and rec.sobject.id != null and std.ascii.eqlIgnoreCase(rec.sobject.id.?, s)) {
+                if (rec == .sobject and
+                    rec.sobject.id != null and
+                    std.ascii.eqlIgnoreCase(rec.sobject.id.?, s))
+                {
                     type_name = rec.sobject.type_name;
                     break;
                 }
@@ -15478,10 +15541,19 @@ pub const Evaluator = struct {
         if (try self.new_builtin_object_value(ne, type_name, current_env)) |result| return result;
 
         const obj = try self.new_sobject_from_assignments(ne, type_name, current_env);
-        if (try self.new_user_class_value(ne, type_name, is_platform_qualified, current_env)) |result| {
+        if (try self.new_user_class_value(
+            ne,
+            type_name,
+            is_platform_qualified,
+            current_env,
+        )) |result| {
             return result;
         }
-        if (try self.new_fallback_exception_value(ne, type_name, current_env)) |result| return result;
+        if (try self.new_fallback_exception_value(
+            ne,
+            type_name,
+            current_env,
+        )) |result| return result;
         return Value{ .sobject = obj };
     }
 
@@ -15496,8 +15568,13 @@ pub const Evaluator = struct {
         return raw_type_name;
     }
 
-    fn new_type_literal_value(self: *Evaluator, ne: *ast.NewExpr, type_name: []const u8) !?Value {
-        if ((std.mem.indexOf(u8, type_name, "<") == null and !std.mem.endsWith(u8, type_name, "[]")) or
+    fn new_type_literal_value(
+        self: *Evaluator,
+        ne: *ast.NewExpr,
+        type_name: []const u8,
+    ) !?Value {
+        if ((std.mem.indexOf(u8, type_name, "<") == null and
+            !std.mem.endsWith(u8, type_name, "[]")) or
             ne.args.len != 0)
         {
             return null;
@@ -15554,7 +15631,11 @@ pub const Evaluator = struct {
         return Value{ .list = list };
     }
 
-    fn populate_new_list_from_single_arg(self: *Evaluator, list: *types.ListValue, arg_val: Value) !void {
+    fn populate_new_list_from_single_arg(
+        self: *Evaluator,
+        list: *types.ListValue,
+        arg_val: Value,
+    ) !void {
         if (arg_val == .set) {
             for (arg_val.set.entries.values()) |item| try list.items.append(self.arena, item);
             return;
@@ -15574,7 +15655,10 @@ pub const Evaluator = struct {
             const asgn = arg.assignment;
             const key_val = try self.eval_expr(asgn.target, current_env);
             const val_val = try self.eval_expr(asgn.value, current_env);
-            const key_str = if (key_val == .null_val) "" else try utils.coerce_to_string(key_val, self.arena);
+            const key_str = if (key_val == .null_val)
+                ""
+            else
+                try utils.coerce_to_string(key_val, self.arena);
             try map.entries.put(self.arena, key_str, val_val);
             try map.key_values.put(self.arena, key_str, key_val);
         }
@@ -15595,7 +15679,11 @@ pub const Evaluator = struct {
         for (arg_val.list.items.items) |item| {
             if (item == .sobject and item.sobject.id != null) {
                 try map.entries.put(self.arena, item.sobject.id.?, item);
-                try map.key_values.put(self.arena, item.sobject.id.?, Value{ .string = item.sobject.id.? });
+                try map.key_values.put(
+                    self.arena,
+                    item.sobject.id.?,
+                    Value{ .string = item.sobject.id.? },
+                );
             }
         }
     }
@@ -15782,7 +15870,11 @@ pub const Evaluator = struct {
         var arg_copy = ne.args[0];
         const arg_val = try self.eval_expr(&arg_copy, current_env);
         if (std.ascii.eqlIgnoreCase(type_name, "AuraHandledException")) {
-            try instance.fields.put(self.arena, "message", Value{ .string = "Script-thrown exception" });
+            try instance.fields.put(
+                self.arena,
+                "message",
+                Value{ .string = "Script-thrown exception" },
+            );
             return;
         }
         try instance.fields.put(self.arena, "message", arg_val);
