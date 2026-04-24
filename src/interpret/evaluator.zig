@@ -1063,7 +1063,10 @@ pub const Evaluator = struct {
             if (std.ascii.indexOfIgnoreCase(where_clause, " IN (")) |in_pos| {
                 var j = in_pos + 5;
                 while (j < where_clause.len and where_clause[j] != ')') {
-                    while (j < where_clause.len and where_clause[j] != '\'' and where_clause[j] != ')') j += 1;
+                    while (j < where_clause.len and
+                        where_clause[j] != '\'' and
+                        where_clause[j] != ')') : (j += 1)
+                    {}
                     if (j < where_clause.len and where_clause[j] == '\'') {
                         j += 1;
                         const start = j;
@@ -1683,7 +1686,8 @@ pub const Evaluator = struct {
                     self.limits_soql = saved_soql;
                 }
             }
-            // If a callback is provided (second arg), store it for later processing by Test.getEventBus()
+            // If a callback is provided (second arg), store it for later
+            // processing by Test.getEventBus()
             if (args.len >= 2 and args[1] == .object and any_publish_success) {
                 const callback = args[1].object;
                 // Store callback info for Test.getEventBus().fail() support
@@ -1704,7 +1708,8 @@ pub const Evaluator = struct {
                         }
                     }
                     try pub_result.fields.put(self.arena, "eventUuids", Value{ .list = uuid_list });
-                    // Call onSuccess(result) on the callback (will be overridden by fail() if called)
+                    // Call onSuccess(result) on the callback (will be
+                    // overridden by fail() if called)
                     _ = self.call_instance_method(
                         cb_class,
                         callback,
@@ -2370,16 +2375,23 @@ pub const Evaluator = struct {
         return self.switch_type_pattern_matches_subject(subject, val_copy);
     }
 
-    fn switch_type_pattern_matches_subject(self: *Evaluator, subject: Value, val_copy: *ast.Expr) bool {
+    fn switch_type_pattern_matches_subject(
+        self: *Evaluator,
+        subject: Value,
+        val_copy: *ast.Expr,
+    ) bool {
         if (self.switch_type_pattern_name(val_copy)) |type_name| {
-            if (subject == .sobject and std.ascii.eqlIgnoreCase(subject.sobject.type_name, type_name)) {
+            if (subject == .sobject and
+                std.ascii.eqlIgnoreCase(subject.sobject.type_name, type_name))
+            {
                 return true;
             }
             if (subject == .object) {
-                const subject_simple = if (std.mem.lastIndexOfScalar(u8, subject.object.class_name, '.')) |di|
-                    subject.object.class_name[di + 1 ..]
-                else
-                    subject.object.class_name;
+                const subject_simple =
+                    if (std.mem.lastIndexOfScalar(u8, subject.object.class_name, '.')) |di|
+                        subject.object.class_name[di + 1 ..]
+                    else
+                        subject.object.class_name;
                 if (std.ascii.eqlIgnoreCase(subject_simple, type_name)) return true;
             }
         }
@@ -2956,7 +2968,9 @@ pub const Evaluator = struct {
         if (std.ascii.eqlIgnoreCase(type_name, "Group")) return .{ '0', '0', 'G' };
         if (std.ascii.eqlIgnoreCase(type_name, "Profile")) return .{ '0', '0', 'e' };
         if (std.ascii.eqlIgnoreCase(type_name, "PermissionSet")) return .{ '0', 'P', 'S' };
-        if (std.ascii.eqlIgnoreCase(type_name, "PermissionSetAssignment")) return .{ '0', 'P', 'a' };
+        if (std.ascii.eqlIgnoreCase(type_name, "PermissionSetAssignment")) {
+            return .{ '0', 'P', 'a' };
+        }
         if (std.ascii.eqlIgnoreCase(type_name, "FieldPermissions")) return .{ '0', 'F', 'P' };
         if (std.ascii.eqlIgnoreCase(type_name, "ObjectPermissions")) return .{ '0', 'O', 'P' };
         if (std.ascii.eqlIgnoreCase(type_name, "Attachment")) return .{ '0', '0', 'P' };
@@ -3159,7 +3173,11 @@ pub const Evaluator = struct {
                 continue;
             }
 
-            if (self.find_record_by_field_value(obj.type_name, field_name, field_value)) |existing| {
+            if (self.find_record_by_field_value(
+                obj.type_name,
+                field_name,
+                field_value,
+            )) |existing| {
                 if (obj.id != null and existing.id != null and
                     std.ascii.eqlIgnoreCase(obj.id.?, existing.id.?))
                 {
@@ -3219,7 +3237,9 @@ pub const Evaluator = struct {
             }
         }
         // Check profileId → look up in the store
-        if (utils.sobject_get(&user.fields, "profileId") orelse utils.sobject_get(&user.fields, "ProfileId")) |pid| {
+        if (utils.sobject_get(&user.fields, "profileId") orelse
+            utils.sobject_get(&user.fields, "ProfileId")) |pid|
+        {
             const pid_str = if (pid == .string) pid.string else null;
             if (pid_str) |profile_id| {
                 var store_iter = self.store.iterator();
@@ -3301,7 +3321,10 @@ pub const Evaluator = struct {
         defer self.trigger_depth -= 1;
 
         // Lowercase object type for lookup
-        const obj_lower = std.ascii.lowerString(self.arena.alloc(u8, obj_type.len) catch return, obj_type);
+        const obj_lower = std.ascii.lowerString(
+            self.arena.alloc(u8, obj_type.len) catch return,
+            obj_type,
+        );
 
         const trigger_list = self.triggers.get(obj_lower) orelse return;
 
@@ -3481,12 +3504,18 @@ pub const Evaluator = struct {
     }
 
     fn throw_insert_id_error(self: *Evaluator) !void {
-        try self.throw_dml_exception("INVALID_FIELD_FOR_INSERT_UPDATE: cannot specify Id in an insert call");
+        try self.throw_dml_exception(
+            "INVALID_FIELD_FOR_INSERT_UPDATE: cannot specify Id in an insert call",
+        );
     }
 
     fn assign_insert_id(self: *Evaluator, obj: *types.SObject) ![]const u8 {
         const key_prefix = sobject_key_prefix(obj.type_name);
-        const id = try std.fmt.allocPrint(self.arena, "{s}{d:0>15}", .{ &key_prefix, self.next_id });
+        const id = try std.fmt.allocPrint(
+            self.arena,
+            "{s}{d:0>15}",
+            .{ &key_prefix, self.next_id },
+        );
         self.next_id += 1;
         obj.id = id;
         try obj.fields.put(self.arena, "Id", Value{ .string = id });
@@ -3494,11 +3523,16 @@ pub const Evaluator = struct {
         return id;
     }
 
-    fn capture_insert_timestamps(arena: std.mem.Allocator, obj: *types.SObject) InsertTimestamps {
+    fn capture_insert_timestamps(
+        arena: std.mem.Allocator,
+        obj: *types.SObject,
+    ) InsertTimestamps {
+        const generated_last_modified_date =
+            utils.sobject_get(&obj.fields, "LastModifiedDate") == null;
         return .{
             .now_str = builtins.current_date_time_string(arena) catch "2026-01-01T00:00:00Z",
             .generated_created_date = utils.sobject_get(&obj.fields, "CreatedDate") == null,
-            .generated_last_modified_date = utils.sobject_get(&obj.fields, "LastModifiedDate") == null,
+            .generated_last_modified_date = generated_last_modified_date,
             .generated_system_modstamp = utils.sobject_get(&obj.fields, "SystemModstamp") == null,
         };
     }
@@ -3511,10 +3545,18 @@ pub const Evaluator = struct {
             try obj.fields.put(self.arena, "CreatedBy", try self.make_system_user_value());
         }
         if (utils.sobject_get(&obj.fields, "LastModifiedById") == null) {
-            try obj.fields.put(self.arena, "LastModifiedById", Value{ .string = "005000000000001" });
+            try obj.fields.put(
+                self.arena,
+                "LastModifiedById",
+                Value{ .string = "005000000000001" },
+            );
         }
         if (utils.sobject_get(&obj.fields, "LastModifiedBy") == null) {
-            try obj.fields.put(self.arena, "LastModifiedBy", try self.make_system_user_value());
+            try obj.fields.put(
+                self.arena,
+                "LastModifiedBy",
+                try self.make_system_user_value(),
+            );
         }
     }
 
@@ -3531,28 +3573,53 @@ pub const Evaluator = struct {
         const existing_name = utils.sobject_get(&obj.fields, "Name");
         if (!has_implicit_name_field(obj.type_name)) return;
         if (existing_name != null and existing_name.? != .null_val) return;
-        if (std.ascii.eqlIgnoreCase(obj.type_name, "Contact") or std.ascii.eqlIgnoreCase(obj.type_name, "Lead")) {
-            try obj.fields.put(self.arena, "Name", Value{ .string = try self.contact_or_lead_insert_name(obj) });
+        if (std.ascii.eqlIgnoreCase(obj.type_name, "Contact") or
+            std.ascii.eqlIgnoreCase(obj.type_name, "Lead"))
+        {
+            try obj.fields.put(
+                self.arena,
+                "Name",
+                Value{ .string = try self.contact_or_lead_insert_name(obj) },
+            );
         } else if (existing_name != null and existing_name.? == .null_val) {
             try obj.fields.put(self.arena, "Name", Value{ .string = id });
         } else {
-            const auto_name = try std.fmt.allocPrint(self.arena, "{s}-{d:0>4}", .{ obj.type_name, self.next_id - 1 });
+            const auto_name = try std.fmt.allocPrint(
+                self.arena,
+                "{s}-{d:0>4}",
+                .{ obj.type_name, self.next_id - 1 },
+            );
             try obj.fields.put(self.arena, "Name", Value{ .string = auto_name });
         }
     }
 
     fn contact_or_lead_insert_name(self: *Evaluator, obj: *types.SObject) ![]const u8 {
-        const first = if (utils.sobject_get(&obj.fields, "FirstName")) |v| (if (v == .string) v.string else "") else "";
-        const last = if (utils.sobject_get(&obj.fields, "LastName")) |v| (if (v == .string) v.string else "") else "";
-        if (first.len > 0 and last.len > 0) return std.fmt.allocPrint(self.arena, "{s} {s}", .{ first, last });
+        const first = if (utils.sobject_get(&obj.fields, "FirstName")) |v|
+            (if (v == .string) v.string else "")
+        else
+            "";
+        const last = if (utils.sobject_get(&obj.fields, "LastName")) |v|
+            (if (v == .string) v.string else "")
+        else
+            "";
+        if (first.len > 0 and last.len > 0) {
+            return std.fmt.allocPrint(self.arena, "{s} {s}", .{ first, last });
+        }
         if (last.len > 0) return last;
         if (first.len > 0) return first;
-        return std.fmt.allocPrint(self.arena, "{s}-{d:0>4}", .{ obj.type_name, self.next_id - 1 });
+        return std.fmt.allocPrint(
+            self.arena,
+            "{s}-{d:0>4}",
+            .{ obj.type_name, self.next_id - 1 },
+        );
     }
 
     fn apply_insert_owner(self: *Evaluator, obj: *types.SObject) !void {
         if (utils.sobject_get(&obj.fields, "OwnerId") == null) {
-            const default_owner_id = if (self.is_guest_user_id(self.current_user_id)) "005000000000001" else self.current_user_id;
+            const default_owner_id = if (self.is_guest_user_id(self.current_user_id))
+                "005000000000001"
+            else
+                self.current_user_id;
             try obj.fields.put(self.arena, "OwnerId", Value{ .string = default_owner_id });
         }
         if (utils.sobject_get(&obj.fields, "OwnerId")) |owner_val| {
@@ -3568,7 +3635,11 @@ pub const Evaluator = struct {
         var rel_count: usize = 0;
         for (obj.fields.keys(), obj.fields.values()) |field_name, field_value| {
             if (field_value != .sobject or rel_count >= rel_keys_buf.len) continue;
-            if (try self.resolve_insert_relationship_field(obj, field_name, field_value)) |resolved| {
+            if (try self.resolve_insert_relationship_field(
+                obj,
+                field_name,
+                field_value,
+            )) |resolved| {
                 rel_keys_buf[rel_count] = resolved.key;
                 rel_vals_buf[rel_count] = resolved.value;
                 rel_count += 1;
@@ -3605,7 +3676,12 @@ pub const Evaluator = struct {
     ) ?ResolvedRelationshipField {
         for (ref_obj.fields.keys(), ref_obj.fields.values()) |field_name, field_value| {
             if (!is_external_id_field_name(field_name) or field_value != .string) continue;
-            const record_id = self.find_record_id_by_field_value(ref_obj.type_name, field_name, field_value.string) orelse return null;
+            const record_id =
+                self.find_record_id_by_field_value(
+                    ref_obj.type_name,
+                    field_name,
+                    field_value.string,
+                ) orelse return null;
             return .{ .key = fk_name, .value = Value{ .string = record_id } };
         }
         return null;
@@ -3645,13 +3721,25 @@ pub const Evaluator = struct {
             try snapshot.fields.put(self.arena, k, v);
         }
         if (timestamps.generated_created_date) {
-            try snapshot.fields.put(self.arena, "CreatedDate", Value{ .string = timestamps.now_str });
+            try snapshot.fields.put(
+                self.arena,
+                "CreatedDate",
+                Value{ .string = timestamps.now_str },
+            );
         }
         if (timestamps.generated_last_modified_date) {
-            try snapshot.fields.put(self.arena, "LastModifiedDate", Value{ .string = timestamps.now_str });
+            try snapshot.fields.put(
+                self.arena,
+                "LastModifiedDate",
+                Value{ .string = timestamps.now_str },
+            );
         }
         if (timestamps.generated_system_modstamp) {
-            try snapshot.fields.put(self.arena, "SystemModstamp", Value{ .string = timestamps.now_str });
+            try snapshot.fields.put(
+                self.arena,
+                "SystemModstamp",
+                Value{ .string = timestamps.now_str },
+            );
         }
         const gop = try self.store.getOrPut(self.arena, obj.type_name);
         if (!gop.found_existing) {
@@ -3760,7 +3848,12 @@ pub const Evaluator = struct {
         try obj.fields.put(self.arena, "ContentDocumentId", Value{ .string = cd_id });
         try snapshot.fields.put(self.arena, "ContentDocumentId", Value{ .string = cd_id });
         if (first_pub_loc != null and first_pub_loc.? != .null_val) {
-            try self.create_content_document_link_for_version(cd_id, id, file_type, first_pub_loc.?);
+            try self.create_content_document_link_for_version(
+                cd_id,
+                id,
+                file_type,
+                first_pub_loc.?,
+            );
         }
     }
 
@@ -3793,7 +3886,11 @@ pub const Evaluator = struct {
         cd.* = .{ .type_name = "ContentDocument", .id = cd_id };
         try cd.fields.put(self.arena, "Id", Value{ .string = cd_id });
         try cd.fields.put(self.arena, "LatestPublishedVersionId", Value{ .string = version_id });
-        try cd.fields.put(self.arena, "Title", utils.sobject_get(&obj.fields, "Title") orelse Value{ .string = "Untitled" });
+        try cd.fields.put(
+            self.arena,
+            "Title",
+            utils.sobject_get(&obj.fields, "Title") orelse Value{ .string = "Untitled" },
+        );
         try cd.fields.put(self.arena, "FileType", Value{ .string = file_type });
         try self.append_sobject_to_store("ContentDocument", cd);
     }
@@ -3811,7 +3908,11 @@ pub const Evaluator = struct {
         try cdl.fields.put(self.arena, "Id", Value{ .string = cdl_id });
         try cdl.fields.put(self.arena, "ContentDocumentId", Value{ .string = cd_id });
         try cdl.fields.put(self.arena, "LinkedEntityId", linked_entity_id);
-        try cdl.fields.put(self.arena, "ContentDocument", try self.content_document_ref(cd_id, version_id, file_type));
+        try cdl.fields.put(
+            self.arena,
+            "ContentDocument",
+            try self.content_document_ref(cd_id, version_id, file_type),
+        );
         try self.append_sobject_to_store("ContentDocumentLink", cdl);
     }
 
@@ -3824,7 +3925,11 @@ pub const Evaluator = struct {
         const cd_ref = try self.arena.create(types.SObject);
         cd_ref.* = .{ .type_name = "ContentDocument", .id = cd_id };
         try cd_ref.fields.put(self.arena, "Id", Value{ .string = cd_id });
-        try cd_ref.fields.put(self.arena, "LatestPublishedVersionId", Value{ .string = version_id });
+        try cd_ref.fields.put(
+            self.arena,
+            "LatestPublishedVersionId",
+            Value{ .string = version_id },
+        );
         try cd_ref.fields.put(self.arena, "FileType", Value{ .string = file_type });
         return Value{ .sobject = cd_ref };
     }
@@ -3836,11 +3941,25 @@ pub const Evaluator = struct {
         sort_order: i64,
     };
 
-    fn create_default_campaign_member_statuses(self: *Evaluator, obj: *types.SObject, campaign_id: []const u8) !void {
+    fn create_default_campaign_member_statuses(
+        self: *Evaluator,
+        obj: *types.SObject,
+        campaign_id: []const u8,
+    ) !void {
         if (!std.ascii.eqlIgnoreCase(obj.type_name, "Campaign")) return;
         const default_statuses = [_]DefaultCampaignMemberStatus{
-            .{ .label = "Sent", .is_default = true, .has_responded = false, .sort_order = 1 },
-            .{ .label = "Responded", .is_default = false, .has_responded = true, .sort_order = 2 },
+            .{
+                .label = "Sent",
+                .is_default = true,
+                .has_responded = false,
+                .sort_order = 1,
+            },
+            .{
+                .label = "Responded",
+                .is_default = false,
+                .has_responded = true,
+                .sort_order = 2,
+            },
         };
         for (default_statuses) |status| {
             try self.create_campaign_member_status(campaign_id, status);
@@ -3864,7 +3983,11 @@ pub const Evaluator = struct {
         try self.append_sobject_to_store("CampaignMemberStatus", cms);
     }
 
-    fn create_email_message_relations(self: *Evaluator, obj: *types.SObject, email_message_id: []const u8) !void {
+    fn create_email_message_relations(
+        self: *Evaluator,
+        obj: *types.SObject,
+        email_message_id: []const u8,
+    ) !void {
         if (!std.ascii.eqlIgnoreCase(obj.type_name, "EmailMessage")) return;
         const to_ids_val = utils.sobject_get(&obj.fields, "toIds") orelse return;
         if (to_ids_val != .list) return;
@@ -3899,14 +4022,18 @@ pub const Evaluator = struct {
     /// Validate required fields on an SObject.
     /// When `only_present` is true (for updates), only validate fields that are
     /// explicitly present in the object's fields map — missing fields are not changed.
-    fn validate_required_fields(self: *Evaluator, obj: *types.SObject, only_present: bool) !?[]const u8 {
+    fn validate_required_fields(
+        self: *Evaluator,
+        obj: *types.SObject,
+        only_present: bool,
+    ) !?[]const u8 {
         const type_name = obj.type_name;
         if (std.ascii.eqlIgnoreCase(type_name, "Account")) {
             const name_val = utils.sobject_get(&obj.fields, "Name");
             // Insert: field must exist and be non-null/non-empty
             // Update: field must not be explicitly set to null/empty
             if (name_val == null) {
-                if (!only_present) return "REQUIRED_FIELD_MISSING: Required fields are missing: [Name]";
+                if (!only_present) return try self.required_field_missing_message("Name");
             } else if (name_val.? == .null_val) {
                 return "REQUIRED_FIELD_MISSING: Required fields are missing: [Name]";
             } else if (name_val.? == .string and name_val.?.string.len == 0) {
@@ -3916,7 +4043,9 @@ pub const Evaluator = struct {
         if (std.ascii.eqlIgnoreCase(type_name, "Contact")) {
             const name_val = utils.sobject_get(&obj.fields, "LastName");
             if (name_val == null) {
-                if (!only_present) return "REQUIRED_FIELD_MISSING: Required fields are missing: [LastName]";
+                if (!only_present) {
+                    return try self.required_field_missing_message("LastName");
+                }
             } else if (name_val.? == .null_val) {
                 return "REQUIRED_FIELD_MISSING: Required fields are missing: [LastName]";
             }
@@ -3924,7 +4053,7 @@ pub const Evaluator = struct {
         if (std.ascii.eqlIgnoreCase(type_name, "Opportunity")) {
             const name_val = utils.sobject_get(&obj.fields, "Name");
             if (name_val == null) {
-                if (!only_present) return "REQUIRED_FIELD_MISSING: Required fields are missing: [Name]";
+                if (!only_present) return try self.required_field_missing_message("Name");
             } else if (name_val.? == .null_val) {
                 return "REQUIRED_FIELD_MISSING: Required fields are missing: [Name]";
             }
@@ -3942,19 +4071,32 @@ pub const Evaluator = struct {
                 const field_val = utils.sobject_get(&obj.fields, field_name);
                 if (field_val == null) {
                     if (!only_present) {
-                        return try std.fmt.allocPrint(self.arena, "REQUIRED_FIELD_MISSING: Required fields are missing: [{s}]", .{field_name});
+                        return try self.required_field_missing_message(field_name);
                     }
                     continue;
                 }
                 if (field_val.? == .null_val) {
-                    return try std.fmt.allocPrint(self.arena, "REQUIRED_FIELD_MISSING: Required fields are missing: [{s}]", .{field_name});
+                    return try self.required_field_missing_message(field_name);
                 }
-                if (field_val.? == .string and std.mem.trim(u8, field_val.?.string, " \t\r\n").len == 0) {
-                    return try std.fmt.allocPrint(self.arena, "REQUIRED_FIELD_MISSING: Required fields are missing: [{s}]", .{field_name});
+                if (field_val.? == .string and
+                    std.mem.trim(u8, field_val.?.string, " \t\r\n").len == 0)
+                {
+                    return try self.required_field_missing_message(field_name);
                 }
             }
         }
         return null;
+    }
+
+    fn required_field_missing_message(
+        self: *Evaluator,
+        field_name: []const u8,
+    ) ![]const u8 {
+        return std.fmt.allocPrint(
+            self.arena,
+            "REQUIRED_FIELD_MISSING: Required fields are missing: [{s}]",
+            .{field_name},
+        );
     }
 
     /// ContentVersion の必須フィールド (`PathOnClient`, `VersionData`) を
@@ -3987,7 +4129,9 @@ pub const Evaluator = struct {
             // `default_val` avoids shadowing the module-level
             // `default_value` function produced by the snake_case rename.
             for (defaults.keys(), defaults.values()) |field_name, default_val| {
-                if (self.get_s_object_field_value_case_insensitive(obj, field_name) != null) continue;
+                if (self.get_s_object_field_value_case_insensitive(obj, field_name) != null) {
+                    continue;
+                }
                 try utils.sobject_put(&obj.fields, self.arena, field_name, default_val);
             }
         }
@@ -4001,13 +4145,19 @@ pub const Evaluator = struct {
     fn apply_standard_object_defaults(self: *Evaluator, obj: *types.SObject) !void {
         if (std.ascii.eqlIgnoreCase(obj.type_name, "User")) {
             if (self.get_s_object_field_value_case_insensitive(obj, "IsActive") == null) {
-                try utils.sobject_put(&obj.fields, self.arena, "IsActive", Value{ .boolean = true });
+                try utils.sobject_put(
+                    &obj.fields,
+                    self.arena,
+                    "IsActive",
+                    Value{ .boolean = true },
+                );
             }
         }
     }
 
     fn update_record(self: *Evaluator, obj: *types.SObject) anyerror!void {
-        // Validate only fields explicitly present (Salesforce doesn't re-validate all required fields on update)
+        // Validate only fields explicitly present (Salesforce doesn't
+        // re-validate all required fields on update)
         if (try self.validate_required_fields(obj, true)) |err_msg| {
             const exc = try self.arena.create(types.ObjectInstance);
             exc.* = .{ .class_name = "DmlException" };
@@ -4024,7 +4174,13 @@ pub const Evaluator = struct {
             if (found_rec == null) {
                 const exc = try self.arena.create(types.ObjectInstance);
                 exc.* = .{ .class_name = "DmlException" };
-                try exc.fields.put(self.arena, "message", Value{ .string = "INVALID_CROSS_REFERENCE_KEY: invalid cross reference id" });
+                try exc.fields.put(
+                    self.arena,
+                    "message",
+                    Value{
+                        .string = "INVALID_CROSS_REFERENCE_KEY: invalid cross reference id",
+                    },
+                );
                 self.pending_exception = Value{ .object = exc };
                 return error.ApexException;
             }
@@ -4052,6 +4208,10 @@ pub const Evaluator = struct {
         if (id_field.? == .string) obj.id = id_field.?.string;
     }
 
+    const guest_owner_record_error_message =
+        "FIELD_INTEGRITY_EXCEPTION, field integrity exception " ++
+        "(Guest users cannot be record owners.)";
+
     fn reject_guest_owner_update(self: *Evaluator, obj: *types.SObject) !void {
         const owner_val = utils.sobject_get(&obj.fields, "OwnerId") orelse return;
         if (owner_val != .string or !self.is_guest_user_id(owner_val.string)) return;
@@ -4060,7 +4220,7 @@ pub const Evaluator = struct {
         try exc.fields.put(
             self.arena,
             "message",
-            Value{ .string = "FIELD_INTEGRITY_EXCEPTION, field integrity exception (Guest users cannot be record owners.)" },
+            Value{ .string = guest_owner_record_error_message },
         );
         self.pending_exception = Value{ .object = exc };
         return error.ApexException;
@@ -4081,7 +4241,9 @@ pub const Evaluator = struct {
             }
         }
         if (utils.sobject_get(&obj.fields, "Id")) |id_val| {
-            if (id_val == .string) return self.find_update_target_record_by_id_field(obj, id_val.string);
+            if (id_val == .string) {
+                return self.find_update_target_record_by_id_field(obj, id_val.string);
+            }
         }
         return null;
     }
@@ -4112,7 +4274,11 @@ pub const Evaluator = struct {
     ) !void {
         const now_str = builtins.current_date_time_string(self.arena) catch "2026-01-01T00:00:00Z";
         obj.fields.put(self.arena, "LastModifiedDate", Value{ .string = now_str }) catch {};
-        obj.fields.put(self.arena, "LastModifiedById", Value{ .string = "005000000000001" }) catch {};
+        obj.fields.put(
+            self.arena,
+            "LastModifiedById",
+            Value{ .string = "005000000000001" },
+        ) catch {};
         if (utils.sobject_get(&obj.fields, "LastModifiedBy") == null) {
             try self.put_last_modified_by_stub(obj);
         }
@@ -4134,14 +4300,22 @@ pub const Evaluator = struct {
         modified_by.* = .{ .type_name = "User", .id = "005000000000001" };
         try modified_by.fields.put(self.arena, "Id", Value{ .string = "005000000000001" });
         try modified_by.fields.put(self.arena, "Name", Value{ .string = "Test User" });
-        try modified_by.fields.put(self.arena, "Username", Value{ .string = "testuser@example.com" });
+        try modified_by.fields.put(
+            self.arena,
+            "Username",
+            Value{ .string = "testuser@example.com" },
+        );
         try obj.fields.put(self.arena, "LastModifiedBy", Value{ .sobject = modified_by });
     }
 
     /// `upsert_record` の external id 分岐を抽出。マッチする既存レコードが
     /// 見つかり update したら `true` を、まだ insert に落ちるべき場合は
     /// `false` を返す。
-    fn upsert_by_external_id(self: *Evaluator, obj: *types.SObject, field_name: []const u8) anyerror!bool {
+    fn upsert_by_external_id(
+        self: *Evaluator,
+        obj: *types.SObject,
+        field_name: []const u8,
+    ) anyerror!bool {
         if (std.ascii.eqlIgnoreCase(field_name, "Id")) {
             if (obj.id != null) {
                 try self.update_record(obj);
@@ -4161,14 +4335,25 @@ pub const Evaluator = struct {
         if (field_value == .null_val) {
             const exc = try self.arena.create(types.ObjectInstance);
             exc.* = .{ .class_name = "DmlException" };
-            try exc.fields.put(self.arena, "message", Value{ .string = "MISSING_ARGUMENT: external id field not specified in an upsert call" });
+            try exc.fields.put(
+                self.arena,
+                "message",
+                Value{
+                    .string = "MISSING_ARGUMENT: external id field not specified in an upsert call",
+                },
+            );
             self.pending_exception = Value{ .object = exc };
             return error.ApexException;
         }
         if (self.find_record_by_field_value(obj.type_name, field_name, field_value)) |existing| {
             if (existing.id) |existing_id| {
                 obj.id = existing_id;
-                try utils.sobject_put(&obj.fields, self.arena, "Id", Value{ .string = existing_id });
+                try utils.sobject_put(
+                    &obj.fields,
+                    self.arena,
+                    "Id",
+                    Value{ .string = existing_id },
+                );
             }
             try self.update_record(obj);
             return true;
@@ -4176,7 +4361,11 @@ pub const Evaluator = struct {
         return false;
     }
 
-    fn upsert_record(self: *Evaluator, obj: *types.SObject, external_id_field: ?[]const u8) anyerror!void {
+    fn upsert_record(
+        self: *Evaluator,
+        obj: *types.SObject,
+        external_id_field: ?[]const u8,
+    ) anyerror!void {
         if (external_id_field) |field_name| {
             if (try self.upsert_by_external_id(obj, field_name)) return;
         }
@@ -4220,7 +4409,13 @@ pub const Evaluator = struct {
                 // Invalid cross reference Id — throw DmlException
                 const exc = try self.arena.create(types.ObjectInstance);
                 exc.* = .{ .class_name = "DmlException" };
-                try exc.fields.put(self.arena, "message", Value{ .string = "INVALID_CROSS_REFERENCE_KEY: invalid cross reference id" });
+                try exc.fields.put(
+                    self.arena,
+                    "message",
+                    Value{
+                        .string = "INVALID_CROSS_REFERENCE_KEY: invalid cross reference id",
+                    },
+                );
                 self.pending_exception = Value{ .object = exc };
                 return error.ApexException;
             }
@@ -4233,7 +4428,11 @@ pub const Evaluator = struct {
         if (obj.id == null) {
             const exc = try self.arena.create(types.ObjectInstance);
             exc.* = .{ .class_name = "DmlException" };
-            try exc.fields.put(self.arena, "message", Value{ .string = "ENTITY_IS_DELETED: entity is deleted" });
+            try exc.fields.put(
+                self.arena,
+                "message",
+                Value{ .string = "ENTITY_IS_DELETED: entity is deleted" },
+            );
             self.pending_exception = Value{ .object = exc };
             return error.ApexException;
         }
@@ -4247,7 +4446,11 @@ pub const Evaluator = struct {
                     // Move to trash for potential undelete
                     const removed = records.orderedRemove(i);
                     if (removed == .sobject) {
-                        try removed.sobject.fields.put(self.arena, "IsDeleted", Value{ .boolean = true });
+                        try removed.sobject.fields.put(
+                            self.arena,
+                            "IsDeleted",
+                            Value{ .boolean = true },
+                        );
                     }
                     const trash_gop = try self.trash.getOrPut(self.arena, obj.type_name);
                     if (!trash_gop.found_existing) trash_gop.value_ptr.* = .empty;
@@ -4263,7 +4466,11 @@ pub const Evaluator = struct {
         if (!found) {
             const exc = try self.arena.create(types.ObjectInstance);
             exc.* = .{ .class_name = "DmlException" };
-            try exc.fields.put(self.arena, "message", Value{ .string = "ENTITY_IS_DELETED: entity is deleted" });
+            try exc.fields.put(
+                self.arena,
+                "message",
+                Value{ .string = "ENTITY_IS_DELETED: entity is deleted" },
+            );
             self.pending_exception = Value{ .object = exc };
             return error.ApexException;
         }
@@ -4290,7 +4497,11 @@ pub const Evaluator = struct {
                     {
                         const pulled = recs.orderedRemove(idx);
                         if (pulled == .sobject) {
-                            try pulled.sobject.fields.put(self.arena, "IsDeleted", Value{ .boolean = true });
+                            try pulled.sobject.fields.put(
+                                self.arena,
+                                "IsDeleted",
+                                Value{ .boolean = true },
+                            );
                         }
                         const gop = try self.trash.getOrPut(self.arena, obj.type_name);
                         if (!gop.found_existing) gop.value_ptr.* = .empty;
@@ -4309,7 +4520,11 @@ pub const Evaluator = struct {
         if (obj.id == null) {
             const exc = try self.arena.create(types.ObjectInstance);
             exc.* = .{ .class_name = "DmlException" };
-            try exc.fields.put(self.arena, "message", Value{ .string = "UNDELETE_FAILED: entity not in recycle bin" });
+            try exc.fields.put(
+                self.arena,
+                "message",
+                Value{ .string = "UNDELETE_FAILED: entity not in recycle bin" },
+            );
             self.pending_exception = Value{ .object = exc };
             return error.ApexException;
         }
@@ -4322,7 +4537,11 @@ pub const Evaluator = struct {
                 {
                     const restored = trashed.orderedRemove(i);
                     if (restored == .sobject) {
-                        try restored.sobject.fields.put(self.arena, "IsDeleted", Value{ .boolean = false });
+                        try restored.sobject.fields.put(
+                            self.arena,
+                            "IsDeleted",
+                            Value{ .boolean = false },
+                        );
                     }
                     const gop = try self.store.getOrPut(self.arena, obj.type_name);
                     if (!gop.found_existing) gop.value_ptr.* = .empty;
@@ -4337,13 +4556,18 @@ pub const Evaluator = struct {
         if (!found) {
             const exc = try self.arena.create(types.ObjectInstance);
             exc.* = .{ .class_name = "DmlException" };
-            try exc.fields.put(self.arena, "message", Value{ .string = "UNDELETE_FAILED: entity not in recycle bin" });
+            try exc.fields.put(
+                self.arena,
+                "message",
+                Value{ .string = "UNDELETE_FAILED: entity not in recycle bin" },
+            );
             self.pending_exception = Value{ .object = exc };
             return error.ApexException;
         }
     }
 
-    /// Auto-maintain RecordCount on DuplicateRecordSet when DuplicateRecordItem is inserted/deleted.
+    /// Auto-maintain RecordCount on DuplicateRecordSet when
+    /// DuplicateRecordItem is inserted/deleted.
     /// `delta` is +1 for insert, -1 for delete.
     fn update_duplicate_record_set_count(self: *Evaluator, dri: *types.SObject, delta: i64) !void {
         const drs_id_val = utils.sobject_get(&dri.fields, "DuplicateRecordSetId") orelse return;
@@ -4356,20 +4580,27 @@ pub const Evaluator = struct {
                 if (rec == .sobject and rec.sobject.id != null and
                     std.mem.eql(u8, rec.sobject.id.?, drs_id))
                 {
-                    const old_count: i64 = if (utils.sobject_get(&rec.sobject.fields, "RecordCount")) |v|
-                        (if (v == .integer) v.integer else 0)
-                    else
-                        0;
+                    const old_count: i64 =
+                        if (utils.sobject_get(&rec.sobject.fields, "RecordCount")) |v|
+                            (if (v == .integer) v.integer else 0)
+                        else
+                            0;
                     const new_count = @max(old_count + delta, 0);
-                    try rec.sobject.fields.put(self.arena, "RecordCount", Value{ .integer = new_count });
+                    try rec.sobject.fields.put(
+                        self.arena,
+                        "RecordCount",
+                        Value{ .integer = new_count },
+                    );
                     break;
                 }
             }
         }
     }
 
-    /// Auto-delete DuplicateRecordSet records with RecordCount < 2 (and not freshly created with count 0).
-    /// This mirrors the Salesforce trigger chain behavior: DRI delete → DRS trigger → auto-delete orphaned DRS.
+    /// Auto-delete DuplicateRecordSet records with RecordCount < 2
+    /// (and not freshly created with count 0).
+    /// This mirrors the Salesforce trigger chain behavior:
+    /// DRI delete → DRS trigger → auto-delete orphaned DRS.
     fn cleanup_orphaned_duplicate_record_sets(self: *Evaluator) !void {
         if (self.store.getPtr("DuplicateRecordSet")) |records| {
             var i: usize = 0;
@@ -4380,8 +4611,10 @@ pub const Evaluator = struct {
                         (if (v == .integer) v.integer else 0)
                     else
                         0;
-                    // Delete DRS when RecordCount > 0 but < 2 (i.e., 1 — single duplicate remaining)
-                    // Also delete when RecordCount == 0 and there were items before (indicated by Object_Type__c being set)
+                    // Delete DRS when RecordCount > 0 but < 2
+                    // (i.e., 1 — single duplicate remaining).
+                    // Also delete when RecordCount == 0 and there were items
+                    // before (indicated by Object_Type__c being set).
                     if (count >= 1 and count < 2) {
                         const removed = records.orderedRemove(i);
                         const trash_gop = try self.trash.getOrPut(self.arena, "DuplicateRecordSet");
@@ -4402,7 +4635,12 @@ pub const Evaluator = struct {
     /// we surface every SELECT column; if only a subset of fields fail the
     /// field-level check we list just those fields. Called from the user-mode
     /// SOQL security gate before the exception is stashed in pending_exception.
-    fn attach_inaccessible_fields_to_exception(self: *Evaluator, exc: *types.ObjectInstance, soql: []const u8, from_type_name: []const u8) !void {
+    fn attach_inaccessible_fields_to_exception(
+        self: *Evaluator,
+        exc: *types.ObjectInstance,
+        soql: []const u8,
+        from_type_name: []const u8,
+    ) !void {
         const inaccessible_map = try self.arena.create(types.MapValue);
         inaccessible_map.* = .{};
         const field_set = try self.arena.create(types.SetValue);
@@ -4422,7 +4660,8 @@ pub const Evaluator = struct {
                 if (trimmed[0] == '(' or std.mem.indexOfScalar(u8, trimmed, '(') != null) continue;
                 // Skip dotted relationship fields — only surface root-level names.
                 if (std.mem.indexOfScalar(u8, trimmed, '.') != null) continue;
-                const include = object_denied or !self.resolve_field_read_access_by_name(from_type_name, trimmed);
+                const include = object_denied or
+                    !self.resolve_field_read_access_by_name(from_type_name, trimmed);
                 if (!include) continue;
                 const key = try self.arena.dupe(u8, trimmed);
                 try field_set.entries.put(self.arena, key, Value{ .string = key });
@@ -4441,7 +4680,11 @@ pub const Evaluator = struct {
         return builtins.resolve_object_crud_permission_public(self, obj_name, "read");
     }
 
-    fn resolve_field_read_access_by_name(self: *Evaluator, obj_name: []const u8, field_name: []const u8) bool {
+    fn resolve_field_read_access_by_name(
+        self: *Evaluator,
+        obj_name: []const u8,
+        field_name: []const u8,
+    ) bool {
         if (!self.is_restricted_user) return true;
         return builtins.resolve_field_read_permission_public(self, obj_name, field_name);
     }
@@ -4495,7 +4738,7 @@ pub const Evaluator = struct {
         const from_type_name = extract_from_type(soql) orelse "SObject";
         const msg = try std.fmt.allocPrint(
             self.arena,
-            "sObject type '{s}' is not supported. If you are attempting to use a custom object, be sure to append the '__c' after the entity name.",
+            unsupported_soql_type_message,
             .{from_type_name},
         );
         const exc = try self.arena.create(types.ObjectInstance);
@@ -4554,7 +4797,11 @@ pub const Evaluator = struct {
         var store_iter = self.store.iterator();
         while (store_iter.next()) |entry| {
             if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, from_type)) {
-                count += self.count_matching_query_records(entry.value_ptr.items, soql, current_env);
+                count += self.count_matching_query_records(
+                    entry.value_ptr.items,
+                    soql,
+                    current_env,
+                );
                 break;
             }
         }
@@ -4562,7 +4809,11 @@ pub const Evaluator = struct {
             var trash_iter = self.trash.iterator();
             while (trash_iter.next()) |entry| {
                 if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, from_type)) {
-                    count += self.count_matching_query_records(entry.value_ptr.items, soql, current_env);
+                    count += self.count_matching_query_records(
+                        entry.value_ptr.items,
+                        soql,
+                        current_env,
+                    );
                     break;
                 }
             }
@@ -4591,12 +4842,24 @@ pub const Evaluator = struct {
         include_all_rows: bool,
         records: *std.ArrayListUnmanaged(Value),
     ) !void {
-        try self.append_matching_store_records_for_query(from_type, soql, current_env, include_all_rows, records);
+        try self.append_matching_store_records_for_query(
+            from_type,
+            soql,
+            current_env,
+            include_all_rows,
+            records,
+        );
         if (records.items.len == 0 and std.ascii.eqlIgnoreCase(from_type, "UserRecordAccess")) {
             try self.seed_user_record_access_records(soql, current_env, records);
         }
         try self.seed_named_query_records_if_needed(from_type, soql, current_env, records);
-        try self.load_query_custom_metadata_records(from_type, soql, current_env, include_all_rows, records);
+        try self.load_query_custom_metadata_records(
+            from_type,
+            soql,
+            current_env,
+            include_all_rows,
+            records,
+        );
         if (include_all_rows) {
             try self.append_matching_trash_records_for_query(from_type, soql, current_env, records);
         }
@@ -4638,7 +4901,12 @@ pub const Evaluator = struct {
             if (record == .sobject) {
                 const copy = try self.clone_s_object(record.sobject);
                 if (is_deleted) |deleted| {
-                    try utils.sobject_put(&copy.fields, self.arena, "IsDeleted", Value{ .boolean = deleted });
+                    try utils.sobject_put(
+                        &copy.fields,
+                        self.arena,
+                        "IsDeleted",
+                        Value{ .boolean = deleted },
+                    );
                 }
                 try records.append(self.arena, Value{ .sobject = copy });
             } else {
@@ -4683,7 +4951,8 @@ pub const Evaluator = struct {
         {
             return;
         }
-        const has_hardcoded_stub = (try self.generate_metadata_stub(from_type, soql, current_env)) != null;
+        const has_hardcoded_stub =
+            (try self.generate_metadata_stub(from_type, soql, current_env)) != null;
         if (has_hardcoded_stub) return;
         try self.load_custom_metadata_from_files(from_type);
         var mdt_iter = self.store.iterator();
@@ -4711,7 +4980,13 @@ pub const Evaluator = struct {
         var trash_iter = self.trash.iterator();
         while (trash_iter.next()) |entry| {
             if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, from_type)) {
-                try self.append_matching_query_records(entry.value_ptr.items, soql, current_env, true, records);
+                try self.append_matching_query_records(
+                    entry.value_ptr.items,
+                    soql,
+                    current_env,
+                    true,
+                    records,
+                );
                 break;
             }
         }
@@ -4737,7 +5012,9 @@ pub const Evaluator = struct {
             var field_name = std.mem.trim(u8, raw_field, " \t\n\r");
             if (field_name.len == 0 or field_name[0] == '(') continue;
             var is_to_label = false;
-            if (std.ascii.startsWithIgnoreCase(field_name, "toLabel(") and std.mem.endsWith(u8, field_name, ")")) {
+            if (std.ascii.startsWithIgnoreCase(field_name, "toLabel(") and
+                std.mem.endsWith(u8, field_name, ")"))
+            {
                 field_name = field_name[8 .. field_name.len - 1];
                 is_to_label = true;
             }
@@ -4754,13 +5031,20 @@ pub const Evaluator = struct {
     ) !void {
         for (records.items) |item| {
             if (item != .sobject) continue;
-            const selected_value = self.get_s_object_field_value_case_insensitive(item.sobject, field_name) orelse Value.null_val;
+            const selected_value =
+                self.get_s_object_field_value_case_insensitive(item.sobject, field_name) orelse
+                Value.null_val;
             try utils.sobject_put(&item.sobject.fields, self.arena, field_name, selected_value);
             if (!is_to_label) continue;
             if (utils.sobject_get(&item.sobject.fields, field_name)) |fv| {
                 if (fv == .string) {
                     if (self.resolve_picklist_label(item.sobject.type_name, field_name, fv.string)) |label| {
-                        try utils.sobject_put(&item.sobject.fields, self.arena, field_name, Value{ .string = label });
+                        try utils.sobject_put(
+                            &item.sobject.fields,
+                            self.arena,
+                            field_name,
+                            Value{ .string = label },
+                        );
                     }
                 }
             }
@@ -4788,9 +5072,15 @@ pub const Evaluator = struct {
         records: *std.ArrayListUnmanaged(Value),
     ) !void {
         if (records.items.len != 0) return;
-        if (try self.seed_field_permissions_query_records(from_type, soql, current_env, records)) return;
-        if (try self.seed_metadata_in_clause_query_records(from_type, soql, current_env, records)) return;
-        if (try self.seed_apex_class_or_query_records(from_type, soql, current_env, records)) return;
+        if (try self.seed_field_permissions_query_records(from_type, soql, current_env, records)) {
+            return;
+        }
+        if (try self.seed_metadata_in_clause_query_records(from_type, soql, current_env, records)) {
+            return;
+        }
+        if (try self.seed_apex_class_or_query_records(from_type, soql, current_env, records)) {
+            return;
+        }
         if (try self.generate_metadata_stub(from_type, soql, current_env)) |stub_record| {
             try records.append(self.arena, stub_record);
         }
@@ -4804,7 +5094,8 @@ pub const Evaluator = struct {
         records: *std.ArrayListUnmanaged(Value),
     ) !bool {
         if (!std.ascii.eqlIgnoreCase(from_type, "FieldPermissions")) return false;
-        const obj_type = self.extract_where_field_value(soql, "SobjectType", current_env) orelse "Account";
+        const obj_type =
+            self.extract_where_field_value(soql, "SobjectType", current_env) orelse "Account";
         const fields = [_]struct { name: []const u8, read: bool, edit: bool }{
             .{ .name = "Name", .read = true, .edit = true },
             .{ .name = "Id", .read = true, .edit = false },
@@ -4821,7 +5112,17 @@ pub const Evaluator = struct {
             const fp_id = try self.alloc_id();
             fp.id = fp_id;
             try fp.fields.put(self.arena, "Id", Value{ .string = fp_id });
-            try fp.fields.put(self.arena, "Field", Value{ .string = try std.fmt.allocPrint(self.arena, "{s}.{s}", .{ obj_type, f.name }) });
+            try fp.fields.put(
+                self.arena,
+                "Field",
+                Value{
+                    .string = try std.fmt.allocPrint(
+                        self.arena,
+                        "{s}.{s}",
+                        .{ obj_type, f.name },
+                    ),
+                },
+            );
             try fp.fields.put(self.arena, "PermissionsRead", Value{ .boolean = f.read });
             try fp.fields.put(self.arena, "PermissionsEdit", Value{ .boolean = f.edit });
             try fp.fields.put(self.arena, "SobjectType", Value{ .string = obj_type });
@@ -4850,7 +5151,10 @@ pub const Evaluator = struct {
         if (pp >= where_clause.len) return false;
         pp += 1;
         while (pp < where_clause.len and where_clause[pp] != ')') {
-            while (pp < where_clause.len and where_clause[pp] != '\'' and where_clause[pp] != ')') pp += 1;
+            while (pp < where_clause.len and
+                where_clause[pp] != '\'' and
+                where_clause[pp] != ')') : (pp += 1)
+            {}
             if (pp < where_clause.len and where_clause[pp] == '\'') {
                 pp += 1;
                 const start = pp;
@@ -4887,9 +5191,12 @@ pub const Evaluator = struct {
         const where_clause = extract_where_clause(soql) orelse return false;
         var wpos: usize = 0;
         while (wpos < where_clause.len) {
-            const name_pos = std.ascii.indexOfIgnoreCasePos(where_clause, wpos, "Name") orelse break;
+            const name_pos =
+                std.ascii.indexOfIgnoreCasePos(where_clause, wpos, "Name") orelse break;
             var j = name_pos + 4;
-            while (j < where_clause.len and (where_clause[j] == ' ' or where_clause[j] == '\t')) j += 1;
+            while (j < where_clause.len and
+                (where_clause[j] == ' ' or where_clause[j] == '\t')) : (j += 1)
+            {}
             if (j + 4 <= where_clause.len and std.ascii.eqlIgnoreCase(where_clause[j .. j + 4], "LIKE")) {
                 j += 4;
             } else if (j < where_clause.len and where_clause[j] == '=') {
@@ -4898,8 +5205,11 @@ pub const Evaluator = struct {
                 wpos = j;
                 continue;
             }
-            while (j < where_clause.len and (where_clause[j] == ' ' or where_clause[j] == '\t')) j += 1;
-            const name_val = self.extract_apex_class_query_name(where_clause, current_env, &wpos, j);
+            while (j < where_clause.len and
+                (where_clause[j] == ' ' or where_clause[j] == '\t')) : (j += 1)
+            {}
+            const name_val =
+                self.extract_apex_class_query_name(where_clause, current_env, &wpos, j);
             if (name_val) |nv| {
                 const tmp_soql = try std.fmt.allocPrint(
                     self.arena,
@@ -4960,7 +5270,8 @@ pub const Evaluator = struct {
     ) !void {
         if (records.items.len != 0 or self.store.get(from_type) != null) return;
         if (std.ascii.eqlIgnoreCase(from_type, "User")) {
-            const use_query_specific_user = self.has_exact_where_field_comparison(soql, "Profile.Name") or
+            const use_query_specific_user =
+                self.has_exact_where_field_comparison(soql, "Profile.Name") or
                 self.has_exact_where_field_comparison(soql, "Profile.UserType") or
                 self.has_exact_where_field_comparison(soql, "UserType");
             const user_record = if (self.query_matches_current_user(soql, current_env))
@@ -4979,7 +5290,13 @@ pub const Evaluator = struct {
                 try self.create_profile_for_query(soql, current_env)
             else
                 try self.create_default_profile_record();
-            try self.append_seeded_store_record("Profile", profile_record, soql, current_env, records);
+            try self.append_seeded_store_record(
+                "Profile",
+                profile_record,
+                soql,
+                current_env,
+                records,
+            );
             return;
         }
         if (std.ascii.eqlIgnoreCase(from_type, "RecordType")) {
@@ -5037,7 +5354,13 @@ pub const Evaluator = struct {
                 try self.create_profile_for_query(soql, current_env)
             else
                 try self.create_default_profile_record();
-            try self.append_seeded_store_record("Profile", profile_record, soql, current_env, records);
+            try self.append_seeded_store_record(
+                "Profile",
+                profile_record,
+                soql,
+                current_env,
+                records,
+            );
         }
     }
 
@@ -5058,6 +5381,11 @@ pub const Evaluator = struct {
         }
     }
 
+    const unsupported_soql_type_message =
+        "sObject type '{s}' is not supported. " ++
+        "If you are attempting to use a custom object, be sure to " ++
+        "append the '__c' after the entity name.";
+
     fn ensure_known_soql_type(
         self: *Evaluator,
         from_type: []const u8,
@@ -5069,14 +5397,110 @@ pub const Evaluator = struct {
         if (try self.is_known_soql_type(from_type, soql, current_env)) return;
         const exc = try self.arena.create(types.ObjectInstance);
         exc.* = .{ .class_name = "System.QueryException" };
-        try exc.fields.put(self.arena, "message", Value{ .string = try std.fmt.allocPrint(
+        try exc.fields.put(
             self.arena,
-            "sObject type '{s}' is not supported. If you are attempting to use a custom object, be sure to append the '__c' after the entity name.",
-            .{from_type},
-        ) });
+            "message",
+            Value{
+                .string = try std.fmt.allocPrint(
+                    self.arena,
+                    unsupported_soql_type_message,
+                    .{from_type},
+                ),
+            },
+        );
         self.pending_exception = Value{ .object = exc };
         return error.ApexException;
     }
+
+    const known_soql_types = [_][]const u8{
+        "Account",
+        "Contact",
+        "Opportunity",
+        "Case",
+        "Lead",
+        "Task",
+        "Event",
+        "Campaign",
+        "User",
+        "ContentVersion",
+        "ContentDocument",
+        "ContentDocumentLink",
+        "ContentDistribution",
+        "PermissionSet",
+        "PermissionSetAssignment",
+        "ObjectPermissions",
+        "Profile",
+        "Organization",
+        "ApexClass",
+        "StaticResource",
+        "FieldPermissions",
+        "PermissionSetGroup",
+        "PlatformCachePartition",
+        "Metadata_Driven_Trigger__mdt",
+        "CronTrigger",
+        "AsyncApexJob",
+        "EntityDefinition",
+        "FieldDefinition",
+        "AggregateResult",
+        "RecordType",
+        "DuplicateRule",
+        "DuplicateRecordSet",
+        "DuplicateRecordItem",
+        "UserRecordAccess",
+        "AuthSession",
+        "LoginHistory",
+        "TaskStatus",
+        "BusinessHours",
+        "FeedItem",
+        "CollaborationGroup",
+        "UserRole",
+        "GroupMember",
+        "Group",
+        "Attachment",
+        "Note",
+        "EmailMessage",
+        "CaseComment",
+        "Solution",
+        "Contract",
+        "Product2",
+        "Pricebook2",
+        "PricebookEntry",
+        "OpportunityLineItem",
+        "Quote",
+        "QuoteLineItem",
+        "PermissionSetLicense",
+        "EmailTemplate",
+        "Folder",
+        "Document",
+        "CampaignMember",
+        "CampaignMemberStatus",
+        "EmailMessageRelation",
+        "OrgWideEmailAddress",
+        "PermissionSetLicenseAssign",
+        "ServiceResource",
+        "AssignedResource",
+        "ServiceTerritory",
+        "ServiceTerritoryMember",
+        "ApexTrigger",
+        "CustomPermission",
+        "FlowDefinitionView",
+        "FlowVersionView",
+        "ApexEmailNotification",
+        "Network",
+        "Topic",
+        "OmniProcess",
+        "AppMenuItem",
+        "LeadStatus",
+        "UserPreference",
+        "UserLogin",
+        "LoginIp",
+        "LeadHistory",
+        "AccountHistory",
+        "EventBusSubscriber",
+        "BatchApexErrorEvent",
+        "AsyncOperationEvent",
+        "AsyncOperationStatus",
+    };
 
     fn is_known_soql_type(
         self: *Evaluator,
@@ -5084,22 +5508,7 @@ pub const Evaluator = struct {
         soql: []const u8,
         current_env: *Env,
     ) !bool {
-        const known_types = [_][]const u8{
-            "Account",                    "Contact",                "Opportunity",                  "Case",                "Lead",                   "Task",                 "Event",
-            "Campaign",                   "User",                   "ContentVersion",               "ContentDocument",     "ContentDocumentLink",    "ContentDistribution",  "PermissionSet",
-            "PermissionSetAssignment",    "ObjectPermissions",      "Profile",                      "Organization",        "ApexClass",              "StaticResource",       "FieldPermissions",
-            "PermissionSetGroup",         "PlatformCachePartition", "Metadata_Driven_Trigger__mdt", "CronTrigger",         "AsyncApexJob",           "EntityDefinition",     "FieldDefinition",
-            "AggregateResult",            "RecordType",             "DuplicateRule",                "DuplicateRecordSet",  "DuplicateRecordItem",    "UserRecordAccess",     "AuthSession",
-            "LoginHistory",               "TaskStatus",             "BusinessHours",                "FeedItem",            "CollaborationGroup",     "UserRole",             "GroupMember",
-            "Group",                      "Attachment",             "Note",                         "EmailMessage",        "CaseComment",            "Solution",             "Contract",
-            "Product2",                   "Pricebook2",             "PricebookEntry",               "OpportunityLineItem", "Quote",                  "QuoteLineItem",        "PermissionSetLicense",
-            "EmailTemplate",              "Folder",                 "Document",                     "CampaignMember",      "CampaignMemberStatus",   "EmailMessageRelation", "OrgWideEmailAddress",
-            "PermissionSetLicenseAssign", "ServiceResource",        "AssignedResource",             "ServiceTerritory",    "ServiceTerritoryMember", "ApexTrigger",          "CustomPermission",
-            "FlowDefinitionView",         "FlowVersionView",        "ApexEmailNotification",        "Network",             "Topic",                  "OmniProcess",          "AppMenuItem",
-            "LeadStatus",                 "UserPreference",         "UserLogin",                    "LoginIp",             "LeadHistory",            "AccountHistory",       "EventBusSubscriber",
-            "BatchApexErrorEvent",        "AsyncOperationEvent",    "AsyncOperationStatus",
-        };
-        for (known_types) |kt| {
+        for (known_soql_types) |kt| {
             if (std.ascii.eqlIgnoreCase(from_type, kt)) return true;
         }
         if (std.mem.endsWith(u8, from_type, "__c") or
@@ -5151,8 +5560,13 @@ pub const Evaluator = struct {
                         const fk_field = self.resolve_foreign_key(ct, from_type, rel_name);
                         for (child_entry.value_ptr.items) |child_rec| {
                             if (child_rec == .sobject) {
-                                if (utils.sobject_get(&child_rec.sobject.fields, fk_field)) |fk_val| {
-                                    if (fk_val == .string and std.ascii.eqlIgnoreCase(fk_val.string, parent_id)) {
+                                if (utils.sobject_get(
+                                    &child_rec.sobject.fields,
+                                    fk_field,
+                                )) |fk_val| {
+                                    if (fk_val == .string and
+                                        std.ascii.eqlIgnoreCase(fk_val.string, parent_id))
+                                    {
                                         try child_records.append(self.arena, child_rec);
                                     }
                                 }
@@ -5195,7 +5609,8 @@ pub const Evaluator = struct {
         while (ii < items.len) : (ii += 1) {
             var jj = ii;
             while (jj > 0) {
-                const cmp_result = self.compare_by_field(items[jj - 1], items[jj], order_info.field);
+                const cmp_result =
+                    self.compare_by_field(items[jj - 1], items[jj], order_info.field);
                 const should_swap = if (order_info.desc) cmp_result < 0 else cmp_result > 0;
                 if (!should_swap) break;
                 const tmp = items[jj - 1];
@@ -5225,7 +5640,11 @@ pub const Evaluator = struct {
         if (offset_val_opt) |offset_val| {
             if (offset_val < records.items.len) {
                 const remaining = records.items.len - offset_val;
-                std.mem.copyForwards(Value, records.items[0..remaining], records.items[offset_val..records.items.len]);
+                std.mem.copyForwards(
+                    Value,
+                    records.items[0..remaining],
+                    records.items[offset_val..records.items.len],
+                );
                 records.items.len = remaining;
             } else {
                 records.items.len = 0;
