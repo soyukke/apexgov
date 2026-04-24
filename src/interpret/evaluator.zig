@@ -21669,47 +21669,74 @@ pub const Evaluator = struct {
             self.active_batch_job_id = saved_batch_job_id;
         }
 
-        const start_scope = self.call_instance_method(
+        const start_scope = try self.call_batch_lifecycle_phase(
             batch_class,
             batch_obj,
+            batch_job_id,
             "start",
             &.{batch_context_value},
-        ) catch |err| {
-            self.update_async_apex_job(batch_job_id, "Failed", 1);
-            if (self.pending_exception) |exception_value| {
-                try self.publish_batch_apex_error_event(
-                    batch_obj,
-                    batch_job_id,
-                    "START",
-                    exception_value,
-                );
-            }
-            return err;
-        };
+        );
 
         const all_records = try self.collect_batch_scope_records(start_scope);
 
         const record_list = try self.arena.create(types.ListValue);
         record_list.* = .{ .items = all_records };
-        _ = self.call_instance_method(batch_class, batch_obj, "execute", &.{ batch_context_value, Value{ .list = record_list } }) catch |err| {
-            self.update_async_apex_job(batch_job_id, "Failed", 1);
-            if (self.pending_exception) |exception_value| {
-                try self.publish_batch_apex_error_event(batch_obj, batch_job_id, "EXECUTE", exception_value);
-            }
-            return err;
-        };
-        _ = self.call_instance_method(batch_class, batch_obj, "finish", &.{batch_context_value}) catch |err| {
-            self.update_async_apex_job(batch_job_id, "Failed", 1);
-            if (self.pending_exception) |exception_value| {
-                try self.publish_batch_apex_error_event(batch_obj, batch_job_id, "FINISH", exception_value);
-            }
-            return err;
-        };
+        _ = try self.call_batch_lifecycle_phase(
+            batch_class,
+            batch_obj,
+            batch_job_id,
+            "execute",
+            &.{ batch_context_value, Value{ .list = record_list } },
+        );
+        _ = try self.call_batch_lifecycle_phase(
+            batch_class,
+            batch_obj,
+            batch_job_id,
+            "finish",
+            &.{batch_context_value},
+        );
 
         self.update_async_apex_job(batch_job_id, "Completed", 0);
     }
 
-    fn collect_batch_scope_records(self: *Evaluator, start_scope: Value) !std.ArrayListUnmanaged(Value) {
+    fn call_batch_lifecycle_phase(
+        self: *Evaluator,
+        batch_class: *ast.ClassDecl,
+        batch_obj: *types.ObjectInstance,
+        batch_job_id: []const u8,
+        phase: []const u8,
+        args: []const Value,
+    ) !Value {
+        return self.call_instance_method(
+            batch_class,
+            batch_obj,
+            phase,
+            args,
+        ) catch |err| {
+            self.update_async_apex_job(batch_job_id, "Failed", 1);
+            if (self.pending_exception) |exception_value| {
+                const phase_name = try self.uppercase_ascii(phase);
+                try self.publish_batch_apex_error_event(
+                    batch_obj,
+                    batch_job_id,
+                    phase_name,
+                    exception_value,
+                );
+            }
+            return err;
+        };
+    }
+
+    fn uppercase_ascii(self: *Evaluator, value: []const u8) ![]const u8 {
+        const result = try self.arena.alloc(u8, value.len);
+        for (value, 0..) |ch, i| result[i] = std.ascii.toUpper(ch);
+        return result;
+    }
+
+    fn collect_batch_scope_records(
+        self: *Evaluator,
+        start_scope: Value,
+    ) !std.ArrayListUnmanaged(Value) {
         var all_records: std.ArrayListUnmanaged(Value) = .empty;
         if (start_scope != .object) {
             try self.append_stored_records(&all_records);
@@ -21719,7 +21746,8 @@ pub const Evaluator = struct {
         if (start_scope.object.fields.get("query")) |query_val| {
             if (query_val == .string) {
                 const batch_env = try self.global_env.child();
-                const query_result = self.execute_soql(query_val.string, batch_env) catch Value.null_val;
+                const query_result =
+                    self.execute_soql(query_val.string, batch_env) catch Value.null_val;
                 if (query_result == .list) {
                     for (query_result.list.items.items) |item| {
                         try all_records.append(self.arena, item);
@@ -21742,7 +21770,10 @@ pub const Evaluator = struct {
         return all_records;
     }
 
-    fn append_stored_records(self: *Evaluator, records: *std.ArrayListUnmanaged(Value)) !void {
+    fn append_stored_records(
+        self: *Evaluator,
+        records: *std.ArrayListUnmanaged(Value),
+    ) !void {
         var store_iter = self.store.iterator();
         while (store_iter.next()) |entry| {
             for (entry.value_ptr.items) |item| {
@@ -21778,7 +21809,12 @@ pub const Evaluator = struct {
         if (self.find_class(job_obj.class_name)) |job_class| {
             const queueable_context = try self.build_queueable_context(job_id);
             const execute_args = [_]Value{queueable_context};
-            const execute_result = if (self.find_best_method_in_class_filtered(job_class, "execute", &execute_args, true) != null)
+            const execute_result = if (self.find_best_method_in_class_filtered(
+                job_class,
+                "execute",
+                &execute_args,
+                true,
+            ) != null)
                 self.call_method(job_obj.class_name, "execute", &execute_args)
             else
                 self.call_instance_method(job_class, job_obj, "execute", &execute_args);
@@ -21800,16 +21836,26 @@ pub const Evaluator = struct {
 
     /// Resolve a static field or static property getter from a specific class.
     /// Tries getter first (for lazy-init patterns), then plain global_env lookup.
-    fn resolve_static_field_value_on_class(self: *Evaluator, class_name: []const u8, field_name: []const u8) ?Value {
+    fn resolve_static_field_value_on_class(
+        self: *Evaluator,
+        class_name: []const u8,
+        field_name: []const u8,
+    ) ?Value {
         self.ensure_static_init(class_name);
         const cd = self.find_class(class_name) orelse return null;
         // Try static property getter first
-        const already_in_getter = if (self.evaluating_getter) |eg| std.ascii.eqlIgnoreCase(eg, field_name) else false;
+        const already_in_getter = if (self.evaluating_getter) |eg|
+            std.ascii.eqlIgnoreCase(eg, field_name)
+        else
+            false;
         if (!already_in_getter) {
             for (cd.members) |member| {
                 switch (member) {
                     .field_decl => |fd| {
-                        if (fd.modifiers.is_static and std.ascii.eqlIgnoreCase(fd.name, field_name) and fd.getter_body != null) {
+                        if (fd.modifiers.is_static and
+                            std.ascii.eqlIgnoreCase(fd.name, field_name) and
+                            fd.getter_body != null)
+                        {
                             const getter_env = self.global_env.child() catch return null;
                             const saved_class = self.current_class;
                             const saved_getter = self.evaluating_getter;
@@ -21820,7 +21866,8 @@ pub const Evaluator = struct {
                                 self.evaluating_getter = saved_getter;
                             }
 
-                            const result = self.exec_block(fd.getter_body.?, getter_env) catch return null;
+                            const result =
+                                self.exec_block(fd.getter_body.?, getter_env) catch return null;
                             return switch (result) {
                                 .return_val => |v| v,
                                 else => self.return_value,
@@ -21832,25 +21879,43 @@ pub const Evaluator = struct {
             }
         }
         // Plain static field lookup
-        const key = std.fmt.allocPrint(self.arena, "{s}.{s}", .{ class_name, field_name }) catch return null;
+        const key = std.fmt.allocPrint(
+            self.arena,
+            "{s}.{s}",
+            .{ class_name, field_name },
+        ) catch return null;
         return self.global_env.get(key);
     }
 
     /// Resolve a static field or static property getter from the outer class of an inner class.
     /// Tries getter first (for lazy-init patterns), then plain global_env lookup.
-    fn resolve_outer_static_field(self: *Evaluator, inner_class_name: []const u8, field_name: []const u8) ?Value {
+    fn resolve_outer_static_field(
+        self: *Evaluator,
+        inner_class_name: []const u8,
+        field_name: []const u8,
+    ) ?Value {
         const outer_name = self.find_outer_class_name(inner_class_name) orelse return null;
         return self.resolve_static_field_value_on_class(outer_name, field_name);
     }
 
     /// Resolve a bare method call from an inner class to the nearest enclosing
     /// outer class that defines a compatible static method with the same name.
-    fn resolve_outer_static_method_owner(self: *Evaluator, inner_class_name: []const u8, method_name: []const u8, args: []const Value) ?[]const u8 {
+    fn resolve_outer_static_method_owner(
+        self: *Evaluator,
+        inner_class_name: []const u8,
+        method_name: []const u8,
+        args: []const Value,
+    ) ?[]const u8 {
         var current_name = inner_class_name;
         while (self.find_outer_class_name(current_name)) |outer_name| {
             if (std.ascii.eqlIgnoreCase(outer_name, current_name)) break;
             if (self.find_class(outer_name)) |outer_decl| {
-                if (self.find_best_method_in_class_filtered(outer_decl, method_name, args, true) != null) {
+                if (self.find_best_method_in_class_filtered(
+                    outer_decl,
+                    method_name,
+                    args,
+                    true,
+                ) != null) {
                     return outer_name;
                 }
             }
@@ -21866,8 +21931,8 @@ pub const Evaluator = struct {
     /// Compare two Values by a field name for ORDER BY.
     /// Returns: -1 if a < b, 0 if equal, 1 if a > b
     fn compare_by_field(self: *Evaluator, a: Value, b: Value, field: []const u8) i32 {
-        const av = if (a == .sobject) self.get_s_object_field_value_case_insensitive(a.sobject, field) orelse Value.null_val else Value.null_val;
-        const bv = if (b == .sobject) self.get_s_object_field_value_case_insensitive(b.sobject, field) orelse Value.null_val else Value.null_val;
+        const av = self.s_object_field_value_or_null(a, field);
+        const bv = self.s_object_field_value_or_null(b, field);
         // null sorts last
         if (av == .null_val and bv == .null_val) return 0;
         if (av == .null_val) return 1;
@@ -21896,6 +21961,18 @@ pub const Evaluator = struct {
             return 0;
         }
         return 0;
+    }
+
+    fn s_object_field_value_or_null(
+        self: *Evaluator,
+        value: Value,
+        field: []const u8,
+    ) Value {
+        if (value != .sobject) return Value.null_val;
+        return self.get_s_object_field_value_case_insensitive(
+            value.sobject,
+            field,
+        ) orelse Value.null_val;
     }
 
     /// Compare two Values for natural ordering.
@@ -21978,12 +22055,18 @@ pub const Evaluator = struct {
         return 0;
     }
 
-    fn class_implements_interface(self: *Evaluator, class_name: []const u8, interface_name: []const u8) bool {
+    fn class_implements_interface(
+        self: *Evaluator,
+        class_name: []const u8,
+        interface_name: []const u8,
+    ) bool {
         const cd = self.find_class(class_name) orelse return false;
         for (cd.interfaces) |iface| {
             if (std.ascii.eqlIgnoreCase(iface.name, interface_name)) return true;
             if (std.mem.lastIndexOfScalar(u8, iface.name, '.')) |dot_pos| {
-                if (std.ascii.eqlIgnoreCase(iface.name[dot_pos + 1 ..], interface_name)) return true;
+                if (std.ascii.eqlIgnoreCase(iface.name[dot_pos + 1 ..], interface_name)) {
+                    return true;
+                }
             }
         }
         // Check parent class
@@ -21997,7 +22080,11 @@ pub const Evaluator = struct {
         return self.class_implements_interface(class_name, "Comparable");
     }
 
-    fn is_batch_lifecycle_method(self: *Evaluator, class_name: []const u8, method_name: []const u8) bool {
+    fn is_batch_lifecycle_method(
+        self: *Evaluator,
+        class_name: []const u8,
+        method_name: []const u8,
+    ) bool {
         if (!(std.ascii.eqlIgnoreCase(method_name, "start") or
             std.ascii.eqlIgnoreCase(method_name, "execute") or
             std.ascii.eqlIgnoreCase(method_name, "finish")))
@@ -22011,23 +22098,35 @@ pub const Evaluator = struct {
     fn call_compare_to(self: *Evaluator, a: *types.ObjectInstance, b_val: Value) !i32 {
         if (self.find_class(a.class_name)) |cd| {
             const result = try self.call_instance_method(cd, a, "compareTo", &.{b_val});
-            if (result == .integer) return @intCast(if (result.integer > 0) @as(i32, 1) else if (result.integer < 0) @as(i32, -1) else @as(i32, 0));
+            if (result == .integer) return @intCast(sign_i64(result.integer));
         }
+        return 0;
+    }
+
+    fn sign_i64(value: i64) i32 {
+        if (value > 0) return 1;
+        if (value < 0) return -1;
         return 0;
     }
 
     /// Find the element type of an array field by scanning the source code.
     /// Looks for patterns like "TypeName[] fieldName" or "List<TypeName> fieldName".
-    fn find_field_array_type(_: *Evaluator, source: []const u8, field_name: []const u8) ?[]const u8 {
+    fn find_field_array_type(
+        _: *Evaluator,
+        source: []const u8,
+        field_name: []const u8,
+    ) ?[]const u8 {
         // Search for "fieldName" in source and look backwards for the type
         var pos: usize = 0;
         while (pos < source.len) {
             // Find field_name in source (case-insensitive)
             const found = std.ascii.indexOfIgnoreCasePos(source, pos, field_name) orelse break;
             // Ensure it's a whole-word match (not part of a larger identifier)
-            const is_word_start = found == 0 or (!std.ascii.isAlphanumeric(source[found - 1]) and source[found - 1] != '_');
+            const is_word_start = found == 0 or
+                (!std.ascii.isAlphanumeric(source[found - 1]) and source[found - 1] != '_');
             const after_end = found + field_name.len;
-            const is_word_end = after_end >= source.len or (!std.ascii.isAlphanumeric(source[after_end]) and source[after_end] != '_');
+            const is_word_end = after_end >= source.len or
+                (!std.ascii.isAlphanumeric(source[after_end]) and source[after_end] != '_');
             if (!is_word_start or !is_word_end) {
                 pos = found + 1;
                 continue;
@@ -22041,7 +22140,10 @@ pub const Evaluator = struct {
                     // Find the start of the type name
                     const type_end = trimmed_before.len - 2;
                     var type_start = type_end;
-                    while (type_start > 0 and (std.ascii.isAlphanumeric(trimmed_before[type_start - 1]) or trimmed_before[type_start - 1] == '_')) {
+                    while (type_start > 0 and
+                        (std.ascii.isAlphanumeric(trimmed_before[type_start - 1]) or
+                            trimmed_before[type_start - 1] == '_'))
+                    {
                         type_start -= 1;
                     }
                     if (type_start < type_end) {
@@ -22052,7 +22154,11 @@ pub const Evaluator = struct {
                 if (std.mem.endsWith(u8, trimmed_before, ">")) {
                     // Find the opening "<"
                     if (std.mem.lastIndexOfScalar(u8, trimmed_before, '<')) |lt| {
-                        const inner = std.mem.trim(u8, trimmed_before[lt + 1 .. trimmed_before.len - 1], " \t");
+                        const inner = std.mem.trim(
+                            u8,
+                            trimmed_before[lt + 1 .. trimmed_before.len - 1],
+                            " \t",
+                        );
                         if (inner.len > 0) {
                             return inner;
                         }
