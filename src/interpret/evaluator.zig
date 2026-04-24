@@ -20087,17 +20087,35 @@ pub const Evaluator = struct {
         return self.return_value;
     }
 
-    fn find_resolved_method_in_hierarchy_typed(self: *Evaluator, actual_class: ?*ast.ClassDecl, class_decl: *ast.ClassDecl, method_name: []const u8, args: []const Value) ?ResolvedInstanceMethod {
+    fn find_resolved_method_in_hierarchy_typed(
+        self: *Evaluator,
+        actual_class: ?*ast.ClassDecl,
+        class_decl: *ast.ClassDecl,
+        method_name: []const u8,
+        args: []const Value,
+    ) ?ResolvedInstanceMethod {
         const arg_type_hints = self.cast_type_hints;
         var best: ?ResolvedInstanceMethod = null;
         var best_score: i32 = -1;
 
         const considerOwner = struct {
-            fn run(eval: *Evaluator, owner: *ast.ClassDecl, method_name_inner: []const u8, args_inner: []const Value, hints: ?[]const ?[]const u8, best_inner: *?ResolvedInstanceMethod, best_score_inner: *i32) void {
+            fn run(
+                eval: *Evaluator,
+                owner: *ast.ClassDecl,
+                method_name_inner: []const u8,
+                args_inner: []const Value,
+                hints: ?[]const ?[]const u8,
+                best_inner: *?ResolvedInstanceMethod,
+                best_score_inner: *i32,
+            ) void {
                 for (owner.members) |member| {
                     switch (member) {
                         .method_decl => |md| {
-                            if (!std.ascii.eqlIgnoreCase(md.name, method_name_inner) or md.params.len != args_inner.len) continue;
+                            if (!std.ascii.eqlIgnoreCase(md.name, method_name_inner) or
+                                md.params.len != args_inner.len)
+                            {
+                                continue;
+                            }
                             if (eval.single_method_candidate_score(md, args_inner, hints)) |score| {
                                 if (best_inner.* == null or score > best_score_inner.*) {
                                     best_inner.* = .{ .owner = owner, .method = md };
@@ -20134,22 +20152,34 @@ pub const Evaluator = struct {
         return best;
     }
 
-    fn find_resolved_method_in_hierarchy(self: *Evaluator, actual_class: ?*ast.ClassDecl, class_decl: *ast.ClassDecl, method_name: []const u8, arg_count: usize) ?ResolvedInstanceMethod {
+    fn find_resolved_method_in_hierarchy(
+        self: *Evaluator,
+        actual_class: ?*ast.ClassDecl,
+        class_decl: *ast.ClassDecl,
+        method_name: []const u8,
+        arg_count: usize,
+    ) ?ResolvedInstanceMethod {
         // Walk the runtime-type chain first so intermediate overrides are seen.
         if (actual_class) |ac| {
             var cur: ?*ast.ClassDecl = ac;
             while (cur) |cd| {
-                if (self.find_method_in_class(cd, method_name, arg_count)) |md| return .{ .owner = cd, .method = md };
+                if (self.find_method_in_class(cd, method_name, arg_count)) |md| {
+                    return .{ .owner = cd, .method = md };
+                }
                 cur = if (cd.super_class) |sc| self.find_class(sc.name) else null;
             }
         }
-        if (self.find_method_in_class(class_decl, method_name, arg_count)) |md| return .{ .owner = class_decl, .method = md };
+        if (self.find_method_in_class(class_decl, method_name, arg_count)) |md| {
+            return .{ .owner = class_decl, .method = md };
+        }
         var current: ?*ast.ClassDecl = class_decl;
         while (current) |cd| {
             if (cd.super_class) |sc| {
                 const parent = self.find_class(sc.name);
                 if (parent) |p| {
-                    if (self.find_method_in_class(p, method_name, arg_count)) |md| return .{ .owner = p, .method = md };
+                    if (self.find_method_in_class(p, method_name, arg_count)) |md| {
+                        return .{ .owner = p, .method = md };
+                    }
                     current = p;
                 } else break;
             } else break;
@@ -20159,21 +20189,33 @@ pub const Evaluator = struct {
 
     /// Type-aware version of findMethodInHierarchy. Walks the runtime (child)
     /// type chain first so intermediate overrides aren't skipped.
-    fn find_method_in_hierarchy_typed(self: *Evaluator, actual_class: ?*ast.ClassDecl, class_decl: *ast.ClassDecl, method_name: []const u8, args: []const Value) ?*ast.MethodDecl {
+    fn find_method_in_hierarchy_typed(
+        self: *Evaluator,
+        actual_class: ?*ast.ClassDecl,
+        class_decl: *ast.ClassDecl,
+        method_name: []const u8,
+        args: []const Value,
+    ) ?*ast.MethodDecl {
         if (actual_class) |ac| {
             var cur: ?*ast.ClassDecl = ac;
             while (cur) |cd| {
-                if (self.find_best_method_in_class(cd, method_name, args)) |md| return md;
+                if (self.find_best_method_in_class(cd, method_name, args)) |md| {
+                    return md;
+                }
                 cur = if (cd.super_class) |sc| self.find_class(sc.name) else null;
             }
         }
-        if (self.find_best_method_in_class(class_decl, method_name, args)) |md| return md;
+        if (self.find_best_method_in_class(class_decl, method_name, args)) |md| {
+            return md;
+        }
         var current: ?*ast.ClassDecl = class_decl;
         while (current) |cd| {
             if (cd.super_class) |sc| {
                 const parent = self.find_class(sc.name);
                 if (parent) |p| {
-                    if (self.find_best_method_in_class(p, method_name, args)) |md| return md;
+                    if (self.find_best_method_in_class(p, method_name, args)) |md| {
+                        return md;
+                    }
                     current = p;
                 } else break;
             } else break;
@@ -20185,25 +20227,37 @@ pub const Evaluator = struct {
     /// 1. The actual (child) class for overrides
     /// 2. The provided class_decl
     /// 3. Parent classes via super_class chain
-    fn find_method_in_hierarchy(self: *Evaluator, actual_class: ?*ast.ClassDecl, class_decl: *ast.ClassDecl, method_name: []const u8, arg_count: usize) ?*ast.MethodDecl {
+    fn find_method_in_hierarchy(
+        self: *Evaluator,
+        actual_class: ?*ast.ClassDecl,
+        class_decl: *ast.ClassDecl,
+        method_name: []const u8,
+        arg_count: usize,
+    ) ?*ast.MethodDecl {
         // Virtual dispatch: walk the full runtime-type chain first (child overrides
         // may live at any intermediate ancestor, not just at the most-derived class).
         if (actual_class) |ac| {
             var cur: ?*ast.ClassDecl = ac;
             while (cur) |cd| {
-                if (self.find_method_in_class(cd, method_name, arg_count)) |md| return md;
+                if (self.find_method_in_class(cd, method_name, arg_count)) |md| {
+                    return md;
+                }
                 cur = if (cd.super_class) |sc| self.find_class(sc.name) else null;
             }
         }
         // Fallback: search from the statically-known declaring class upward
         // (used for super.method() dispatch or when the actual class isn't loaded).
-        if (self.find_method_in_class(class_decl, method_name, arg_count)) |md| return md;
+        if (self.find_method_in_class(class_decl, method_name, arg_count)) |md| {
+            return md;
+        }
         var current: ?*ast.ClassDecl = class_decl;
         while (current) |cd| {
             if (cd.super_class) |sc| {
                 const parent = self.find_class(sc.name);
                 if (parent) |p| {
-                    if (self.find_method_in_class(p, method_name, arg_count)) |md| return md;
+                    if (self.find_method_in_class(p, method_name, arg_count)) |md| {
+                        return md;
+                    }
                     current = p;
                 } else break;
             } else break;
@@ -20211,7 +20265,12 @@ pub const Evaluator = struct {
         return null;
     }
 
-    fn find_method_in_class(_: *Evaluator, class_decl: *ast.ClassDecl, method_name: []const u8, arg_count: usize) ?*ast.MethodDecl {
+    fn find_method_in_class(
+        _: *Evaluator,
+        class_decl: *ast.ClassDecl,
+        method_name: []const u8,
+        arg_count: usize,
+    ) ?*ast.MethodDecl {
         var best_match: ?*ast.MethodDecl = null;
         for (class_decl.members) |member| {
             switch (member) {
@@ -20228,7 +20287,13 @@ pub const Evaluator = struct {
     }
 
     /// Type-aware method resolution filtered by static/instance.
-    fn find_best_method_in_class_filtered(self: *Evaluator, class_decl: *ast.ClassDecl, method_name: []const u8, args: []const Value, static_only: bool) ?*ast.MethodDecl {
+    fn find_best_method_in_class_filtered(
+        self: *Evaluator,
+        class_decl: *ast.ClassDecl,
+        method_name: []const u8,
+        args: []const Value,
+        static_only: bool,
+    ) ?*ast.MethodDecl {
         var candidates: [64]*ast.MethodDecl = undefined;
         var count: usize = 0;
         var best_any: ?*ast.MethodDecl = null;
@@ -20236,7 +20301,9 @@ pub const Evaluator = struct {
         for (class_decl.members) |member| {
             switch (member) {
                 .method_decl => |md| {
-                    if (std.ascii.eqlIgnoreCase(md.name, method_name) and md.modifiers.is_static == static_only) {
+                    if (std.ascii.eqlIgnoreCase(md.name, method_name) and
+                        md.modifiers.is_static == static_only)
+                    {
                         if (md.params.len == args.len) {
                             if (count < candidates.len) {
                                 candidates[count] = md;
@@ -20259,32 +20326,7 @@ pub const Evaluator = struct {
         var best: ?*ast.MethodDecl = null;
         var best_score: i32 = -1;
         for (candidates[0..count]) |md| {
-            var score: i32 = 0;
-            for (md.params, 0..) |param, i| {
-                if (i >= args.len) break;
-                const pt = param.type_ref.name;
-                const arg = args[i];
-                const arg_hint = if (arg_type_hints != null and i < arg_type_hints.?.len) arg_type_hints.?[i] else null;
-                if (arg_hint) |hint| {
-                    const hint_score = self.overload_score_for_type_hint(hint, self.render_type_ref(param.type_ref));
-                    if (hint_score > 0) {
-                        score += hint_score;
-                        if (arg == .null_val) continue;
-                    }
-                }
-                var arg_score = overload_score_for_arg(arg, pt);
-                // For object args with score 0, check inheritance chain
-                if (arg_score == 0 and arg == .object) {
-                    if (self.is_subclass_of(arg.object.class_name, pt)) {
-                        arg_score = 2;
-                    }
-                }
-                // For List args, score generic element compatibility using declared element types.
-                if (arg == .list and std.ascii.eqlIgnoreCase(pt, "List") and param.type_ref.params.len > 0) {
-                    arg_score = self.score_list_argument_for_param(arg.list, arg_hint, param.type_ref);
-                }
-                score += arg_score;
-            }
+            const score = self.filtered_method_candidate_score(md, args, arg_type_hints);
             if (score > best_score) {
                 best_score = score;
                 best = md;
@@ -20293,10 +20335,53 @@ pub const Evaluator = struct {
         return best orelse candidates[0];
     }
 
+    fn filtered_method_candidate_score(
+        self: *Evaluator,
+        method_decl: *ast.MethodDecl,
+        args: []const Value,
+        arg_type_hints: ?[]const ?[]const u8,
+    ) i32 {
+        var score: i32 = 0;
+        for (method_decl.params, 0..) |param, i| {
+            if (i >= args.len) break;
+            const arg = args[i];
+            const arg_hint = overload_arg_type_hint(arg_type_hints, i);
+            if (arg_hint) |hint| {
+                const hint_score = self.overload_score_for_type_hint(
+                    hint,
+                    self.render_type_ref(param.type_ref),
+                );
+                if (hint_score > 0) {
+                    score += hint_score;
+                    if (arg == .null_val) continue;
+                }
+            }
+            var arg_score = overload_score_for_arg(arg, param.type_ref.name);
+            if (arg_score == 0 and arg == .object) {
+                if (self.is_subclass_of(arg.object.class_name, param.type_ref.name)) {
+                    arg_score = 2;
+                }
+            }
+            if (arg == .list and
+                std.ascii.eqlIgnoreCase(param.type_ref.name, "List") and
+                param.type_ref.params.len > 0)
+            {
+                arg_score = self.score_list_argument_for_param(arg.list, arg_hint, param.type_ref);
+            }
+            score += arg_score;
+        }
+        return score;
+    }
+
     /// Type-aware method resolution for overloaded methods.
     /// When multiple methods match by name and arg count, picks the one
     /// whose parameter types best match the actual argument types.
-    fn find_best_method_in_class(self: *Evaluator, class_decl: *ast.ClassDecl, method_name: []const u8, args: []const Value) ?*ast.MethodDecl {
+    fn find_best_method_in_class(
+        self: *Evaluator,
+        class_decl: *ast.ClassDecl,
+        method_name: []const u8,
+        args: []const Value,
+    ) ?*ast.MethodDecl {
         var candidates: [64]*ast.MethodDecl = undefined;
         var count: usize = 0;
         var best_any: ?*ast.MethodDecl = null;
@@ -20348,9 +20433,12 @@ pub const Evaluator = struct {
             if (i >= args.len) break;
             const pt = param.type_ref.name;
             const arg = args[i];
-            const arg_hint = if (arg_type_hints != null and i < arg_type_hints.?.len) arg_type_hints.?[i] else null;
+            const arg_hint = overload_arg_type_hint(arg_type_hints, i);
             if (arg_hint) |hint| {
-                const hint_score = self.overload_score_for_type_hint(hint, self.render_type_ref(param.type_ref));
+                const hint_score = self.overload_score_for_type_hint(
+                    hint,
+                    self.render_type_ref(param.type_ref),
+                );
                 if (hint_score > 0) {
                     score += hint_score;
                     if (arg == .null_val) continue;
@@ -20371,7 +20459,10 @@ pub const Evaluator = struct {
                     }
                 }
                 // List generic element type check
-                if (arg == .list and std.ascii.eqlIgnoreCase(pt, "List") and param.type_ref.params.len > 0) {
+                if (arg == .list and
+                    std.ascii.eqlIgnoreCase(pt, "List") and
+                    param.type_ref.params.len > 0)
+                {
                     arg_score = self.score_list_argument_for_param(arg.list, arg_hint, param.type_ref);
                 }
                 score += arg_score;
@@ -20380,13 +20471,25 @@ pub const Evaluator = struct {
         return score;
     }
 
-    fn find_compatible_method_in_class(self: *Evaluator, class_decl: *ast.ClassDecl, method_name: []const u8, args: []const Value) ?*ast.MethodDecl {
+    fn overload_arg_type_hint(hints: ?[]const ?[]const u8, index: usize) ?[]const u8 {
+        if (hints == null or index >= hints.?.len) return null;
+        return hints.?[index];
+    }
+
+    fn find_compatible_method_in_class(
+        self: *Evaluator,
+        class_decl: *ast.ClassDecl,
+        method_name: []const u8,
+        args: []const Value,
+    ) ?*ast.MethodDecl {
         var candidates: [64]*ast.MethodDecl = undefined;
         var count: usize = 0;
         for (class_decl.members) |member| {
             switch (member) {
                 .method_decl => |md| {
-                    if (std.ascii.eqlIgnoreCase(md.name, method_name) and md.params.len == args.len) {
+                    if (std.ascii.eqlIgnoreCase(md.name, method_name) and
+                        md.params.len == args.len)
+                    {
                         if (count < candidates.len) {
                             candidates[count] = md;
                             count += 1;
@@ -20413,28 +20516,25 @@ pub const Evaluator = struct {
         return best;
     }
 
-    fn single_method_candidate_score(self: *Evaluator, md: *ast.MethodDecl, args: []const Value, arg_type_hints: ?[]const ?[]const u8) ?i32 {
+    fn single_method_candidate_score(
+        self: *Evaluator,
+        md: *ast.MethodDecl,
+        args: []const Value,
+        arg_type_hints: ?[]const ?[]const u8,
+    ) ?i32 {
         var score: i32 = 0;
         for (md.params, 0..) |param, i| {
             if (i >= args.len) break;
             const arg = args[i];
             const rendered_param_type = self.render_type_ref(param.type_ref);
             const param_base = type_base_name(rendered_param_type);
-            const arg_hint = if (arg_type_hints != null and i < arg_type_hints.?.len) arg_type_hints.?[i] else null;
+            const arg_hint = overload_arg_type_hint(arg_type_hints, i);
 
             var enum_bridge = false;
-            if (arg_hint) |hint| {
-                const hint_score = self.overload_score_for_type_hint(hint, rendered_param_type);
-                if (hint_score > 0) {
-                    score += hint_score;
-                    if (arg == .null_val) continue;
-                    // Enum values are stored as plain strings internally; when the
-                    // declared hint matches an enum-typed parameter, accept the
-                    // arg even though overloadScoreForArg would score it as 0.
-                    if (arg == .string and (is_system_enum_type_name(rendered_param_type) or self.find_visible_enum_decl(if (std.mem.lastIndexOfScalar(u8, rendered_param_type, '.')) |di| rendered_param_type[di + 1 ..] else rendered_param_type) != null)) {
-                        enum_bridge = true;
-                    }
-                }
+            if (self.overload_hint_match(arg_hint, rendered_param_type, arg)) |hint_match| {
+                score += hint_match.score;
+                if (hint_match.null_match) continue;
+                enum_bridge = hint_match.enum_bridge;
             }
 
             if (arg == .null_val) continue;
@@ -20443,7 +20543,9 @@ pub const Evaluator = struct {
             if (arg == .sobject and std.ascii.eqlIgnoreCase(param_base, "List")) {
                 return null;
             } else if (arg == .list) {
-                if (std.ascii.eqlIgnoreCase(param_base, "List") or std.ascii.eqlIgnoreCase(param_base, "Iterable")) {
+                if (std.ascii.eqlIgnoreCase(param_base, "List") or
+                    std.ascii.eqlIgnoreCase(param_base, "Iterable"))
+                {
                     arg_score = self.score_list_argument_for_param(arg.list, arg_hint, param.type_ref);
                 } else if (std.ascii.eqlIgnoreCase(param_base, "Object")) {
                     arg_score = 1;
@@ -20452,10 +20554,16 @@ pub const Evaluator = struct {
                 }
             } else {
                 arg_score = overload_score_for_arg(arg, param.type_ref.name);
-                if (arg_score == 0 and arg == .string and std.ascii.eqlIgnoreCase(param_base, "Blob")) {
+                if (arg_score == 0 and
+                    arg == .string and
+                    std.ascii.eqlIgnoreCase(param_base, "Blob"))
+                {
                     arg_score = 1;
                 }
-                if (arg_score == 0 and arg == .object and self.is_subclass_of(arg.object.class_name, param.type_ref.name)) {
+                if (arg_score == 0 and
+                    arg == .object and
+                    self.is_subclass_of(arg.object.class_name, param.type_ref.name))
+                {
                     arg_score = 2;
                 }
             }
@@ -20469,6 +20577,41 @@ pub const Evaluator = struct {
             score += arg_score;
         }
         return score;
+    }
+
+    const OverloadHintMatch = struct {
+        score: i32,
+        enum_bridge: bool,
+        null_match: bool,
+    };
+
+    fn overload_hint_match(
+        self: *Evaluator,
+        arg_hint: ?[]const u8,
+        rendered_param_type: []const u8,
+        arg: Value,
+    ) ?OverloadHintMatch {
+        const hint = arg_hint orelse return null;
+        const hint_score = self.overload_score_for_type_hint(hint, rendered_param_type);
+        if (hint_score <= 0) return null;
+        return .{
+            .score = hint_score,
+            .enum_bridge = arg == .string and
+                self.overload_param_accepts_enum_bridge(rendered_param_type),
+            .null_match = arg == .null_val,
+        };
+    }
+
+    fn overload_param_accepts_enum_bridge(
+        self: *Evaluator,
+        rendered_param_type: []const u8,
+    ) bool {
+        if (is_system_enum_type_name(rendered_param_type)) return true;
+        const enum_name = if (std.mem.lastIndexOfScalar(u8, rendered_param_type, '.')) |di|
+            rendered_param_type[di + 1 ..]
+        else
+            rendered_param_type;
+        return self.find_visible_enum_decl(enum_name) != null;
     }
 
     /// If `expr` syntactically accesses an enum value (e.g. `SortOrder.ASCENDING`,
