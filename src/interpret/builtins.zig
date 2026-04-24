@@ -3708,8 +3708,13 @@ fn default_field_is_nillable(object_type: []const u8, field_name: []const u8) bo
         std.ascii.eqlIgnoreCase(object_type, "Lead")) and
         std.ascii.eqlIgnoreCase(field_name, "LastName")) return false;
     if (std.ascii.eqlIgnoreCase(object_type, "ContentVersion") and
-        (std.ascii.eqlIgnoreCase(field_name, "PathOnClient") or std.ascii.eqlIgnoreCase(field_name, "VersionData"))) return false;
+        content_version_required_field(field_name)) return false;
     return true;
+}
+
+fn content_version_required_field(field_name: []const u8) bool {
+    return std.ascii.eqlIgnoreCase(field_name, "PathOnClient") or
+        std.ascii.eqlIgnoreCase(field_name, "VersionData");
 }
 
 fn split_qualified_metadata_name(
@@ -4107,7 +4112,11 @@ fn create_describe_result(ctx: *BuiltinContext, obj_name: []const u8) !Value {
     try desc.fields.put(ctx.arena, "isSearchable", Value{ .boolean = true });
 
     // Fields map
-    try desc.fields.put(ctx.arena, "fields", try create_field_describe_map_value(ctx, obj_name));
+    try desc.fields.put(
+        ctx.arena,
+        "fields",
+        try create_field_describe_map_value(ctx, obj_name),
+    );
 
     const local_name = describe_local_name(obj_name);
     const entity_label: []const u8 = ctx.eval.object_labels.get(obj_name) orelse local_name;
@@ -4124,7 +4133,8 @@ fn create_describe_result(ctx: *BuiltinContext, obj_name: []const u8) !Value {
 
     // isCustom: custom objects/events/metadata/big objects use __x-style suffixes
     try desc.fields.put(ctx.arena, "isCustom", Value{ .boolean = is_custom });
-    // isCustomSetting: Hierarchy/List custom settings are declared in object-meta.xml via <customSettingsType>.
+    // Hierarchy/List custom settings are declared in object-meta.xml via
+    // <customSettingsType>.
     // We detect them by scanning object-meta.xml files at load time into custom_setting_types.
     const is_custom_setting =
         std.mem.endsWith(u8, obj_name, "__c") and
@@ -4351,7 +4361,53 @@ const known_describe_field_sets = [_]struct { object: []const u8, fields: []cons
     } },
 };
 
-fn add_known_describe_fields(ctx: *BuiltinContext, fields_kv: *types.MapValue, object_type: []const u8) !void {
+const canonical_describe_field_sets = [_]struct { object: []const u8, fields: []const []const u8 }{
+    .{ .object = "Account", .fields = &.{
+        "Id",                "Name",              "ParentId",           "OwnerId",
+        "Phone",             "Fax",               "Website",            "AccountNumber",
+        "Industry",          "Type",              "BillingStreet",      "BillingCity",
+        "BillingState",      "BillingPostalCode", "BillingCountry",     "ShippingStreet",
+        "ShippingCity",      "ShippingState",     "ShippingPostalCode", "ShippingCountry",
+        "NumberOfEmployees", "Description",       "Rating",             "AnnualRevenue",
+    } },
+    .{ .object = "Contact", .fields = &.{
+        "Id",             "AccountId",    "FirstName",     "LastName",
+        "Name",           "Email",        "Phone",         "MobilePhone",
+        "HomePhone",      "OtherPhone",   "Fax",           "Title",
+        "Department",     "Birthdate",    "LeadSource",    "MailingCity",
+        "MailingCountry", "MailingState", "MailingStreet", "MailingPostalCode",
+        "Description",    "OwnerId",      "ReportsToId",
+    } },
+    .{ .object = "Lead", .fields = &.{
+        "Id",      "FirstName",  "LastName", "Company",  "Email", "Phone", "Status",
+        "OwnerId", "LeadSource", "Rating",   "Industry",
+    } },
+    .{ .object = "User", .fields = &.{
+        "Id",           "Username",         "Email",
+        "FirstName",    "LastName",         "Name",
+        "ProfileId",    "Alias",            "UserType",
+        "IsActive",     "TimeZoneSidKey",   "LanguageLocaleKey",
+        "LocaleSidKey", "EmailEncodingKey",
+    } },
+    .{ .object = "Profile", .fields = &.{
+        "Id", "Name", "DeveloperName", "UserType", "UserLicenseId",
+    } },
+    .{ .object = "Opportunity", .fields = &.{
+        "Id",        "Name",       "AccountId",   "StageName",
+        "CloseDate", "Amount",     "OwnerId",     "Probability",
+        "Type",      "LeadSource", "Description", "IsPrivate",
+    } },
+    .{ .object = "Task", .fields = &.{
+        "Id",     "Subject", "ActivityDate", "Priority",
+        "Status", "WhatId",  "WhoId",        "OwnerId",
+    } },
+};
+
+fn add_known_describe_fields(
+    ctx: *BuiltinContext,
+    fields_kv: *types.MapValue,
+    object_type: []const u8,
+) !void {
     for (known_describe_field_sets) |entry| {
         if (!std.ascii.eqlIgnoreCase(object_type, entry.object)) continue;
         try add_describe_field_names(ctx, fields_kv, object_type, entry.fields);
@@ -4376,15 +4432,27 @@ fn add_describe_fields_from_record(
     object_type: []const u8,
     record: Value,
 ) !void {
-    if (record != .sobject or !std.ascii.eqlIgnoreCase(record.sobject.type_name, object_type)) return;
+    if (record != .sobject or
+        !std.ascii.eqlIgnoreCase(record.sobject.type_name, object_type)) return;
     for (record.sobject.fields.keys(), record.sobject.fields.values()) |field_name, field_value| {
         if (std.mem.indexOfScalar(u8, field_name, '.') != null) continue;
-        if (field_value == .sobject or field_value == .list or field_value == .map or field_value == .set) continue;
+        if (!describe_field_value_is_scalar(field_value)) continue;
         try add_describe_field_if_missing(ctx, fields_kv, object_type, field_name);
     }
 }
 
-fn add_describe_fields_from_store(ctx: *BuiltinContext, fields_kv: *types.MapValue, object_type: []const u8) !void {
+fn describe_field_value_is_scalar(field_value: Value) bool {
+    return switch (field_value) {
+        .sobject, .list, .map, .set => false,
+        else => true,
+    };
+}
+
+fn add_describe_fields_from_store(
+    ctx: *BuiltinContext,
+    fields_kv: *types.MapValue,
+    object_type: []const u8,
+) !void {
     if (ctx.eval.store.get(object_type)) |records| {
         for (records.items) |record| {
             try add_describe_fields_from_record(ctx, fields_kv, object_type, record);
@@ -4398,49 +4466,19 @@ fn add_describe_fields_from_store(ctx: *BuiltinContext, fields_kv: *types.MapVal
 }
 
 /// Canonicalize a field name into its API form.
-/// Priority: field-meta.xml-derived types (exact key) → well-known per-object lists
+/// Priority: field-meta.xml-derived types (exact key) -> well-known per-object lists
 /// → upper-first fallback. Always returns a non-empty slice.
-fn canonical_field_api_name(ctx: *BuiltinContext, object_type: []const u8, field_name: []const u8) []const u8 {
+fn canonical_field_api_name(
+    ctx: *BuiltinContext,
+    object_type: []const u8,
+    field_name: []const u8,
+) []const u8 {
     if (ctx.eval.field_types.get(object_type)) |type_map| {
         for (type_map.keys()) |known| {
             if (std.ascii.eqlIgnoreCase(known, field_name)) return known;
         }
     }
-    const canonical_sets = [_]struct { object: []const u8, fields: []const []const u8 }{
-        .{ .object = "Account", .fields = &.{
-            "Id",                "Name",         "ParentId",      "OwnerId",            "Phone",
-            "Fax",               "Website",      "AccountNumber", "Industry",           "Type",
-            "BillingStreet",     "BillingCity",  "BillingState",  "BillingPostalCode",  "BillingCountry",
-            "ShippingStreet",    "ShippingCity", "ShippingState", "ShippingPostalCode", "ShippingCountry",
-            "NumberOfEmployees", "Description",  "Rating",        "AnnualRevenue",
-        } },
-        .{ .object = "Contact", .fields = &.{
-            "Id",          "AccountId",      "FirstName",    "LastName",      "Name",
-            "Email",       "Phone",          "MobilePhone",  "HomePhone",     "OtherPhone",
-            "Fax",         "Title",          "Department",   "Birthdate",     "LeadSource",
-            "MailingCity", "MailingCountry", "MailingState", "MailingStreet", "MailingPostalCode",
-            "Description", "OwnerId",        "ReportsToId",
-        } },
-        .{ .object = "Lead", .fields = &.{
-            "Id",      "FirstName",  "LastName", "Company",  "Email", "Phone", "Status",
-            "OwnerId", "LeadSource", "Rating",   "Industry",
-        } },
-        .{ .object = "User", .fields = &.{
-            "Id",    "Username", "Email",    "FirstName",      "LastName",          "Name",         "ProfileId",
-            "Alias", "UserType", "IsActive", "TimeZoneSidKey", "LanguageLocaleKey", "LocaleSidKey", "EmailEncodingKey",
-        } },
-        .{ .object = "Profile", .fields = &.{
-            "Id", "Name", "DeveloperName", "UserType", "UserLicenseId",
-        } },
-        .{ .object = "Opportunity", .fields = &.{
-            "Id",      "Name",        "AccountId", "StageName",  "CloseDate",   "Amount",
-            "OwnerId", "Probability", "Type",      "LeadSource", "Description", "IsPrivate",
-        } },
-        .{ .object = "Task", .fields = &.{
-            "Id", "Subject", "ActivityDate", "Priority", "Status", "WhatId", "WhoId", "OwnerId",
-        } },
-    };
-    inline for (canonical_sets) |entry| {
+    inline for (canonical_describe_field_sets) |entry| {
         if (std.ascii.eqlIgnoreCase(entry.object, object_type)) {
             for (entry.fields) |canonical| {
                 if (std.ascii.eqlIgnoreCase(canonical, field_name)) return canonical;
@@ -4457,54 +4495,39 @@ fn canonical_field_api_name(ctx: *BuiltinContext, object_type: []const u8, field
     return field_name;
 }
 
-fn create_field_describe_result_with_type(ctx: *BuiltinContext, object_type: []const u8, field_name: []const u8, field_type: ?[]const u8) !Value {
+fn create_field_describe_result_with_type(
+    ctx: *BuiltinContext,
+    object_type: []const u8,
+    field_name: []const u8,
+    field_type: ?[]const u8,
+) !Value {
     const fdr = try ctx.arena.create(types.ObjectInstance);
     fdr.* = .{ .class_name = "DescribeFieldResult" };
     const canonical_name: []const u8 = canonical_field_api_name(ctx, object_type, field_name);
     const metadata = lookup_field_metadata(ctx, object_type, canonical_name);
     try fdr.fields.put(ctx.arena, "name", Value{ .string = canonical_name });
-    try fdr.fields.put(ctx.arena, "localName", Value{ .string = describe_local_name(canonical_name) });
-    try fdr.fields.put(ctx.arena, "label", Value{ .string = if (metadata) |meta| meta.label orelse default_field_label(field_name) else default_field_label(field_name) });
+    try fdr.fields.put(
+        ctx.arena,
+        "localName",
+        Value{ .string = describe_local_name(canonical_name) },
+    );
+    try fdr.fields.put(
+        ctx.arena,
+        "label",
+        Value{ .string = describe_field_label(metadata, field_name) },
+    );
     try fdr.fields.put(ctx.arena, "inlineHelpText", Value.null_val);
     try fdr.fields.put(ctx.arena, "objectType", Value{ .string = object_type });
-    try fdr.fields.put(ctx.arena, "isAccessible", Value{ .boolean = resolve_field_read_permission(ctx.eval, object_type, field_name) });
-    // Id and system fields are not updateable/createable.
-    // Renamed from `is_system_field` to avoid shadowing the module-level
-    // `is_system_field` function (added when the legacy camelCase helper
-    // was snake_cased).
-    const is_system_meta_field = std.ascii.eqlIgnoreCase(field_name, "Id") or
-        std.ascii.eqlIgnoreCase(field_name, "CreatedDate") or
-        std.ascii.eqlIgnoreCase(field_name, "CreatedById") or
-        std.ascii.eqlIgnoreCase(field_name, "LastModifiedDate") or
-        std.ascii.eqlIgnoreCase(field_name, "LastModifiedById") or
-        std.ascii.eqlIgnoreCase(field_name, "SystemModstamp") or
-        std.ascii.eqlIgnoreCase(field_name, "IsDeleted");
-    try fdr.fields.put(ctx.arena, "isUpdateable", Value{ .boolean = !is_system_meta_field and resolve_field_write_permission(ctx.eval, object_type, field_name, "edit") });
-    try fdr.fields.put(ctx.arena, "isCreateable", Value{ .boolean = !is_system_meta_field and resolve_field_write_permission(ctx.eval, object_type, field_name, "create") });
-    try fdr.fields.put(ctx.arena, "isFilterable", Value{ .boolean = resolve_field_read_permission(ctx.eval, object_type, field_name) });
-    // Set field length based on field type
-    const length: i64 = if (metadata != null and metadata.?.length != null)
-        metadata.?.length.?
-    else if (std.ascii.eqlIgnoreCase(field_name, "Id"))
-        18
-    else if (std.ascii.eqlIgnoreCase(field_name, "Name") or std.ascii.eqlIgnoreCase(field_name, "OwnerId"))
-        255
-    else
-        131072;
+    try add_field_describe_permissions(ctx, fdr, object_type, field_name);
+    const length = describe_field_length(metadata, field_name);
     try fdr.fields.put(ctx.arena, "length", Value{ .integer = length });
-    try fdr.fields.put(ctx.arena, "isNillable", Value{ .boolean = if (metadata) |meta| !meta.is_required else default_field_is_nillable(object_type, field_name) });
-    // Set field type — map XML type to DisplayType enum name, infer from field name if not provided
-    const raw_ft: []const u8 = field_type orelse blk: {
-        if (ctx.eval.field_types.get(object_type)) |type_map| {
-            for (type_map.keys(), type_map.values()) |known_field_name, known_type| {
-                if (std.ascii.eqlIgnoreCase(known_field_name, field_name)) break :blk known_type;
-            }
-        }
-        break :blk infer_field_type_for_object(object_type, field_name);
-    };
+    const is_nillable = describe_field_is_nillable(metadata, object_type, field_name);
+    try fdr.fields.put(ctx.arena, "isNillable", Value{ .boolean = is_nillable });
+    const raw_ft = describe_raw_field_type(ctx, object_type, field_name, field_type);
     const ft: []const u8 = map_xml_type_to_display_type(raw_ft);
     try fdr.fields.put(ctx.arena, "type", Value{ .string = ft });
-    try fdr.fields.put(ctx.arena, "isSortable", Value{ .boolean = !std.ascii.eqlIgnoreCase(ft, "TEXTAREA") });
+    const is_sortable = !std.ascii.eqlIgnoreCase(ft, "TEXTAREA");
+    try fdr.fields.put(ctx.arena, "isSortable", Value{ .boolean = is_sortable });
     if (std.ascii.eqlIgnoreCase(ft, "REFERENCE")) {
         if (try default_relationship_name(ctx.arena, field_name)) |relationship_name| {
             try fdr.fields.put(ctx.arena, "relationshipName", Value{ .string = relationship_name });
@@ -4518,45 +4541,156 @@ fn create_field_describe_result_with_type(ctx: *BuiltinContext, object_type: []c
     return Value{ .object = fdr };
 }
 
+fn add_field_describe_permissions(
+    ctx: *BuiltinContext,
+    fdr: *types.ObjectInstance,
+    object_type: []const u8,
+    field_name: []const u8,
+) !void {
+    const readable = resolve_field_read_permission(ctx.eval, object_type, field_name);
+    const is_system_meta = is_system_metadata_field(field_name);
+    const is_updateable = !is_system_meta and
+        resolve_field_write_permission(ctx.eval, object_type, field_name, "edit");
+    const is_createable = !is_system_meta and
+        resolve_field_write_permission(ctx.eval, object_type, field_name, "create");
+    try fdr.fields.put(ctx.arena, "isAccessible", Value{ .boolean = readable });
+    try fdr.fields.put(ctx.arena, "isUpdateable", Value{ .boolean = is_updateable });
+    try fdr.fields.put(ctx.arena, "isCreateable", Value{ .boolean = is_createable });
+    try fdr.fields.put(ctx.arena, "isFilterable", Value{ .boolean = readable });
+}
+
+fn is_system_metadata_field(field_name: []const u8) bool {
+    return type_matches_any(field_name, &.{
+        "Id",
+        "CreatedDate",
+        "CreatedById",
+        "LastModifiedDate",
+        "LastModifiedById",
+        "SystemModstamp",
+        "IsDeleted",
+    });
+}
+
+fn describe_field_label(
+    metadata: ?evaluator_mod.FieldMetadata,
+    field_name: []const u8,
+) []const u8 {
+    return if (metadata) |meta|
+        meta.label orelse default_field_label(field_name)
+    else
+        default_field_label(field_name);
+}
+
+fn describe_field_length(
+    metadata: ?evaluator_mod.FieldMetadata,
+    field_name: []const u8,
+) i64 {
+    if (metadata) |meta| {
+        if (meta.length) |length| return length;
+    }
+    if (std.ascii.eqlIgnoreCase(field_name, "Id")) return 18;
+    if (describe_text_field_has_name_length(field_name)) return 255;
+    return 131072;
+}
+
+fn describe_field_is_nillable(
+    metadata: ?evaluator_mod.FieldMetadata,
+    object_type: []const u8,
+    field_name: []const u8,
+) bool {
+    return if (metadata) |meta|
+        !meta.is_required
+    else
+        default_field_is_nillable(object_type, field_name);
+}
+
+fn describe_text_field_has_name_length(field_name: []const u8) bool {
+    return std.ascii.eqlIgnoreCase(field_name, "Name") or
+        std.ascii.eqlIgnoreCase(field_name, "OwnerId");
+}
+
+fn describe_raw_field_type(
+    ctx: *BuiltinContext,
+    object_type: []const u8,
+    field_name: []const u8,
+    field_type: ?[]const u8,
+) []const u8 {
+    if (field_type) |known_type| return known_type;
+    if (ctx.eval.field_types.get(object_type)) |type_map| {
+        for (type_map.keys(), type_map.values()) |known_field_name, known_type| {
+            if (std.ascii.eqlIgnoreCase(known_field_name, field_name)) return known_type;
+        }
+    }
+    return infer_field_type_for_object(object_type, field_name);
+}
+
 /// DescribeFieldResult.getSoapType 互換。DisplayType enum 名を
 /// SoapType enum 名 (BOOLEAN / INTEGER / DOUBLE / DATE / DATETIME / ID /
 /// STRING) に写像する。`create_field_describe_result_with_type` から
 /// 抽出。
 fn display_type_to_soap_type(ft: []const u8) []const u8 {
-    const ci = std.ascii;
-    if (ci.eqlIgnoreCase(ft, "Boolean")) return "BOOLEAN";
-    if (ci.eqlIgnoreCase(ft, "Integer") or ci.eqlIgnoreCase(ft, "Long")) return "INTEGER";
-    if (ci.eqlIgnoreCase(ft, "Double") or ci.eqlIgnoreCase(ft, "Currency") or ci.eqlIgnoreCase(ft, "Percent")) return "DOUBLE";
-    if (ci.eqlIgnoreCase(ft, "Date")) return "DATE";
-    if (ci.eqlIgnoreCase(ft, "DateTime")) return "DATETIME";
-    if (ci.eqlIgnoreCase(ft, "ID") or ci.eqlIgnoreCase(ft, "REFERENCE")) return "ID";
+    if (std.ascii.eqlIgnoreCase(ft, "Boolean")) return "BOOLEAN";
+    if (type_matches_any(ft, &.{ "Integer", "Long" })) return "INTEGER";
+    if (type_matches_any(ft, &.{ "Double", "Currency", "Percent" })) return "DOUBLE";
+    if (std.ascii.eqlIgnoreCase(ft, "Date")) return "DATE";
+    if (std.ascii.eqlIgnoreCase(ft, "DateTime")) return "DATETIME";
+    if (type_matches_any(ft, &.{ "ID", "REFERENCE" })) return "ID";
     return "STRING";
 }
 
 /// field-meta.xml の <type> 値を Schema.DisplayType enum 名にマッピング。
 fn map_xml_type_to_display_type(xml_type: []const u8) []const u8 {
-    const ci = std.ascii;
-    if (ci.eqlIgnoreCase(xml_type, "Text") or ci.eqlIgnoreCase(xml_type, "STRING")) return "STRING";
-    if (ci.eqlIgnoreCase(xml_type, "LongTextArea") or ci.eqlIgnoreCase(xml_type, "TextArea") or ci.eqlIgnoreCase(xml_type, "RichTextArea") or ci.eqlIgnoreCase(xml_type, "Html")) return "TEXTAREA";
-    if (ci.eqlIgnoreCase(xml_type, "Checkbox") or ci.eqlIgnoreCase(xml_type, "Boolean") or ci.eqlIgnoreCase(xml_type, "BOOLEAN")) return "BOOLEAN";
-    if (ci.eqlIgnoreCase(xml_type, "Number") or ci.eqlIgnoreCase(xml_type, "Double") or ci.eqlIgnoreCase(xml_type, "DOUBLE")) return "DOUBLE";
-    if (ci.eqlIgnoreCase(xml_type, "DateTime") or ci.eqlIgnoreCase(xml_type, "DATETIME")) return "DATETIME";
-    if (ci.eqlIgnoreCase(xml_type, "Date") or ci.eqlIgnoreCase(xml_type, "DATE")) return "DATE";
-    if (ci.eqlIgnoreCase(xml_type, "Lookup") or ci.eqlIgnoreCase(xml_type, "MasterDetail") or ci.eqlIgnoreCase(xml_type, "REFERENCE")) return "REFERENCE";
-    if (ci.eqlIgnoreCase(xml_type, "Url") or ci.eqlIgnoreCase(xml_type, "URL")) return "URL";
-    if (ci.eqlIgnoreCase(xml_type, "Phone") or ci.eqlIgnoreCase(xml_type, "PHONE")) return "PHONE";
-    if (ci.eqlIgnoreCase(xml_type, "Email") or ci.eqlIgnoreCase(xml_type, "EMAIL")) return "EMAIL";
-    if (ci.eqlIgnoreCase(xml_type, "Picklist") or ci.eqlIgnoreCase(xml_type, "PICKLIST")) return "PICKLIST";
-    if (ci.eqlIgnoreCase(xml_type, "MultiselectPicklist") or ci.eqlIgnoreCase(xml_type, "MULTIPICKLIST")) return "MULTIPICKLIST";
-    if (ci.eqlIgnoreCase(xml_type, "Currency") or ci.eqlIgnoreCase(xml_type, "CURRENCY")) return "CURRENCY";
-    if (ci.eqlIgnoreCase(xml_type, "Percent") or ci.eqlIgnoreCase(xml_type, "PERCENT")) return "PERCENT";
-    if (ci.eqlIgnoreCase(xml_type, "EncryptedText") or ci.eqlIgnoreCase(xml_type, "ENCRYPTEDSTRING")) return "ENCRYPTEDSTRING";
-    if (ci.eqlIgnoreCase(xml_type, "Integer") or ci.eqlIgnoreCase(xml_type, "INTEGER")) return "INTEGER";
-    if (ci.eqlIgnoreCase(xml_type, "Long") or ci.eqlIgnoreCase(xml_type, "LONG")) return "LONG";
-    if (ci.eqlIgnoreCase(xml_type, "Time") or ci.eqlIgnoreCase(xml_type, "TIME")) return "TIME";
-    if (ci.eqlIgnoreCase(xml_type, "Id") or ci.eqlIgnoreCase(xml_type, "ID")) return "ID";
+    if (type_matches_any(xml_type, &.{ "Text", "STRING" })) return "STRING";
+    if (type_matches_any(xml_type, &.{
+        "LongTextArea",
+        "TextArea",
+        "RichTextArea",
+        "Html",
+    })) return "TEXTAREA";
+    if (type_matches_any(xml_type, &.{
+        "Checkbox",
+        "Boolean",
+        "BOOLEAN",
+    })) return "BOOLEAN";
+    if (type_matches_any(xml_type, &.{
+        "Number",
+        "Double",
+        "DOUBLE",
+    })) return "DOUBLE";
+    if (type_matches_any(xml_type, &.{ "DateTime", "DATETIME" })) return "DATETIME";
+    if (type_matches_any(xml_type, &.{ "Date", "DATE" })) return "DATE";
+    if (type_matches_any(xml_type, &.{
+        "Lookup",
+        "MasterDetail",
+        "REFERENCE",
+    })) return "REFERENCE";
+    if (type_matches_any(xml_type, &.{ "Url", "URL" })) return "URL";
+    if (type_matches_any(xml_type, &.{ "Phone", "PHONE" })) return "PHONE";
+    if (type_matches_any(xml_type, &.{ "Email", "EMAIL" })) return "EMAIL";
+    if (type_matches_any(xml_type, &.{ "Picklist", "PICKLIST" })) return "PICKLIST";
+    if (type_matches_any(xml_type, &.{
+        "MultiselectPicklist",
+        "MULTIPICKLIST",
+    })) return "MULTIPICKLIST";
+    if (type_matches_any(xml_type, &.{ "Currency", "CURRENCY" })) return "CURRENCY";
+    if (type_matches_any(xml_type, &.{ "Percent", "PERCENT" })) return "PERCENT";
+    if (type_matches_any(xml_type, &.{
+        "EncryptedText",
+        "ENCRYPTEDSTRING",
+    })) return "ENCRYPTEDSTRING";
+    if (type_matches_any(xml_type, &.{ "Integer", "INTEGER" })) return "INTEGER";
+    if (type_matches_any(xml_type, &.{ "Long", "LONG" })) return "LONG";
+    if (type_matches_any(xml_type, &.{ "Time", "TIME" })) return "TIME";
+    if (type_matches_any(xml_type, &.{ "Id", "ID" })) return "ID";
     // Already a DisplayType name — return as-is
     return xml_type;
+}
+
+fn type_matches_any(value: []const u8, candidates: []const []const u8) bool {
+    for (candidates) |candidate| {
+        if (std.ascii.eqlIgnoreCase(value, candidate)) return true;
+    }
+    return false;
 }
 
 /// フィールド名からフィールド型を推測する。field-meta.xml の type 情報がない場合のフォールバック。
