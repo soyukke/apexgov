@@ -20675,9 +20675,16 @@ pub const Evaluator = struct {
     /// True when `arg_str` looks like a value of the enum type named by `param_type`.
     /// Handles both bare enum names ("SortOrder") and qualified forms
     /// ("fflib_QueryFactory.SortOrder").
-    fn string_matches_enum_param_type(self: *Evaluator, arg_str: []const u8, param_type: []const u8) bool {
+    fn string_matches_enum_param_type(
+        self: *Evaluator,
+        arg_str: []const u8,
+        param_type: []const u8,
+    ) bool {
         if (arg_str.len == 0) return false;
-        const simple = if (std.mem.lastIndexOfScalar(u8, param_type, '.')) |di| param_type[di + 1 ..] else param_type;
+        const simple = if (std.mem.lastIndexOfScalar(u8, param_type, '.')) |di|
+            param_type[di + 1 ..]
+        else
+            param_type;
         if (simple.len == 0) return false;
         // System built-in enums (TriggerOperation, LoggingLevel, AccessType, etc.)
         if (is_system_enum_value(simple, arg_str)) return true;
@@ -20705,7 +20712,11 @@ pub const Evaluator = struct {
         return false;
     }
 
-    fn overload_score_for_type_hint(self: *Evaluator, raw_hint: []const u8, raw_param_type: []const u8) i32 {
+    fn overload_score_for_type_hint(
+        self: *Evaluator,
+        raw_hint: []const u8,
+        raw_param_type: []const u8,
+    ) i32 {
         if (std.ascii.eqlIgnoreCase(raw_hint, raw_param_type)) return 6;
         const hint = strip_type_namespace(raw_hint);
         const pt = strip_type_namespace(raw_param_type);
@@ -20714,26 +20725,15 @@ pub const Evaluator = struct {
         const hint_has_generics = std.mem.indexOfScalar(u8, hint, '<') != null;
         const pt_has_generics = std.mem.indexOfScalar(u8, pt, '<') != null;
         if (std.ascii.eqlIgnoreCase(hint, pt)) return 3;
-        if (hint_has_generics and pt_has_generics and std.ascii.eqlIgnoreCase(hint_base, pt_base)) {
-            if (std.ascii.eqlIgnoreCase(hint_base, "Map")) {
-                const hint_args = extract_map_type_args(hint);
-                const param_args = extract_map_type_args(pt);
-                if (hint_args != null and param_args != null and names_match_by_simple_name(strip_type_namespace(hint_args.?.key), strip_type_namespace(param_args.?.key))) {
-                    const hint_value = strip_type_namespace(hint_args.?.value);
-                    const param_value = strip_type_namespace(param_args.?.value);
-                    if (names_match_by_simple_name(hint_value, param_value)) return 3;
-                    if (std.ascii.eqlIgnoreCase(type_base_name(param_value), "SObject") and self.is_s_object_type_name(type_base_name(hint_value))) return 3;
-                }
-            } else if (extract_collection_element_type_name(hint)) |hint_elem_type| {
-                if (extract_collection_element_type_name(pt)) |param_elem_type| {
-                    const hint_elem = strip_type_namespace(hint_elem_type);
-                    const param_elem = strip_type_namespace(param_elem_type);
-                    if (names_match_by_simple_name(hint_elem, param_elem)) return 3;
-                    if (std.ascii.eqlIgnoreCase(type_base_name(param_elem), "SObject") and self.is_s_object_type_name(type_base_name(hint_elem))) return 3;
-                }
-            }
+        if (hint_has_generics and pt_has_generics and
+            self.generic_type_hint_matches_param(hint, pt, hint_base, pt_base))
+            return 3;
+
+        if (!(hint_has_generics and pt_has_generics) and
+            std.ascii.eqlIgnoreCase(hint_base, pt_base))
+        {
+            return 3;
         }
-        if (!(hint_has_generics and pt_has_generics) and std.ascii.eqlIgnoreCase(hint_base, pt_base)) return 3;
         // Match dotted form against its simple tail (and vice versa) so that a
         // `ModeTarget2.Mode` declared-type hint scores against a bare `Mode`
         // parameter declaration. This is common when user code references an
@@ -20749,33 +20749,105 @@ pub const Evaluator = struct {
         if (std.ascii.eqlIgnoreCase(pt, "Object")) return 1;
 
         if (is_collection_type_name(hint_base)) {
-            if (std.ascii.eqlIgnoreCase(pt_base, "Iterable")) {
-                if (hint_has_generics and pt_has_generics) {
-                    const hint_elem_type = extract_collection_element_type_name(hint);
-                    const param_elem_type = extract_collection_element_type_name(pt);
-                    if (hint_elem_type != null and param_elem_type != null and names_match_by_simple_name(strip_type_namespace(hint_elem_type.?), strip_type_namespace(param_elem_type.?))) {
-                        return if (std.ascii.eqlIgnoreCase(hint_base, "Set")) 4 else 3;
-                    }
-                }
-                if (std.ascii.eqlIgnoreCase(hint_base, "Set")) return 2;
-                if (std.ascii.eqlIgnoreCase(hint_base, "List")) return 1;
-            }
-            return 0;
+            return self.collection_type_hint_score(
+                hint,
+                pt,
+                hint_base,
+                pt_base,
+                hint_has_generics and pt_has_generics,
+            );
         }
 
-        if (self.is_s_object_type_name(hint_base) and
-            (std.ascii.eqlIgnoreCase(pt_base, "SObject") or
-                std.ascii.eqlIgnoreCase(pt_base, "sObject") or
-                std.ascii.eqlIgnoreCase(pt_base, "Sobject")))
+        if (self.s_object_type_hint_matches_param(hint_base, pt_base)) return 3;
+
+        if (self.find_class(hint_base) != null and
+            self.is_subclass_of(hint_base, pt_base))
         {
-            return 3;
+            return 2;
         }
-
-        if (self.find_class(hint_base) != null and self.is_subclass_of(hint_base, pt_base)) return 2;
         return 0;
     }
 
-    fn init_instance_fields(self: *Evaluator, class_decl: *ast.ClassDecl, instance: *types.ObjectInstance) !void {
+    fn generic_type_hint_matches_param(
+        self: *Evaluator,
+        hint: []const u8,
+        param_type: []const u8,
+        hint_base: []const u8,
+        param_base: []const u8,
+    ) bool {
+        if (!std.ascii.eqlIgnoreCase(hint_base, param_base)) return false;
+        if (std.ascii.eqlIgnoreCase(hint_base, "Map")) {
+            return self.map_type_hint_matches_param(hint, param_type);
+        }
+        const hint_elem_type = extract_collection_element_type_name(hint) orelse return false;
+        const param_elem_type =
+            extract_collection_element_type_name(param_type) orelse return false;
+        return self.element_type_hint_matches_param(hint_elem_type, param_elem_type);
+    }
+
+    fn collection_type_hint_score(
+        self: *Evaluator,
+        hint: []const u8,
+        param_type: []const u8,
+        hint_base: []const u8,
+        param_base: []const u8,
+        both_have_generics: bool,
+    ) i32 {
+        if (!std.ascii.eqlIgnoreCase(param_base, "Iterable")) return 0;
+        if (both_have_generics) {
+            const hint_elem_type = extract_collection_element_type_name(hint);
+            const param_elem_type = extract_collection_element_type_name(param_type);
+            if (hint_elem_type != null and
+                param_elem_type != null and
+                self.element_type_hint_matches_param(hint_elem_type.?, param_elem_type.?))
+            {
+                return if (std.ascii.eqlIgnoreCase(hint_base, "Set")) 4 else 3;
+            }
+        }
+        if (std.ascii.eqlIgnoreCase(hint_base, "Set")) return 2;
+        if (std.ascii.eqlIgnoreCase(hint_base, "List")) return 1;
+        return 0;
+    }
+
+    fn s_object_type_hint_matches_param(
+        self: *Evaluator,
+        hint_base: []const u8,
+        param_base: []const u8,
+    ) bool {
+        return self.is_s_object_type_name(hint_base) and
+            std.ascii.eqlIgnoreCase(param_base, "SObject");
+    }
+
+    fn map_type_hint_matches_param(
+        self: *Evaluator,
+        hint: []const u8,
+        param_type: []const u8,
+    ) bool {
+        const hint_args = extract_map_type_args(hint) orelse return false;
+        const param_args = extract_map_type_args(param_type) orelse return false;
+        const hint_key = strip_type_namespace(hint_args.key);
+        const param_key = strip_type_namespace(param_args.key);
+        if (!names_match_by_simple_name(hint_key, param_key)) return false;
+        return self.element_type_hint_matches_param(hint_args.value, param_args.value);
+    }
+
+    fn element_type_hint_matches_param(
+        self: *Evaluator,
+        hint_elem_type: []const u8,
+        param_elem_type: []const u8,
+    ) bool {
+        const hint_elem = strip_type_namespace(hint_elem_type);
+        const param_elem = strip_type_namespace(param_elem_type);
+        if (names_match_by_simple_name(hint_elem, param_elem)) return true;
+        return std.ascii.eqlIgnoreCase(type_base_name(param_elem), "SObject") and
+            self.is_s_object_type_name(type_base_name(hint_elem));
+    }
+
+    fn init_instance_fields(
+        self: *Evaluator,
+        class_decl: *ast.ClassDecl,
+        instance: *types.ObjectInstance,
+    ) !void {
         // Set current_class so that unqualified static field references (e.g. BASE_URL)
         // resolve to ClassName.BASE_URL in the global environment.
         const saved_class = self.current_class;
@@ -20829,7 +20901,11 @@ pub const Evaluator = struct {
         return std.mem.eql(u8, callee, "super") or std.mem.eql(u8, callee, "this");
     }
 
-    fn find_matching_constructor(self: *Evaluator, class_decl: *ast.ClassDecl, args: []const Value) ?*ast.ConstructorDecl {
+    fn find_matching_constructor(
+        self: *Evaluator,
+        class_decl: *ast.ClassDecl,
+        args: []const Value,
+    ) ?*ast.ConstructorDecl {
         var candidates: [8]*ast.ConstructorDecl = undefined;
         var count: usize = 0;
         for (class_decl.members) |member| {
@@ -20853,9 +20929,15 @@ pub const Evaluator = struct {
                 if (i >= args.len) break;
                 const pt = param.type_ref.name;
                 const arg = args[i];
-                if (arg == .string and (std.ascii.eqlIgnoreCase(pt, "String") or std.ascii.eqlIgnoreCase(pt, "Id"))) {
+                if (arg == .string and
+                    (std.ascii.eqlIgnoreCase(pt, "String") or
+                        std.ascii.eqlIgnoreCase(pt, "Id")))
+                {
                     score += 2;
-                } else if (arg == .integer and (std.ascii.eqlIgnoreCase(pt, "Integer") or std.ascii.eqlIgnoreCase(pt, "int"))) {
+                } else if (arg == .integer and
+                    (std.ascii.eqlIgnoreCase(pt, "Integer") or
+                        std.ascii.eqlIgnoreCase(pt, "int")))
+                {
                     score += 2;
                 } else if (arg == .boolean and std.ascii.eqlIgnoreCase(pt, "Boolean")) {
                     score += 2;
@@ -20962,11 +21044,17 @@ pub const Evaluator = struct {
         return score;
     }
 
-    fn score_constructor_arg(self: *Evaluator, arg: Value, param: ast.Param, arg_hint: ?[]const u8) i32 {
+    fn score_constructor_arg(
+        self: *Evaluator,
+        arg: Value,
+        param: ast.Param,
+        arg_hint: ?[]const u8,
+    ) i32 {
         const pt = param.type_ref.name;
         var score: i32 = 0;
         if (arg_hint) |hint| {
-            const hint_score = self.overload_score_for_type_hint(hint, self.render_type_ref(param.type_ref));
+            const rendered_type = self.render_type_ref(param.type_ref);
+            const hint_score = self.overload_score_for_type_hint(hint, rendered_type);
             if (hint_score > 0) score += hint_score;
         }
         if (arg == .string and
@@ -21008,9 +21096,7 @@ pub const Evaluator = struct {
     }
 
     fn is_constructor_sobject_param(param_type: []const u8) bool {
-        return std.ascii.eqlIgnoreCase(param_type, "SObject") or
-            std.ascii.eqlIgnoreCase(param_type, "sObject") or
-            std.ascii.eqlIgnoreCase(param_type, "Sobject");
+        return std.ascii.eqlIgnoreCase(param_type, "SObject");
     }
 
     fn score_constructor_null_arg(param_type: []const u8) i32 {
@@ -21097,11 +21183,19 @@ pub const Evaluator = struct {
         return class_name;
     }
 
-    fn is_instance_field(_: *Evaluator, class_decl: *ast.ClassDecl, name: []const u8) bool {
+    fn is_instance_field(
+        _: *Evaluator,
+        class_decl: *ast.ClassDecl,
+        name: []const u8,
+    ) bool {
         for (class_decl.members) |member| {
             switch (member) {
                 .field_decl => |fd| {
-                    if (!fd.modifiers.is_static and std.ascii.eqlIgnoreCase(fd.name, name)) return true;
+                    if (!fd.modifiers.is_static and
+                        std.ascii.eqlIgnoreCase(fd.name, name))
+                    {
+                        return true;
+                    }
                 },
                 else => {},
             }
@@ -21114,7 +21208,11 @@ pub const Evaluator = struct {
         field_decl: *ast.FieldDecl,
     };
 
-    fn find_field_decl_with_owner(self: *Evaluator, class_name: []const u8, field_name: []const u8) ?FieldLookup {
+    fn find_field_decl_with_owner(
+        self: *Evaluator,
+        class_name: []const u8,
+        field_name: []const u8,
+    ) ?FieldLookup {
         var current = self.find_class(class_name);
         while (current) |cd| {
             for (cd.members) |member| {
@@ -21132,18 +21230,34 @@ pub const Evaluator = struct {
         return null;
     }
 
-    fn read_static_backing_value(self: *Evaluator, owner_name: []const u8, field_name: []const u8) Value {
+    fn read_static_backing_value(
+        self: *Evaluator,
+        owner_name: []const u8,
+        field_name: []const u8,
+    ) Value {
         self.ensure_static_init(owner_name);
-        const key = std.fmt.allocPrint(self.arena, "{s}.{s}", .{ owner_name, field_name }) catch return .null_val;
+        const key = std.fmt.allocPrint(
+            self.arena,
+            "{s}.{s}",
+            .{ owner_name, field_name },
+        ) catch return .null_val;
         if (self.global_env.get(key)) |v| return v;
         if (self.find_outer_class_name(owner_name)) |outer| {
-            const outer_key = std.fmt.allocPrint(self.arena, "{s}.{s}", .{ outer, field_name }) catch return .null_val;
+            const outer_key = std.fmt.allocPrint(
+                self.arena,
+                "{s}.{s}",
+                .{ outer, field_name },
+            ) catch return .null_val;
             if (self.global_env.get(outer_key)) |v| return v;
         }
         return .null_val;
     }
 
-    fn is_parent_instance_field(self: *Evaluator, class_decl: *ast.ClassDecl, name: []const u8) bool {
+    fn is_parent_instance_field(
+        self: *Evaluator,
+        class_decl: *ast.ClassDecl,
+        name: []const u8,
+    ) bool {
         if (class_decl.super_class) |sc| {
             if (self.find_class(sc.name)) |parent| {
                 if (self.is_instance_field(parent, name)) return true;
