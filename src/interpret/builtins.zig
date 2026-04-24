@@ -3802,52 +3802,152 @@ const ChildRelationshipSpec = struct {
 
 const standard_child_relationships = [_]ChildRelationshipSpec{
     .{ .parent = "Account", .child = "Contact", .fk = "AccountId", .relationship = "Contacts" },
-    .{ .parent = "Account", .child = "Opportunity", .fk = "AccountId", .relationship = "Opportunities" },
+    .{
+        .parent = "Account",
+        .child = "Opportunity",
+        .fk = "AccountId",
+        .relationship = "Opportunities",
+    },
     .{ .parent = "Account", .child = "Case", .fk = "AccountId", .relationship = "Cases" },
     .{ .parent = "Account", .child = "Contract", .fk = "AccountId", .relationship = "Contracts" },
     .{ .parent = "Account", .child = "Order", .fk = "AccountId", .relationship = "Orders" },
     .{ .parent = "Account", .child = "Asset", .fk = "AccountId", .relationship = "Assets" },
     .{ .parent = "Account", .child = "Event", .fk = "WhatId", .relationship = "Events" },
     .{ .parent = "Account", .child = "Task", .fk = "WhatId", .relationship = "Tasks" },
-    .{ .parent = "Account", .child = "AccountContactRelation", .fk = "AccountId", .relationship = "AccountContactRelations" },
+    .{
+        .parent = "Account",
+        .child = "AccountContactRelation",
+        .fk = "AccountId",
+        .relationship = "AccountContactRelations",
+    },
     .{ .parent = "Contact", .child = "Asset", .fk = "ContactId", .relationship = "Assets" },
     .{ .parent = "Contact", .child = "Case", .fk = "ContactId", .relationship = "Cases" },
     .{ .parent = "Contact", .child = "Event", .fk = "WhoId", .relationship = "Events" },
     .{ .parent = "Contact", .child = "Task", .fk = "WhoId", .relationship = "Tasks" },
-    .{ .parent = "Contact", .child = "CampaignMember", .fk = "ContactId", .relationship = "CampaignMembers" },
-    .{ .parent = "Contact", .child = "AccountContactRelation", .fk = "ContactId", .relationship = "AccountContactRelations" },
-    .{ .parent = "Lead", .child = "CampaignMember", .fk = "LeadId", .relationship = "CampaignMembers" },
+    .{
+        .parent = "Contact",
+        .child = "CampaignMember",
+        .fk = "ContactId",
+        .relationship = "CampaignMembers",
+    },
+    .{
+        .parent = "Contact",
+        .child = "AccountContactRelation",
+        .fk = "ContactId",
+        .relationship = "AccountContactRelations",
+    },
+    .{
+        .parent = "Lead",
+        .child = "CampaignMember",
+        .fk = "LeadId",
+        .relationship = "CampaignMembers",
+    },
     .{ .parent = "Lead", .child = "Event", .fk = "WhoId", .relationship = "Events" },
     .{ .parent = "Lead", .child = "Task", .fk = "WhoId", .relationship = "Tasks" },
-    .{ .parent = "Opportunity", .child = "OpportunityLineItem", .fk = "OpportunityId", .relationship = "OpportunityLineItems" },
-    .{ .parent = "Opportunity", .child = "OpportunityContactRole", .fk = "OpportunityId", .relationship = "OpportunityContactRoles" },
+    .{
+        .parent = "Opportunity",
+        .child = "OpportunityLineItem",
+        .fk = "OpportunityId",
+        .relationship = "OpportunityLineItems",
+    },
+    .{
+        .parent = "Opportunity",
+        .child = "OpportunityContactRole",
+        .fk = "OpportunityId",
+        .relationship = "OpportunityContactRoles",
+    },
     .{ .parent = "Opportunity", .child = "Event", .fk = "WhatId", .relationship = "Events" },
     .{ .parent = "Opportunity", .child = "Task", .fk = "WhatId", .relationship = "Tasks" },
     .{ .parent = "Opportunity", .child = "Quote", .fk = "OpportunityId", .relationship = "Quotes" },
-    .{ .parent = "Opportunity", .child = "OpportunityFieldHistory", .fk = "OpportunityId", .relationship = "Histories" },
-    .{ .parent = "Product2", .child = "OpportunityLineItem", .fk = "Product2Id", .relationship = "OpportunityLineItems" },
-    .{ .parent = "Product2", .child = "PricebookEntry", .fk = "Product2Id", .relationship = "PricebookEntries" },
-    .{ .parent = "PricebookEntry", .child = "OpportunityLineItem", .fk = "PricebookEntryId", .relationship = "OpportunityLineItems" },
-    .{ .parent = "Pricebook2", .child = "PricebookEntry", .fk = "Pricebook2Id", .relationship = "PricebookEntries" },
-    .{ .parent = "Quote", .child = "QuoteLineItem", .fk = "QuoteId", .relationship = "QuoteLineItems" },
-    .{ .parent = "Campaign", .child = "CampaignMember", .fk = "CampaignId", .relationship = "CampaignMembers" },
-    .{ .parent = "Campaign", .child = "Opportunity", .fk = "CampaignId", .relationship = "Opportunities" },
+    .{
+        .parent = "Opportunity",
+        .child = "OpportunityFieldHistory",
+        .fk = "OpportunityId",
+        .relationship = "Histories",
+    },
+    .{
+        .parent = "Product2",
+        .child = "OpportunityLineItem",
+        .fk = "Product2Id",
+        .relationship = "OpportunityLineItems",
+    },
+    .{
+        .parent = "Product2",
+        .child = "PricebookEntry",
+        .fk = "Product2Id",
+        .relationship = "PricebookEntries",
+    },
+    .{
+        .parent = "PricebookEntry",
+        .child = "OpportunityLineItem",
+        .fk = "PricebookEntryId",
+        .relationship = "OpportunityLineItems",
+    },
+    .{
+        .parent = "Pricebook2",
+        .child = "PricebookEntry",
+        .fk = "Pricebook2Id",
+        .relationship = "PricebookEntries",
+    },
+    .{
+        .parent = "Quote",
+        .child = "QuoteLineItem",
+        .fk = "QuoteId",
+        .relationship = "QuoteLineItems",
+    },
+    .{
+        .parent = "Campaign",
+        .child = "CampaignMember",
+        .fk = "CampaignId",
+        .relationship = "CampaignMembers",
+    },
+    .{
+        .parent = "Campaign",
+        .child = "Opportunity",
+        .fk = "CampaignId",
+        .relationship = "Opportunities",
+    },
     .{ .parent = "Case", .child = "CaseComment", .fk = "ParentId", .relationship = "CaseComments" },
-    .{ .parent = "Case", .child = "EmailMessage", .fk = "ParentId", .relationship = "EmailMessages" },
+    .{
+        .parent = "Case",
+        .child = "EmailMessage",
+        .fk = "ParentId",
+        .relationship = "EmailMessages",
+    },
     .{ .parent = "Case", .child = "Event", .fk = "WhatId", .relationship = "Events" },
     .{ .parent = "Case", .child = "Task", .fk = "WhatId", .relationship = "Tasks" },
     .{ .parent = "User", .child = "UserLogin", .fk = "UserId", .relationship = "UserLogins" },
     .{ .parent = "User", .child = "Event", .fk = "OwnerId", .relationship = "Events" },
     .{ .parent = "User", .child = "Task", .fk = "OwnerId", .relationship = "Tasks" },
-    .{ .parent = "Contract", .child = "ContractLineItem", .fk = "ContractId", .relationship = "ContractLineItems" },
-    .{ .parent = "Contract", .child = "Opportunity", .fk = "ContractId", .relationship = "Opportunities" },
+    .{
+        .parent = "Contract",
+        .child = "ContractLineItem",
+        .fk = "ContractId",
+        .relationship = "ContractLineItems",
+    },
+    .{
+        .parent = "Contract",
+        .child = "Opportunity",
+        .fk = "ContractId",
+        .relationship = "Opportunities",
+    },
     .{ .parent = "Contract", .child = "Order", .fk = "ContractId", .relationship = "Orders" },
     .{ .parent = "Order", .child = "OrderItem", .fk = "OrderId", .relationship = "OrderItems" },
-    .{ .parent = "Opportunity", .child = "ListEmail", .fk = "RelatedToId", .relationship = "ListEmails" },
+    .{
+        .parent = "Opportunity",
+        .child = "ListEmail",
+        .fk = "RelatedToId",
+        .relationship = "ListEmails",
+    },
     .{ .parent = "ListEmail", .child = "Task", .fk = "WhatId", .relationship = "Tasks" },
     .{ .parent = "Account", .child = "User", .fk = "AccountId", .relationship = "Users" },
     .{ .parent = "Account", .child = "Account", .fk = "ParentId", .relationship = "ChildAccounts" },
-    .{ .parent = "Opportunity", .child = "Opportunity", .fk = "ParentId", .relationship = "ChildOpportunities" },
+    .{
+        .parent = "Opportunity",
+        .child = "Opportunity",
+        .fk = "ParentId",
+        .relationship = "ChildOpportunities",
+    },
     .{ .parent = "Case", .child = "Case", .fk = "ParentId", .relationship = "ChildCases" },
 };
 
@@ -3891,7 +3991,9 @@ pub fn create_field_set_collection_value(
             field_set.* = .{ .class_name = "Schema.FieldSet" };
             try field_set.fields.put(arena, "name", Value{ .string = field_set_meta.name });
             try field_set.fields.put(arena, "label", Value{ .string = field_set_meta.label });
-            try field_set.fields.put(arena, "nameSpace", Value{ .string = field_set_meta.namespace });
+            try field_set.fields.put(arena, "nameSpace", Value{
+                .string = field_set_meta.namespace,
+            });
 
             const members = try arena.create(types.ListValue);
             members.* = .{};
@@ -3903,9 +4005,13 @@ pub fn create_field_set_collection_value(
                         meta.label orelse default_field_label(member_meta.field_path)
                     else
                         default_field_label(member_meta.field_path);
-                try member.fields.put(arena, "fieldPath", Value{ .string = member_meta.field_path });
+                try member.fields.put(arena, "fieldPath", Value{
+                    .string = member_meta.field_path,
+                });
                 try member.fields.put(arena, "label", Value{ .string = member_label });
-                try member.fields.put(arena, "required", Value{ .boolean = member_meta.is_required });
+                try member.fields.put(arena, "required", Value{
+                    .boolean = member_meta.is_required,
+                });
                 try member.fields.put(
                     arena,
                     "sObjectField",
@@ -3918,7 +4024,9 @@ pub fn create_field_set_collection_value(
                 try members.items.append(arena, Value{ .object = member });
             }
             try field_set.fields.put(arena, "fields", Value{ .list = members });
-            try map.entries.put(arena, field_set_meta.qualified_name, Value{ .object = field_set });
+            try map.entries.put(arena, field_set_meta.qualified_name, Value{
+                .object = field_set,
+            });
         }
     }
 
@@ -4008,25 +4116,44 @@ fn create_describe_result(ctx: *BuiltinContext, obj_name: []const u8) !Value {
         try default_describe_label_plural(ctx.arena, obj_name);
     try desc.fields.put(ctx.arena, "label", Value{ .string = entity_label });
     try desc.fields.put(ctx.arena, "labelPlural", Value{ .string = entity_label_plural });
-    try desc.fields.put(ctx.arena, "fieldSets", try create_field_set_collection_value(ctx.arena, ctx.eval, obj_name));
+    try desc.fields.put(
+        ctx.arena,
+        "fieldSets",
+        try create_field_set_collection_value(ctx.arena, ctx.eval, obj_name),
+    );
 
     // isCustom: custom objects/events/metadata/big objects use __x-style suffixes
     try desc.fields.put(ctx.arena, "isCustom", Value{ .boolean = is_custom });
     // isCustomSetting: Hierarchy/List custom settings are declared in object-meta.xml via <customSettingsType>.
     // We detect them by scanning object-meta.xml files at load time into custom_setting_types.
-    const is_custom_setting = std.mem.endsWith(u8, obj_name, "__c") and ctx.eval.custom_setting_types.get(obj_name) != null;
+    const is_custom_setting =
+        std.mem.endsWith(u8, obj_name, "__c") and
+        ctx.eval.custom_setting_types.get(obj_name) != null;
     try desc.fields.put(ctx.arena, "isCustomSetting", Value{ .boolean = is_custom_setting });
 
     const record_type_artifacts = try build_record_type_info_artifacts(ctx, obj_name);
     try desc.fields.put(ctx.arena, "recordTypeInfos", record_type_artifacts.list);
     try desc.fields.put(ctx.arena, "recordTypeInfosById", record_type_artifacts.by_id);
     try desc.fields.put(ctx.arena, "recordTypeInfosByName", record_type_artifacts.by_name);
-    try desc.fields.put(ctx.arena, "recordTypeInfosByDeveloperName", record_type_artifacts.by_dev_name);
+    try desc.fields.put(
+        ctx.arena,
+        "recordTypeInfosByDeveloperName",
+        record_type_artifacts.by_dev_name,
+    );
 
     return Value{ .object = desc };
 }
 
-fn create_record_type_info(ctx: *BuiltinContext, name: []const u8, dev_name: []const u8, rt_id: []const u8, is_master: bool, is_active: bool, is_available: bool, is_default: bool) !Value {
+fn create_record_type_info(
+    ctx: *BuiltinContext,
+    name: []const u8,
+    dev_name: []const u8,
+    rt_id: []const u8,
+    is_master: bool,
+    is_active: bool,
+    is_available: bool,
+    is_default: bool,
+) !Value {
     const rti = try ctx.arena.create(types.ObjectInstance);
     rti.* = .{ .class_name = "Schema.RecordTypeInfo" };
     try rti.fields.put(ctx.arena, "name", Value{ .string = name });
@@ -4046,7 +4173,10 @@ const RecordTypeInfoArtifacts = struct {
     by_dev_name: Value,
 };
 
-fn build_record_type_info_artifacts(ctx: *BuiltinContext, obj_name: []const u8) !RecordTypeInfoArtifacts {
+fn build_record_type_info_artifacts(
+    ctx: *BuiltinContext,
+    obj_name: []const u8,
+) !RecordTypeInfoArtifacts {
     const rt_list = try ctx.arena.create(types.ListValue);
     rt_list.* = .{};
     const rt_by_id_map = try ctx.arena.create(types.MapValue);
@@ -4069,7 +4199,16 @@ fn build_record_type_info_artifacts(ctx: *BuiltinContext, obj_name: []const u8) 
     }
 
     const master_rt_id = try std.fmt.allocPrint(ctx.arena, "0120000000000{d:0>2}AAA", .{obj_idx});
-    const master_rt = try create_record_type_info(ctx, "Master", "Master", master_rt_id, true, true, true, true);
+    const master_rt = try create_record_type_info(
+        ctx,
+        "Master",
+        "Master",
+        master_rt_id,
+        true,
+        true,
+        true,
+        true,
+    );
     try rt_list.items.append(ctx.arena, master_rt);
     try rt_by_id_map.entries.put(ctx.arena, master_rt_id, master_rt);
     try rt_by_name_map.entries.put(ctx.arena, "Master", master_rt);
@@ -4078,7 +4217,16 @@ fn build_record_type_info_artifacts(ctx: *BuiltinContext, obj_name: []const u8) 
     try rt_by_dev_name_map.entries.put(ctx.arena, "master", master_rt);
 
     const def_rt_id = try std.fmt.allocPrint(ctx.arena, "0120000000001{d:0>2}AAA", .{obj_idx});
-    const default_rt = try create_record_type_info(ctx, "Default", "Default", def_rt_id, false, true, true, false);
+    const default_rt = try create_record_type_info(
+        ctx,
+        "Default",
+        "Default",
+        def_rt_id,
+        false,
+        true,
+        true,
+        false,
+    );
     try rt_list.items.append(ctx.arena, default_rt);
     try rt_by_id_map.entries.put(ctx.arena, def_rt_id, default_rt);
     try rt_by_name_map.entries.put(ctx.arena, "Default", default_rt);
@@ -4094,11 +4242,19 @@ fn build_record_type_info_artifacts(ctx: *BuiltinContext, obj_name: []const u8) 
     };
 }
 
-pub fn create_field_describe_result(ctx: *BuiltinContext, object_type: []const u8, field_name: []const u8) !Value {
+pub fn create_field_describe_result(
+    ctx: *BuiltinContext,
+    object_type: []const u8,
+    field_name: []const u8,
+) !Value {
     return create_field_describe_result_with_type(ctx, object_type, field_name, null);
 }
 
-pub fn sobject_field_exists(ctx: *BuiltinContext, sob: *types.SObject, field_name: []const u8) bool {
+pub fn sobject_field_exists(
+    ctx: *BuiltinContext,
+    sob: *types.SObject,
+    field_name: []const u8,
+) bool {
     for (sob.fields.keys()) |known_field| {
         if (std.ascii.eqlIgnoreCase(known_field, field_name)) return true;
     }
@@ -4121,9 +4277,18 @@ pub fn sobject_field_exists(ctx: *BuiltinContext, sob: *types.SObject, field_nam
     return false;
 }
 
-fn add_describe_field_if_missing(ctx: *BuiltinContext, fields_kv: *types.MapValue, object_type: []const u8, field_name: []const u8) !void {
+fn add_describe_field_if_missing(
+    ctx: *BuiltinContext,
+    fields_kv: *types.MapValue,
+    object_type: []const u8,
+    field_name: []const u8,
+) !void {
     if (fields_kv.entries.contains(field_name)) return;
-    try fields_kv.entries.put(ctx.arena, field_name, try create_s_object_field_token_value(ctx.arena, object_type, field_name));
+    try fields_kv.entries.put(
+        ctx.arena,
+        field_name,
+        try create_s_object_field_token_value(ctx.arena, object_type, field_name),
+    );
 }
 
 const known_describe_field_sets = [_]struct { object: []const u8, fields: []const []const u8 }{
@@ -4205,7 +4370,12 @@ fn add_describe_field_names(
     }
 }
 
-fn add_describe_fields_from_record(ctx: *BuiltinContext, fields_kv: *types.MapValue, object_type: []const u8, record: Value) !void {
+fn add_describe_fields_from_record(
+    ctx: *BuiltinContext,
+    fields_kv: *types.MapValue,
+    object_type: []const u8,
+    record: Value,
+) !void {
     if (record != .sobject or !std.ascii.eqlIgnoreCase(record.sobject.type_name, object_type)) return;
     for (record.sobject.fields.keys(), record.sobject.fields.values()) |field_name, field_value| {
         if (std.mem.indexOfScalar(u8, field_name, '.') != null) continue;
