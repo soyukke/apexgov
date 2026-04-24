@@ -18275,17 +18275,6 @@ pub const Evaluator = struct {
         target: Value,
         external_id_field: ?[]const u8,
     ) !Value {
-        const appendFailure = struct {
-            fn build(
-                self_eval: *Evaluator,
-                cls: []const u8,
-                item: Value,
-                op_kind: ast.DmlOp,
-            ) !Value {
-                return self_eval.build_failed_dml_result(cls, item, op_kind == .upsert);
-            }
-        };
-
         switch (target) {
             .null_val, .void_val => return self.create_empty_result_list_value(),
             .sobject => {
@@ -18299,136 +18288,79 @@ pub const Evaluator = struct {
                 );
             },
             .list => |records| {
-                const items = records.items.items;
-                if (items.len == 0) return self.create_empty_result_list_value();
-
-                self.limits_dml += 1;
-                self.limits_dml_rows += @intCast(items.len);
-
-                const list = try self.arena.create(types.ListValue);
-                list.* = .{};
-                for (items) |item| {
-                    if (item != .sobject) {
-                        try list.items.append(self.arena, try appendFailure.build(self, result_class, item, op));
-                        continue;
-                    }
-                    const was_created = op == .upsert and self.will_upsert_create_record(item.sobject, external_id_field);
-                    const result = switch (op) {
-                        .insert => blk: {
-                            self.execute_dml_with_external_id_internal(.insert, item, null, false, null) catch {
-                                const failed = try appendFailure.build(self, result_class, item, op);
-                                self.pending_exception = null;
-                                break :blk failed;
-                            };
-                            break :blk try self.create_dml_result_value(result_class, true, self.sobject_id_for_result(item.sobject), null);
-                        },
-                        .update => blk: {
-                            self.execute_dml_with_external_id_internal(.update, item, null, false, null) catch {
-                                const failed = try appendFailure.build(self, result_class, item, op);
-                                self.pending_exception = null;
-                                break :blk failed;
-                            };
-                            break :blk try self.create_dml_result_value(result_class, true, self.sobject_id_for_result(item.sobject), null);
-                        },
-                        .upsert => blk: {
-                            self.execute_dml_with_external_id_internal(.upsert, item, external_id_field, false, null) catch {
-                                const failed = try appendFailure.build(self, result_class, item, op);
-                                self.pending_exception = null;
-                                break :blk failed;
-                            };
-                            break :blk try self.create_dml_result_value(result_class, true, self.sobject_id_for_result(item.sobject), was_created);
-                        },
-                        .delete => blk: {
-                            self.execute_dml_with_external_id_internal(.delete, item, null, false, null) catch {
-                                const failed = try appendFailure.build(self, result_class, item, op);
-                                self.pending_exception = null;
-                                break :blk failed;
-                            };
-                            break :blk try self.create_dml_result_value(result_class, true, self.sobject_id_for_result(item.sobject), null);
-                        },
-                        .undelete => blk: {
-                            self.execute_dml_with_external_id_internal(.undelete, item, null, false, null) catch {
-                                const failed = try appendFailure.build(self, result_class, item, op);
-                                self.pending_exception = null;
-                                break :blk failed;
-                            };
-                            break :blk try self.create_dml_result_value(result_class, true, self.sobject_id_for_result(item.sobject), null);
-                        },
-                        else => Value.null_val,
-                    };
-                    try list.items.append(self.arena, result);
-                }
-                return Value{ .list = list };
+                return try self.execute_partial_dml_items(
+                    op,
+                    result_class,
+                    records.items.items,
+                    external_id_field,
+                );
             },
             .set => |records| {
-                const items = records.entries.values();
-                if (items.len == 0) return self.create_empty_result_list_value();
-
-                self.limits_dml += 1;
-                self.limits_dml_rows += @intCast(items.len);
-
-                const list = try self.arena.create(types.ListValue);
-                list.* = .{};
-                for (items) |item| {
-                    if (item != .sobject) {
-                        try list.items.append(self.arena, try appendFailure.build(self, result_class, item, op));
-                        continue;
-                    }
-                    const was_created = op == .upsert and self.will_upsert_create_record(item.sobject, external_id_field);
-                    const result = switch (op) {
-                        .insert => blk: {
-                            self.execute_dml_with_external_id_internal(.insert, item, null, false, null) catch {
-                                const failed = try appendFailure.build(self, result_class, item, op);
-                                self.pending_exception = null;
-                                break :blk failed;
-                            };
-                            break :blk try self.create_dml_result_value(result_class, true, self.sobject_id_for_result(item.sobject), null);
-                        },
-                        .update => blk: {
-                            self.execute_dml_with_external_id_internal(.update, item, null, false, null) catch {
-                                const failed = try appendFailure.build(self, result_class, item, op);
-                                self.pending_exception = null;
-                                break :blk failed;
-                            };
-                            break :blk try self.create_dml_result_value(result_class, true, self.sobject_id_for_result(item.sobject), null);
-                        },
-                        .upsert => blk: {
-                            self.execute_dml_with_external_id_internal(.upsert, item, external_id_field, false, null) catch {
-                                const failed = try appendFailure.build(self, result_class, item, op);
-                                self.pending_exception = null;
-                                break :blk failed;
-                            };
-                            break :blk try self.create_dml_result_value(result_class, true, self.sobject_id_for_result(item.sobject), was_created);
-                        },
-                        .delete => blk: {
-                            self.execute_dml_with_external_id_internal(.delete, item, null, false, null) catch {
-                                const failed = try appendFailure.build(self, result_class, item, op);
-                                self.pending_exception = null;
-                                break :blk failed;
-                            };
-                            break :blk try self.create_dml_result_value(result_class, true, self.sobject_id_for_result(item.sobject), null);
-                        },
-                        .undelete => blk: {
-                            self.execute_dml_with_external_id_internal(.undelete, item, null, false, null) catch {
-                                const failed = try appendFailure.build(self, result_class, item, op);
-                                self.pending_exception = null;
-                                break :blk failed;
-                            };
-                            break :blk try self.create_dml_result_value(result_class, true, self.sobject_id_for_result(item.sobject), null);
-                        },
-                        else => Value.null_val,
-                    };
-                    try list.items.append(self.arena, result);
-                }
-                return Value{ .list = list };
+                return try self.execute_partial_dml_items(
+                    op,
+                    result_class,
+                    records.entries.values(),
+                    external_id_field,
+                );
             },
             else => {
                 const list = try self.arena.create(types.ListValue);
                 list.* = .{};
-                try list.items.append(self.arena, try appendFailure.build(self, result_class, target, op));
+                try list.items.append(
+                    self.arena,
+                    try self.build_failed_dml_result(result_class, target, op == .upsert),
+                );
                 return Value{ .list = list };
             },
         }
+    }
+
+    fn execute_partial_dml_items(
+        self: *Evaluator,
+        op: ast.DmlOp,
+        result_class: []const u8,
+        items: []const Value,
+        external_id_field: ?[]const u8,
+    ) !Value {
+        if (items.len == 0) return self.create_empty_result_list_value();
+
+        self.limits_dml += 1;
+        self.limits_dml_rows += @intCast(items.len);
+
+        const list = try self.arena.create(types.ListValue);
+        list.* = .{};
+        for (items) |item| {
+            const result = try self.execute_partial_dml_item(
+                op,
+                result_class,
+                item,
+                external_id_field,
+            );
+            try list.items.append(self.arena, result);
+        }
+        return Value{ .list = list };
+    }
+
+    fn execute_partial_dml_item(
+        self: *Evaluator,
+        op: ast.DmlOp,
+        result_class: []const u8,
+        item: Value,
+        external_id_field: ?[]const u8,
+    ) !Value {
+        if (item != .sobject) {
+            return try self.build_failed_dml_result(result_class, item, op == .upsert);
+        }
+        return self.execute_partial_single_sobject_dml(
+            op,
+            result_class,
+            item,
+            external_id_field,
+        ) catch {
+            const failed = try self.build_failed_dml_result(result_class, item, op == .upsert);
+            self.pending_exception = null;
+            return failed;
+        };
     }
 
     fn execute_partial_single_sobject_dml(
