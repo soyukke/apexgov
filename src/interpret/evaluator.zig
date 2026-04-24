@@ -8814,9 +8814,17 @@ pub const Evaluator = struct {
 
                 has_matching_rollups = true;
                 const fk_field = summary_fk[dot_idx + 1 ..];
-                try self.collect_summary_impact_ids_from_records(&impacted_ids, new_records, fk_field);
+                try self.collect_summary_impact_ids_from_records(
+                    &impacted_ids,
+                    new_records,
+                    fk_field,
+                );
                 if (old_records) |previous_records| {
-                    try self.collect_summary_impact_ids_from_records(&impacted_ids, previous_records.items, fk_field);
+                    try self.collect_summary_impact_ids_from_records(
+                        &impacted_ids,
+                        previous_records.items,
+                        fk_field,
+                    );
                 }
             }
 
@@ -8945,7 +8953,10 @@ pub const Evaluator = struct {
                     false,
                 .null_val => std.ascii.eqlIgnoreCase(filter.value, "null"),
                 else => {
-                    const actual = utils.coerce_to_string(field_val.?, self.arena) catch return false;
+                    const actual = utils.coerce_to_string(
+                        field_val.?,
+                        self.arena,
+                    ) catch return false;
                     return std.ascii.eqlIgnoreCase(actual, filter.value);
                 },
             };
@@ -9262,7 +9273,11 @@ pub const Evaluator = struct {
         return aggregate orelse Value.null_val;
     }
 
-    fn compute_formula_field_value(self: *Evaluator, sob: *types.SObject, metadata: FieldMetadata) ?Value {
+    fn compute_formula_field_value(
+        self: *Evaluator,
+        sob: *types.SObject,
+        metadata: FieldMetadata,
+    ) ?Value {
         const formula = metadata.formula orelse return null;
         const trimmed = std.mem.trim(u8, formula, " \t\n\r");
         if (trimmed.len == 0) return null;
@@ -9408,7 +9423,9 @@ pub const Evaluator = struct {
                 if (self.resolve_static_field_value_on_class(this_cn, name)) |val| return val;
                 if (self.find_class(this_cn)) |cd| {
                     if (cd.super_class) |sc| {
-                        if (self.resolve_static_field_value_on_class(sc.name, name)) |val| return val;
+                        if (self.resolve_static_field_value_on_class(sc.name, name)) |val| {
+                            return val;
+                        }
                     }
                 }
                 if (self.resolve_outer_static_field(this_cn, name)) |val| return val;
@@ -9624,11 +9641,17 @@ pub const Evaluator = struct {
                     for (scd.members) |m| {
                         switch (m) {
                             .field_decl => |pfd| {
-                                if (std.ascii.eqlIgnoreCase(pfd.name, id_name) and pfd.getter_body != null) {
+                                if (std.ascii.eqlIgnoreCase(pfd.name, id_name) and
+                                    pfd.getter_body != null)
+                                {
                                     const this_expr_node = try self.arena.create(ast.Expr);
                                     this_expr_node.* = .this_expr;
                                     const fa_node = try self.arena.create(ast.FieldAccess);
-                                    fa_node.* = .{ .object = this_expr_node, .field = id_name, .null_safe = false };
+                                    fa_node.* = .{
+                                        .object = this_expr_node,
+                                        .field = id_name,
+                                        .null_safe = false,
+                                    };
                                     const fa_expr = try self.arena.create(ast.Expr);
                                     fa_expr.* = .{ .field_access = fa_node };
                                     return try self.eval_expr(fa_expr, current_env);
@@ -9689,7 +9712,9 @@ pub const Evaluator = struct {
             if (self.resolve_static_field_value_on_class(cc, id_name)) |val| return val;
             if (self.find_class(cc)) |cd| {
                 if (cd.super_class) |sc| {
-                    if (self.resolve_static_field_value_on_class(sc.name, id_name)) |val| return val;
+                    if (self.resolve_static_field_value_on_class(sc.name, id_name)) |val| {
+                        return val;
+                    }
                 }
             }
             if (self.resolve_outer_static_field(cc, id_name)) |val| return val;
@@ -9787,9 +9812,15 @@ pub const Evaluator = struct {
         self.cast_type_hints = call_type_hints.items;
         defer self.cast_type_hints = prev_hints;
 
-        if (try self.eval_constructor_call_expr(call, args.items, current_env)) |result| return result;
-        if (try self.eval_this_instance_call_expr(call, args.items, current_env)) |result| return result;
-        if (try self.eval_static_or_loaded_call_expr(call.callee, args.items)) |result| return result;
+        if (try self.eval_constructor_call_expr(call, args.items, current_env)) |result| {
+            return result;
+        }
+        if (try self.eval_this_instance_call_expr(call, args.items, current_env)) |result| {
+            return result;
+        }
+        if (try self.eval_static_or_loaded_call_expr(call.callee, args.items)) |result| {
+            return result;
+        }
         if (current_env.get("this")) |this_val| {
             if (this_val == .object or this_val == .sobject or this_val == .string or
                 this_val == .list or this_val == .map or this_val == .set)
@@ -9827,7 +9858,10 @@ pub const Evaluator = struct {
         if (!std.mem.eql(u8, call.callee, "this")) return null;
         if (current_env.get("this")) |this_val| {
             if (this_val == .object) {
-                const ctor_class_name = if (self.current_constructor_class) |cc| cc else this_val.object.class_name;
+                const ctor_class_name = if (self.current_constructor_class) |cc|
+                    cc
+                else
+                    this_val.object.class_name;
                 if (self.find_class(ctor_class_name)) |cd| {
                     try self.run_constructor(cd, this_val.object, args);
                 }
@@ -9859,7 +9893,12 @@ pub const Evaluator = struct {
         for (this_val.object.fields.values()[0..n_snap], 0..) |v, fi| {
             pre_fields[fi] = v;
         }
-        const result = try self.call_instance_method(dispatch_decl, this_val.object, call.callee, args);
+        const result = try self.call_instance_method(
+            dispatch_decl,
+            this_val.object,
+            call.callee,
+            args,
+        );
         try self.sync_instance_call_fields(current_env, this_val.object, pre_fields[0..n_snap]);
         return result;
     }
@@ -9875,7 +9914,10 @@ pub const Evaluator = struct {
                 const pre = pre_fields[fi];
                 const changed = switch (fv) {
                     .null_val => pre != .null_val,
-                    .string => |s| if (pre == .string) s.ptr != pre.string.ptr or s.len != pre.string.len else true,
+                    .string => |s| if (pre == .string)
+                        s.ptr != pre.string.ptr or s.len != pre.string.len
+                    else
+                        true,
                     .integer => |i| if (pre == .integer) i != pre.integer else true,
                     .boolean => |b| if (pre == .boolean) b != pre.boolean else true,
                     else => true,
@@ -9919,7 +9961,11 @@ pub const Evaluator = struct {
         return null;
     }
 
-    fn eval_field_access_expr(self: *Evaluator, fa: *ast.FieldAccess, current_env: *Env) anyerror!Value {
+    fn eval_field_access_expr(
+        self: *Evaluator,
+        fa: *ast.FieldAccess,
+        current_env: *Env,
+    ) anyerror!Value {
         if (try self.eval_schema_field_access_expr(fa)) |value| return value;
         if (try self.eval_nested_static_field_access_expr(fa)) |value| return value;
         if (try self.eval_null_safe_field_access_expr(fa, current_env)) |value| return value;
@@ -9928,7 +9974,9 @@ pub const Evaluator = struct {
     }
 
     fn eval_schema_field_access_expr(self: *Evaluator, fa: *ast.FieldAccess) !?Value {
-        if (!(fa.object.* == .identifier and std.mem.startsWith(u8, fa.object.identifier.name, "Schema."))) {
+        if (!(fa.object.* == .identifier and
+            std.mem.startsWith(u8, fa.object.identifier.name, "Schema.")))
+        {
             return null;
         }
         const schema_name = fa.object.identifier.name["Schema.".len..];
@@ -9941,7 +9989,9 @@ pub const Evaluator = struct {
         if (std.ascii.eqlIgnoreCase(fa.field, "SObjectType")) {
             return try self.make_schema_sobject_type_object(schema_name);
         }
-        if (self.is_s_object_type_name(schema_name) and !std.ascii.eqlIgnoreCase(fa.field, "class")) {
+        if (self.is_s_object_type_name(schema_name) and
+            !std.ascii.eqlIgnoreCase(fa.field, "class"))
+        {
             return try self.make_s_object_field_token(schema_name, fa.field);
         }
         return null;
@@ -9956,7 +10006,11 @@ pub const Evaluator = struct {
         self.ensure_static_init(outer_name);
         const inner_fq = try std.fmt.allocPrint(self.arena, "{s}.{s}", .{ outer_name, inner_name });
         self.ensure_static_init(inner_fq);
-        const fq_key = try std.fmt.allocPrint(self.arena, "{s}.{s}.{s}", .{ outer_name, inner_name, fa.field });
+        const fq_key = try std.fmt.allocPrint(
+            self.arena,
+            "{s}.{s}.{s}",
+            .{ outer_name, inner_name, fa.field },
+        );
         if (self.global_env.get(fq_key)) |v| return v;
         if (self.find_class(outer_name)) |cd| {
             for (cd.members) |member| {
@@ -9978,7 +10032,9 @@ pub const Evaluator = struct {
         {
             return Value{ .string = fa.field };
         }
-        if (std.ascii.eqlIgnoreCase(outer_name, "Schema") and is_known_schema_enum_type(inner_name)) {
+        if (std.ascii.eqlIgnoreCase(outer_name, "Schema") and
+            is_known_schema_enum_type(inner_name))
+        {
             return Value{ .string = fa.field };
         }
         if (std.ascii.eqlIgnoreCase(outer_name, "Schema") and
@@ -10018,7 +10074,11 @@ pub const Evaluator = struct {
         return try self.eval_field_access(fa, obj, current_env);
     }
 
-    fn eval_index_access_expr(self: *Evaluator, ia: *ast.IndexAccess, current_env: *Env) anyerror!Value {
+    fn eval_index_access_expr(
+        self: *Evaluator,
+        ia: *ast.IndexAccess,
+        current_env: *Env,
+    ) anyerror!Value {
         const obj = try self.eval_expr(ia.object, current_env);
         const idx = try self.eval_expr(ia.index, current_env);
         if (obj == .list and idx == .integer) {
@@ -10031,7 +10091,11 @@ pub const Evaluator = struct {
             try exc.fields.put(
                 self.arena,
                 "message",
-                Value{ .string = try std.fmt.allocPrint(self.arena, "List index out of bounds: {d}", .{idx.integer}) },
+                Value{ .string = try std.fmt.allocPrint(
+                    self.arena,
+                    "List index out of bounds: {d}",
+                    .{idx.integer},
+                ) },
             );
             self.pending_exception = Value{ .object = exc };
             return error.ApexException;
@@ -10042,7 +10106,11 @@ pub const Evaluator = struct {
         return Value.null_val;
     }
 
-    fn eval_new_expr_with_trace(self: *Evaluator, ne: *ast.NewExpr, current_env: *Env) anyerror!Value {
+    fn eval_new_expr_with_trace(
+        self: *Evaluator,
+        ne: *ast.NewExpr,
+        current_env: *Env,
+    ) anyerror!Value {
         if (ne.loc.line > 0) {
             self.current_call_line = ne.loc.line;
             if (self.call_stack.items.len > 0)
@@ -10054,7 +10122,11 @@ pub const Evaluator = struct {
                 const line = if (ne.loc.line > 0) ne.loc.line else 1;
                 const trace = try self.build_stack_trace_string();
                 try val.object.fields.put(self.arena, "stackTraceString", Value{ .string = trace });
-                try val.object.fields.put(self.arena, "lineNumber", Value{ .integer = @intCast(line) });
+                try val.object.fields.put(
+                    self.arena,
+                    "lineNumber",
+                    Value{ .integer = @intCast(line) },
+                );
             }
         }
         return val;
@@ -10066,8 +10138,16 @@ pub const Evaluator = struct {
         return self.eval_object_cast_expr(val, ce.target_type.name);
     }
 
-    fn raise_type_exception(self: *Evaluator, src_name: []const u8, target: []const u8) anyerror!Value {
-        const msg = try std.fmt.allocPrint(self.arena, "Invalid conversion from runtime type {s} to {s}", .{ src_name, target });
+    fn raise_type_exception(
+        self: *Evaluator,
+        src_name: []const u8,
+        target: []const u8,
+    ) anyerror!Value {
+        const msg = try std.fmt.allocPrint(
+            self.arena,
+            "Invalid conversion from runtime type {s} to {s}",
+            .{ src_name, target },
+        );
         const exc = try self.arena.create(types.ObjectInstance);
         exc.* = .{ .class_name = "System.TypeException" };
         try exc.fields.put(self.arena, "message", Value{ .string = msg });
@@ -10111,7 +10191,9 @@ pub const Evaluator = struct {
         {
             return null;
         }
-        if (std.ascii.eqlIgnoreCase(src_name, "Date") and std.ascii.eqlIgnoreCase(target, "DateTime")) {
+        if (std.ascii.eqlIgnoreCase(src_name, "Date") and
+            std.ascii.eqlIgnoreCase(target, "DateTime"))
+        {
             if (val.object.fields.get("value")) |v| {
                 if (v == .string) {
                     const dt_str = try std.fmt.allocPrint(self.arena, "{s}T00:00:00Z", .{v.string});
@@ -10139,7 +10221,11 @@ pub const Evaluator = struct {
             self.object_cast_matches_target_hierarchy(src_name, target);
     }
 
-    fn object_cast_matches_source_hierarchy(self: *Evaluator, src_name: []const u8, target: []const u8) bool {
+    fn object_cast_matches_source_hierarchy(
+        self: *Evaluator,
+        src_name: []const u8,
+        target: []const u8,
+    ) bool {
         const src_cd = self.find_class(src_name) orelse return false;
         var cur: ?*ast.ClassDecl = src_cd;
         while (cur) |cd| {
@@ -10161,7 +10247,11 @@ pub const Evaluator = struct {
         return false;
     }
 
-    fn object_cast_matches_target_hierarchy(self: *Evaluator, src_name: []const u8, target: []const u8) bool {
+    fn object_cast_matches_target_hierarchy(
+        self: *Evaluator,
+        src_name: []const u8,
+        target: []const u8,
+    ) bool {
         const tgt_cd = self.find_class(target) orelse return false;
         var cur: ?*ast.ClassDecl = tgt_cd;
         while (cur) |cd| {
@@ -10186,18 +10276,29 @@ pub const Evaluator = struct {
             {
                 return Value{ .boolean = true };
             }
-            return Value{ .boolean = std.ascii.eqlIgnoreCase(val.sobject.type_name, ie.type_name.name) };
+            return Value{
+                .boolean = std.ascii.eqlIgnoreCase(val.sobject.type_name, ie.type_name.name),
+            };
         }
-        if (val == .object) return self.eval_object_instanceof_expr(val.object.class_name, ie.type_name.name);
+        if (val == .object) {
+            return self.eval_object_instanceof_expr(val.object.class_name, ie.type_name.name);
+        }
         if (val == .list) return self.eval_list_instanceof_expr(val.list, ie.type_name);
-        if (val == .map) return Value{ .boolean = std.ascii.eqlIgnoreCase(ie.type_name.name, "Map") };
+        if (val == .map) {
+            return Value{ .boolean = std.ascii.eqlIgnoreCase(ie.type_name.name, "Map") };
+        }
         if (val == .set) {
             const tn = ie.type_name.name;
             const tn_base = if (std.mem.lastIndexOfScalar(u8, tn, '.')) |di| tn[di + 1 ..] else tn;
-            return Value{ .boolean = std.ascii.eqlIgnoreCase(tn, "Set") or std.ascii.eqlIgnoreCase(tn_base, "Iterable") };
+            return Value{
+                .boolean = std.ascii.eqlIgnoreCase(tn, "Set") or
+                    std.ascii.eqlIgnoreCase(tn_base, "Iterable"),
+            };
         }
         if (val == .string) {
-            if (std.ascii.eqlIgnoreCase(ie.type_name.name, "String")) return Value{ .boolean = true };
+            if (std.ascii.eqlIgnoreCase(ie.type_name.name, "String")) {
+                return Value{ .boolean = true };
+            }
             if (std.ascii.eqlIgnoreCase(ie.type_name.name, "Id")) {
                 return Value{ .boolean = is_salesforce_id_string(val.string) };
             }
@@ -10206,7 +10307,9 @@ pub const Evaluator = struct {
         if (val == .integer or val == .long or val == .double) {
             return Value{ .boolean = instanceof_matches_primitive(val, ie.type_name.name) };
         }
-        if (val == .boolean) return Value{ .boolean = std.ascii.eqlIgnoreCase(ie.type_name.name, "Boolean") };
+        if (val == .boolean) {
+            return Value{ .boolean = std.ascii.eqlIgnoreCase(ie.type_name.name, "Boolean") };
+        }
         return Value{ .boolean = false };
     }
 
@@ -10230,7 +10333,9 @@ pub const Evaluator = struct {
             var cur: ?*ast.ClassDecl = cd;
             while (cur) |ccd| {
                 for (ccd.interfaces) |iface| {
-                    if (std.ascii.eqlIgnoreCase(iface.name, type_name)) return Value{ .boolean = true };
+                    if (std.ascii.eqlIgnoreCase(iface.name, type_name)) {
+                        return Value{ .boolean = true };
+                    }
                     if (std.mem.lastIndexOfScalar(u8, iface.name, '.')) |dot_pos| {
                         if (std.ascii.eqlIgnoreCase(iface.name[dot_pos + 1 ..], type_name)) {
                             return Value{ .boolean = true };
@@ -10238,18 +10343,26 @@ pub const Evaluator = struct {
                     }
                 }
                 if (ccd.super_class) |sc| {
-                    if (std.ascii.eqlIgnoreCase(sc.name, type_name)) return Value{ .boolean = true };
+                    if (std.ascii.eqlIgnoreCase(sc.name, type_name)) {
+                        return Value{ .boolean = true };
+                    }
                     cur = self.find_class(sc.name);
                 } else break;
             }
         }
-        if (std.mem.endsWith(u8, type_name, "Exception") and std.mem.endsWith(u8, class_name, "Exception")) {
+        if (std.mem.endsWith(u8, type_name, "Exception") and
+            std.mem.endsWith(u8, class_name, "Exception"))
+        {
             return Value{ .boolean = true };
         }
         return Value{ .boolean = false };
     }
 
-    fn eval_list_instanceof_expr(self: *Evaluator, list: *types.ListValue, type_ref: types.TypeRef) Value {
+    fn eval_list_instanceof_expr(
+        self: *Evaluator,
+        list: *types.ListValue,
+        type_ref: types.TypeRef,
+    ) Value {
         const tn = type_ref.name;
         const tn_base = blk: {
             if (std.mem.lastIndexOfScalar(u8, tn, '.')) |di| break :blk tn[di + 1 ..];
@@ -10330,7 +10443,11 @@ pub const Evaluator = struct {
         return null;
     }
 
-    fn annotate_declared_collection_type(self: *Evaluator, value: Value, declared_type: ?[]const u8) Value {
+    fn annotate_declared_collection_type(
+        self: *Evaluator,
+        value: Value,
+        declared_type: ?[]const u8,
+    ) Value {
         if (declared_type) |type_name| {
             if (value == .list) {
                 if (value.list.element_type == null) {
@@ -10346,16 +10463,28 @@ pub const Evaluator = struct {
 
     fn names_match_by_simple_name(left: []const u8, right: []const u8) bool {
         if (std.ascii.eqlIgnoreCase(left, right)) return true;
-        const left_simple = if (std.mem.lastIndexOfScalar(u8, left, '.')) |idx| left[idx + 1 ..] else left;
-        const right_simple = if (std.mem.lastIndexOfScalar(u8, right, '.')) |idx| right[idx + 1 ..] else right;
+        const left_simple = if (std.mem.lastIndexOfScalar(u8, left, '.')) |idx|
+            left[idx + 1 ..]
+        else
+            left;
+        const right_simple = if (std.mem.lastIndexOfScalar(u8, right, '.')) |idx|
+            right[idx + 1 ..]
+        else
+            right;
         return std.ascii.eqlIgnoreCase(left_simple, right_simple);
     }
 
-    fn infer_list_element_type(self: *Evaluator, list: *types.ListValue, arg_hint: ?[]const u8) ?[]const u8 {
+    fn infer_list_element_type(
+        self: *Evaluator,
+        list: *types.ListValue,
+        arg_hint: ?[]const u8,
+    ) ?[]const u8 {
         _ = self;
         if (list.element_type) |element_type| return strip_type_namespace(element_type);
         if (arg_hint) |hint| {
-            if (extract_collection_element_type_name(hint)) |element_type| return strip_type_namespace(element_type);
+            if (extract_collection_element_type_name(hint)) |element_type| {
+                return strip_type_namespace(element_type);
+            }
         }
         if (list.items.items.len == 0) return null;
 
@@ -10367,9 +10496,16 @@ pub const Evaluator = struct {
         };
     }
 
-    fn score_list_argument_for_param(self: *Evaluator, list: *types.ListValue, arg_hint: ?[]const u8, param_type: types.TypeRef) i32 {
+    fn score_list_argument_for_param(
+        self: *Evaluator,
+        list: *types.ListValue,
+        arg_hint: ?[]const u8,
+        param_type: types.TypeRef,
+    ) i32 {
         const param_base = type_base_name(param_type.name);
-        if (!std.ascii.eqlIgnoreCase(param_base, "List") and !std.ascii.eqlIgnoreCase(param_base, "Iterable")) {
+        if (!std.ascii.eqlIgnoreCase(param_base, "List") and
+            !std.ascii.eqlIgnoreCase(param_base, "Iterable"))
+        {
             return overload_score_for_arg(Value{ .list = list }, param_type.name);
         }
         if (param_type.params.len == 0) return 2;
@@ -10394,7 +10530,10 @@ pub const Evaluator = struct {
             return 0;
         }
         if (names_match_by_simple_name(actual_elem_base, param_elem_base)) return 3;
-        if (self.is_s_object_type_name(actual_elem_base) and self.is_s_object_type_name(param_elem_base) and self.is_subclass_of(actual_elem_base, param_elem_base)) {
+        if (self.is_s_object_type_name(actual_elem_base) and
+            self.is_s_object_type_name(param_elem_base) and
+            self.is_subclass_of(actual_elem_base, param_elem_base))
+        {
             return 2;
         }
         return 0;
@@ -10406,14 +10545,20 @@ pub const Evaluator = struct {
         return stripped;
     }
 
-    fn find_declared_field_type(self: *Evaluator, class_name: []const u8, field_name: []const u8) ?[]const u8 {
+    fn find_declared_field_type(
+        self: *Evaluator,
+        class_name: []const u8,
+        field_name: []const u8,
+    ) ?[]const u8 {
         if (self.find_class(class_name)) |cd| {
             var cur: ?*ast.ClassDecl = cd;
             while (cur) |ccd| {
                 for (ccd.members) |member| {
                     switch (member) {
                         .field_decl => |fd| {
-                            if (std.ascii.eqlIgnoreCase(fd.name, field_name)) return self.render_type_ref(fd.type_ref);
+                            if (std.ascii.eqlIgnoreCase(fd.name, field_name)) {
+                                return self.render_type_ref(fd.type_ref);
+                            }
                         },
                         else => {},
                     }
@@ -10424,53 +10569,92 @@ pub const Evaluator = struct {
         return null;
     }
 
-    fn resolve_assignment_target_type(self: *Evaluator, target: *const ast.Expr, current_env: *Env) ?[]const u8 {
+    fn resolve_assignment_target_type(
+        self: *Evaluator,
+        target: *const ast.Expr,
+        current_env: *Env,
+    ) ?[]const u8 {
         switch (target.*) {
             .identifier => |id| {
                 if (current_env.get_declared_type(id.name)) |type_name| return type_name;
                 if (current_env.get("this")) |this_val| {
                     if (this_val == .object) {
-                        if (self.find_declared_field_type(this_val.object.class_name, id.name)) |type_name| return type_name;
+                        if (self.find_declared_field_type(
+                            this_val.object.class_name,
+                            id.name,
+                        )) |type_name| {
+                            return type_name;
+                        }
                     }
                 }
                 if (self.current_class) |cc| {
                     if (self.find_declared_field_type(cc, id.name)) |type_name| return type_name;
                     if (self.find_outer_class_name(cc)) |outer| {
-                        if (self.find_declared_field_type(outer, id.name)) |type_name| return type_name;
-                    }
-                }
-                return null;
-            },
-            .field_access => |fa| {
-                if (fa.object.* == .this_expr) {
-                    if (current_env.get("this")) |this_val| {
-                        if (this_val == .object) {
-                            return self.find_declared_field_type(this_val.object.class_name, fa.field);
+                        if (self.find_declared_field_type(outer, id.name)) |type_name| {
+                            return type_name;
                         }
                     }
-                    return null;
-                }
-                if (fa.object.* == .identifier) {
-                    const owner_name = fa.object.identifier.name;
-                    if (current_env.get_declared_type(owner_name)) |owner_type| {
-                        if (self.find_declared_field_type(type_base_name(owner_type), fa.field)) |type_name| return type_name;
-                    }
-                    const is_class = self.find_class(owner_name) != null;
-                    const is_var = current_env.get(owner_name) != null;
-                    if (is_class and !is_var) {
-                        if (self.find_declared_field_type(owner_name, fa.field)) |type_name| return type_name;
-                    }
-                }
-                if (self.resolve_assignment_target_type(fa.object, current_env)) |owner_type| {
-                    if (self.find_declared_field_type(type_base_name(owner_type), fa.field)) |type_name| return type_name;
                 }
                 return null;
             },
+            .field_access => |fa| return self.resolve_field_access_assignment_target_type(
+                fa,
+                current_env,
+            ),
             else => return null,
         }
     }
 
-    fn extract_expr_type_hint(self: *Evaluator, expr: *const ast.Expr, current_env: *Env) ?[]const u8 {
+    fn resolve_field_access_assignment_target_type(
+        self: *Evaluator,
+        fa: *const ast.FieldAccess,
+        current_env: *Env,
+    ) ?[]const u8 {
+        if (fa.object.* == .this_expr) {
+            if (current_env.get("this")) |this_val| {
+                if (this_val == .object) {
+                    return self.find_declared_field_type(
+                        this_val.object.class_name,
+                        fa.field,
+                    );
+                }
+            }
+            return null;
+        }
+        if (fa.object.* == .identifier) {
+            const owner_name = fa.object.identifier.name;
+            if (current_env.get_declared_type(owner_name)) |owner_type| {
+                if (self.find_declared_field_type(
+                    type_base_name(owner_type),
+                    fa.field,
+                )) |type_name| {
+                    return type_name;
+                }
+            }
+            const is_class = self.find_class(owner_name) != null;
+            const is_var = current_env.get(owner_name) != null;
+            if (is_class and !is_var) {
+                if (self.find_declared_field_type(owner_name, fa.field)) |type_name| {
+                    return type_name;
+                }
+            }
+        }
+        if (self.resolve_assignment_target_type(fa.object, current_env)) |owner_type| {
+            if (self.find_declared_field_type(
+                type_base_name(owner_type),
+                fa.field,
+            )) |type_name| {
+                return type_name;
+            }
+        }
+        return null;
+    }
+
+    fn extract_expr_type_hint(
+        self: *Evaluator,
+        expr: *const ast.Expr,
+        current_env: *Env,
+    ) ?[]const u8 {
         switch (expr.*) {
             .cast_expr => |ce| return self.render_type_ref(ce.target_type),
             .new_expr => |ne| {
@@ -10514,20 +10698,34 @@ pub const Evaluator = struct {
 
     /// `extract_expr_type_hint` から抽出。メソッド呼び出し式の **戻り値型** を
     /// 推論する。`Foo.bar()` / `foo.bar()` / `Foo.Bar.baz()` の三形のみ扱う。
-    fn method_call_return_type_hint(self: *Evaluator, mc: anytype, current_env: *Env) ?[]const u8 {
+    fn method_call_return_type_hint(
+        self: *Evaluator,
+        mc: anytype,
+        current_env: *Env,
+    ) ?[]const u8 {
         const arg_count = mc.args.len;
 
         if (mc.object.* == .identifier) {
             const target_name = mc.object.identifier.name;
             if (self.find_class(target_name)) |class_decl| {
-                if (self.find_method_in_hierarchy(null, class_decl, mc.method, arg_count)) |method_decl| {
+                if (self.find_method_in_hierarchy(
+                    null,
+                    class_decl,
+                    mc.method,
+                    arg_count,
+                )) |method_decl| {
                     return strip_type_namespace(self.render_type_ref(method_decl.return_type));
                 }
             }
             if (self.resolve_assignment_target_type(mc.object, current_env)) |instance_type| {
                 const base_type = type_base_name(instance_type);
                 if (self.find_class(base_type)) |class_decl| {
-                    if (self.find_method_in_hierarchy(null, class_decl, mc.method, arg_count)) |method_decl| {
+                    if (self.find_method_in_hierarchy(
+                        null,
+                        class_decl,
+                        mc.method,
+                        arg_count,
+                    )) |method_decl| {
                         return strip_type_namespace(self.render_type_ref(method_decl.return_type));
                     }
                 }
@@ -10537,9 +10735,18 @@ pub const Evaluator = struct {
         if (mc.object.* == .field_access) {
             const fa = mc.object.field_access;
             if (fa.object.* == .identifier) {
-                const qualified_name = std.fmt.allocPrint(self.arena, "{s}.{s}", .{ fa.object.identifier.name, fa.field }) catch return null;
+                const qualified_name = std.fmt.allocPrint(
+                    self.arena,
+                    "{s}.{s}",
+                    .{ fa.object.identifier.name, fa.field },
+                ) catch return null;
                 if (self.find_class(qualified_name)) |class_decl| {
-                    if (self.find_method_in_hierarchy(null, class_decl, mc.method, arg_count)) |method_decl| {
+                    if (self.find_method_in_hierarchy(
+                        null,
+                        class_decl,
+                        mc.method,
+                        arg_count,
+                    )) |method_decl| {
                         return strip_type_namespace(self.render_type_ref(method_decl.return_type));
                     }
                 }
@@ -10549,7 +10756,11 @@ pub const Evaluator = struct {
         return null;
     }
 
-    fn maybe_coerce_schema_expr_value(self: *Evaluator, expr: *const ast.Expr, value: Value) !Value {
+    fn maybe_coerce_schema_expr_value(
+        self: *Evaluator,
+        expr: *const ast.Expr,
+        value: Value,
+    ) !Value {
         if (value != .string) return value;
 
         switch (expr.*) {
@@ -10609,7 +10820,9 @@ pub const Evaluator = struct {
                 }
             }
         }
-        if (fa.object.* == .identifier and std.mem.startsWith(u8, fa.object.identifier.name, "Schema.")) {
+        if (fa.object.* == .identifier and
+            std.mem.startsWith(u8, fa.object.identifier.name, "Schema."))
+        {
             const schema_name = fa.object.identifier.name["Schema.".len..];
             if (is_known_schema_enum_type(schema_name)) {
                 return Value{ .string = fa.field };
@@ -10639,7 +10852,10 @@ pub const Evaluator = struct {
         if (type_ref.params.len == 0) return strip_type_namespace(type_ref.name);
 
         var buf: std.ArrayListUnmanaged(u8) = .empty;
-        buf.appendSlice(self.arena, strip_type_namespace(type_ref.name)) catch return strip_type_namespace(type_ref.name);
+        buf.appendSlice(
+            self.arena,
+            strip_type_namespace(type_ref.name),
+        ) catch return strip_type_namespace(type_ref.name);
         buf.append(self.arena, '<') catch return strip_type_namespace(type_ref.name);
         for (type_ref.params, 0..) |param, i| {
             if (i > 0) buf.appendSlice(self.arena, ",") catch {};
@@ -10649,23 +10865,45 @@ pub const Evaluator = struct {
         return buf.toOwnedSlice(self.arena) catch strip_type_namespace(type_ref.name);
     }
 
-    fn coerce_soql_assignment_to_declared_type(self: *Evaluator, val: Value, source_expr: ?*const ast.Expr, target_type: []const u8) !Value {
-        if (source_expr == null or source_expr.?.* != .soql or val != .list or is_collection_type_name(target_type)) {
+    fn coerce_soql_assignment_to_declared_type(
+        self: *Evaluator,
+        val: Value,
+        source_expr: ?*const ast.Expr,
+        target_type: []const u8,
+    ) !Value {
+        if (source_expr == null or
+            source_expr.?.* != .soql or
+            val != .list or
+            is_collection_type_name(target_type))
+        {
             return val;
         }
         if (val.list.items.items.len > 0) return val.list.items.items[0];
 
         const exc = try self.arena.create(types.ObjectInstance);
         exc.* = .{ .class_name = "QueryException" };
-        try exc.fields.put(self.arena, "message", Value{ .string = "List has no rows for assignment to SObject" });
+        try exc.fields.put(
+            self.arena,
+            "message",
+            Value{ .string = "List has no rows for assignment to SObject" },
+        );
         self.pending_exception = Value{ .object = exc };
         return error.ApexException;
     }
 
-    fn eval_assignment(self: *Evaluator, asgn: *ast.Assignment, val: Value, current_env: *Env) !Value {
+    fn eval_assignment(
+        self: *Evaluator,
+        asgn: *ast.Assignment,
+        val: Value,
+        current_env: *Env,
+    ) !Value {
         var coerced_val = val;
         if (self.resolve_assignment_target_type(asgn.target, current_env)) |target_type| {
-            coerced_val = try self.coerce_soql_assignment_to_declared_type(coerced_val, asgn.value, target_type);
+            coerced_val = try self.coerce_soql_assignment_to_declared_type(
+                coerced_val,
+                asgn.value,
+                target_type,
+            );
             coerced_val = self.annotate_declared_collection_type(coerced_val, target_type);
         }
         return switch (asgn.target.*) {
@@ -10687,14 +10925,24 @@ pub const Evaluator = struct {
             const current = self.eval_expr(asgn.target, current_env) catch Value.null_val;
             if (current != .null_val) return current;
             const assign = try self.arena.create(ast.Assignment);
-            assign.* = .{ .target = asgn.target, .op = .assign, .value = asgn.value, .loc = asgn.loc };
+            assign.* = .{
+                .target = asgn.target,
+                .op = .assign,
+                .value = asgn.value,
+                .loc = asgn.loc,
+            };
             return self.eval_assignment(assign, coerced_val, current_env);
         }
 
         const final_val = if (asgn.op == .assign)
             coerced_val
         else
-            try self.eval_identifier_compound_assignment(id_name, asgn.op, coerced_val, current_env);
+            try self.eval_identifier_compound_assignment(
+                id_name,
+                asgn.op,
+                coerced_val,
+                current_env,
+            );
         try self.assign_identifier_binding(id_name, final_val, current_env);
         try self.update_this_identifier_field(id_name, final_val, current_env);
         self.update_static_identifier_field(id_name, final_val, current_env);
@@ -10715,7 +10963,12 @@ pub const Evaluator = struct {
         return try self.apply_compound_assignment(current, op, coerced_val);
     }
 
-    fn assign_identifier_binding(self: *Evaluator, id_name: []const u8, final_val: Value, current_env: *Env) !void {
+    fn assign_identifier_binding(
+        self: *Evaluator,
+        id_name: []const u8,
+        final_val: Value,
+        current_env: *Env,
+    ) !void {
         current_env.set(id_name, final_val) catch {
             var found_static = false;
             if (self.current_class) |class_name| {
@@ -10736,7 +10989,12 @@ pub const Evaluator = struct {
         };
     }
 
-    fn update_this_identifier_field(self: *Evaluator, id_name: []const u8, final_val: Value, current_env: *Env) !void {
+    fn update_this_identifier_field(
+        self: *Evaluator,
+        id_name: []const u8,
+        final_val: Value,
+        current_env: *Env,
+    ) !void {
         const this_val = current_env.get("this") orelse return;
         if (this_val != .object) return;
         if (self.should_update_this_field(this_val.object, id_name)) {
@@ -10745,29 +11003,52 @@ pub const Evaluator = struct {
         _ = self.assign_existing_static_field(this_val.object.class_name, id_name, final_val);
     }
 
-    fn should_update_this_field(self: *Evaluator, object: *types.ObjectInstance, id_name: []const u8) bool {
+    fn should_update_this_field(
+        self: *Evaluator,
+        object: *types.ObjectInstance,
+        id_name: []const u8,
+    ) bool {
         for (object.fields.keys()) |key| {
             if (std.ascii.eqlIgnoreCase(key, id_name)) return true;
         }
         const class_decl = self.find_class(object.class_name) orelse return false;
-        return self.is_instance_field(class_decl, id_name) or self.is_parent_instance_field(class_decl, id_name);
+        return self.is_instance_field(class_decl, id_name) or
+            self.is_parent_instance_field(class_decl, id_name);
     }
 
-    fn update_static_identifier_field(self: *Evaluator, id_name: []const u8, final_val: Value, current_env: *Env) void {
+    fn update_static_identifier_field(
+        self: *Evaluator,
+        id_name: []const u8,
+        final_val: Value,
+        current_env: *Env,
+    ) void {
         if (current_env.get("this") != null) return;
         if (self.current_class) |class_name| {
             _ = self.assign_existing_static_field(class_name, id_name, final_val);
         }
     }
 
-    fn assign_existing_static_field(self: *Evaluator, class_name: []const u8, field_name: []const u8, value: Value) bool {
-        const static_key = std.fmt.allocPrint(self.arena, "{s}.{s}", .{ class_name, field_name }) catch "";
+    fn assign_existing_static_field(
+        self: *Evaluator,
+        class_name: []const u8,
+        field_name: []const u8,
+        value: Value,
+    ) bool {
+        const static_key = std.fmt.allocPrint(
+            self.arena,
+            "{s}.{s}",
+            .{ class_name, field_name },
+        ) catch "";
         if (self.global_env.get(static_key) != null) {
             self.global_env.set(static_key, value) catch {};
             return true;
         }
         const outer_name = self.find_outer_class_name(class_name) orelse return false;
-        const outer_key = std.fmt.allocPrint(self.arena, "{s}.{s}", .{ outer_name, field_name }) catch "";
+        const outer_key = std.fmt.allocPrint(
+            self.arena,
+            "{s}.{s}",
+            .{ outer_name, field_name },
+        ) catch "";
         if (self.global_env.get(outer_key) == null) return false;
         self.global_env.set(outer_key, value) catch {};
         return true;
@@ -10780,7 +11061,9 @@ pub const Evaluator = struct {
         coerced_val: Value,
         current_env: *Env,
     ) !Value {
-        if (try self.assign_static_field_access(fa, asgn.op, coerced_val, current_env)) |result| return result;
+        if (try self.assign_static_field_access(fa, asgn.op, coerced_val, current_env)) |result| {
+            return result;
+        }
         const obj = try self.eval_expr(fa.object, current_env);
         const final_val = try self.field_assignment_value(obj, fa.field, asgn.op, coerced_val);
         if (obj == .sobject) {
@@ -10814,14 +11097,23 @@ pub const Evaluator = struct {
         self.ensure_static_init(class_name);
         const key = try std.fmt.allocPrint(self.arena, "{s}.{s}", .{ class_name, fa.field });
         const current = self.global_env.get(key) orelse Value.null_val;
-        const final_val = if (op == .assign) coerced_val else try self.apply_compound_assignment(current, op, coerced_val);
+        const final_val = if (op == .assign)
+            coerced_val
+        else
+            try self.apply_compound_assignment(current, op, coerced_val);
         self.global_env.set(key, final_val) catch {
             try self.global_env.define(key, final_val);
         };
         return final_val;
     }
 
-    fn field_assignment_value(self: *Evaluator, obj: Value, field_name: []const u8, op: ast.AssignOp, value: Value) !Value {
+    fn field_assignment_value(
+        self: *Evaluator,
+        obj: Value,
+        field_name: []const u8,
+        op: ast.AssignOp,
+        value: Value,
+    ) !Value {
         if (op == .assign) return value;
         const current = if (obj == .sobject)
             utils.sobject_get(&obj.sobject.fields, field_name) orelse Value.null_val
@@ -10832,12 +11124,21 @@ pub const Evaluator = struct {
         return try self.apply_compound_assignment(current, op, value);
     }
 
-    fn apply_compound_assignment(self: *Evaluator, current: Value, op: ast.AssignOp, value: Value) !Value {
+    fn apply_compound_assignment(
+        self: *Evaluator,
+        current: Value,
+        op: ast.AssignOp,
+        value: Value,
+    ) !Value {
         var result = eval_compound_assign(current, op, value, self.arena);
         if (op == .plus_assign and (current == .string or value == .string)) {
             const left = try utils.coerce_to_string(current, self.arena);
             const right = try utils.coerce_to_string(value, self.arena);
-            result = Value{ .string = try std.fmt.allocPrint(self.arena, "{s}{s}", .{ left, right }) };
+            result = Value{ .string = try std.fmt.allocPrint(
+                self.arena,
+                "{s}{s}",
+                .{ left, right },
+            ) };
         }
         return result;
     }
@@ -10867,10 +11168,17 @@ pub const Evaluator = struct {
         for (class_decl.members) |member| {
             switch (member) {
                 .field_decl => |field_decl| {
-                    if (!std.ascii.eqlIgnoreCase(field_decl.name, fa.field) or field_decl.setter_body == null) continue;
+                    if (!std.ascii.eqlIgnoreCase(field_decl.name, fa.field) or
+                        field_decl.setter_body == null)
+                    {
+                        continue;
+                    }
                     try self.execute_field_setter(object, field_decl.setter_body.?, final_val);
                     if (fa.object.* == .this_expr) {
-                        current_env.set(fa.field, object.fields.get(fa.field) orelse final_val) catch {};
+                        current_env.set(
+                            fa.field,
+                            object.fields.get(fa.field) orelse final_val,
+                        ) catch {};
                     }
                     return true;
                 },
@@ -10880,7 +11188,12 @@ pub const Evaluator = struct {
         return false;
     }
 
-    fn execute_field_setter(self: *Evaluator, object: *types.ObjectInstance, setter_body: []ast.Stmt, value: Value) !void {
+    fn execute_field_setter(
+        self: *Evaluator,
+        object: *types.ObjectInstance,
+        setter_body: []ast.Stmt,
+        value: Value,
+    ) !void {
         const setter_env = try self.global_env.child();
         try setter_env.define("this", Value{ .object = object });
         for (object.fields.keys(), object.fields.values()) |key, field_value| {
@@ -10893,7 +11206,11 @@ pub const Evaluator = struct {
         try self.sync_field_setter_object(object, setter_env);
     }
 
-    fn sync_field_setter_object(self: *Evaluator, object: *types.ObjectInstance, setter_env: *Env) !void {
+    fn sync_field_setter_object(
+        self: *Evaluator,
+        object: *types.ObjectInstance,
+        setter_env: *Env,
+    ) !void {
         const this_val = setter_env.get("this") orelse return;
         if (this_val == .object and this_val.object == object) {
             var field_keys: std.ArrayListUnmanaged([]const u8) = .empty;
@@ -10926,7 +11243,12 @@ pub const Evaluator = struct {
         try object.fields.put(self.arena, existing_key orelse field_name, value);
     }
 
-    fn eval_index_assignment(self: *Evaluator, ia: *ast.IndexAccess, val: Value, current_env: *Env) !Value {
+    fn eval_index_assignment(
+        self: *Evaluator,
+        ia: *ast.IndexAccess,
+        val: Value,
+        current_env: *Env,
+    ) !Value {
         const obj = try self.eval_expr(ia.object, current_env);
         const idx = try self.eval_expr(ia.index, current_env);
         if (obj == .list and idx == .integer and idx.integer >= 0) {
@@ -10938,14 +11260,20 @@ pub const Evaluator = struct {
         return val;
     }
 
-    fn eval_method_call(self: *Evaluator, mc: *ast.MethodCallExpr, current_env: *Env) anyerror!Value {
+    fn eval_method_call(
+        self: *Evaluator,
+        mc: *ast.MethodCallExpr,
+        current_env: *Env,
+    ) anyerror!Value {
         if (mc.loc.line > 0) {
             self.current_call_line = mc.loc.line;
             if (self.call_stack.items.len > 0)
                 self.call_stack.items[self.call_stack.items.len - 1].line = mc.loc.line;
         }
 
-        if (try self.eval_field_add_error_sugar_method_call(mc, current_env)) |result| return result;
+        if (try self.eval_field_add_error_sugar_method_call(mc, current_env)) |result| {
+            return result;
+        }
 
         if (mc.null_safe) {
             const obj_val = self.eval_expr(mc.object, current_env) catch |err| {
@@ -10977,8 +11305,12 @@ pub const Evaluator = struct {
 
         if (try self.eval_system_search_method_call(mc, args.items)) |result| return result;
         if (try self.eval_super_method_call(mc, current_env, args.items)) |result| return result;
-        if (try self.eval_identifier_method_call(mc, current_env, args.items)) |result| return result;
-        if (try self.eval_field_access_method_call(mc, current_env, args.items)) |result| return result;
+        if (try self.eval_identifier_method_call(mc, current_env, args.items)) |result| {
+            return result;
+        }
+        if (try self.eval_field_access_method_call(mc, current_env, args.items)) |result| {
+            return result;
+        }
 
         const obj = try self.eval_expr(mc.object, current_env);
         return self.eval_instance_method(obj, mc.method, args.items, current_env);
@@ -11008,7 +11340,11 @@ pub const Evaluator = struct {
         const err_obj = try self.arena.create(types.ObjectInstance);
         err_obj.* = .{ .class_name = "Database.Error" };
         try err_obj.fields.put(self.arena, "message", Value{ .string = msg_str });
-        try err_obj.fields.put(self.arena, "statusCode", Value{ .string = "FIELD_CUSTOM_VALIDATION_EXCEPTION" });
+        try err_obj.fields.put(
+            self.arena,
+            "statusCode",
+            Value{ .string = "FIELD_CUSTOM_VALIDATION_EXCEPTION" },
+        );
         try err_obj.fields.put(self.arena, "field", Value{ .string = fa.field });
         const fields_list = try self.arena.create(types.ListValue);
         fields_list.* = .{};
@@ -11094,13 +11430,50 @@ pub const Evaluator = struct {
         if (mc.object.* != .identifier) return null;
         const class_name = mc.object.identifier.name;
 
-        if (try self.eval_identifier_assert_or_test_method_call(class_name, mc.method, args)) |result| return result;
-        if (try self.eval_identifier_system_special_method_call(class_name, mc.method, args, current_env)) |result| return result;
-        if (try self.eval_identifier_json_method_call(class_name, mc.method, args)) |result| return result;
-        if (try self.eval_identifier_early_custom_metadata_method(class_name, mc.method, args)) |result| return result;
-        if (try self.eval_identifier_integer_value_of_method_call(class_name, mc.method, args)) |result| return result;
-        if (try self.eval_resolved_identifier_method_call(class_name, mc.method, args, current_env, mc)) |result| return result;
-        return try self.eval_identifier_static_dispatch(class_name, mc.method, args, current_env, mc);
+        if (try self.eval_identifier_assert_or_test_method_call(class_name, mc.method, args)) |result| {
+            return result;
+        }
+        if (try self.eval_identifier_system_special_method_call(
+            class_name,
+            mc.method,
+            args,
+            current_env,
+        )) |result| {
+            return result;
+        }
+        if (try self.eval_identifier_json_method_call(class_name, mc.method, args)) |result| {
+            return result;
+        }
+        if (try self.eval_identifier_early_custom_metadata_method(
+            class_name,
+            mc.method,
+            args,
+        )) |result| {
+            return result;
+        }
+        if (try self.eval_identifier_integer_value_of_method_call(
+            class_name,
+            mc.method,
+            args,
+        )) |result| {
+            return result;
+        }
+        if (try self.eval_resolved_identifier_method_call(
+            class_name,
+            mc.method,
+            args,
+            current_env,
+            mc,
+        )) |result| {
+            return result;
+        }
+        return try self.eval_identifier_static_dispatch(
+            class_name,
+            mc.method,
+            args,
+            current_env,
+            mc,
+        );
     }
 
     fn eval_identifier_assert_or_test_method_call(
@@ -11109,7 +11482,9 @@ pub const Evaluator = struct {
         method: []const u8,
         args: []const Value,
     ) anyerror!?Value {
-        if (std.ascii.eqlIgnoreCase(class_name, "Assert")) return try self.handle_assert(method, args);
+        if (std.ascii.eqlIgnoreCase(class_name, "Assert")) {
+            return try self.handle_assert(method, args);
+        }
         if (std.ascii.eqlIgnoreCase(class_name, "Test")) return try self.handle_test(method, args);
         if (std.ascii.eqlIgnoreCase(class_name, "System") and
             (std.ascii.startsWithIgnoreCase(method, "assert") or
@@ -11154,7 +11529,11 @@ pub const Evaluator = struct {
         if (std.fmt.parseInt(i64, args[0].string, 10)) |value| {
             return Value{ .integer = value };
         } else |_| {
-            const message = try std.fmt.allocPrint(self.arena, "Invalid integer: {s}", .{args[0].string});
+            const message = try std.fmt.allocPrint(
+                self.arena,
+                "Invalid integer: {s}",
+                .{args[0].string},
+            );
             return try self.throw_named_exception("System.TypeException", message);
         }
     }
@@ -11189,7 +11568,9 @@ pub const Evaluator = struct {
             (std.ascii.eqlIgnoreCase(args[0].object.class_name, "Schema.SObjectField") or
                 std.ascii.eqlIgnoreCase(args[0].object.class_name, "SObjectField")))
         {
-            return try self.throw_system_json_exception("Apex Type unsupported in JSON: Schema.SObjectField");
+            return try self.throw_system_json_exception(
+                "Apex Type unsupported in JSON: Schema.SObjectField",
+            );
         }
         self.last_json_value = args[0];
         return Value{ .string = try utils.to_json(args[0], self.arena) };
@@ -11314,7 +11695,11 @@ pub const Evaluator = struct {
             for (entry.value_ptr.items) |item| {
                 if (item != .sobject) continue;
                 if (utils.sobject_get(&item.sobject.fields, "DeveloperName")) |dn| {
-                    if (dn == .string and std.ascii.eqlIgnoreCase(dn.string, developer_name)) return item;
+                    if (dn == .string and
+                        std.ascii.eqlIgnoreCase(dn.string, developer_name))
+                    {
+                        return item;
+                    }
                 }
             }
         }
@@ -11345,7 +11730,10 @@ pub const Evaluator = struct {
         current_env: *Env,
         mc: *ast.MethodCallExpr,
     ) anyerror!?Value {
-        const resolved_var = try self.resolve_identifier_method_receiver_value(class_name, current_env);
+        const resolved_var = try self.resolve_identifier_method_receiver_value(
+            class_name,
+            current_env,
+        );
         switch (resolved_var) {
             .list, .map, .set, .sobject, .object, .string, .double, .integer, .boolean => {
                 return try self.eval_instance_method(resolved_var, method, args, current_env);
@@ -11371,7 +11759,9 @@ pub const Evaluator = struct {
     ) anyerror!Value {
         if (current_env.get(class_name)) |value| return value;
         if (try self.resolve_current_class_method_receiver_value(class_name)) |value| return value;
-        if (self.resolve_this_class_method_receiver_value(class_name, current_env)) |value| return value;
+        if (self.resolve_this_class_method_receiver_value(class_name, current_env)) |value| {
+            return value;
+        }
         return Value.null_val;
     }
 
@@ -11385,11 +11775,18 @@ pub const Evaluator = struct {
         else
             false;
         if (!already_in_getter) {
-            if (try self.resolve_current_class_static_getter_value(current_class_name, class_name)) |value| {
+            if (try self.resolve_current_class_static_getter_value(
+                current_class_name,
+                class_name,
+            )) |value| {
                 return value;
             }
         }
-        const current_key = std.fmt.allocPrint(self.arena, "{s}.{s}", .{ current_class_name, class_name }) catch {
+        const current_key = std.fmt.allocPrint(
+            self.arena,
+            "{s}.{s}",
+            .{ current_class_name, class_name },
+        ) catch {
             return Value.null_val;
         };
         if (self.global_env.get(current_key)) |value| return value;
@@ -11421,7 +11818,10 @@ pub const Evaluator = struct {
                         self.evaluating_getter = saved_getter;
                     }
 
-                    const getter_result = self.exec_block(field_decl.getter_body.?, getter_env) catch {
+                    const getter_result = self.exec_block(
+                        field_decl.getter_body.?,
+                        getter_env,
+                    ) catch {
                         return Value.null_val;
                     };
                     return switch (getter_result) {
@@ -11444,7 +11844,11 @@ pub const Evaluator = struct {
         if (this_val != .object) return null;
 
         const this_class_name = this_val.object.class_name;
-        const this_key = std.fmt.allocPrint(self.arena, "{s}.{s}", .{ this_class_name, class_name }) catch {
+        const this_key = std.fmt.allocPrint(
+            self.arena,
+            "{s}.{s}",
+            .{ this_class_name, class_name },
+        ) catch {
             return Value.null_val;
         };
         if (self.global_env.get(this_key)) |value| return value;
@@ -11479,17 +11883,29 @@ pub const Evaluator = struct {
             return try self.handle_database_method(method, args, current_env);
         }
         var builtin_ctx = self.make_builtin_context();
-        if (try builtins.dispatch_static(&builtin_ctx, class_name, method, args)) |result| return result;
-        if (try self.eval_identifier_custom_metadata_method(class_name, method, args)) |result| return result;
-        if (try self.handle_custom_setting_static_method(class_name, method, args)) |result| return result;
-        if (!std.ascii.eqlIgnoreCase(class_name, "Database") and self.find_class(class_name) != null) {
+        if (try builtins.dispatch_static(&builtin_ctx, class_name, method, args)) |result| {
+            return result;
+        }
+        if (try self.eval_identifier_custom_metadata_method(class_name, method, args)) |result| {
+            return result;
+        }
+        if (try self.handle_custom_setting_static_method(class_name, method, args)) |result| {
+            return result;
+        }
+        if (!std.ascii.eqlIgnoreCase(class_name, "Database") and
+            self.find_class(class_name) != null)
+        {
             return try self.call_method(class_name, method, args);
         }
         if (try self.handle_test_factory(class_name, method, args)) |result| return result;
-        if (std.ascii.eqlIgnoreCase(method, "getSObjectType")) return try self.schema_s_object_type_value(class_name);
+        if (std.ascii.eqlIgnoreCase(method, "getSObjectType")) {
+            return try self.schema_s_object_type_value(class_name);
+        }
         if (self.find_class(class_name) == null) {
             if (self.eval_expr(mc.object, current_env)) |obj_val| {
-                if (obj_val != .null_val) return try self.eval_instance_method(obj_val, method, args, current_env);
+                if (obj_val != .null_val) {
+                    return try self.eval_instance_method(obj_val, method, args, current_env);
+                }
             } else |_| {}
         }
         return try self.call_method(class_name, method, args);
@@ -11507,7 +11923,9 @@ pub const Evaluator = struct {
             const dev_name = if (args.len > 0 and args[0] == .string) args[0].string else "";
             return try self.custom_metadata_get_instance(class_name, dev_name);
         }
-        if (std.ascii.eqlIgnoreCase(method, "getAll")) return try self.custom_metadata_get_all(class_name);
+        if (std.ascii.eqlIgnoreCase(method, "getAll")) {
+            return try self.custom_metadata_get_all(class_name);
+        }
         return null;
     }
 
@@ -11519,10 +11937,20 @@ pub const Evaluator = struct {
     ) anyerror!?Value {
         if (mc.object.* != .field_access) return null;
         const field_access = mc.object.field_access;
-        if (try self.eval_three_level_field_access_method_call(field_access, mc.method, args, current_env)) |result| {
+        if (try self.eval_three_level_field_access_method_call(
+            field_access,
+            mc.method,
+            args,
+            current_env,
+        )) |result| {
             return result;
         }
-        return try self.eval_identifier_field_access_method_call(field_access, mc.method, args, current_env);
+        return try self.eval_identifier_field_access_method_call(
+            field_access,
+            mc.method,
+            args,
+            current_env,
+        );
     }
 
     fn eval_three_level_field_access_method_call(
@@ -11558,9 +11986,15 @@ pub const Evaluator = struct {
                 current_env,
             );
         }
-        if (std.ascii.eqlIgnoreCase(outer_name, "Schema") and std.ascii.eqlIgnoreCase(method, "getDescribe")) {
+        if (std.ascii.eqlIgnoreCase(outer_name, "Schema") and
+            std.ascii.eqlIgnoreCase(method, "getDescribe"))
+        {
             var builtin_ctx = self.make_builtin_context();
-            return try builtins.create_field_describe_result(&builtin_ctx, type_name, field_access.field);
+            return try builtins.create_field_describe_result(
+                &builtin_ctx,
+                type_name,
+                field_access.field,
+            );
         }
         return null;
     }
@@ -11576,13 +12010,41 @@ pub const Evaluator = struct {
         const outer_class = field_access.object.identifier.name;
         const inner = field_access.field;
 
-        if (try self.eval_system_namespace_method_call(outer_class, inner, method, args, current_env)) |result| return result;
-        if (try self.eval_schema_field_token_method_call(outer_class, inner, method, args, current_env)) |result| return result;
-        if (try self.eval_dataweave_script_method_call(outer_class, inner, method, args)) |result| return result;
-        if (try self.eval_invocable_action_method_call(outer_class, inner, method, args)) |result| return result;
-        if (try self.eval_flow_interview_namespace_method_call(outer_class, inner, method, args)) |result| return result;
+        if (try self.eval_system_namespace_method_call(
+            outer_class,
+            inner,
+            method,
+            args,
+            current_env,
+        )) |result| {
+            return result;
+        }
+        if (try self.eval_schema_field_token_method_call(
+            outer_class,
+            inner,
+            method,
+            args,
+            current_env,
+        )) |result| {
+            return result;
+        }
+        if (try self.eval_dataweave_script_method_call(outer_class, inner, method, args)) |result| {
+            return result;
+        }
+        if (try self.eval_invocable_action_method_call(outer_class, inner, method, args)) |result| {
+            return result;
+        }
+        if (try self.eval_flow_interview_namespace_method_call(
+            outer_class,
+            inner,
+            method,
+            args,
+        )) |result| {
+            return result;
+        }
         if (std.ascii.eqlIgnoreCase(outer_class, "ConnectApi")) {
-            return (try self.handle_connect_api_namespace(inner, method, args)) orelse Value.null_val;
+            return (try self.handle_connect_api_namespace(inner, method, args)) orelse
+                Value.null_val;
         }
         return try self.eval_cache_namespace_method_call(outer_class, inner, method, args);
     }
@@ -11788,22 +12250,35 @@ pub const Evaluator = struct {
         return false;
     }
 
-    fn connect_api_append_output_segment(self: *Evaluator, segments: *types.ListValue, segment: *types.ObjectInstance) !void {
+    fn connect_api_append_output_segment(
+        self: *Evaluator,
+        segments: *types.ListValue,
+        segment: *types.ObjectInstance,
+    ) !void {
         try segments.items.append(self.arena, Value{ .object = segment });
     }
 
-    fn connect_api_append_text_segment(self: *Evaluator, segments: *types.ListValue, text: []const u8) !void {
+    fn connect_api_append_text_segment(
+        self: *Evaluator,
+        segments: *types.ListValue,
+        text: []const u8,
+    ) !void {
         if (text.len == 0) return;
         const segment = try self.connect_api_create_object("ConnectApi.TextSegment");
         try segment.fields.put(self.arena, "text", Value{ .string = text });
         try self.connect_api_append_output_segment(segments, segment);
     }
 
-    fn connect_api_append_parsed_text(self: *Evaluator, segments: *types.ListValue, text: []const u8) !void {
+    fn connect_api_append_parsed_text(
+        self: *Evaluator,
+        segments: *types.ListValue,
+        text: []const u8,
+    ) !void {
         var text_start: usize = 0;
         var i: usize = 0;
         while (i < text.len) {
-            const is_http = std.mem.startsWith(u8, text[i..], "http://") or std.mem.startsWith(u8, text[i..], "https://");
+            const is_http = std.mem.startsWith(u8, text[i..], "http://") or
+                std.mem.startsWith(u8, text[i..], "https://");
             if (is_http) {
                 try self.connect_api_append_text_segment(segments, text[text_start..i]);
                 var end = i;
@@ -11834,7 +12309,10 @@ pub const Evaluator = struct {
         try self.connect_api_append_text_segment(segments, text[text_start..]);
     }
 
-    fn connect_api_build_output_segments(self: *Evaluator, message_segments: Value) !*types.ListValue {
+    fn connect_api_build_output_segments(
+        self: *Evaluator,
+        message_segments: Value,
+    ) !*types.ListValue {
         const output = try self.arena.create(types.ListValue);
         output.* = .{};
         if (message_segments != .list) return output;
@@ -11844,62 +12322,85 @@ pub const Evaluator = struct {
             const class_name = segment_input.object.class_name;
 
             if (connect_api_class_name_equals(class_name, "TextSegmentInput")) {
-                const text = utils.sobject_get(&segment_input.object.fields, "text") orelse Value.null_val;
+                const text = utils.sobject_get(
+                    &segment_input.object.fields,
+                    "text",
+                ) orelse Value.null_val;
                 if (text == .string) try self.connect_api_append_parsed_text(output, text.string);
                 continue;
             }
 
-            if (connect_api_class_name_equals(class_name, "MentionSegmentInput")) {
-                try self.connect_api_append_mention_segment_input(output, segment_input.object);
-                continue;
-            }
-
-            if (connect_api_class_name_equals(class_name, "LinkSegmentInput")) {
-                const url = utils.sobject_get(&segment_input.object.fields, "url") orelse Value.null_val;
-                if (url == .string) {
-                    const link = try self.connect_api_create_object("ConnectApi.LinkSegment");
-                    try link.fields.put(self.arena, "url", url);
-                    try self.connect_api_append_output_segment(output, link);
-                }
-                continue;
-            }
-
-            if (connect_api_class_name_equals(class_name, "HashtagSegmentInput")) {
-                const tag = utils.sobject_get(&segment_input.object.fields, "tag") orelse Value.null_val;
-                if (tag == .string) {
-                    const hashtag = try self.connect_api_create_object("ConnectApi.HashtagSegment");
-                    try hashtag.fields.put(self.arena, "tag", tag);
-                    try self.connect_api_append_output_segment(output, hashtag);
-                }
-                continue;
-            }
-
-            if (connect_api_class_name_equals(class_name, "MarkupBeginSegmentInput")) {
-                try self.connect_api_append_markup_segment_input(output, segment_input.object, "ConnectApi.MarkupBeginSegment");
-                continue;
-            }
-
-            if (connect_api_class_name_equals(class_name, "MarkupEndSegmentInput")) {
-                try self.connect_api_append_markup_segment_input(output, segment_input.object, "ConnectApi.MarkupEndSegment");
-                continue;
-            }
-
-            if (connect_api_class_name_equals(class_name, "EntityLinkSegmentInput")) {
-                const entity = try self.connect_api_create_object("ConnectApi.EntityLinkSegment");
-                if (utils.sobject_get(&segment_input.object.fields, "entityId")) |entity_id| {
-                    try entity.fields.put(self.arena, "record", entity_id);
-                }
-                try self.connect_api_append_output_segment(output, entity);
-                continue;
-            }
-
-            if (connect_api_class_name_equals(class_name, "InlineImageSegmentInput")) {
-                try self.connect_api_append_inline_image_segment_input(output, segment_input.object);
-                continue;
-            }
+            try self.connect_api_append_non_text_segment_input(
+                output,
+                segment_input.object,
+                class_name,
+            );
         }
 
         return output;
+    }
+
+    fn connect_api_append_non_text_segment_input(
+        self: *Evaluator,
+        output: *types.ListValue,
+        input: *types.ObjectInstance,
+        class_name: []const u8,
+    ) !void {
+        if (connect_api_class_name_equals(class_name, "MentionSegmentInput")) {
+            try self.connect_api_append_mention_segment_input(output, input);
+            return;
+        }
+
+        if (connect_api_class_name_equals(class_name, "LinkSegmentInput")) {
+            const url = utils.sobject_get(&input.fields, "url") orelse Value.null_val;
+            if (url == .string) {
+                const link = try self.connect_api_create_object("ConnectApi.LinkSegment");
+                try link.fields.put(self.arena, "url", url);
+                try self.connect_api_append_output_segment(output, link);
+            }
+            return;
+        }
+
+        if (connect_api_class_name_equals(class_name, "HashtagSegmentInput")) {
+            const tag = utils.sobject_get(&input.fields, "tag") orelse Value.null_val;
+            if (tag == .string) {
+                const hashtag = try self.connect_api_create_object("ConnectApi.HashtagSegment");
+                try hashtag.fields.put(self.arena, "tag", tag);
+                try self.connect_api_append_output_segment(output, hashtag);
+            }
+            return;
+        }
+
+        if (connect_api_class_name_equals(class_name, "MarkupBeginSegmentInput")) {
+            try self.connect_api_append_markup_segment_input(
+                output,
+                input,
+                "ConnectApi.MarkupBeginSegment",
+            );
+            return;
+        }
+
+        if (connect_api_class_name_equals(class_name, "MarkupEndSegmentInput")) {
+            try self.connect_api_append_markup_segment_input(
+                output,
+                input,
+                "ConnectApi.MarkupEndSegment",
+            );
+            return;
+        }
+
+        if (connect_api_class_name_equals(class_name, "EntityLinkSegmentInput")) {
+            const entity = try self.connect_api_create_object("ConnectApi.EntityLinkSegment");
+            if (utils.sobject_get(&input.fields, "entityId")) |entity_id| {
+                try entity.fields.put(self.arena, "record", entity_id);
+            }
+            try self.connect_api_append_output_segment(output, entity);
+            return;
+        }
+
+        if (connect_api_class_name_equals(class_name, "InlineImageSegmentInput")) {
+            try self.connect_api_append_inline_image_segment_input(output, input);
+        }
     }
 
     fn connect_api_append_mention_segment_input(
@@ -11921,7 +12422,11 @@ pub const Evaluator = struct {
             return error.ApexException;
         }
         const mention = try self.connect_api_create_object("ConnectApi.MentionSegment");
-        try mention.fields.put(self.arena, "record", try self.connect_api_create_record_ref(mention_id.string));
+        try mention.fields.put(
+            self.arena,
+            "record",
+            try self.connect_api_create_record_ref(mention_id.string),
+        );
         try self.connect_api_append_output_segment(output, mention);
     }
 
@@ -11955,7 +12460,10 @@ pub const Evaluator = struct {
         try self.connect_api_append_output_segment(output, image);
     }
 
-    fn connect_api_render_body_text(self: *Evaluator, output_segments: *types.ListValue) ![]const u8 {
+    fn connect_api_render_body_text(
+        self: *Evaluator,
+        output_segments: *types.ListValue,
+    ) ![]const u8 {
         var buf: std.ArrayListUnmanaged(u8) = .empty;
         for (output_segments.items.items) |segment| {
             if (segment != .object) continue;
@@ -12059,7 +12567,9 @@ pub const Evaluator = struct {
                     if (segments == .list) return segments;
                 }
                 for (obj.fields.values()) |field_value| {
-                    if (self.connect_api_extract_message_segments(field_value, depth - 1)) |segments| return segments;
+                    if (self.connect_api_extract_message_segments(field_value, depth - 1)) |segments| {
+                        return segments;
+                    }
                 }
                 return null;
             },
@@ -12076,13 +12586,21 @@ pub const Evaluator = struct {
         return Value{ .object = body };
     }
 
-    fn connect_api_persist_feed_item(self: *Evaluator, parent_id: Value, body_value: Value) ![]const u8 {
+    fn connect_api_persist_feed_item(
+        self: *Evaluator,
+        parent_id: Value,
+        body_value: Value,
+    ) ![]const u8 {
         const feed_item = try self.arena.create(types.SObject);
         feed_item.* = .{ .type_name = "FeedItem" };
         if (parent_id == .string) {
             try feed_item.fields.put(self.arena, "ParentId", parent_id);
         } else if (parent_id != .null_val) {
-            try feed_item.fields.put(self.arena, "ParentId", Value{ .string = try utils.coerce_to_string(parent_id, self.arena) });
+            try feed_item.fields.put(
+                self.arena,
+                "ParentId",
+                Value{ .string = try utils.coerce_to_string(parent_id, self.arena) },
+            );
         }
         if (body_value == .object) {
             if (utils.sobject_get(&body_value.object.fields, "text")) |body_text| {
@@ -12093,11 +12611,20 @@ pub const Evaluator = struct {
         return feed_item.id orelse "";
     }
 
-    fn handle_connect_api_namespace(self: *Evaluator, namespace: []const u8, method: []const u8, args: []const Value) !?Value {
+    fn handle_connect_api_namespace(
+        self: *Evaluator,
+        namespace: []const u8,
+        method: []const u8,
+        args: []const Value,
+    ) !?Value {
         if (!self.see_all_data) {
             const exc = try self.arena.create(types.ObjectInstance);
             exc.* = .{ .class_name = "UnsupportedOperationException" };
-            try exc.fields.put(self.arena, "message", Value{ .string = "ConnectApi is not supported in data-siloed tests" });
+            try exc.fields.put(
+                self.arena,
+                "message",
+                Value{ .string = "ConnectApi is not supported in data-siloed tests" },
+            );
             self.pending_exception = Value{ .object = exc };
             return error.ApexException;
         }
@@ -12109,8 +12636,10 @@ pub const Evaluator = struct {
             var message_segments: Value = Value.null_val;
 
             if (args.len >= 2 and args[1] == .object) {
-                subject_id = utils.sobject_get(&args[1].object.fields, "subjectId") orelse Value.null_val;
-                message_segments = self.connect_api_extract_message_segments(args[1], 4) orelse Value.null_val;
+                subject_id = utils.sobject_get(&args[1].object.fields, "subjectId") orelse
+                    Value.null_val;
+                message_segments = self.connect_api_extract_message_segments(args[1], 4) orelse
+                    Value.null_val;
             } else if (args.len >= 4) {
                 subject_id = args[1];
                 const text_segments = try self.arena.create(types.ListValue);
@@ -12167,10 +12696,19 @@ pub const Evaluator = struct {
         if (try self.eval_json_parser_instance_method(obj, method, args)) |result| return result;
         if (try self.eval_time_instance_method(obj, method)) |result| return result;
         if (try self.eval_date_like_instance_method(obj, method, args)) |result| return result;
-        if (try self.eval_user_defined_object_instance_method(obj, method, args, current_env)) |result| return result;
+        if (try self.eval_user_defined_object_instance_method(
+            obj,
+            method,
+            args,
+            current_env,
+        )) |result| {
+            return result;
+        }
         if (try self.eval_builtin_instance_dispatch(obj, method, args)) |result| return result;
         if (try self.eval_s_object_instance_method(obj, method, args)) |result| return result;
-        if (try self.eval_collection_or_string_instance_method(obj, method, args)) |result| return result;
+        if (try self.eval_collection_or_string_instance_method(obj, method, args)) |result| {
+            return result;
+        }
         return try self.eval_object_class_instance_method(obj, method, args);
     }
 
@@ -12285,9 +12823,15 @@ pub const Evaluator = struct {
             return null;
         }
         const type_name = type_name_from_value(obj);
-        if (std.ascii.startsWithIgnoreCase(type_name, "Map")) return try self.alloc_empty_map_value();
-        if (std.ascii.startsWithIgnoreCase(type_name, "List")) return try self.alloc_empty_list_value();
-        if (std.ascii.startsWithIgnoreCase(type_name, "Set")) return try self.alloc_empty_set_value();
+        if (std.ascii.startsWithIgnoreCase(type_name, "Map")) {
+            return try self.alloc_empty_map_value();
+        }
+        if (std.ascii.startsWithIgnoreCase(type_name, "List")) {
+            return try self.alloc_empty_list_value();
+        }
+        if (std.ascii.startsWithIgnoreCase(type_name, "Set")) {
+            return try self.alloc_empty_set_value();
+        }
         if (self.is_s_object_type_name(type_name)) {
             const sob = try self.arena.create(types.SObject);
             sob.* = .{ .type_name = type_name };
@@ -12336,9 +12880,20 @@ pub const Evaluator = struct {
         const provider = obj.object.fields.get("__stubProvider__") orelse return null;
         if (provider != .object) return null;
         const provider_class = self.find_class(provider.object.class_name) orelse return null;
-        const stub_method = self.resolve_stub_provider_method_decl(obj.object.class_name, method, args);
-        if (stub_uses_default_object_method(method, args.len) and stub_method == null) return null;
-        const handle_args = try self.build_stub_provider_handle_method_args(obj, method, args, stub_method);
+        const stub_method = self.resolve_stub_provider_method_decl(
+            obj.object.class_name,
+            method,
+            args,
+        );
+        if (stub_uses_default_object_method(method, args.len) and stub_method == null) {
+            return null;
+        }
+        const handle_args = try self.build_stub_provider_handle_method_args(
+            obj,
+            method,
+            args,
+            stub_method,
+        );
         return try self.call_instance_method(
             provider_class,
             provider.object,
@@ -12415,7 +12970,9 @@ pub const Evaluator = struct {
         stub_method: ?*ast.MethodDecl,
     ) []const u8 {
         if (stub_method) |method_decl| {
-            if (index < method_decl.params.len) return self.render_type_ref(method_decl.params[index].type_ref);
+            if (index < method_decl.params.len) {
+                return self.render_type_ref(method_decl.params[index].type_ref);
+            }
         }
         return switch (arg) {
             .string => "String",
@@ -12438,15 +12995,23 @@ pub const Evaluator = struct {
         method: []const u8,
         args: []const Value,
     ) anyerror!?Value {
-        if (!(obj == .object and std.ascii.eqlIgnoreCase(obj.object.class_name, "JSONParser"))) return null;
+        if (!(obj == .object and
+            std.ascii.eqlIgnoreCase(obj.object.class_name, "JSONParser")))
+        {
+            return null;
+        }
         const body = json_parser_body(obj.object);
-        if (std.ascii.eqlIgnoreCase(method, "nextToken")) return try self.eval_json_parser_next_token(obj.object, body);
+        if (std.ascii.eqlIgnoreCase(method, "nextToken")) {
+            return try self.eval_json_parser_next_token(obj.object, body);
+        }
         if (std.ascii.eqlIgnoreCase(method, "getCurrentToken")) {
             return obj.object.fields.get("__token__") orelse Value.null_val;
         }
         if (std.ascii.eqlIgnoreCase(method, "getCurrentName")) {
             const token_value = obj.object.fields.get("__token__") orelse Value.null_val;
-            if (token_value == .string and std.ascii.eqlIgnoreCase(token_value.string, "FIELD_NAME")) {
+            if (token_value == .string and
+                std.ascii.eqlIgnoreCase(token_value.string, "FIELD_NAME"))
+            {
                 return obj.object.fields.get("__text__") orelse Value.null_val;
             }
             return Value.null_val;
@@ -12475,7 +13040,11 @@ pub const Evaluator = struct {
     fn skip_json_parser_trivia(body: []const u8, start: usize) usize {
         var pos = start;
         while (pos < body.len and
-            (body[pos] == ' ' or body[pos] == '\t' or body[pos] == '\n' or body[pos] == '\r' or body[pos] == ','))
+            (body[pos] == ' ' or
+                body[pos] == '\t' or
+                body[pos] == '\n' or
+                body[pos] == '\r' or
+                body[pos] == ','))
         {
             pos += 1;
         }
@@ -12620,10 +13189,18 @@ pub const Evaluator = struct {
         method: []const u8,
     ) anyerror!?Value {
         _ = self;
-        if (!(obj == .object and std.ascii.eqlIgnoreCase(obj.object.class_name, "Time"))) return null;
-        if (std.ascii.eqlIgnoreCase(method, "hour")) return obj.object.fields.get("hour") orelse Value{ .integer = 0 };
-        if (std.ascii.eqlIgnoreCase(method, "minute")) return obj.object.fields.get("minute") orelse Value{ .integer = 0 };
-        if (std.ascii.eqlIgnoreCase(method, "second")) return obj.object.fields.get("second") orelse Value{ .integer = 0 };
+        if (!(obj == .object and std.ascii.eqlIgnoreCase(obj.object.class_name, "Time"))) {
+            return null;
+        }
+        if (std.ascii.eqlIgnoreCase(method, "hour")) {
+            return obj.object.fields.get("hour") orelse Value{ .integer = 0 };
+        }
+        if (std.ascii.eqlIgnoreCase(method, "minute")) {
+            return obj.object.fields.get("minute") orelse Value{ .integer = 0 };
+        }
+        if (std.ascii.eqlIgnoreCase(method, "second")) {
+            return obj.object.fields.get("second") orelse Value{ .integer = 0 };
+        }
         if (std.ascii.eqlIgnoreCase(method, "millisecond")) {
             return obj.object.fields.get("millisecond") orelse Value{ .integer = 0 };
         }
@@ -12644,7 +13221,9 @@ pub const Evaluator = struct {
         }
         const date_str = builtins.extract_date_string(obj) orelse return null;
         if (args.len == 0 and std.ascii.eqlIgnoreCase(method, "format")) {
-            if (parse_iso_date(date_str)) |dt| return try self.format_date_like_instance(obj.object.class_name, dt);
+            if (parse_iso_date(date_str)) |dt| {
+                return try self.format_date_like_instance(obj.object.class_name, dt);
+            }
         }
         const result = try self.eval_string_method(date_str, method, args);
         if (result != .string) return result;
@@ -12683,14 +13262,18 @@ pub const Evaluator = struct {
             break :blk if (h_mod == 0) 12 else h_mod;
         };
         const am_pm: []const u8 = if (dt.h < 12) "AM" else "PM";
-        return Value{ .string = try std.fmt.allocPrint(self.arena, "{d}/{d}/{d:0>4}, {d}:{d:0>2} {s}", .{
-            dt.m,
-            dt.d,
-            @as(u32, @intCast(dt.y)),
-            hour12,
-            dt.mi,
-            am_pm,
-        }) };
+        return Value{ .string = try std.fmt.allocPrint(
+            self.arena,
+            "{d}/{d}/{d:0>4}, {d}:{d:0>2} {s}",
+            .{
+                dt.m,
+                dt.d,
+                @as(u32, @intCast(dt.y)),
+                hour12,
+                dt.mi,
+                am_pm,
+            },
+        ) };
     }
 
     fn eval_user_defined_object_instance_method(
