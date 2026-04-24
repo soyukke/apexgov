@@ -7968,763 +7968,733 @@ pub const Evaluator = struct {
             // OS スタックオーバーフローを引き起こす場合があるため null を返す
             return .null_val;
         }
-        switch (expr.*) {
-            .integer_literal => |v| return .{ .integer = v },
-            .long_literal => |v| return .{ .long = v },
-            .double_literal => |v| return .{ .double = v },
-            .string_literal => |v| return .{ .string = v },
-            .boolean_literal => |v| return .{ .boolean = v },
-            .null_literal => return .null_val,
-            .this_expr, .super_expr => {
-                return current_env.get("this") orelse .null_val;
-            },
+        return switch (expr.*) {
+            .integer_literal => |v| .{ .integer = v },
+            .long_literal => |v| .{ .long = v },
+            .double_literal => |v| .{ .double = v },
+            .string_literal => |v| .{ .string = v },
+            .boolean_literal => |v| .{ .boolean = v },
+            .null_literal => .null_val,
+            .this_expr, .super_expr => current_env.get("this") orelse .null_val,
+            .identifier => |id| self.eval_identifier_expr(id, current_env),
+            .binary => |bin| self.eval_binary_expr(bin, current_env),
+            .unary => |un| self.eval_unary_expr(un, current_env),
+            .assignment => |asgn| self.eval_assignment_expr(asgn, current_env),
+            .call => |call| self.eval_call_expr(call, current_env),
+            .method_call => |mc| self.eval_method_call(mc, current_env),
+            .field_access => |fa| self.eval_field_access_expr(fa, current_env),
+            .index_access => |ia| self.eval_index_access_expr(ia, current_env),
+            .new_expr => |ne| self.eval_new_expr_with_trace(ne, current_env),
+            .cast_expr => |ce| self.eval_cast_expr(ce, current_env),
+            .ternary => |te| self.eval_ternary_expr(te, current_env),
+            .instanceof => |ie| self.eval_instanceof_expr(ie, current_env),
+            .soql => |sq| self.execute_soql(sq.raw, current_env),
+            .grouped => |inner| self.eval_expr(inner, current_env),
+        };
+    }
 
-            .identifier => |id| {
-                if (current_env.get(id.name)) |val| {
-                    // If value is null_val, still check for instance getter (property may override)
-                    if (val != .null_val) return val;
-                }
-                // Fallback: runConstructor pre-loads instance fields into the
-                // ctor env as snapshots, but after `super()` (or any peer
-                // mutation) the snapshot goes stale. When the env binding was
-                // a snapshot (no declared_type attached — params/locals from
-                // defineTyped DO carry one), and the live instance.fields
-                // entry is non-null, prefer the instance value. Params set to
-                // null intentionally stay null because they carry a declared
-                // type and therefore bypass this fallback.
-                if (current_env.get("this")) |this_live| {
-                    if (this_live == .object) {
-                        if (utils.sobject_get(&this_live.object.fields, id.name)) |live| {
-                            if (live != .null_val) {
-                                if (self.find_class(this_live.object.class_name)) |live_cd| {
-                                    if (self.is_instance_field(live_cd, id.name) or
-                                        self.is_parent_instance_field(live_cd, id.name))
-                                    {
-                                        // Only refresh when the env entry is an untyped
-                                        // ctor pre-load. A typed binding (parameter /
-                                        // declared local) is authoritative.
-                                        if (current_env.get_declared_type(id.name) == null) {
-                                            return live;
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                // SObjectType.X (without Schema. prefix) → Schema.SObjectType token for X
-                if (std.mem.startsWith(u8, id.name, "SObjectType.") and
-                    std.mem.indexOfScalar(u8, id.name["SObjectType.".len..], '.') == null)
-                {
-                    const object_name = id.name["SObjectType.".len..];
-                    const sot = try self.arena.create(types.ObjectInstance);
-                    sot.* = .{ .class_name = "Schema.SObjectType" };
-                    try sot.fields.put(self.arena, "name", Value{ .string = object_name });
-                    return Value{ .object = sot };
-                }
-                if (std.mem.startsWith(u8, id.name, "Schema.")) {
-                    const suffix = id.name["Schema.".len..];
-                    if (std.mem.lastIndexOfScalar(u8, suffix, '.')) |dot_idx| {
-                        const owner_name = suffix[0..dot_idx];
-                        const member_name = suffix[dot_idx + 1 ..];
-                        if (std.ascii.eqlIgnoreCase(owner_name, "SObjectType")) {
-                            const sot = try self.arena.create(types.ObjectInstance);
-                            sot.* = .{ .class_name = "Schema.SObjectType" };
-                            try sot.fields.put(self.arena, "name", Value{ .string = member_name });
-                            return Value{ .object = sot };
-                        }
-                        if (std.ascii.eqlIgnoreCase(member_name, "SObjectType")) {
-                            const sot = try self.arena.create(types.ObjectInstance);
-                            sot.* = .{ .class_name = "Schema.SObjectType" };
-                            try sot.fields.put(self.arena, "name", Value{ .string = owner_name });
-                            return Value{ .object = sot };
-                        }
-                        if (!std.ascii.eqlIgnoreCase(member_name, "class")) {
-                            return try self.make_s_object_field_token(owner_name, member_name);
-                        }
-                    }
-                }
-                // Check if this is a property with a getter on `this`
-                // (bare identifier in getter body referencing another property)
-                // Skip if we're already inside this property's getter to avoid infinite recursion
-                // (self-referencing getter pattern: backing field access, not getter re-invocation)
-                // ALSO skip when the identifier is a typed local / parameter binding — a
-                // parameter with a nullable value (e.g. passed null from a caller) must
-                // not be silently promoted to the property getter's result. Distinguish
-                // by checking `getDeclaredType`: parameters/declared locals carry one,
-                // ctor-env instance-field pre-loads do not.
-                if (current_env.get("this")) |this_check| {
-                    if (this_check == .object) {
-                        const already_in_instance_getter = if (self.evaluating_getter) |eg| std.ascii.eqlIgnoreCase(eg, id.name) else false;
-                        const shadowed_by_typed_local = current_env.get_declared_type(id.name) != null;
-                        if (!already_in_instance_getter and !shadowed_by_typed_local) {
-                            if (self.find_class(this_check.object.class_name)) |this_cd| {
-                                var scan_cd: ?*ast.ClassDecl = this_cd;
-                                while (scan_cd) |scd| {
-                                    for (scd.members) |m| {
-                                        switch (m) {
-                                            .field_decl => |pfd| {
-                                                if (std.ascii.eqlIgnoreCase(pfd.name, id.name) and pfd.getter_body != null) {
-                                                    // Evaluate as this.propertyName → triggers getter
-                                                    const this_expr_node = try self.arena.create(ast.Expr);
-                                                    this_expr_node.* = .this_expr;
-                                                    const fa_node = try self.arena.create(ast.FieldAccess);
-                                                    fa_node.* = .{ .object = this_expr_node, .field = id.name, .null_safe = false };
-                                                    const fa_expr = try self.arena.create(ast.Expr);
-                                                    fa_expr.* = .{ .field_access = fa_node };
-                                                    return self.eval_expr(fa_expr, current_env);
-                                                }
-                                            },
-                                            else => {},
-                                        }
-                                    }
-                                    scan_cd = if (scd.super_class) |sc| self.find_class(sc.name) else null;
-                                }
-                            }
-                        } else if (already_in_instance_getter) {
-                            // Inside own getter: return backing field value directly
-                            if (self.find_field_decl_with_owner(this_check.object.class_name, id.name)) |lookup| {
-                                if (lookup.field_decl.modifiers.is_static) {
-                                    return self.read_static_backing_value(lookup.owner_name, id.name);
-                                }
-                            }
-                            if (this_check.object.fields.get(id.name)) |fv| return fv;
-                            // Case-insensitive fallback
-                            for (this_check.object.fields.keys(), this_check.object.fields.values()) |fk, fv| {
-                                if (std.ascii.eqlIgnoreCase(fk, id.name)) return fv;
-                            }
-                            return .null_val;
-                        }
-                    }
-                }
-                // Check static fields in enclosing class context
-                // When `this` is available, check ClassName.fieldName and parent class
-                if (current_env.get("this")) |this_val| {
-                    if (this_val == .object) {
-                        const this_cn = this_val.object.class_name;
-                        const key = std.fmt.allocPrint(self.arena, "{s}.{s}", .{ this_cn, id.name }) catch return .null_val;
-                        if (self.global_env.get(key)) |val| return val;
-                        // Check parent class static fields
-                        if (self.find_class(this_cn)) |cd| {
-                            if (cd.super_class) |sc| {
-                                self.ensure_static_init(sc.name);
-                                const pkey = std.fmt.allocPrint(self.arena, "{s}.{s}", .{ sc.name, id.name }) catch return .null_val;
-                                if (self.global_env.get(pkey)) |val| return val;
-                            }
-                        }
-                        // Check outer class static fields/getters (for inner classes)
-                        if (self.resolve_outer_static_field(this_cn, id.name)) |val| return val;
-                    }
-                }
-                // Check current_class static fields (for static methods)
-                if (self.current_class) |cc| {
-                    if (self.resolve_static_field_value_on_class(cc, id.name)) |val| return val;
-                    if (self.find_class(cc)) |cd| {
-                        if (cd.super_class) |sc| {
-                            if (self.resolve_static_field_value_on_class(sc.name, id.name)) |val| return val;
-                        }
-                    }
-                    // Check outer class static fields/getters when current_class is an inner class
-                    if (self.resolve_outer_static_field(cc, id.name)) |val| return val;
-                }
-                // Check if identifier is an inner enum/class of enclosing class or parent
-                // (e.g., HttpVerb inside RestClient → used as HttpVerb.GET)
-                {
-                    const check_classes = [_]?[]const u8{
-                        if (current_env.get("this")) |tv| (if (tv == .object) tv.object.class_name else null) else null,
-                        self.current_class,
-                    };
-                    for (check_classes) |cc_opt| {
-                        var cur_class: ?[]const u8 = cc_opt;
-                        while (cur_class) |ccn| {
-                            if (self.find_class(ccn)) |ccd| {
-                                for (ccd.members) |member| {
-                                    switch (member) {
-                                        .enum_decl => |ed| {
-                                            if (std.ascii.eqlIgnoreCase(ed.name, id.name)) {
-                                                return Value{ .string = id.name };
-                                            }
-                                        },
-                                        .class_decl => |inner_cd| {
-                                            if (std.ascii.eqlIgnoreCase(inner_cd.name, id.name)) {
-                                                return Value{ .string = id.name };
-                                            }
-                                        },
-                                        else => {},
-                                    }
-                                }
-                                cur_class = if (ccd.super_class) |sc| sc.name else null;
-                            } else break;
-                        }
-                    }
-                }
-                return .null_val;
-            },
+    fn eval_identifier_expr(self: *Evaluator, id: anytype, current_env: *Env) anyerror!Value {
+        if (self.eval_identifier_env_or_instance_value(id.name, current_env)) |value| return value;
+        if (try self.eval_schema_identifier_value(id.name)) |value| return value;
+        if (try self.eval_identifier_property_value(id.name, current_env)) |value| return value;
+        if (self.eval_identifier_static_value(id.name, current_env)) |value| return value;
+        if (self.eval_identifier_inner_type_value(id.name, current_env)) |value| return value;
+        return .null_val;
+    }
 
-            .binary => |bin| {
-                const left = try self.eval_expr(bin.left, current_env);
-                switch (bin.op) {
-                    .and_op => {
-                        if (!(utils.coerce_to_bool(left) catch false)) {
-                            return Value{ .boolean = false };
-                        }
-                    },
-                    .or_op => {
-                        if (utils.coerce_to_bool(left) catch false) {
-                            return Value{ .boolean = true };
-                        }
-                    },
-                    else => {},
-                }
-                const right = try self.eval_expr(bin.right, current_env);
-                return eval_binary(self, left, bin.op, right, self.arena);
-            },
-
-            .unary => |un| {
-                const operand = try self.eval_expr(un.operand, current_env);
-                return eval_unary(un.op, operand);
-            },
-
-            .assignment => |asgn| {
-                const val = try self.eval_expr(asgn.value, current_env);
-                if (asgn.is_postfix) {
-                    // Postfix n++ / n--: return original value, but still perform the assignment
-                    const original = self.eval_expr(asgn.target, current_env) catch Value.null_val;
-                    _ = try self.eval_assignment(asgn, val, current_env);
-                    return original;
-                }
-                return self.eval_assignment(asgn, val, current_env);
-            },
-
-            .call => |call| {
-                // Set call-site line for stack trace generation, and update parent frame's line
-                if (call.loc.line > 0) {
-                    self.current_call_line = call.loc.line;
-                    if (self.call_stack.items.len > 0)
-                        self.call_stack.items[self.call_stack.items.len - 1].line = call.loc.line;
-                }
-                var args: std.ArrayListUnmanaged(Value) = .empty;
-                var call_type_hints: std.ArrayListUnmanaged(?[]const u8) = .empty;
-                for (call.args) |*arg| {
-                    var arg_value = try self.eval_expr(arg, current_env);
-                    arg_value = try self.maybe_coerce_schema_expr_value(arg, arg_value);
-                    try args.append(self.arena, arg_value);
-                    const hint = self.extract_expr_type_hint(arg, current_env);
-                    try call_type_hints.append(self.arena, hint);
-                }
-                const prev_hints = self.cast_type_hints;
-                self.cast_type_hints = call_type_hints.items;
-                defer self.cast_type_hints = prev_hints;
-                // super(args) → call parent class constructor
-                if (std.mem.eql(u8, call.callee, "super")) {
-                    if (current_env.get("this")) |this_val| {
-                        if (this_val == .object) {
-                            // Use current_constructor_class to find the correct parent
-                            // (not the instance's actual class, which may be a child)
-                            const ctor_class = if (self.current_constructor_class) |cc|
-                                self.find_class(cc)
-                            else
-                                self.find_class(this_val.object.class_name);
-                            if (ctor_class) |cd| {
-                                if (cd.super_class) |sc| {
-                                    if (self.find_class(sc.name)) |parent_decl| {
-                                        try self.run_constructor(parent_decl, this_val.object, args.items);
-                                    }
+    fn eval_identifier_env_or_instance_value(self: *Evaluator, id_name: []const u8, current_env: *Env) ?Value {
+        if (current_env.get(id_name)) |val| {
+            if (val != .null_val) return val;
+        }
+        if (current_env.get("this")) |this_live| {
+            if (this_live == .object) {
+                if (utils.sobject_get(&this_live.object.fields, id_name)) |live| {
+                    if (live != .null_val) {
+                        if (self.find_class(this_live.object.class_name)) |live_cd| {
+                            if (self.is_instance_field(live_cd, id_name) or
+                                self.is_parent_instance_field(live_cd, id_name))
+                            {
+                                if (current_env.get_declared_type(id_name) == null) {
+                                    return live;
                                 }
                             }
                         }
                     }
-                    return Value.void_val;
                 }
-                // this(args) → constructor delegation to another constructor in the same class
-                if (std.mem.eql(u8, call.callee, "this")) {
-                    if (current_env.get("this")) |this_val| {
-                        if (this_val == .object) {
-                            const ctor_class_name = if (self.current_constructor_class) |cc| cc else this_val.object.class_name;
-                            if (self.find_class(ctor_class_name)) |cd| {
-                                try self.run_constructor(cd, this_val.object, args.items);
-                            }
-                        }
-                    }
-                    return Value.void_val;
-                }
-                // Try as instance method on `this` first
-                if (current_env.get("this")) |this_val| {
-                    if (this_val == .object) {
-                        const actual_decl: ?*ast.ClassDecl = self.find_class(this_val.object.class_name);
-                        const dispatch_decl = blk: {
-                            if (self.current_class) |current_class_name| {
-                                if (self.find_class(current_class_name)) |owner_decl| break :blk owner_decl;
-                            }
-                            break :blk actual_decl orelse return Value.null_val;
-                        };
-                        {
-                            // Virtual dispatch: start at the runtime (child) class and walk up.
-                            // Without this, an inherited method calling another method of the
-                            // same receiver (e.g. parent.getStringValue() → toString()) would
-                            // miss the child's override because it would search only from the
-                            // defining (parent) class upward.
-                            const md = self.find_method_in_hierarchy(actual_decl, dispatch_decl, call.callee, args.items.len);
-                            if (md != null) {
-                                // Snapshot field values before the call
-                                var pre_fields: [16]Value = undefined;
-                                const field_keys = this_val.object.fields.keys();
-                                const n_snap = @min(field_keys.len, pre_fields.len);
-                                for (this_val.object.fields.values()[0..n_snap], 0..) |v, fi| {
-                                    pre_fields[fi] = v;
-                                }
-                                const result = try self.call_instance_method(dispatch_decl, this_val.object, call.callee, args.items);
-                                // Sync back only fields that were MODIFIED by the called method
-                                for (this_val.object.fields.keys(), this_val.object.fields.values(), 0..) |fk, fv, fi| {
-                                    if (fi < n_snap) {
-                                        // Compare by identity: if value changed, sync it
-                                        const pre = pre_fields[fi];
-                                        const changed = switch (fv) {
-                                            .null_val => pre != .null_val,
-                                            .string => |s| if (pre == .string) s.ptr != pre.string.ptr or s.len != pre.string.len else true,
-                                            .integer => |i| if (pre == .integer) i != pre.integer else true,
-                                            .boolean => |b| if (pre == .boolean) b != pre.boolean else true,
-                                            else => true,
-                                        };
-                                        if (changed) {
-                                            current_env.set(fk, fv) catch {};
-                                        }
-                                    } else {
-                                        // New field added during call, sync it
-                                        current_env.set(fk, fv) catch {};
-                                    }
-                                }
-                                return result;
-                            }
-                        }
-                    }
-                }
-                // Try as static method in current class first
-                if (self.current_class) |cc| {
-                    if (self.find_class(cc)) |cd| {
-                        if (self.find_best_method_in_class_filtered(cd, call.callee, args.items, true) != null) {
-                            return self.call_method(cc, call.callee, args.items);
-                        }
-                    }
-                    if (self.resolve_outer_static_method_owner(cc, call.callee, args.items)) |outer_owner| {
-                        return self.call_method(outer_owner, call.callee, args.items);
-                    }
-                }
-                // Search all loaded classes for matching method
-                var class_iter = self.classes.iterator();
-                while (class_iter.next()) |entry| {
-                    for (entry.value_ptr.*.members) |member| {
-                        switch (member) {
-                            .method_decl => |md| {
-                                if (std.ascii.eqlIgnoreCase(md.name, call.callee)) {
-                                    return self.call_method(entry.key_ptr.*, call.callee, args.items);
+            }
+        }
+        return null;
+    }
+
+    fn eval_schema_identifier_value(self: *Evaluator, id_name: []const u8) !?Value {
+        if (std.mem.startsWith(u8, id_name, "SObjectType.") and
+            std.mem.indexOfScalar(u8, id_name["SObjectType.".len..], '.') == null)
+        {
+            return try self.make_schema_sobject_type_object(id_name["SObjectType.".len..]);
+        }
+        if (!std.mem.startsWith(u8, id_name, "Schema.")) return null;
+        const suffix = id_name["Schema.".len..];
+        const dot_idx = std.mem.lastIndexOfScalar(u8, suffix, '.') orelse return null;
+        const owner_name = suffix[0..dot_idx];
+        const member_name = suffix[dot_idx + 1 ..];
+        if (std.ascii.eqlIgnoreCase(owner_name, "SObjectType")) {
+            return try self.make_schema_sobject_type_object(member_name);
+        }
+        if (std.ascii.eqlIgnoreCase(member_name, "SObjectType")) {
+            return try self.make_schema_sobject_type_object(owner_name);
+        }
+        if (!std.ascii.eqlIgnoreCase(member_name, "class")) {
+            return try self.make_s_object_field_token(owner_name, member_name);
+        }
+        return null;
+    }
+
+    fn eval_identifier_property_value(
+        self: *Evaluator,
+        id_name: []const u8,
+        current_env: *Env,
+    ) anyerror!?Value {
+        const this_check = current_env.get("this") orelse return null;
+        if (this_check != .object) return null;
+        const already_in_instance_getter = if (self.evaluating_getter) |eg|
+            std.ascii.eqlIgnoreCase(eg, id_name)
+        else
+            false;
+        const shadowed_by_typed_local = current_env.get_declared_type(id_name) != null;
+        if (!already_in_instance_getter and !shadowed_by_typed_local) {
+            if (self.find_class(this_check.object.class_name)) |this_cd| {
+                var scan_cd: ?*ast.ClassDecl = this_cd;
+                while (scan_cd) |scd| {
+                    for (scd.members) |m| {
+                        switch (m) {
+                            .field_decl => |pfd| {
+                                if (std.ascii.eqlIgnoreCase(pfd.name, id_name) and pfd.getter_body != null) {
+                                    const this_expr_node = try self.arena.create(ast.Expr);
+                                    this_expr_node.* = .this_expr;
+                                    const fa_node = try self.arena.create(ast.FieldAccess);
+                                    fa_node.* = .{ .object = this_expr_node, .field = id_name, .null_safe = false };
+                                    const fa_expr = try self.arena.create(ast.Expr);
+                                    fa_expr.* = .{ .field_access = fa_node };
+                                    return try self.eval_expr(fa_expr, current_env);
                                 }
                             },
                             else => {},
                         }
                     }
+                    scan_cd = if (scd.super_class) |sc| self.find_class(sc.name) else null;
                 }
-                // Last resort: dispatch as `this.callee(args)` on the current receiver so
-                // that inherited builtin methods (e.g. `Exception.setMessage`) still fire
-                // when a user subclass calls them without an explicit `this.` qualifier.
-                if (current_env.get("this")) |this_val| {
-                    if (this_val == .object or this_val == .sobject or this_val == .string or
-                        this_val == .list or this_val == .map or this_val == .set)
-                    {
-                        return self.eval_instance_method(this_val, call.callee, args.items, current_env);
-                    }
-                }
-                return Value.null_val;
-            },
+            }
+            return null;
+        }
+        if (!already_in_instance_getter) return null;
+        if (self.find_field_decl_with_owner(this_check.object.class_name, id_name)) |lookup| {
+            if (lookup.field_decl.modifiers.is_static) {
+                return self.read_static_backing_value(lookup.owner_name, id_name);
+            }
+        }
+        if (this_check.object.fields.get(id_name)) |fv| return fv;
+        for (this_check.object.fields.keys(), this_check.object.fields.values()) |fk, fv| {
+            if (std.ascii.eqlIgnoreCase(fk, id_name)) return fv;
+        }
+        return .null_val;
+    }
 
-            .method_call => |mc| return self.eval_method_call(mc, current_env),
+    fn eval_identifier_static_value(self: *Evaluator, id_name: []const u8, current_env: *Env) ?Value {
+        if (current_env.get("this")) |this_val| {
+            if (this_val == .object) {
+                const this_cn = this_val.object.class_name;
+                const key = std.fmt.allocPrint(self.arena, "{s}.{s}", .{ this_cn, id_name }) catch return .null_val;
+                if (self.global_env.get(key)) |val| return val;
+                if (self.find_class(this_cn)) |cd| {
+                    if (cd.super_class) |sc| {
+                        self.ensure_static_init(sc.name);
+                        const pkey = std.fmt.allocPrint(self.arena, "{s}.{s}", .{ sc.name, id_name }) catch return .null_val;
+                        if (self.global_env.get(pkey)) |val| return val;
+                    }
+                }
+                if (self.resolve_outer_static_field(this_cn, id_name)) |val| return val;
+            }
+        }
+        if (self.current_class) |cc| {
+            if (self.resolve_static_field_value_on_class(cc, id_name)) |val| return val;
+            if (self.find_class(cc)) |cd| {
+                if (cd.super_class) |sc| {
+                    if (self.resolve_static_field_value_on_class(sc.name, id_name)) |val| return val;
+                }
+            }
+            if (self.resolve_outer_static_field(cc, id_name)) |val| return val;
+        }
+        return null;
+    }
 
-            .field_access => |fa| {
-                if (fa.object.* == .identifier and std.mem.startsWith(u8, fa.object.identifier.name, "Schema.")) {
-                    const schema_name = fa.object.identifier.name["Schema.".len..];
-                    if (is_known_schema_enum_type(schema_name)) {
-                        return Value{ .string = fa.field };
-                    }
-                    if (std.ascii.eqlIgnoreCase(schema_name, "SObjectType")) {
-                        const sot = try self.arena.create(types.ObjectInstance);
-                        sot.* = .{ .class_name = "Schema.SObjectType" };
-                        try sot.fields.put(self.arena, "name", Value{ .string = fa.field });
-                        return Value{ .object = sot };
-                    }
-                    if (std.ascii.eqlIgnoreCase(fa.field, "SObjectType")) {
-                        const sot = try self.arena.create(types.ObjectInstance);
-                        sot.* = .{ .class_name = "Schema.SObjectType" };
-                        try sot.fields.put(self.arena, "name", Value{ .string = schema_name });
-                        return Value{ .object = sot };
-                    }
-                    if (self.is_s_object_type_name(schema_name) and !std.ascii.eqlIgnoreCase(fa.field, "class")) {
-                        return self.make_s_object_field_token(schema_name, fa.field);
-                    }
-                }
-                // Pre-check: three-level ClassName.Inner.Field pattern for enums/constants
-                // Must be done BEFORE evaluating the inner object to avoid misresolution
-                if (fa.object.* == .field_access) {
-                    const inner_fa = fa.object.field_access;
-                    if (inner_fa.object.* == .identifier) {
-                        const outer_name = inner_fa.object.identifier.name;
-                        const inner_name = inner_fa.field;
-                        // Try global_env key: OuterClass.Inner.Field
-                        self.ensure_static_init(outer_name);
-                        const inner_fq = try std.fmt.allocPrint(self.arena, "{s}.{s}", .{ outer_name, inner_name });
-                        self.ensure_static_init(inner_fq);
-                        const fq_key = try std.fmt.allocPrint(self.arena, "{s}.{s}.{s}", .{ outer_name, inner_name, fa.field });
-                        if (self.global_env.get(fq_key)) |v| return v;
-                        // Try as enum in class
-                        if (self.find_class(outer_name)) |cd| {
-                            for (cd.members) |member| {
-                                switch (member) {
-                                    .enum_decl => |ed| {
-                                        if (std.ascii.eqlIgnoreCase(ed.name, inner_name)) {
-                                            return Value{ .string = fa.field };
-                                        }
-                                    },
-                                    else => {},
+    fn eval_identifier_inner_type_value(self: *Evaluator, id_name: []const u8, current_env: *Env) ?Value {
+        const check_classes = [_]?[]const u8{
+            if (current_env.get("this")) |tv| (if (tv == .object) tv.object.class_name else null) else null,
+            self.current_class,
+        };
+        for (check_classes) |cc_opt| {
+            var cur_class: ?[]const u8 = cc_opt;
+            while (cur_class) |ccn| {
+                if (self.find_class(ccn)) |ccd| {
+                    for (ccd.members) |member| {
+                        switch (member) {
+                            .enum_decl => |ed| {
+                                if (std.ascii.eqlIgnoreCase(ed.name, id_name)) {
+                                    return Value{ .string = id_name };
                                 }
-                            }
-                        }
-                        // System.AccessType/AccessLevel/LoggingLevel/TriggerOperation
-                        if (std.ascii.eqlIgnoreCase(outer_name, "System") and
-                            (std.ascii.eqlIgnoreCase(inner_name, "AccessType") or
-                                std.ascii.eqlIgnoreCase(inner_name, "AccessLevel") or
-                                std.ascii.eqlIgnoreCase(inner_name, "LoggingLevel") or
-                                std.ascii.eqlIgnoreCase(inner_name, "TriggerOperation")))
-                        {
-                            return Value{ .string = fa.field };
-                        }
-                        if (std.ascii.eqlIgnoreCase(outer_name, "Schema") and is_known_schema_enum_type(inner_name)) {
-                            return Value{ .string = fa.field };
-                        }
-                        // Schema.<SObjectType>.FieldName / Schema.<SObjectType>.SObjectType
-                        // must resolve directly without rewriting to unqualified identifiers,
-                        // otherwise a local variable like `User user` can shadow `Schema.User`.
-                        if (std.ascii.eqlIgnoreCase(outer_name, "Schema") and
-                            !std.ascii.eqlIgnoreCase(inner_name, "sObjectType") and
-                            !std.ascii.eqlIgnoreCase(inner_name, "SObjectType") and
-                            self.is_s_object_type_name(inner_name))
-                        {
-                            if (std.ascii.eqlIgnoreCase(fa.field, "SObjectType")) {
-                                const sot = try self.arena.create(types.ObjectInstance);
-                                sot.* = .{ .class_name = "Schema.SObjectType" };
-                                try sot.fields.put(self.arena, "name", Value{ .string = inner_name });
-                                return Value{ .object = sot };
-                            }
-                            if (!std.ascii.eqlIgnoreCase(fa.field, "class")) {
-                                return self.make_s_object_field_token(inner_name, fa.field);
-                            }
+                            },
+                            .class_decl => |inner_cd| {
+                                if (std.ascii.eqlIgnoreCase(inner_cd.name, id_name)) {
+                                    return Value{ .string = id_name };
+                                }
+                            },
+                            else => {},
                         }
                     }
-                }
-                if (fa.null_safe) {
-                    const obj = self.eval_expr(fa.object, current_env) catch |err| {
-                        if (err == error.ApexException and self.pending_exception != null) {
-                            if (self.pending_exception.? == .object) {
-                                const cn = self.pending_exception.?.object.class_name;
-                                if (std.ascii.indexOfIgnoreCase(cn, "NullPointer") != null) {
-                                    self.pending_exception = null;
-                                    return Value.null_val;
-                                }
-                            }
-                        }
-                        return err;
-                    };
-                    if (obj == .null_val) return Value.null_val;
-                    return self.eval_field_access(fa, obj, current_env);
-                }
-                const obj = try self.eval_expr(fa.object, current_env);
-                return self.eval_field_access(fa, obj, current_env);
-            },
+                    cur_class = if (ccd.super_class) |sc| sc.name else null;
+                } else break;
+            }
+        }
+        return null;
+    }
 
-            .index_access => |ia| {
-                const obj = try self.eval_expr(ia.object, current_env);
-                const idx = try self.eval_expr(ia.index, current_env);
-                if (obj == .list and idx == .integer) {
-                    if (idx.integer >= 0) {
-                        const i: usize = @intCast(idx.integer);
-                        if (i < obj.list.items.items.len) return obj.list.items.items[i];
-                    }
-                    const exc = try self.arena.create(types.ObjectInstance);
-                    exc.* = .{ .class_name = "ListException" };
-                    try exc.fields.put(self.arena, "message", Value{ .string = try std.fmt.allocPrint(self.arena, "List index out of bounds: {d}", .{idx.integer}) });
-                    self.pending_exception = Value{ .object = exc };
-                    return error.ApexException;
-                }
-                if (obj == .map and idx == .string) {
-                    return obj.map.entries.get(idx.string) orelse Value.null_val;
-                }
-                return Value.null_val;
-            },
-
-            .new_expr => |ne| {
-                // Set call-site line for constructor frame tracking, and update parent frame's line
-                if (ne.loc.line > 0) {
-                    self.current_call_line = ne.loc.line;
-                    if (self.call_stack.items.len > 0)
-                        self.call_stack.items[self.call_stack.items.len - 1].line = ne.loc.line;
-                }
-                const val = try self.eval_new_expr(ne, current_env);
-                // Capture stack trace for Exception objects at creation time
-                if (val == .object and std.mem.endsWith(u8, val.object.class_name, "Exception")) {
-                    if (val.object.fields.get("stackTraceString") == null) {
-                        const line = if (ne.loc.line > 0) ne.loc.line else 1;
-                        const trace = try self.build_stack_trace_string();
-                        try val.object.fields.put(self.arena, "stackTraceString", Value{ .string = trace });
-                        try val.object.fields.put(self.arena, "lineNumber", Value{ .integer = @intCast(line) });
-                    }
-                }
-                return val;
-            },
-
-            .cast_expr => |ce| {
-                const val = try self.eval_expr(ce.operand, current_env);
-                const target = ce.target_type.name;
-                // Check for incompatible casts that should throw TypeException
-                if (val == .object) {
-                    const src_name = val.object.class_name;
-                    // If casting to a primitive type like DateTime, Integer, etc. from an object
-                    if (std.ascii.eqlIgnoreCase(target, "DateTime") or
-                        std.ascii.eqlIgnoreCase(target, "Date") or
-                        std.ascii.eqlIgnoreCase(target, "Time"))
-                    {
-                        // Allow Date → Datetime cast (Apex converts Date to Datetime at midnight)
-                        if (std.ascii.eqlIgnoreCase(src_name, "Date") and std.ascii.eqlIgnoreCase(target, "DateTime")) {
-                            // Convert Date "YYYY-MM-DD" to Datetime "YYYY-MM-DDT00:00:00Z"
-                            if (val.object.fields.get("value")) |v| {
-                                if (v == .string) {
-                                    const dt_str = try std.fmt.allocPrint(self.arena, "{s}T00:00:00Z", .{v.string});
-                                    return try builtins.make_datetime_value(self.arena, dt_str);
-                                }
-                            }
-                            return val;
-                        }
-                        // Only allow if the object is actually that type
-                        if (!std.ascii.eqlIgnoreCase(src_name, target)) {
-                            // Normalize type name to match Apex conventions (e.g., DateTime → Datetime)
-                            const normalized_target = if (std.ascii.eqlIgnoreCase(target, "DateTime")) "Datetime" else if (std.ascii.eqlIgnoreCase(target, "Date")) "Date" else if (std.ascii.eqlIgnoreCase(target, "Time")) "Time" else target;
-                            const msg = try std.fmt.allocPrint(self.arena, "Invalid conversion from runtime type {s} to {s}", .{ src_name, normalized_target });
-                            const exc = try self.arena.create(types.ObjectInstance);
-                            exc.* = .{ .class_name = "System.TypeException" };
-                            try exc.fields.put(self.arena, "message", Value{ .string = msg });
-                            self.pending_exception = Value{ .object = exc };
-                            return error.ApexException;
-                        }
-                    }
-                    // Casting to a class type → check hierarchy
-                    if (!std.ascii.eqlIgnoreCase(src_name, target)) {
-                        // Check if target is a parent class
-                        var is_compatible = false;
-                        if (self.find_class(src_name)) |src_cd| {
-                            var cur: ?*ast.ClassDecl = src_cd;
-                            while (cur) |cd| {
-                                if (std.ascii.eqlIgnoreCase(cd.name, target)) {
-                                    is_compatible = true;
-                                    break;
-                                }
-                                // Check interfaces at this level
-                                for (cd.interfaces) |iface| {
-                                    if (std.ascii.eqlIgnoreCase(iface.name, target)) {
-                                        is_compatible = true;
-                                        break;
-                                    }
-                                    // Trailing-component match so that `TriggerAction.BeforeInsert`
-                                    // matches an `implements BeforeInsert` declaration inside
-                                    // the class that owns `TriggerAction`.
-                                    if (std.mem.lastIndexOfScalar(u8, target, '.')) |di| {
-                                        if (std.ascii.eqlIgnoreCase(iface.name, target[di + 1 ..])) {
-                                            is_compatible = true;
-                                            break;
-                                        }
-                                    }
-                                    if (std.mem.lastIndexOfScalar(u8, iface.name, '.')) |di| {
-                                        if (std.ascii.eqlIgnoreCase(iface.name[di + 1 ..], target)) {
-                                            is_compatible = true;
-                                            break;
-                                        }
-                                    }
-                                }
-                                if (is_compatible) break;
-                                if (cd.super_class) |sc| {
-                                    if (std.ascii.eqlIgnoreCase(sc.name, target)) {
-                                        is_compatible = true;
-                                        break;
-                                    }
-                                    cur = self.find_class(sc.name);
-                                } else break;
-                            }
-                        }
-                        // Also check if target is a child class of src (downcast)
-                        if (!is_compatible) {
-                            if (self.find_class(target)) |tgt_cd| {
-                                var cur2: ?*ast.ClassDecl = tgt_cd;
-                                while (cur2) |cd| {
-                                    if (std.ascii.eqlIgnoreCase(cd.name, src_name)) {
-                                        is_compatible = true;
-                                        break;
-                                    }
-                                    if (cd.super_class) |sc| {
-                                        if (std.ascii.eqlIgnoreCase(sc.name, src_name)) {
-                                            is_compatible = true;
-                                            break;
-                                        }
-                                        cur2 = self.find_class(sc.name);
-                                    } else break;
-                                }
-                            }
-                        }
-                        // If the target names a loaded interface declaration but neither
-                        // the source nor any of its ancestors implement it, Apex raises
-                        // TypeException. We only throw when we're confident target is
-                        // an interface in user code — otherwise preserve the historical
-                        // lenient cast for unknown/generic target names.
-                        if (!is_compatible and self.is_known_interface_name(target)) {
-                            const msg = try std.fmt.allocPrint(self.arena, "Invalid conversion from runtime type {s} to {s}", .{ src_name, target });
-                            const exc = try self.arena.create(types.ObjectInstance);
-                            exc.* = .{ .class_name = "System.TypeException" };
-                            try exc.fields.put(self.arena, "message", Value{ .string = msg });
-                            self.pending_exception = Value{ .object = exc };
-                            return error.ApexException;
-                        }
-                        // Abstract-class target: Apex rejects a cast to an abstract class
-                        // when the runtime object doesn't extend it. Trigger this only
-                        // when both sides are known user classes so the lenient fallback
-                        // still covers unknown / generic names.
-                        if (!is_compatible) {
-                            if (self.find_class(target)) |tgt_cd| {
-                                if (tgt_cd.modifiers.is_abstract and self.find_class(src_name) != null) {
-                                    const msg = try std.fmt.allocPrint(self.arena, "Invalid conversion from runtime type {s} to {s}", .{ src_name, target });
-                                    const exc = try self.arena.create(types.ObjectInstance);
-                                    exc.* = .{ .class_name = "System.TypeException" };
-                                    try exc.fields.put(self.arena, "message", Value{ .string = msg });
-                                    self.pending_exception = Value{ .object = exc };
-                                    return error.ApexException;
-                                }
-                            }
-                        }
-                    }
-                } else if (val == .sobject) {
-                    // SObject casts are always allowed (Account → SObject, etc.)
-                }
-                return val;
-            },
-
-            .ternary => |te| {
-                const cond = try self.eval_expr(te.condition, current_env);
-                if (utils.coerce_to_bool(cond) catch false) {
-                    return self.eval_expr(te.then_expr, current_env);
-                } else {
-                    return self.eval_expr(te.else_expr, current_env);
+    fn eval_binary_expr(self: *Evaluator, bin: anytype, current_env: *Env) anyerror!Value {
+        const left = try self.eval_expr(bin.left, current_env);
+        switch (bin.op) {
+            .and_op => {
+                if (!(utils.coerce_to_bool(left) catch false)) {
+                    return Value{ .boolean = false };
                 }
             },
-
-            .instanceof => |ie| {
-                const val = try self.eval_expr(ie.operand, current_env);
-                if (instanceof_matches_primitive(val, ie.type_name.name)) {
+            .or_op => {
+                if (utils.coerce_to_bool(left) catch false) {
                     return Value{ .boolean = true };
                 }
-                if (val == .sobject) {
-                    if (std.ascii.eqlIgnoreCase(ie.type_name.name, "SObject") or
-                        std.ascii.eqlIgnoreCase(ie.type_name.name, "Sobject") or
-                        std.ascii.eqlIgnoreCase(ie.type_name.name, "sObject"))
-                    {
-                        return Value{ .boolean = true };
-                    }
-                    return Value{ .boolean = std.ascii.eqlIgnoreCase(val.sobject.type_name, ie.type_name.name) };
-                }
-                if (val == .object) {
-                    // Check class name and superclass/interface hierarchy
-                    if (std.ascii.eqlIgnoreCase(val.object.class_name, ie.type_name.name)) return Value{ .boolean = true };
-                    // Also match when type name is dotted (e.g., "OuterClass.Inner") and class_name is the simple name
-                    if (std.mem.lastIndexOfScalar(u8, ie.type_name.name, '.')) |dot_pos| {
-                        if (std.ascii.eqlIgnoreCase(val.object.class_name, ie.type_name.name[dot_pos + 1 ..])) return Value{ .boolean = true };
-                    }
-                    // Also match when class_name is dotted ("OuterClass.Inner") and type_name is the simple name
-                    if (std.mem.lastIndexOfScalar(u8, val.object.class_name, '.')) |dot_pos| {
-                        if (std.ascii.eqlIgnoreCase(val.object.class_name[dot_pos + 1 ..], ie.type_name.name)) return Value{ .boolean = true };
-                    }
-                    // Walk superclass hierarchy
-                    if (self.find_class(val.object.class_name)) |cd| {
-                        var cur: ?*ast.ClassDecl = cd;
-                        while (cur) |ccd| {
-                            // Check implemented interfaces
-                            for (ccd.interfaces) |iface| {
-                                if (std.ascii.eqlIgnoreCase(iface.name, ie.type_name.name)) return Value{ .boolean = true };
-                                // Also match when interface name has a prefix (e.g., "di_Binding.Provider" matches "Provider")
-                                if (std.mem.lastIndexOfScalar(u8, iface.name, '.')) |dot_pos| {
-                                    if (std.ascii.eqlIgnoreCase(iface.name[dot_pos + 1 ..], ie.type_name.name)) return Value{ .boolean = true };
-                                }
-                            }
-                            if (ccd.super_class) |sc| {
-                                if (std.ascii.eqlIgnoreCase(sc.name, ie.type_name.name)) return Value{ .boolean = true };
-                                cur = self.find_class(sc.name);
-                            } else break;
-                        }
-                    }
-                    // Check if it's an exception type matching Exception hierarchy
-                    if (std.mem.endsWith(u8, ie.type_name.name, "Exception") and std.mem.endsWith(u8, val.object.class_name, "Exception")) {
-                        return Value{ .boolean = true };
-                    }
-                    return Value{ .boolean = false };
-                }
-                if (val == .list) {
-                    const tn = ie.type_name.name;
-                    const tn_base = blk: {
-                        if (std.mem.lastIndexOfScalar(u8, tn, '.')) |di| break :blk tn[di + 1 ..];
-                        break :blk tn;
-                    };
-                    // Apex List implements Iterable<Object>
-                    const is_list_match = std.ascii.eqlIgnoreCase(tn, "List");
-                    const is_iter_match = std.ascii.eqlIgnoreCase(tn_base, "Iterable");
-                    if (!is_list_match and !is_iter_match) return Value{ .boolean = false };
-                    // If no element type params specified, match any list
-                    if (ie.type_name.params.len == 0) return Value{ .boolean = true };
-                    // Check element type against actual list items
-                    // Note: type params are validated to have non-empty names
-                    const elem_type = ie.type_name.params[0].name;
-                    if (std.ascii.eqlIgnoreCase(elem_type, "Object")) return Value{ .boolean = true };
-                    if (elem_type.len > 0 and elem_type.len <= 128) {
-                        for (val.list.items.items) |item| {
-                            if (item == .null_val) continue;
-                            if (instanceof_matches_primitive(item, elem_type)) return Value{ .boolean = true };
-                            if (item == .object and self.is_subclass_of(item.object.class_name, elem_type)) return Value{ .boolean = true };
-                            return Value{ .boolean = false };
-                        }
-                    }
-                    return Value{ .boolean = true }; // empty list or unknown element type matches any
-                }
-                if (val == .map) return Value{ .boolean = std.ascii.eqlIgnoreCase(ie.type_name.name, "Map") };
-                if (val == .set) {
-                    const tn = ie.type_name.name;
-                    const tn_base = if (std.mem.lastIndexOfScalar(u8, tn, '.')) |di| tn[di + 1 ..] else tn;
-                    return Value{ .boolean = std.ascii.eqlIgnoreCase(tn, "Set") or std.ascii.eqlIgnoreCase(tn_base, "Iterable") };
-                }
-                if (val == .string) {
-                    if (std.ascii.eqlIgnoreCase(ie.type_name.name, "String")) return Value{ .boolean = true };
-                    if (std.ascii.eqlIgnoreCase(ie.type_name.name, "Id")) {
-                        return Value{ .boolean = is_salesforce_id_string(val.string) };
-                    }
-                    return Value{ .boolean = false };
-                }
-                if (val == .integer) {
-                    return Value{ .boolean = instanceof_matches_primitive(val, ie.type_name.name) };
-                }
-                if (val == .long) {
-                    return Value{ .boolean = instanceof_matches_primitive(val, ie.type_name.name) };
-                }
-                if (val == .double) {
-                    return Value{ .boolean = instanceof_matches_primitive(val, ie.type_name.name) };
-                }
-                if (val == .boolean) return Value{ .boolean = std.ascii.eqlIgnoreCase(ie.type_name.name, "Boolean") };
-                return Value{ .boolean = false };
             },
-
-            .soql => |sq| return self.execute_soql(sq.raw, current_env),
-
-            .grouped => |inner| return self.eval_expr(inner, current_env),
+            else => {},
         }
+        const right = try self.eval_expr(bin.right, current_env);
+        return eval_binary(self, left, bin.op, right, self.arena);
+    }
+
+    fn eval_unary_expr(self: *Evaluator, un: anytype, current_env: *Env) anyerror!Value {
+        const operand = try self.eval_expr(un.operand, current_env);
+        return eval_unary(un.op, operand);
+    }
+
+    fn eval_assignment_expr(self: *Evaluator, asgn: anytype, current_env: *Env) anyerror!Value {
+        const val = try self.eval_expr(asgn.value, current_env);
+        if (asgn.is_postfix) {
+            const original = self.eval_expr(asgn.target, current_env) catch Value.null_val;
+            _ = try self.eval_assignment(asgn, val, current_env);
+            return original;
+        }
+        return self.eval_assignment(asgn, val, current_env);
+    }
+
+    fn eval_call_expr(self: *Evaluator, call: anytype, current_env: *Env) anyerror!Value {
+        if (call.loc.line > 0) {
+            self.current_call_line = call.loc.line;
+            if (self.call_stack.items.len > 0)
+                self.call_stack.items[self.call_stack.items.len - 1].line = call.loc.line;
+        }
+        var args: std.ArrayListUnmanaged(Value) = .empty;
+        var call_type_hints: std.ArrayListUnmanaged(?[]const u8) = .empty;
+        for (call.args) |*arg| {
+            var arg_value = try self.eval_expr(arg, current_env);
+            arg_value = try self.maybe_coerce_schema_expr_value(arg, arg_value);
+            try args.append(self.arena, arg_value);
+            try call_type_hints.append(self.arena, self.extract_expr_type_hint(arg, current_env));
+        }
+        const prev_hints = self.cast_type_hints;
+        self.cast_type_hints = call_type_hints.items;
+        defer self.cast_type_hints = prev_hints;
+
+        if (try self.eval_constructor_call_expr(call, args.items, current_env)) |result| return result;
+        if (try self.eval_this_instance_call_expr(call, args.items, current_env)) |result| return result;
+        if (try self.eval_static_or_loaded_call_expr(call.callee, args.items)) |result| return result;
+        if (current_env.get("this")) |this_val| {
+            if (this_val == .object or this_val == .sobject or this_val == .string or
+                this_val == .list or this_val == .map or this_val == .set)
+            {
+                return self.eval_instance_method(this_val, call.callee, args.items, current_env);
+            }
+        }
+        return Value.null_val;
+    }
+
+    fn eval_constructor_call_expr(
+        self: *Evaluator,
+        call: anytype,
+        args: []const Value,
+        current_env: *Env,
+    ) anyerror!?Value {
+        if (std.mem.eql(u8, call.callee, "super")) {
+            if (current_env.get("this")) |this_val| {
+                if (this_val == .object) {
+                    const ctor_class = if (self.current_constructor_class) |cc|
+                        self.find_class(cc)
+                    else
+                        self.find_class(this_val.object.class_name);
+                    if (ctor_class) |cd| {
+                        if (cd.super_class) |sc| {
+                            if (self.find_class(sc.name)) |parent_decl| {
+                                try self.run_constructor(parent_decl, this_val.object, args);
+                            }
+                        }
+                    }
+                }
+            }
+            return Value.void_val;
+        }
+        if (!std.mem.eql(u8, call.callee, "this")) return null;
+        if (current_env.get("this")) |this_val| {
+            if (this_val == .object) {
+                const ctor_class_name = if (self.current_constructor_class) |cc| cc else this_val.object.class_name;
+                if (self.find_class(ctor_class_name)) |cd| {
+                    try self.run_constructor(cd, this_val.object, args);
+                }
+            }
+        }
+        return Value.void_val;
+    }
+
+    fn eval_this_instance_call_expr(
+        self: *Evaluator,
+        call: anytype,
+        args: []const Value,
+        current_env: *Env,
+    ) anyerror!?Value {
+        const this_val = current_env.get("this") orelse return null;
+        if (this_val != .object) return null;
+        const actual_decl: ?*ast.ClassDecl = self.find_class(this_val.object.class_name);
+        const dispatch_decl = blk: {
+            if (self.current_class) |current_class_name| {
+                if (self.find_class(current_class_name)) |owner_decl| break :blk owner_decl;
+            }
+            break :blk actual_decl orelse return Value.null_val;
+        };
+        const md = self.find_method_in_hierarchy(actual_decl, dispatch_decl, call.callee, args.len);
+        if (md == null) return null;
+        var pre_fields: [16]Value = undefined;
+        const field_keys = this_val.object.fields.keys();
+        const n_snap = @min(field_keys.len, pre_fields.len);
+        for (this_val.object.fields.values()[0..n_snap], 0..) |v, fi| {
+            pre_fields[fi] = v;
+        }
+        const result = try self.call_instance_method(dispatch_decl, this_val.object, call.callee, args);
+        try self.sync_instance_call_fields(current_env, this_val.object, pre_fields[0..n_snap]);
+        return result;
+    }
+
+    fn sync_instance_call_fields(
+        self: *Evaluator,
+        current_env: *Env,
+        object: *types.ObjectInstance,
+        pre_fields: []const Value,
+    ) !void {
+        for (object.fields.keys(), object.fields.values(), 0..) |fk, fv, fi| {
+            if (fi < pre_fields.len) {
+                const pre = pre_fields[fi];
+                const changed = switch (fv) {
+                    .null_val => pre != .null_val,
+                    .string => |s| if (pre == .string) s.ptr != pre.string.ptr or s.len != pre.string.len else true,
+                    .integer => |i| if (pre == .integer) i != pre.integer else true,
+                    .boolean => |b| if (pre == .boolean) b != pre.boolean else true,
+                    else => true,
+                };
+                if (changed) current_env.set(fk, fv) catch {};
+            } else {
+                current_env.set(fk, fv) catch {};
+            }
+        }
+        _ = self;
+    }
+
+    fn eval_static_or_loaded_call_expr(
+        self: *Evaluator,
+        callee: []const u8,
+        args: []const Value,
+    ) anyerror!?Value {
+        if (self.current_class) |cc| {
+            if (self.find_class(cc)) |cd| {
+                if (self.find_best_method_in_class_filtered(cd, callee, args, true) != null) {
+                    return try self.call_method(cc, callee, args);
+                }
+            }
+            if (self.resolve_outer_static_method_owner(cc, callee, args)) |outer_owner| {
+                return try self.call_method(outer_owner, callee, args);
+            }
+        }
+        var class_iter = self.classes.iterator();
+        while (class_iter.next()) |entry| {
+            for (entry.value_ptr.*.members) |member| {
+                switch (member) {
+                    .method_decl => |md| {
+                        if (std.ascii.eqlIgnoreCase(md.name, callee)) {
+                            return try self.call_method(entry.key_ptr.*, callee, args);
+                        }
+                    },
+                    else => {},
+                }
+            }
+        }
+        return null;
+    }
+
+    fn eval_field_access_expr(self: *Evaluator, fa: *ast.FieldAccess, current_env: *Env) anyerror!Value {
+        if (try self.eval_schema_field_access_expr(fa)) |value| return value;
+        if (try self.eval_nested_static_field_access_expr(fa)) |value| return value;
+        if (try self.eval_null_safe_field_access_expr(fa, current_env)) |value| return value;
+        const obj = try self.eval_expr(fa.object, current_env);
+        return try self.eval_field_access(fa, obj, current_env);
+    }
+
+    fn eval_schema_field_access_expr(self: *Evaluator, fa: *ast.FieldAccess) !?Value {
+        if (!(fa.object.* == .identifier and std.mem.startsWith(u8, fa.object.identifier.name, "Schema."))) {
+            return null;
+        }
+        const schema_name = fa.object.identifier.name["Schema.".len..];
+        if (is_known_schema_enum_type(schema_name)) {
+            return Value{ .string = fa.field };
+        }
+        if (std.ascii.eqlIgnoreCase(schema_name, "SObjectType")) {
+            return try self.make_schema_sobject_type_object(fa.field);
+        }
+        if (std.ascii.eqlIgnoreCase(fa.field, "SObjectType")) {
+            return try self.make_schema_sobject_type_object(schema_name);
+        }
+        if (self.is_s_object_type_name(schema_name) and !std.ascii.eqlIgnoreCase(fa.field, "class")) {
+            return try self.make_s_object_field_token(schema_name, fa.field);
+        }
+        return null;
+    }
+
+    fn eval_nested_static_field_access_expr(self: *Evaluator, fa: *ast.FieldAccess) !?Value {
+        if (fa.object.* != .field_access) return null;
+        const inner_fa = fa.object.field_access;
+        if (inner_fa.object.* != .identifier) return null;
+        const outer_name = inner_fa.object.identifier.name;
+        const inner_name = inner_fa.field;
+        self.ensure_static_init(outer_name);
+        const inner_fq = try std.fmt.allocPrint(self.arena, "{s}.{s}", .{ outer_name, inner_name });
+        self.ensure_static_init(inner_fq);
+        const fq_key = try std.fmt.allocPrint(self.arena, "{s}.{s}.{s}", .{ outer_name, inner_name, fa.field });
+        if (self.global_env.get(fq_key)) |v| return v;
+        if (self.find_class(outer_name)) |cd| {
+            for (cd.members) |member| {
+                switch (member) {
+                    .enum_decl => |ed| {
+                        if (std.ascii.eqlIgnoreCase(ed.name, inner_name)) {
+                            return Value{ .string = fa.field };
+                        }
+                    },
+                    else => {},
+                }
+            }
+        }
+        if (std.ascii.eqlIgnoreCase(outer_name, "System") and
+            (std.ascii.eqlIgnoreCase(inner_name, "AccessType") or
+                std.ascii.eqlIgnoreCase(inner_name, "AccessLevel") or
+                std.ascii.eqlIgnoreCase(inner_name, "LoggingLevel") or
+                std.ascii.eqlIgnoreCase(inner_name, "TriggerOperation")))
+        {
+            return Value{ .string = fa.field };
+        }
+        if (std.ascii.eqlIgnoreCase(outer_name, "Schema") and is_known_schema_enum_type(inner_name)) {
+            return Value{ .string = fa.field };
+        }
+        if (std.ascii.eqlIgnoreCase(outer_name, "Schema") and
+            !std.ascii.eqlIgnoreCase(inner_name, "sObjectType") and
+            !std.ascii.eqlIgnoreCase(inner_name, "SObjectType") and
+            self.is_s_object_type_name(inner_name))
+        {
+            if (std.ascii.eqlIgnoreCase(fa.field, "SObjectType")) {
+                return try self.make_schema_sobject_type_object(inner_name);
+            }
+            if (!std.ascii.eqlIgnoreCase(fa.field, "class")) {
+                return try self.make_s_object_field_token(inner_name, fa.field);
+            }
+        }
+        return null;
+    }
+
+    fn eval_null_safe_field_access_expr(
+        self: *Evaluator,
+        fa: *ast.FieldAccess,
+        current_env: *Env,
+    ) anyerror!?Value {
+        if (!fa.null_safe) return null;
+        const obj = self.eval_expr(fa.object, current_env) catch |err| {
+            if (err == error.ApexException and self.pending_exception != null) {
+                if (self.pending_exception.? == .object) {
+                    const cn = self.pending_exception.?.object.class_name;
+                    if (std.ascii.indexOfIgnoreCase(cn, "NullPointer") != null) {
+                        self.pending_exception = null;
+                        return Value.null_val;
+                    }
+                }
+            }
+            return err;
+        };
+        if (obj == .null_val) return Value.null_val;
+        return try self.eval_field_access(fa, obj, current_env);
+    }
+
+    fn eval_index_access_expr(self: *Evaluator, ia: *ast.IndexAccess, current_env: *Env) anyerror!Value {
+        const obj = try self.eval_expr(ia.object, current_env);
+        const idx = try self.eval_expr(ia.index, current_env);
+        if (obj == .list and idx == .integer) {
+            if (idx.integer >= 0) {
+                const i: usize = @intCast(idx.integer);
+                if (i < obj.list.items.items.len) return obj.list.items.items[i];
+            }
+            const exc = try self.arena.create(types.ObjectInstance);
+            exc.* = .{ .class_name = "ListException" };
+            try exc.fields.put(
+                self.arena,
+                "message",
+                Value{ .string = try std.fmt.allocPrint(self.arena, "List index out of bounds: {d}", .{idx.integer}) },
+            );
+            self.pending_exception = Value{ .object = exc };
+            return error.ApexException;
+        }
+        if (obj == .map and idx == .string) {
+            return obj.map.entries.get(idx.string) orelse Value.null_val;
+        }
+        return Value.null_val;
+    }
+
+    fn eval_new_expr_with_trace(self: *Evaluator, ne: *ast.NewExpr, current_env: *Env) anyerror!Value {
+        if (ne.loc.line > 0) {
+            self.current_call_line = ne.loc.line;
+            if (self.call_stack.items.len > 0)
+                self.call_stack.items[self.call_stack.items.len - 1].line = ne.loc.line;
+        }
+        const val = try self.eval_new_expr(ne, current_env);
+        if (val == .object and std.mem.endsWith(u8, val.object.class_name, "Exception")) {
+            if (val.object.fields.get("stackTraceString") == null) {
+                const line = if (ne.loc.line > 0) ne.loc.line else 1;
+                const trace = try self.build_stack_trace_string();
+                try val.object.fields.put(self.arena, "stackTraceString", Value{ .string = trace });
+                try val.object.fields.put(self.arena, "lineNumber", Value{ .integer = @intCast(line) });
+            }
+        }
+        return val;
+    }
+
+    fn eval_cast_expr(self: *Evaluator, ce: anytype, current_env: *Env) anyerror!Value {
+        const val = try self.eval_expr(ce.operand, current_env);
+        if (val != .object) return val;
+        return self.eval_object_cast_expr(val, ce.target_type.name);
+    }
+
+    fn raise_type_exception(self: *Evaluator, src_name: []const u8, target: []const u8) anyerror!Value {
+        const msg = try std.fmt.allocPrint(self.arena, "Invalid conversion from runtime type {s} to {s}", .{ src_name, target });
+        const exc = try self.arena.create(types.ObjectInstance);
+        exc.* = .{ .class_name = "System.TypeException" };
+        try exc.fields.put(self.arena, "message", Value{ .string = msg });
+        self.pending_exception = Value{ .object = exc };
+        return error.ApexException;
+    }
+
+    fn eval_ternary_expr(self: *Evaluator, te: anytype, current_env: *Env) anyerror!Value {
+        const cond = try self.eval_expr(te.condition, current_env);
+        if (utils.coerce_to_bool(cond) catch false) {
+            return self.eval_expr(te.then_expr, current_env);
+        }
+        return self.eval_expr(te.else_expr, current_env);
+    }
+
+    fn eval_object_cast_expr(self: *Evaluator, val: Value, target: []const u8) anyerror!Value {
+        const src_name = val.object.class_name;
+        if (try self.eval_temporal_object_cast(val, src_name, target)) |result| return result;
+        if (std.ascii.eqlIgnoreCase(src_name, target)) return val;
+        if (self.is_compatible_object_cast(src_name, target)) return val;
+        if (self.is_known_interface_name(target)) {
+            return self.raise_type_exception(src_name, target);
+        }
+        if (self.find_class(target)) |tgt_cd| {
+            if (tgt_cd.modifiers.is_abstract and self.find_class(src_name) != null) {
+                return self.raise_type_exception(src_name, target);
+            }
+        }
+        return val;
+    }
+
+    fn eval_temporal_object_cast(
+        self: *Evaluator,
+        val: Value,
+        src_name: []const u8,
+        target: []const u8,
+    ) anyerror!?Value {
+        if (!std.ascii.eqlIgnoreCase(target, "DateTime") and
+            !std.ascii.eqlIgnoreCase(target, "Date") and
+            !std.ascii.eqlIgnoreCase(target, "Time"))
+        {
+            return null;
+        }
+        if (std.ascii.eqlIgnoreCase(src_name, "Date") and std.ascii.eqlIgnoreCase(target, "DateTime")) {
+            if (val.object.fields.get("value")) |v| {
+                if (v == .string) {
+                    const dt_str = try std.fmt.allocPrint(self.arena, "{s}T00:00:00Z", .{v.string});
+                    return try builtins.make_datetime_value(self.arena, dt_str);
+                }
+            }
+            return val;
+        }
+        if (!std.ascii.eqlIgnoreCase(src_name, target)) {
+            const normalized_target = if (std.ascii.eqlIgnoreCase(target, "DateTime"))
+                "Datetime"
+            else if (std.ascii.eqlIgnoreCase(target, "Date"))
+                "Date"
+            else if (std.ascii.eqlIgnoreCase(target, "Time"))
+                "Time"
+            else
+                target;
+            return try self.raise_type_exception(src_name, normalized_target);
+        }
+        return val;
+    }
+
+    fn is_compatible_object_cast(self: *Evaluator, src_name: []const u8, target: []const u8) bool {
+        return self.object_cast_matches_source_hierarchy(src_name, target) or
+            self.object_cast_matches_target_hierarchy(src_name, target);
+    }
+
+    fn object_cast_matches_source_hierarchy(self: *Evaluator, src_name: []const u8, target: []const u8) bool {
+        const src_cd = self.find_class(src_name) orelse return false;
+        var cur: ?*ast.ClassDecl = src_cd;
+        while (cur) |cd| {
+            if (std.ascii.eqlIgnoreCase(cd.name, target)) return true;
+            for (cd.interfaces) |iface| {
+                if (std.ascii.eqlIgnoreCase(iface.name, target)) return true;
+                if (std.mem.lastIndexOfScalar(u8, target, '.')) |di| {
+                    if (std.ascii.eqlIgnoreCase(iface.name, target[di + 1 ..])) return true;
+                }
+                if (std.mem.lastIndexOfScalar(u8, iface.name, '.')) |di| {
+                    if (std.ascii.eqlIgnoreCase(iface.name[di + 1 ..], target)) return true;
+                }
+            }
+            if (cd.super_class) |sc| {
+                if (std.ascii.eqlIgnoreCase(sc.name, target)) return true;
+                cur = self.find_class(sc.name);
+            } else break;
+        }
+        return false;
+    }
+
+    fn object_cast_matches_target_hierarchy(self: *Evaluator, src_name: []const u8, target: []const u8) bool {
+        const tgt_cd = self.find_class(target) orelse return false;
+        var cur: ?*ast.ClassDecl = tgt_cd;
+        while (cur) |cd| {
+            if (std.ascii.eqlIgnoreCase(cd.name, src_name)) return true;
+            if (cd.super_class) |sc| {
+                if (std.ascii.eqlIgnoreCase(sc.name, src_name)) return true;
+                cur = self.find_class(sc.name);
+            } else break;
+        }
+        return false;
+    }
+
+    fn eval_instanceof_expr(self: *Evaluator, ie: anytype, current_env: *Env) anyerror!Value {
+        const val = try self.eval_expr(ie.operand, current_env);
+        if (instanceof_matches_primitive(val, ie.type_name.name)) {
+            return Value{ .boolean = true };
+        }
+        if (val == .sobject) {
+            if (std.ascii.eqlIgnoreCase(ie.type_name.name, "SObject") or
+                std.ascii.eqlIgnoreCase(ie.type_name.name, "Sobject") or
+                std.ascii.eqlIgnoreCase(ie.type_name.name, "sObject"))
+            {
+                return Value{ .boolean = true };
+            }
+            return Value{ .boolean = std.ascii.eqlIgnoreCase(val.sobject.type_name, ie.type_name.name) };
+        }
+        if (val == .object) return self.eval_object_instanceof_expr(val.object.class_name, ie.type_name.name);
+        if (val == .list) return self.eval_list_instanceof_expr(val.list, ie.type_name);
+        if (val == .map) return Value{ .boolean = std.ascii.eqlIgnoreCase(ie.type_name.name, "Map") };
+        if (val == .set) {
+            const tn = ie.type_name.name;
+            const tn_base = if (std.mem.lastIndexOfScalar(u8, tn, '.')) |di| tn[di + 1 ..] else tn;
+            return Value{ .boolean = std.ascii.eqlIgnoreCase(tn, "Set") or std.ascii.eqlIgnoreCase(tn_base, "Iterable") };
+        }
+        if (val == .string) {
+            if (std.ascii.eqlIgnoreCase(ie.type_name.name, "String")) return Value{ .boolean = true };
+            if (std.ascii.eqlIgnoreCase(ie.type_name.name, "Id")) {
+                return Value{ .boolean = is_salesforce_id_string(val.string) };
+            }
+            return Value{ .boolean = false };
+        }
+        if (val == .integer or val == .long or val == .double) {
+            return Value{ .boolean = instanceof_matches_primitive(val, ie.type_name.name) };
+        }
+        if (val == .boolean) return Value{ .boolean = std.ascii.eqlIgnoreCase(ie.type_name.name, "Boolean") };
+        return Value{ .boolean = false };
+    }
+
+    fn eval_object_instanceof_expr(
+        self: *Evaluator,
+        class_name: []const u8,
+        type_name: []const u8,
+    ) Value {
+        if (std.ascii.eqlIgnoreCase(class_name, type_name)) return Value{ .boolean = true };
+        if (std.mem.lastIndexOfScalar(u8, type_name, '.')) |dot_pos| {
+            if (std.ascii.eqlIgnoreCase(class_name, type_name[dot_pos + 1 ..])) {
+                return Value{ .boolean = true };
+            }
+        }
+        if (std.mem.lastIndexOfScalar(u8, class_name, '.')) |dot_pos| {
+            if (std.ascii.eqlIgnoreCase(class_name[dot_pos + 1 ..], type_name)) {
+                return Value{ .boolean = true };
+            }
+        }
+        if (self.find_class(class_name)) |cd| {
+            var cur: ?*ast.ClassDecl = cd;
+            while (cur) |ccd| {
+                for (ccd.interfaces) |iface| {
+                    if (std.ascii.eqlIgnoreCase(iface.name, type_name)) return Value{ .boolean = true };
+                    if (std.mem.lastIndexOfScalar(u8, iface.name, '.')) |dot_pos| {
+                        if (std.ascii.eqlIgnoreCase(iface.name[dot_pos + 1 ..], type_name)) {
+                            return Value{ .boolean = true };
+                        }
+                    }
+                }
+                if (ccd.super_class) |sc| {
+                    if (std.ascii.eqlIgnoreCase(sc.name, type_name)) return Value{ .boolean = true };
+                    cur = self.find_class(sc.name);
+                } else break;
+            }
+        }
+        if (std.mem.endsWith(u8, type_name, "Exception") and std.mem.endsWith(u8, class_name, "Exception")) {
+            return Value{ .boolean = true };
+        }
+        return Value{ .boolean = false };
+    }
+
+    fn eval_list_instanceof_expr(self: *Evaluator, list: *types.ListValue, type_ref: types.TypeRef) Value {
+        const tn = type_ref.name;
+        const tn_base = blk: {
+            if (std.mem.lastIndexOfScalar(u8, tn, '.')) |di| break :blk tn[di + 1 ..];
+            break :blk tn;
+        };
+        const is_list_match = std.ascii.eqlIgnoreCase(tn, "List");
+        const is_iter_match = std.ascii.eqlIgnoreCase(tn_base, "Iterable");
+        if (!is_list_match and !is_iter_match) return Value{ .boolean = false };
+        if (type_ref.params.len == 0) return Value{ .boolean = true };
+        const elem_type = type_ref.params[0].name;
+        if (std.ascii.eqlIgnoreCase(elem_type, "Object")) return Value{ .boolean = true };
+        if (elem_type.len > 0 and elem_type.len <= 128) {
+            for (list.items.items) |item| {
+                if (item == .null_val) continue;
+                if (instanceof_matches_primitive(item, elem_type)) return Value{ .boolean = true };
+                if (item == .object and self.is_subclass_of(item.object.class_name, elem_type)) {
+                    return Value{ .boolean = true };
+                }
+                return Value{ .boolean = false };
+            }
+        }
+        return Value{ .boolean = true };
     }
 
     fn is_collection_type_name(type_name: []const u8) bool {
