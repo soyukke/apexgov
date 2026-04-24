@@ -51,6 +51,16 @@ const ProfileOptions = struct {
     }
 };
 
+const InterpretTestOptions = struct {
+    filter_class: ?[]const u8 = null,
+    filter_method: ?[]const u8 = null,
+    paths: std.ArrayList([]const u8) = .empty,
+
+    fn deinit(self: *InterpretTestOptions, gpa: std.mem.Allocator) void {
+        self.paths.deinit(gpa);
+    }
+};
+
 pub fn main(init: std.process.Init) void {
     // 再帰が深い Apex コードの解釈実行に備え、スタックサイズを拡大した
     // ワーカースレッドで実行する（macOS メインスレッドのデフォルトは 8 MB）。
@@ -464,8 +474,8 @@ fn run_interpret(gpa: std.mem.Allocator, io: Io, args: []const []const u8) !u8 {
 }
 
 fn run_interpret_test(gpa: std.mem.Allocator, io: Io, args: []const []const u8) !u8 {
-    var paths: std.ArrayList([]const u8) = .empty;
-    defer paths.deinit(gpa);
+    var opts = InterpretTestOptions{};
+    defer opts.deinit(gpa);
 
     var i: usize = 0;
     while (i < args.len) {
@@ -473,28 +483,47 @@ fn run_interpret_test(gpa: std.mem.Allocator, io: Io, args: []const []const u8) 
             print_stderr(io,
                 \\apexgov interpret test
                 \\  Run Apex test classes using the Zig native interpreter.
-                \\  Usage: apexgov interpret test <paths...>
+                \\  Usage: apexgov interpret test [--class CLASS] [--method METHOD] <paths...>
                 \\
             , .{});
             return 0;
         }
-        if (std.mem.startsWith(u8, args[i], "--")) {
-            i += 1;
+        if (try consume_option(args, &i, "--class")) |v| {
+            opts.filter_class = v;
             continue;
         }
-        try paths.append(gpa, args[i]);
+        if (try consume_option(args, &i, "--method")) |v| {
+            opts.filter_method = v;
+            continue;
+        }
+        if (std.mem.startsWith(u8, args[i], "--")) return error.UnknownOption;
+        try opts.paths.append(gpa, args[i]);
         i += 1;
     }
 
-    if (paths.items.len == 0) {
-        try paths.append(gpa, "force-app");
+    if (opts.filter_method != null and opts.filter_class == null) return error.MissingTestClass;
+
+    if (opts.paths.items.len == 0) {
+        try opts.paths.append(gpa, "force-app");
     }
 
     var write_buffer: [8192]u8 = undefined;
     var stderr_writer = Io.File.stderr().writer(io, &write_buffer);
     const writer = &stderr_writer.interface;
 
-    const suite = try apexgov.interpret.run_test_suite(gpa, io, paths.items, writer);
+    var suite = if (opts.filter_class) |class_name|
+        try apexgov.interpret.run_single_test(
+            gpa,
+            io,
+            opts.paths.items,
+            class_name,
+            opts.filter_method,
+            writer,
+        )
+    else
+        try apexgov.interpret.run_test_suite(gpa, io, opts.paths.items, writer);
+    defer suite.deinit();
+
     try writer.flush();
 
     return if (suite.total > 0 and suite.passed == suite.total) 0 else 1;
@@ -661,7 +690,7 @@ fn print_usage(io: Io) void {
         \\                [--out FILE] [--severity-threshold info|warning|error|none]
         \\  apexgov profile <log_paths...> [--config FILE] [--baseline FILE]
         \\                                 [--format text|json|sarif] [--out FILE]
-        \\  apexgov interpret test <paths...>
+        \\  apexgov interpret test [--class CLASS] [--method METHOD] <paths...>
         \\  apexgov typegen <sfdx-project-root> [--out DIR]
         \\  apexgov lsp
         \\
@@ -672,6 +701,7 @@ fn print_usage(io: Io) void {
         \\  apexgov profile artifacts/logs
         \\          --baseline reports/profile-baseline.json --config apexgov.toml
         \\  apexgov interpret test force-app/main/default/classes
+        \\  apexgov interpret test --class MyTest --method testCase force-app
         \\  apexgov typegen my-sfdx-project --out .sfdx/typings/lwc
         \\  apexgov lsp                 Start the Language Server Protocol server (stdio)
         \\

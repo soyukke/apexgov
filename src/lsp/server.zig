@@ -755,7 +755,7 @@ pub const Server = struct {
         var test_allocating = std.Io.Writer.Allocating.init(self.allocator);
         defer test_allocating.deinit();
 
-        const suite = interpret.run_single_test(
+        var suite = interpret.run_single_test(
             self.allocator,
             self.io,
             test_paths,
@@ -766,6 +766,7 @@ pub const Server = struct {
             try self.notify_test_execution_failed();
             return;
         };
+        defer suite.deinit();
 
         try self.notify_test_result(class_name, method_name, suite, test_allocating.written());
     }

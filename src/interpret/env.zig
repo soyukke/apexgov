@@ -11,6 +11,7 @@ pub const Env = struct {
     declared_types: std.StringArrayHashMapUnmanaged([]const u8) = .empty,
     parent: ?*Env = null,
     arena: std.mem.Allocator,
+    this_value: ?Value = null,
 
     pub fn init(arena: std.mem.Allocator) Env {
         return .{ .arena = arena };
@@ -18,12 +19,13 @@ pub const Env = struct {
 
     pub fn child(self: *Env) !*Env {
         const c = try self.arena.create(Env);
-        c.* = .{ .arena = self.arena, .parent = self };
+        c.* = .{ .arena = self.arena, .parent = self, .this_value = self.this_value };
         return c;
     }
 
     pub fn define(self: *Env, name: []const u8, value: Value) !void {
         try self.bindings.put(self.arena, name, value);
+        if (std.mem.eql(u8, name, "this")) self.this_value = value;
     }
 
     pub fn define_typed(
@@ -33,6 +35,7 @@ pub const Env = struct {
         declared_type: ?[]const u8,
     ) !void {
         try self.bindings.put(self.arena, name, value);
+        if (std.mem.eql(u8, name, "this")) self.this_value = value;
         if (declared_type) |type_name| {
             try self.declared_types.put(self.arena, name, type_name);
         }
@@ -47,6 +50,16 @@ pub const Env = struct {
         }
         if (self.parent) |p| return p.get(name);
         return null;
+    }
+
+    pub fn get_exact(self: *const Env, name: []const u8) ?Value {
+        if (self.bindings.get(name)) |v| return v;
+        if (self.parent) |p| return p.get_exact(name);
+        return null;
+    }
+
+    pub fn get_this(self: *const Env) ?Value {
+        return self.this_value;
     }
 
     pub fn has(self: *const Env, name: []const u8) bool {
@@ -70,12 +83,14 @@ pub const Env = struct {
     pub fn set(self: *Env, name: []const u8, value: Value) !void {
         if (self.bindings.getIndex(name)) |idx| {
             self.bindings.values()[idx] = value;
+            if (std.mem.eql(u8, name, "this")) self.this_value = value;
             return;
         }
         // Case-insensitive fallback
         for (self.bindings.keys(), 0..) |k, idx| {
             if (std.ascii.eqlIgnoreCase(k, name)) {
                 self.bindings.values()[idx] = value;
+                if (std.ascii.eqlIgnoreCase(name, "this")) self.this_value = value;
                 return;
             }
         }
@@ -145,7 +160,7 @@ test "set undefined variable returns error" {
     try std.testing.expectError(error.UndefinedVariable, env.set("nope", .{ .integer = 1 }));
 }
 
-test "define_typed stores declared type" {
+test "defineTyped stores declared type" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 

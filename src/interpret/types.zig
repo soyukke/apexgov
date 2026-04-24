@@ -117,14 +117,14 @@ pub const RuntimeError = struct {
 // テスト
 // ---------------------------------------------------------------------------
 
-test "Value.is_null" {
+test "Value.isNull" {
     const v: Value = .null_val;
     try std.testing.expect(v.is_null());
     const i: Value = .{ .integer = 42 };
     try std.testing.expect(!i.is_null());
 }
 
-test "Value.is_truthy" {
+test "Value.isTruthy" {
     const null_val: Value = .null_val;
     try std.testing.expect(!null_val.is_truthy());
     try std.testing.expect((Value{ .boolean = true }).is_truthy());

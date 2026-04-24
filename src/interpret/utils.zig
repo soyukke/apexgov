@@ -40,143 +40,6 @@ fn numeric_as_f64(v: Value) ?f64 {
 
 /// Apex == セマンティクスで値を比較する。
 /// String は大文字小文字を区別しない。
-fn is_date_like_class(name: []const u8) bool {
-    return std.ascii.eqlIgnoreCase(name, "Date") or std.ascii.eqlIgnoreCase(name, "Datetime");
-}
-
-fn date_object_value_eql_str(obj: anytype, s: []const u8) bool {
-    if (!is_date_like_class(obj.class_name)) return false;
-    const v = obj.fields.get("value") orelse return false;
-    if (v != .string) return false;
-    const a_norm = normalize_date_time_str(v.string);
-    const b_norm = normalize_date_time_str(s);
-    return std.ascii.eqlIgnoreCase(a_norm, b_norm);
-}
-
-fn cross_tag_value_eql(a: Value, b: Value, a_tag: anytype, b_tag: anytype) bool {
-    if (numeric_as_f64(a)) |af| {
-        if (numeric_as_f64(b)) |bf| return af == bf;
-    }
-    if (a_tag == .object and b_tag == .string) return date_object_value_eql_str(a.object, b.string);
-    if (a_tag == .string and b_tag == .object) return date_object_value_eql_str(b.object, a.string);
-    return false;
-}
-
-fn sobject_fields_eql(a: *const anyopaque, b: *const anyopaque) bool {
-    _ = a;
-    _ = b;
-    return true;
-}
-
-fn sobject_value_eql(av: anytype, bv: anytype) bool {
-    // Compare by Id if both have one
-    if (av.id != null and bv.id != null) return std.ascii.eqlIgnoreCase(av.id.?, bv.id.?);
-    // Pointer equality first
-    if (av == bv) return true;
-    // Deep equality: same type
-    if (!std.ascii.eqlIgnoreCase(av.type_name, bv.type_name)) return false;
-    // Compare all fields from both sides — missing fields treated as null
-    for (av.fields.keys(), av.fields.values()) |k, v| {
-        const other = sobject_get(&bv.fields, k) orelse Value.null_val;
-        if (!value_eql(v, other)) return false;
-    }
-    for (bv.fields.keys(), bv.fields.values()) |k, v| {
-        if (sobject_get(&av.fields, k) == null) {
-            if (!value_eql(v, Value.null_val)) return false;
-        }
-    }
-    return true;
-}
-
-fn list_value_eql(av: anytype, bv: anytype) bool {
-    if (av == bv) return true;
-    if (av.items.items.len != bv.items.items.len) return false;
-    for (av.items.items, bv.items.items) |a_item, b_item| {
-        if (!value_eql(a_item, b_item)) return false;
-    }
-    return true;
-}
-
-fn map_value_eql(av: anytype, bv: anytype) bool {
-    if (av == bv) return true;
-    if (av.entries.count() != bv.entries.count()) return false;
-    for (av.entries.keys(), av.entries.values()) |k, v| {
-        const other = bv.entries.get(k) orelse return false;
-        if (!value_eql(v, other)) return false;
-    }
-    return true;
-}
-
-fn set_value_eql(av: anytype, bv: anytype) bool {
-    if (av == bv) return true;
-    if (av.entries.count() != bv.entries.count()) return false;
-    for (av.entries.keys()) |k| {
-        if (!bv.entries.contains(k)) return false;
-    }
-    return true;
-}
-
-fn object_name_field_eql(av: anytype, bv: anytype) bool {
-    const a_name = av.fields.get("name") orelse return false;
-    const b_name = bv.fields.get("name") orelse return false;
-    if (a_name != .string or b_name != .string) return false;
-    return std.ascii.eqlIgnoreCase(a_name.string, b_name.string);
-}
-
-fn object_date_eql(av: anytype, bv: anytype) bool {
-    const a_val = av.fields.get("value") orelse return false;
-    const b_val = bv.fields.get("value") orelse return false;
-    if (a_val != .string or b_val != .string) return false;
-    const a_norm = normalize_date_time_str(a_val.string);
-    const b_norm = normalize_date_time_str(b_val.string);
-    return std.ascii.eqlIgnoreCase(a_norm, b_norm);
-}
-
-fn object_sfield_eql(av: anytype, bv: anytype) bool {
-    const a_name = av.fields.get("fieldName") orelse av.fields.get("name") orelse return false;
-    const b_name = bv.fields.get("fieldName") orelse bv.fields.get("name") orelse return false;
-    if (a_name != .string or b_name != .string) return false;
-
-    const same_object_type = blk: {
-        const ao = av.fields.get("objectType");
-        const bo = bv.fields.get("objectType");
-        if (ao == null or bo == null) break :blk true;
-        if (ao.? != .string or bo.? != .string) break :blk false;
-        break :blk std.ascii.eqlIgnoreCase(ao.?.string, bo.?.string);
-    };
-    return same_object_type and std.ascii.eqlIgnoreCase(a_name.string, b_name.string);
-}
-
-fn object_value_eql(av: anytype, bv: anytype) bool {
-    if (av == bv) return true;
-    const a_type_is_sobject_type = std.ascii.eqlIgnoreCase(av.class_name, "Schema.SObjectType");
-    const b_type_is_sobject_type = std.ascii.eqlIgnoreCase(bv.class_name, "Schema.SObjectType");
-    const a_type_is_type = std.ascii.eqlIgnoreCase(av.class_name, "Type");
-    const b_type_is_type = std.ascii.eqlIgnoreCase(bv.class_name, "Type");
-    if ((a_type_is_sobject_type and b_type_is_sobject_type) or
-        (a_type_is_type and b_type_is_type))
-    {
-        return object_name_field_eql(av, bv);
-    }
-    if (is_date_like_class(av.class_name) and is_date_like_class(bv.class_name)) {
-        return object_date_eql(av, bv);
-    }
-    const a_is_sfield = std.ascii.eqlIgnoreCase(av.class_name, "Schema.SObjectField") or
-        std.ascii.eqlIgnoreCase(av.class_name, "SObjectField");
-    const b_is_sfield = std.ascii.eqlIgnoreCase(bv.class_name, "Schema.SObjectField") or
-        std.ascii.eqlIgnoreCase(bv.class_name, "SObjectField");
-    if (a_is_sfield and b_is_sfield) return object_sfield_eql(av, bv);
-    return false;
-}
-
-fn string_value_eql(a: []const u8, b: []const u8) bool {
-    if (std.ascii.eqlIgnoreCase(a, b)) return true;
-    // Normalize DateTime strings: "2016-09-15T16:51:41.000+0000" == "2016-09-15T16:51:41Z"
-    const a_norm = normalize_date_time_str(a);
-    const b_norm = normalize_date_time_str(b);
-    return std.ascii.eqlIgnoreCase(a_norm, b_norm);
-}
-
 pub fn value_eql(a: Value, b: Value) bool {
     const TagType = @typeInfo(Value).@"union".tag_type.?;
     const a_tag: TagType = a;
@@ -184,85 +47,156 @@ pub fn value_eql(a: Value, b: Value) bool {
 
     if (a_tag == .null_val and b_tag == .null_val) return true;
     if (a_tag == .null_val or b_tag == .null_val) return false;
-    if (a_tag != b_tag) return cross_tag_value_eql(a, b, a_tag, b_tag);
+
+    if (a_tag != b_tag) {
+        return value_eql_cross_type(a, b, a_tag, b_tag);
+    }
 
     return switch (a) {
         .boolean => |av| av == b.boolean,
         .integer => |av| av == b.integer,
         .long => |av| av == b.long,
         .double => |av| av == b.double,
-        .string => |av| string_value_eql(av, b.string),
+        .string => |av| blk: {
+            if (std.ascii.eqlIgnoreCase(av, b.string)) break :blk true;
+            // Normalize DateTime strings: "2016-09-15T16:51:41.000+0000" == "2016-09-15T16:51:41Z"
+            const a_norm = normalize_date_time_str(av);
+            const b_norm = normalize_date_time_str(b.string);
+            break :blk std.ascii.eqlIgnoreCase(a_norm, b_norm);
+        },
         .void_val => true,
         .null_val => true,
-        .sobject => |av| sobject_value_eql(av, b.sobject),
-        .list => |av| list_value_eql(av, b.list),
-        .map => |av| map_value_eql(av, b.map),
-        .set => |av| set_value_eql(av, b.set),
-        .object => |av| object_value_eql(av, b.object),
+        .sobject => |av| value_eql_sobject(av, b.sobject),
+        .list => |av| value_eql_list(av, b.list),
+        .map => |av| value_eql_map(av, b.map),
+        .set => |av| value_eql_set(av, b.set),
+        .object => |av| value_eql_object(av, b.object),
     };
 }
 
-fn map_coerce_to_string(m: anytype, arena: std.mem.Allocator) anyerror![]const u8 {
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
-    try buf.appendSlice(arena, "{");
-    for (m.entries.keys(), m.entries.values(), 0..) |k, val, i| {
-        if (i > 0) try buf.appendSlice(arena, ", ");
-        try buf.appendSlice(arena, k);
-        try buf.append(arena, '=');
-        const vs = try coerce_to_string(val, arena);
-        try buf.appendSlice(arena, vs);
+fn value_eql_cross_type(a: Value, b: Value, a_tag: anytype, b_tag: anytype) bool {
+    if (numeric_as_f64(a)) |af| {
+        if (numeric_as_f64(b)) |bf| return af == bf;
     }
-    try buf.appendSlice(arena, "}");
-    return buf.items;
+    if (a_tag == .object and b_tag == .string) {
+        return value_eql_date_object_string(a.object, b.string);
+    }
+    if (a_tag == .string and b_tag == .object) {
+        return value_eql_date_object_string(b.object, a.string);
+    }
+    return false;
 }
 
-fn set_coerce_to_string(s2: anytype, arena: std.mem.Allocator) ![]const u8 {
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
-    try buf.appendSlice(arena, "{");
-    for (s2.entries.keys(), 0..) |k, i| {
-        if (i > 0) try buf.appendSlice(arena, ", ");
-        try buf.appendSlice(arena, k);
-    }
-    try buf.appendSlice(arena, "}");
-    return buf.items;
+fn value_eql_date_object_string(obj: *types.ObjectInstance, s: []const u8) bool {
+    if (!is_date_like_object(obj)) return false;
+    const v = obj.fields.get("value") orelse return false;
+    if (v != .string) return false;
+    const a_norm = normalize_date_time_str(v.string);
+    const b_norm = normalize_date_time_str(s);
+    return std.ascii.eqlIgnoreCase(a_norm, b_norm);
 }
 
-fn object_name_field_string(obj: anytype, key: []const u8) ?[]const u8 {
-    if (obj.fields.get(key)) |n| {
-        if (n == .string) return n.string;
+fn value_eql_sobject(a: *types.SObject, b: *types.SObject) bool {
+    if (a.id != null and b.id != null) return std.ascii.eqlIgnoreCase(a.id.?, b.id.?);
+    if (a == b) return true;
+    if (!std.ascii.eqlIgnoreCase(a.type_name, b.type_name)) return false;
+    for (a.fields.keys(), a.fields.values()) |k, v| {
+        const bv = sobject_get(&b.fields, k) orelse Value.null_val;
+        if (!value_eql(v, bv)) return false;
     }
-    return null;
+    for (b.fields.keys(), b.fields.values()) |k, v| {
+        if (sobject_get(&a.fields, k) == null and !value_eql(v, Value.null_val)) {
+            return false;
+        }
+    }
+    return true;
 }
 
-fn object_coerce_to_string(obj: anytype, arena: std.mem.Allocator) ![]const u8 {
-    // Schema.SObjectType / SObjectField / Type → .name field
-    if (std.ascii.eqlIgnoreCase(obj.class_name, "Schema.SObjectType")) {
-        if (object_name_field_string(obj, "name")) |s| return s;
+fn value_eql_list(a: *types.ListValue, b: *types.ListValue) bool {
+    if (a == b) return true;
+    if (a.items.items.len != b.items.items.len) return false;
+    for (a.items.items, b.items.items) |a_item, b_item| {
+        if (!value_eql(a_item, b_item)) return false;
     }
-    if (std.ascii.eqlIgnoreCase(obj.class_name, "Schema.SObjectField") or
-        std.ascii.eqlIgnoreCase(obj.class_name, "SObjectField"))
-    {
-        if (object_name_field_string(obj, "name")) |s| return s;
+    return true;
+}
+
+fn value_eql_map(a: *types.MapValue, b: *types.MapValue) bool {
+    if (a == b) return true;
+    if (a.entries.count() != b.entries.count()) return false;
+    for (a.entries.keys(), a.entries.values()) |k, v| {
+        const bv = b.entries.get(k) orelse return false;
+        if (!value_eql(v, bv)) return false;
     }
-    if (std.ascii.eqlIgnoreCase(obj.class_name, "DescribeFieldResult")) {
-        if (object_name_field_string(obj, "fieldName")) |s| return s;
-        if (object_name_field_string(obj, "name")) |s| return s;
+    return true;
+}
+
+fn value_eql_set(a: *types.SetValue, b: *types.SetValue) bool {
+    if (a == b) return true;
+    if (a.entries.count() != b.entries.count()) return false;
+    for (a.entries.keys()) |k| {
+        if (!b.entries.contains(k)) return false;
     }
-    if (std.ascii.eqlIgnoreCase(obj.class_name, "Date") or
-        std.ascii.eqlIgnoreCase(obj.class_name, "Datetime") or
-        std.ascii.eqlIgnoreCase(obj.class_name, "Blob"))
-    {
-        if (object_name_field_string(obj, "value")) |s| return s;
+    return true;
+}
+
+fn value_eql_object(a: *types.ObjectInstance, b: *types.ObjectInstance) bool {
+    if (a == b) return true;
+    if (is_named_type_object(a, b)) return object_name_fields_eql(a, b);
+    if (is_date_like_object(a) and is_date_like_object(b)) return date_object_values_eql(a, b);
+    if (is_s_object_field_object(a) and is_s_object_field_object(b)) {
+        return s_object_field_objects_eql(a, b);
     }
-    if (std.ascii.eqlIgnoreCase(obj.class_name, "Type") or
-        std.ascii.eqlIgnoreCase(obj.class_name, "System.Type"))
-    {
-        if (object_name_field_string(obj, "name")) |s| return s;
-    }
-    // Use simple name (after last dot) like Apex does
-    const cn = obj.class_name;
-    const simple = if (std.mem.lastIndexOfScalar(u8, cn, '.')) |di| cn[di + 1 ..] else cn;
-    return std.fmt.allocPrint(arena, "{s}:[instance]", .{simple});
+    return false;
+}
+
+fn is_named_type_object(a: *types.ObjectInstance, b: *types.ObjectInstance) bool {
+    return (std.ascii.eqlIgnoreCase(a.class_name, "Schema.SObjectType") and
+        std.ascii.eqlIgnoreCase(b.class_name, "Schema.SObjectType")) or
+        (std.ascii.eqlIgnoreCase(a.class_name, "Type") and
+            std.ascii.eqlIgnoreCase(b.class_name, "Type"));
+}
+
+fn object_name_fields_eql(a: *types.ObjectInstance, b: *types.ObjectInstance) bool {
+    const a_name = a.fields.get("name") orelse return false;
+    const b_name = b.fields.get("name") orelse return false;
+    return a_name == .string and b_name == .string and
+        std.ascii.eqlIgnoreCase(a_name.string, b_name.string);
+}
+
+fn is_date_like_object(obj: *types.ObjectInstance) bool {
+    return std.ascii.eqlIgnoreCase(obj.class_name, "Date") or
+        std.ascii.eqlIgnoreCase(obj.class_name, "Datetime");
+}
+
+fn date_object_values_eql(a: *types.ObjectInstance, b: *types.ObjectInstance) bool {
+    const a_val = a.fields.get("value") orelse return false;
+    const b_val = b.fields.get("value") orelse return false;
+    if (a_val != .string or b_val != .string) return false;
+    const a_norm = normalize_date_time_str(a_val.string);
+    const b_norm = normalize_date_time_str(b_val.string);
+    return std.ascii.eqlIgnoreCase(a_norm, b_norm);
+}
+
+fn is_s_object_field_object(obj: *types.ObjectInstance) bool {
+    return std.ascii.eqlIgnoreCase(obj.class_name, "Schema.SObjectField") or
+        std.ascii.eqlIgnoreCase(obj.class_name, "SObjectField");
+}
+
+fn s_object_field_objects_eql(a: *types.ObjectInstance, b: *types.ObjectInstance) bool {
+    const a_name = a.fields.get("fieldName") orelse a.fields.get("name") orelse return false;
+    const b_name = b.fields.get("fieldName") orelse b.fields.get("name") orelse return false;
+    if (a_name != .string or b_name != .string) return false;
+    return s_object_field_object_types_eql(a, b) and
+        std.ascii.eqlIgnoreCase(a_name.string, b_name.string);
+}
+
+fn s_object_field_object_types_eql(a: *types.ObjectInstance, b: *types.ObjectInstance) bool {
+    const a_object_type = a.fields.get("objectType");
+    const b_object_type = b.fields.get("objectType");
+    if (a_object_type == null or b_object_type == null) return true;
+    if (a_object_type.? != .string or b_object_type.? != .string) return false;
+    return std.ascii.eqlIgnoreCase(a_object_type.?.string, b_object_type.?.string);
 }
 
 /// Value を文字列に変換する。
@@ -276,84 +210,83 @@ pub fn coerce_to_string(v: Value, arena: std.mem.Allocator) ![]const u8 {
         .string => |s| s,
         .void_val => "void",
         .list => |l| try std.fmt.allocPrint(arena, "List[{d}]", .{l.items.items.len}),
-        .map => |m| try map_coerce_to_string(m, arena),
-        .set => |s2| try set_coerce_to_string(s2, arena),
+        .map => |m| blk: {
+            var buf: std.ArrayListUnmanaged(u8) = .empty;
+            try buf.appendSlice(arena, "{");
+            for (m.entries.keys(), m.entries.values(), 0..) |k, val, i| {
+                if (i > 0) try buf.appendSlice(arena, ", ");
+                try buf.appendSlice(arena, k);
+                try buf.append(arena, '=');
+                const vs = try coerce_to_string(val, arena);
+                try buf.appendSlice(arena, vs);
+            }
+            try buf.appendSlice(arena, "}");
+            break :blk buf.items;
+        },
+        .set => |s2| blk: {
+            var buf: std.ArrayListUnmanaged(u8) = .empty;
+            try buf.appendSlice(arena, "{");
+            for (s2.entries.keys(), 0..) |k, i| {
+                if (i > 0) try buf.appendSlice(arena, ", ");
+                try buf.appendSlice(arena, k);
+            }
+            try buf.appendSlice(arena, "}");
+            break :blk buf.items;
+        },
         .sobject => |sob| try std.fmt.allocPrint(
             arena,
             "{s}({s})",
             .{ sob.type_name, sob.id orelse "null" },
         ),
-        .object => |obj| try object_coerce_to_string(obj, arena),
+        .object => |obj| try coerce_object_to_string(obj, arena),
     };
 }
 
-fn list_to_json(items: anytype, arena: std.mem.Allocator) anyerror![]const u8 {
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
-    try buf.append(arena, '[');
-    for (items, 0..) |item, idx| {
-        if (idx > 0) try buf.append(arena, ',');
-        try buf.appendSlice(arena, try to_json(item, arena));
+fn coerce_object_to_string(obj: *types.ObjectInstance, arena: std.mem.Allocator) ![]const u8 {
+    // Schema.SObjectType -> return the "name" field (e.g. "Account")
+    if (std.ascii.eqlIgnoreCase(obj.class_name, "Schema.SObjectType")) {
+        if (obj.fields.get("name")) |n| {
+            if (n == .string) return n.string;
+        }
     }
-    try buf.append(arena, ']');
-    return buf.toOwnedSlice(arena);
-}
-
-fn map_to_json(m: anytype, arena: std.mem.Allocator) anyerror![]const u8 {
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
-    try buf.append(arena, '{');
-    for (m.entries.keys(), m.entries.values(), 0..) |k, val, idx| {
-        if (idx > 0) try buf.append(arena, ',');
-        try buf.appendSlice(arena, try std.fmt.allocPrint(arena, "\"{s}\":", .{k}));
-        try buf.appendSlice(arena, try to_json(val, arena));
+    // SObjectField -> return the "name" field
+    if (std.ascii.eqlIgnoreCase(obj.class_name, "Schema.SObjectField") or
+        std.ascii.eqlIgnoreCase(obj.class_name, "SObjectField"))
+    {
+        if (obj.fields.get("name")) |n| {
+            if (n == .string) return n.string;
+        }
     }
-    try buf.append(arena, '}');
-    return buf.toOwnedSlice(arena);
-}
-
-fn sobject_to_json(sob: anytype, arena: std.mem.Allocator) anyerror![]const u8 {
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
-    try buf.append(arena, '{');
-    try buf.appendSlice(
-        arena,
-        try std.fmt.allocPrint(arena, "\"attributes\":{{\"type\":\"{s}\"}}", .{sob.type_name}),
-    );
-    if (sob.id) |id| {
-        try buf.appendSlice(arena, try std.fmt.allocPrint(arena, ",\"Id\":\"{s}\"", .{id}));
+    if (std.ascii.eqlIgnoreCase(obj.class_name, "DescribeFieldResult")) {
+        if (obj.fields.get("fieldName")) |n| {
+            if (n == .string) return n.string;
+        }
+        if (obj.fields.get("name")) |n| {
+            if (n == .string) return n.string;
+        }
     }
-    for (sob.fields.keys(), sob.fields.values()) |k, val| {
-        if (std.ascii.eqlIgnoreCase(k, "Id")) continue;
-        try buf.append(arena, ',');
-        try buf.appendSlice(arena, try std.fmt.allocPrint(arena, "\"{s}\":", .{k}));
-        try buf.appendSlice(arena, try to_json(val, arena));
+    // Date/Datetime/Blob -> return the stored value string
+    if (std.ascii.eqlIgnoreCase(obj.class_name, "Date") or
+        std.ascii.eqlIgnoreCase(obj.class_name, "Datetime") or
+        std.ascii.eqlIgnoreCase(obj.class_name, "Blob"))
+    {
+        if (obj.fields.get("value")) |bv| {
+            if (bv == .string) return bv.string;
+        }
     }
-    try buf.append(arena, '}');
-    return buf.toOwnedSlice(arena);
-}
-
-fn object_to_json_date_like(obj: anytype, arena: std.mem.Allocator) !?[]const u8 {
-    if (!is_date_like_class(obj.class_name)) return null;
-    const val = obj.fields.get("value") orelse return null;
-    if (val != .string) return null;
-    const serialized = if (std.ascii.eqlIgnoreCase(obj.class_name, "Datetime"))
-        try format_json_date_time_str(arena, val.string)
-    else
-        val.string;
-    return try std.fmt.allocPrint(arena, "\"{s}\"", .{serialized});
-}
-
-fn object_to_json(obj: anytype, arena: std.mem.Allocator) anyerror![]const u8 {
-    if (try object_to_json_date_like(obj, arena)) |s| return s;
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
-    try buf.append(arena, '{');
-    var first = true;
-    for (obj.fields.keys(), obj.fields.values()) |k, val| {
-        if (!first) try buf.append(arena, ',');
-        first = false;
-        try buf.appendSlice(arena, try std.fmt.allocPrint(arena, "\"{s}\":", .{k}));
-        try buf.appendSlice(arena, try to_json(val, arena));
+    // Type (from SomeClass.class) -> return the resolved class name so that
+    // Map<Type, X> keys don't collapse to a single "Type:[instance]" slot.
+    if (std.ascii.eqlIgnoreCase(obj.class_name, "Type") or
+        std.ascii.eqlIgnoreCase(obj.class_name, "System.Type"))
+    {
+        if (obj.fields.get("name")) |n| {
+            if (n == .string) return n.string;
+        }
     }
-    try buf.append(arena, '}');
-    return buf.toOwnedSlice(arena);
+    // Use simple name (after last dot) like Apex does
+    const cn = obj.class_name;
+    const simple = if (std.mem.lastIndexOfScalar(u8, cn, '.')) |di| cn[di + 1 ..] else cn;
+    return std.fmt.allocPrint(arena, "{s}:[instance]", .{simple});
 }
 
 /// Value を JSON 文字列に変換する。
@@ -366,12 +299,88 @@ pub fn to_json(v: Value, arena: std.mem.Allocator) ![]const u8 {
         .double => |d| try std.fmt.allocPrint(arena, "{d}", .{d}),
         .string => |s| try std.fmt.allocPrint(arena, "\"{s}\"", .{s}),
         .void_val => "null",
-        .list => |l| list_to_json(l.items.items, arena),
-        .map => |m| map_to_json(m, arena),
+        .list => |l| blk: {
+            var buf: std.ArrayListUnmanaged(u8) = .empty;
+            try buf.append(arena, '[');
+            for (l.items.items, 0..) |item, idx| {
+                if (idx > 0) try buf.append(arena, ',');
+                const item_json = try to_json(item, arena);
+                try buf.appendSlice(arena, item_json);
+            }
+            try buf.append(arena, ']');
+            break :blk try buf.toOwnedSlice(arena);
+        },
+        .map => |m| blk: {
+            var buf: std.ArrayListUnmanaged(u8) = .empty;
+            try buf.append(arena, '{');
+            for (m.entries.keys(), m.entries.values(), 0..) |k, val, idx| {
+                if (idx > 0) try buf.append(arena, ',');
+                try buf.appendSlice(arena, try std.fmt.allocPrint(arena, "\"{s}\":", .{k}));
+                try buf.appendSlice(arena, try to_json(val, arena));
+            }
+            try buf.append(arena, '}');
+            break :blk try buf.toOwnedSlice(arena);
+        },
         .set => "[]",
-        .sobject => |sob| sobject_to_json(sob, arena),
-        .object => |obj| object_to_json(obj, arena),
+        .sobject => |sob| blk: {
+            var buf: std.ArrayListUnmanaged(u8) = .empty;
+            try buf.append(arena, '{');
+            // Always output attributes with type
+            try buf.appendSlice(
+                arena,
+                try std.fmt.allocPrint(
+                    arena,
+                    "\"attributes\":{{\"type\":\"{s}\"}}",
+                    .{sob.type_name},
+                ),
+            );
+            // Output Id if present
+            if (sob.id) |id| {
+                try buf.appendSlice(arena, try std.fmt.allocPrint(arena, ",\"Id\":\"{s}\"", .{id}));
+            }
+            for (sob.fields.keys(), sob.fields.values()) |k, val| {
+                // Skip internal attributes field and Id (already output)
+                if (std.ascii.eqlIgnoreCase(k, "Id")) continue;
+                try buf.append(arena, ',');
+                try buf.appendSlice(arena, try std.fmt.allocPrint(arena, "\"{s}\":", .{k}));
+                try buf.appendSlice(arena, try to_json(val, arena));
+            }
+            try buf.append(arena, '}');
+            break :blk try buf.toOwnedSlice(arena);
+        },
+        .object => |obj| try object_to_json(obj, arena),
     };
+}
+
+/// `to_json` の ObjectInstance 分岐を抽出。Date / Datetime は
+/// `"value"` 文字列をクオート (Datetime は ISO 正規化)、他は通常の
+/// `{ "key": value, ... }` 形式で出力する。
+/// `to_json` と相互再帰なので `anyerror!` で推論ループを断つ。
+fn object_to_json(obj: *types.ObjectInstance, arena: std.mem.Allocator) anyerror![]const u8 {
+    if ((std.ascii.eqlIgnoreCase(obj.class_name, "Date") or
+        std.ascii.eqlIgnoreCase(obj.class_name, "Datetime")) and obj.fields.get("value") != null)
+    {
+        if (obj.fields.get("value")) |val| {
+            if (val == .string) {
+                const serialized = if (std.ascii.eqlIgnoreCase(obj.class_name, "Datetime"))
+                    try format_json_date_time_str(arena, val.string)
+                else
+                    val.string;
+                return try std.fmt.allocPrint(arena, "\"{s}\"", .{serialized});
+            }
+        }
+    }
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    try buf.append(arena, '{');
+    var first = true;
+    for (obj.fields.keys(), obj.fields.values()) |k, val| {
+        if (!first) try buf.append(arena, ',');
+        first = false;
+        try buf.appendSlice(arena, try std.fmt.allocPrint(arena, "\"{s}\":", .{k}));
+        try buf.appendSlice(arena, try to_json(val, arena));
+    }
+    try buf.append(arena, '}');
+    return try buf.toOwnedSlice(arena);
 }
 
 /// Value を bool に変換する（Apex の暗黙変換）。
@@ -387,27 +396,27 @@ pub fn coerce_to_bool(v: Value) !bool {
 // テスト
 // ---------------------------------------------------------------------------
 
-test "value_eql: null == null" {
+test "valueEql: null == null" {
     try std.testing.expect(value_eql(Value.null_val, Value.null_val));
 }
 
-test "value_eql: string case-insensitive" {
+test "valueEql: string case-insensitive" {
     try std.testing.expect(value_eql(Value{ .string = "Hello" }, Value{ .string = "hello" }));
     try std.testing.expect(value_eql(Value{ .string = "ABC" }, Value{ .string = "abc" }));
     try std.testing.expect(!value_eql(Value{ .string = "a" }, Value{ .string = "b" }));
 }
 
-test "value_eql: integer" {
+test "valueEql: integer" {
     try std.testing.expect(value_eql(Value{ .integer = 42 }, Value{ .integer = 42 }));
     try std.testing.expect(!value_eql(Value{ .integer = 1 }, Value{ .integer = 2 }));
 }
 
-test "value_eql: integer/double cross" {
+test "valueEql: integer/double cross" {
     try std.testing.expect(value_eql(Value{ .integer = 3 }, Value{ .double = 3.0 }));
     try std.testing.expect(!value_eql(Value{ .integer = 3 }, Value{ .double = 3.1 }));
 }
 
-test "value_eql: null != non-null" {
+test "valueEql: null != non-null" {
     try std.testing.expect(!value_eql(Value.null_val, Value{ .integer = 0 }));
     try std.testing.expect(!value_eql(Value{ .string = "" }, Value.null_val));
 }
@@ -462,7 +471,7 @@ pub fn format_apex_double(arena: std.mem.Allocator, d: f64) ![]const u8 {
     return try std.fmt.allocPrint(arena, "{d}.0", .{d});
 }
 
-test "coerce_to_string" {
+test "coerceToString" {
     try std.testing.expectEqualStrings(
         "null",
         try coerce_to_string(Value.null_val, std.testing.allocator),
@@ -482,7 +491,7 @@ test "coerce_to_string" {
     try std.testing.expectEqualStrings("42", s);
 }
 
-test "format_apex_double" {
+test "formatApexDouble" {
     const alloc = std.testing.allocator;
 
     const s1 = try format_apex_double(alloc, 10.0);
@@ -521,16 +530,15 @@ pub fn is_json_balanced(json: []const u8) bool {
                 in_str = false;
             }
         } else {
-            const ch = json[i];
-            if (ch == '"') {
+            if (json[i] == '"') {
                 in_str = true;
-            } else if (ch == '{') {
+            } else if (json[i] == '{') {
                 brace_depth += 1;
-            } else if (ch == '}') {
+            } else if (json[i] == '}') {
                 brace_depth -= 1;
-            } else if (ch == '[') {
+            } else if (json[i] == '[') {
                 bracket_depth += 1;
-            } else if (ch == ']') {
+            } else if (json[i] == ']') {
                 bracket_depth -= 1;
             }
         }
@@ -538,7 +546,7 @@ pub fn is_json_balanced(json: []const u8) bool {
     return brace_depth == 0 and bracket_depth == 0 and !in_str;
 }
 
-test "is_json_balanced" {
+test "isJsonBalanced" {
     try std.testing.expect(is_json_balanced("{}"));
     try std.testing.expect(is_json_balanced("{\"key\":\"val\"}"));
     try std.testing.expect(is_json_balanced("{\"key\":\"val with \\\"quotes\\\"\"}"));
