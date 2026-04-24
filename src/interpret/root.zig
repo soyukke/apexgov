@@ -52,9 +52,25 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, source: []const u8, opts: Options
     if (opts.source_paths.len > 0) {
         eval.source_paths = opts.source_paths;
         for (opts.source_paths) |path| {
-            collect_field_defaults(arena.allocator(), io, path, &eval.field_defaults, &eval.field_types, &eval.field_metadata, &eval.child_relationships) catch {};
-            collect_field_sets(arena.allocator(), io, path, &eval.field_sets) catch {};
-            collect_custom_setting_types(arena.allocator(), io, path, &eval.custom_setting_types, &eval.custom_setting_kinds, &eval.object_labels, &eval.object_label_plurals) catch {};
+            try collect_field_defaults(
+                arena.allocator(),
+                io,
+                path,
+                &eval.field_defaults,
+                &eval.field_types,
+                &eval.field_metadata,
+                &eval.child_relationships,
+            );
+            try collect_field_sets(arena.allocator(), io, path, &eval.field_sets);
+            try collect_custom_setting_types(
+                arena.allocator(),
+                io,
+                path,
+                &eval.custom_setting_types,
+                &eval.custom_setting_kinds,
+                &eval.object_labels,
+                &eval.object_label_plurals,
+            );
         }
     }
     try eval.load_decls(decls);
@@ -213,7 +229,12 @@ fn find_sample_app_fixture_path(alloc: std.mem.Allocator, io: std.Io) ![]const u
 }
 
 /// ディレクトリ内の全 .cls ファイルを読み込み、@isTest メソッドを実行する。
-pub fn run_test_suite(gpa: std.mem.Allocator, io: std.Io, paths: []const []const u8, writer: anytype) !TestSuiteResult {
+pub fn run_test_suite(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    paths: []const []const u8,
+    writer: anytype,
+) !TestSuiteResult {
     return run_tests_filtered(gpa, io, paths, null, null, writer);
 }
 
@@ -251,7 +272,10 @@ fn run_tests_filtered(
     var eval = try evaluator.Evaluator.init(parse_alloc, io);
     eval.source_paths = paths;
     const load_stats = try load_test_sources(parse_alloc, io, paths, &eval);
-    try writer.print("interpret: loaded {d} Apex source file(s)\n", .{load_stats.source_count});
+    try writer.print(
+        "interpret: loaded {d} Apex source file(s)\n",
+        .{load_stats.source_count},
+    );
     try writer.print(
         "interpret: registered {d} class(es), {d} trigger(s), {d} parse error(s)\n",
         .{ eval.classes.count(), eval.triggers.count(), load_stats.parse_errors },
@@ -273,7 +297,10 @@ fn run_tests_filtered(
     );
 
     suite.failed += suite.errors;
-    try writer.print("\n--- Results: {d} total, {d} passed, {d} failed ---\n", .{ suite.total, suite.passed, suite.total - suite.passed });
+    try writer.print(
+        "\n--- Results: {d} total, {d} passed, {d} failed ---\n",
+        .{ suite.total, suite.passed, suite.total - suite.passed },
+    );
     // 所有権 move: ここまでくれば caller が deinit で arena を解放する。
     suite.arena = parse_arena;
     return suite;
@@ -493,7 +520,13 @@ fn run_test_method(
     _ = test_arena.reset(.retain_capacity);
     var test_eval = evaluator.Evaluator.init(test_arena.allocator(), io) catch return;
     copy_test_eval_context(&test_eval, base_eval, parse_alloc);
-    configure_test_method(&test_eval, method_decl, class_name, test_setup_method, classes_with_statics);
+    configure_test_method(
+        &test_eval,
+        method_decl,
+        class_name,
+        test_setup_method,
+        classes_with_statics,
+    );
     reset_test_limits(&test_eval);
 
     const result = test_eval.call_method(class_name, method_decl.name, &.{});
@@ -633,8 +666,10 @@ fn pending_exception_message(test_eval: *evaluator.Evaluator) []const u8 {
 
 fn is_test_class(cd: *ast.ClassDecl) bool {
     for (cd.annotations) |ann| {
-        if (std.ascii.eqlIgnoreCase(ann, "@isTest") or std.ascii.eqlIgnoreCase(ann, "@IsTest") or
-            std.ascii.startsWithIgnoreCase(ann, "@isTest(") or std.ascii.startsWithIgnoreCase(ann, "@test("))
+        if (std.ascii.eqlIgnoreCase(ann, "@isTest") or
+            std.ascii.eqlIgnoreCase(ann, "@IsTest") or
+            std.ascii.startsWithIgnoreCase(ann, "@isTest(") or
+            std.ascii.startsWithIgnoreCase(ann, "@test("))
         {
             return true;
         }
@@ -654,21 +689,36 @@ fn is_test_class(cd: *ast.ClassDecl) bool {
 fn is_test_method(md: *ast.MethodDecl) bool {
     if (md.modifiers.is_test_method) return true;
     for (md.annotations) |ann| {
-        if (std.ascii.eqlIgnoreCase(ann, "@isTest") or std.ascii.eqlIgnoreCase(ann, "@IsTest") or std.ascii.eqlIgnoreCase(ann, "@test")) {
+        if (std.ascii.eqlIgnoreCase(ann, "@isTest") or
+            std.ascii.eqlIgnoreCase(ann, "@IsTest") or
+            std.ascii.eqlIgnoreCase(ann, "@test"))
+        {
             return true;
         }
         // Also match @isTest(SeeAllData=true) and similar parameterized annotations
-        if (std.ascii.startsWithIgnoreCase(ann, "@isTest(") or std.ascii.startsWithIgnoreCase(ann, "@test(")) {
+        if (std.ascii.startsWithIgnoreCase(ann, "@isTest(") or
+            std.ascii.startsWithIgnoreCase(ann, "@test("))
+        {
             return true;
         }
     }
     return false;
 }
 
-fn collect_cls_files(alloc: std.mem.Allocator, io: std.Io, path: []const u8, files: *std.ArrayListUnmanaged(SourceFile)) !void {
+fn collect_cls_files(
+    alloc: std.mem.Allocator,
+    io: std.Io,
+    path: []const u8,
+    files: *std.ArrayListUnmanaged(SourceFile),
+) !void {
     // Try as single .cls/.trigger file first
     if (std.mem.endsWith(u8, path, ".cls") or std.mem.endsWith(u8, path, ".trigger")) {
-        const content = std.Io.Dir.cwd().readFileAlloc(io, path, alloc, .limited(10 * 1024 * 1024)) catch return;
+        const content = std.Io.Dir.cwd().readFileAlloc(
+            io,
+            path,
+            alloc,
+            .limited(10 * 1024 * 1024),
+        ) catch return;
         const path_copy = alloc.dupe(u8, path) catch return;
         files.append(alloc, .{ .path = path_copy, .content = content }) catch return;
         return;
@@ -683,16 +733,28 @@ fn collect_cls_files(alloc: std.mem.Allocator, io: std.Io, path: []const u8, fil
 
     while (walker.next(io) catch null) |entry| {
         if (entry.kind != .file) continue;
-        if (!std.mem.endsWith(u8, entry.basename, ".cls") and !std.mem.endsWith(u8, entry.basename, ".trigger")) continue;
+        if (!std.mem.endsWith(u8, entry.basename, ".cls") and
+            !std.mem.endsWith(u8, entry.basename, ".trigger"))
+        {
+            continue;
+        }
         // Skip name-shadowing stub classes that intentionally shadow system classes
         // (e.g., extra-tests/name-shadowing/System/JSON.cls). These empty classes
         // exist only to verify that production code uses fully-qualified names in
         // Salesforce, but they break the interpreter's built-in dispatch.
         if (std.mem.indexOf(u8, entry.path, "name-shadowing/") != null or
-            std.mem.indexOf(u8, entry.path, "name-shadowing\\") != null) continue;
+            std.mem.indexOf(u8, entry.path, "name-shadowing\\") != null)
+        {
+            continue;
+        }
 
         const full_path = std.fs.path.join(alloc, &.{ path, entry.path }) catch continue;
-        const content = std.Io.Dir.cwd().readFileAlloc(io, full_path, alloc, .limited(10 * 1024 * 1024)) catch continue;
+        const content = std.Io.Dir.cwd().readFileAlloc(
+            io,
+            full_path,
+            alloc,
+            .limited(10 * 1024 * 1024),
+        ) catch continue;
         files.append(alloc, .{ .path = full_path, .content = content }) catch continue;
     }
 }
@@ -717,14 +779,33 @@ const FieldMetadataEntry = struct {
     entry_path: []const u8,
 };
 
+const FieldDefaultsMap = std.StringArrayHashMapUnmanaged(
+    std.StringArrayHashMapUnmanaged(Value),
+);
+const FieldTypesMap = std.StringArrayHashMapUnmanaged(
+    std.StringArrayHashMapUnmanaged([]const u8),
+);
+const FieldMetadataMap = std.StringArrayHashMapUnmanaged(
+    std.StringArrayHashMapUnmanaged(evaluator.FieldMetadata),
+);
+const ChildRelationshipsMap = std.StringArrayHashMapUnmanaged(
+    evaluator.CustomChildRelationship,
+);
+const CustomSettingTypesMap = std.StringArrayHashMapUnmanaged(void);
+const CustomSettingKindsMap = std.StringArrayHashMapUnmanaged([]const u8);
+const ObjectLabelsMap = std.StringArrayHashMapUnmanaged([]const u8);
+const FieldSetsMap = std.StringArrayHashMapUnmanaged(
+    std.StringArrayHashMapUnmanaged(evaluator.FieldSetMetadata),
+);
+
 fn collect_field_defaults(
     alloc: std.mem.Allocator,
     io: std.Io,
     path: []const u8,
-    field_defaults: *std.StringArrayHashMapUnmanaged(std.StringArrayHashMapUnmanaged(Value)),
-    field_types: *std.StringArrayHashMapUnmanaged(std.StringArrayHashMapUnmanaged([]const u8)),
-    field_metadata: *std.StringArrayHashMapUnmanaged(std.StringArrayHashMapUnmanaged(evaluator.FieldMetadata)),
-    child_relationships: *std.StringArrayHashMapUnmanaged(evaluator.CustomChildRelationship),
+    field_defaults: *FieldDefaultsMap,
+    field_types: *FieldTypesMap,
+    field_metadata: *FieldMetadataMap,
+    child_relationships: *ChildRelationshipsMap,
 ) !void {
     var dir = std.Io.Dir.cwd().openDir(io, path, .{ .iterate = true }) catch return;
     defer dir.close(io);
@@ -737,14 +818,33 @@ fn collect_field_defaults(
         if (!std.mem.endsWith(u8, entry.basename, ".field-meta.xml")) continue;
 
         const field_entry = parse_field_metadata_entry(entry.path, entry.basename) orelse continue;
-        const full_path = std.fs.path.join(alloc, &.{ path, field_entry.entry_path }) catch continue;
-        const content = std.Io.Dir.cwd().readFileAlloc(io, full_path, alloc, .limited(64 * 1024)) catch continue;
+        const full_path = std.fs.path.join(
+            alloc,
+            &.{ path, field_entry.entry_path },
+        ) catch continue;
+        const content = std.Io.Dir.cwd().readFileAlloc(
+            io,
+            full_path,
+            alloc,
+            .limited(64 * 1024),
+        ) catch continue;
 
         var metadata = read_field_metadata(alloc, content) catch continue;
         store_field_type_metadata(alloc, content, field_entry, field_types) catch {};
-        store_field_reference_metadata(alloc, content, field_entry, &metadata, child_relationships) catch {};
+        store_field_reference_metadata(
+            alloc,
+            content,
+            field_entry,
+            &metadata,
+            child_relationships,
+        ) catch {};
         store_field_metadata(alloc, field_entry, metadata, field_metadata) catch {};
-        store_picklist_default(alloc, field_entry, metadata.picklist_values, field_defaults) catch {};
+        store_picklist_default(
+            alloc,
+            field_entry,
+            metadata.picklist_values,
+            field_defaults,
+        ) catch {};
         store_xml_default_value(alloc, content, field_entry, field_defaults) catch {};
     }
 }
@@ -756,10 +856,12 @@ fn parse_field_metadata_entry(entry_path: []const u8, basename: []const u8) ?Fie
     const sep_idx = std.mem.indexOfAny(u8, after_objects, "/\\") orelse return null;
     return .{
         .type_name = after_objects[0..sep_idx],
-        .field_name = basename[0 .. basename.len - ".field-meta.xml".len],
+        .field_name = basename[0 .. basename.len - field_meta_xml_suffix.len],
         .entry_path = entry_path,
     };
 }
+
+const field_meta_xml_suffix = ".field-meta.xml";
 
 fn read_field_metadata(alloc: std.mem.Allocator, content: []const u8) !evaluator.FieldMetadata {
     var metadata = evaluator.FieldMetadata{};
@@ -783,13 +885,16 @@ fn read_field_metadata(alloc: std.mem.Allocator, content: []const u8) !evaluator
         );
     }
     if (extract_xml_tag_value(content, "summarizedField")) |summarized_field| {
-        metadata.summarized_field = alloc.dupe(u8, std.mem.trim(u8, summarized_field, " \t\n\r")) catch null;
+        const value = std.mem.trim(u8, summarized_field, " \t\n\r");
+        metadata.summarized_field = alloc.dupe(u8, value) catch null;
     }
     if (extract_xml_tag_value(content, "summaryForeignKey")) |summary_foreign_key| {
-        metadata.summary_foreign_key = alloc.dupe(u8, std.mem.trim(u8, summary_foreign_key, " \t\n\r")) catch null;
+        const value = std.mem.trim(u8, summary_foreign_key, " \t\n\r");
+        metadata.summary_foreign_key = alloc.dupe(u8, value) catch null;
     }
     if (extract_xml_tag_value(content, "summaryOperation")) |summary_operation| {
-        metadata.summary_operation = alloc.dupe(u8, std.mem.trim(u8, summary_operation, " \t\n\r")) catch null;
+        const value = std.mem.trim(u8, summary_operation, " \t\n\r");
+        metadata.summary_operation = alloc.dupe(u8, value) catch null;
     }
     metadata.summary_filters = parse_summary_filters(alloc, content) catch &.{};
     metadata.picklist_values = parse_picklist_values(alloc, content) catch &.{};
@@ -805,7 +910,7 @@ fn store_field_type_metadata(
     alloc: std.mem.Allocator,
     content: []const u8,
     field_entry: FieldMetadataEntry,
-    field_types: *std.StringArrayHashMapUnmanaged(std.StringArrayHashMapUnmanaged([]const u8)),
+    field_types: *FieldTypesMap,
 ) !void {
     const field_type = extract_xml_tag_value(content, "type") orelse return;
     const type_key = try alloc.dupe(u8, field_entry.type_name);
@@ -820,7 +925,7 @@ fn store_field_reference_metadata(
     content: []const u8,
     field_entry: FieldMetadataEntry,
     metadata: *evaluator.FieldMetadata,
-    child_relationships: *std.StringArrayHashMapUnmanaged(evaluator.CustomChildRelationship),
+    child_relationships: *ChildRelationshipsMap,
 ) !void {
     const reference_to = extract_xml_tag_value(content, "referenceTo") orelse return;
     const parent_type = std.mem.trim(u8, reference_to, " \t\n\r");
@@ -854,7 +959,7 @@ fn store_field_metadata(
     alloc: std.mem.Allocator,
     field_entry: FieldMetadataEntry,
     metadata: evaluator.FieldMetadata,
-    field_metadata: *std.StringArrayHashMapUnmanaged(std.StringArrayHashMapUnmanaged(evaluator.FieldMetadata)),
+    field_metadata: *FieldMetadataMap,
 ) !void {
     if (!field_metadata_has_values(metadata)) return;
     const type_key = try alloc.dupe(u8, field_entry.type_name);
@@ -880,7 +985,7 @@ fn store_picklist_default(
     alloc: std.mem.Allocator,
     field_entry: FieldMetadataEntry,
     picklist_values: []const evaluator.PicklistValueMetadata,
-    field_defaults: *std.StringArrayHashMapUnmanaged(std.StringArrayHashMapUnmanaged(Value)),
+    field_defaults: *FieldDefaultsMap,
 ) !void {
     for (picklist_values) |picklist_value| {
         if (!picklist_value.is_default) continue;
@@ -898,17 +1003,24 @@ fn store_xml_default_value(
     alloc: std.mem.Allocator,
     content: []const u8,
     field_entry: FieldMetadataEntry,
-    field_defaults: *std.StringArrayHashMapUnmanaged(std.StringArrayHashMapUnmanaged(Value)),
+    field_defaults: *FieldDefaultsMap,
 ) !void {
     const raw_value = extract_xml_tag_value(content, "defaultValue") orelse return;
     const decoded = try decode_xml_default_value(alloc, raw_value);
-    try store_field_default_value(alloc, field_entry, default_value_from_text(decoded), field_defaults);
+    try store_field_default_value(
+        alloc,
+        field_entry,
+        default_value_from_text(decoded),
+        field_defaults,
+    );
 }
 
 fn default_value_from_text(decoded: []const u8) Value {
     if (std.ascii.eqlIgnoreCase(decoded, "true")) return Value{ .boolean = true };
     if (std.ascii.eqlIgnoreCase(decoded, "false")) return Value{ .boolean = false };
-    if (std.fmt.parseInt(i64, decoded, 10)) |int_value| return Value{ .integer = int_value } else |_| {}
+    if (std.fmt.parseInt(i64, decoded, 10)) |int_value| {
+        return Value{ .integer = int_value };
+    } else |_| {}
     return Value{ .string = decoded };
 }
 
@@ -916,7 +1028,7 @@ fn store_field_default_value(
     alloc: std.mem.Allocator,
     field_entry: FieldMetadataEntry,
     value: Value,
-    field_defaults: *std.StringArrayHashMapUnmanaged(std.StringArrayHashMapUnmanaged(Value)),
+    field_defaults: *FieldDefaultsMap,
 ) !void {
     const type_key = try alloc.dupe(u8, field_entry.type_name);
     const field_key = try alloc.dupe(u8, field_entry.field_name);
@@ -926,10 +1038,18 @@ fn store_field_default_value(
 }
 
 fn extract_xml_tag_value(content: []const u8, tag_name: []const u8) ?[]const u8 {
-    const start_tag = std.fmt.allocPrint(std.heap.page_allocator, "<{s}>", .{tag_name}) catch return null;
+    const start_tag = std.fmt.allocPrint(
+        std.heap.page_allocator,
+        "<{s}>",
+        .{tag_name},
+    ) catch return null;
     defer std.heap.page_allocator.free(start_tag);
 
-    const end_tag = std.fmt.allocPrint(std.heap.page_allocator, "</{s}>", .{tag_name}) catch return null;
+    const end_tag = std.fmt.allocPrint(
+        std.heap.page_allocator,
+        "</{s}>",
+        .{tag_name},
+    ) catch return null;
     defer std.heap.page_allocator.free(end_tag);
 
     const start_idx = std.mem.indexOf(u8, content, start_tag) orelse return null;
@@ -938,12 +1058,25 @@ fn extract_xml_tag_value(content: []const u8, tag_name: []const u8) ?[]const u8 
     return content[value_start..end_idx];
 }
 
-fn parse_summary_filters(alloc: std.mem.Allocator, content: []const u8) ![]const evaluator.SummaryFilter {
+fn parse_summary_filters(
+    alloc: std.mem.Allocator,
+    content: []const u8,
+) ![]const evaluator.SummaryFilter {
     var filters = std.ArrayListUnmanaged(evaluator.SummaryFilter).empty;
     var search_start: usize = 0;
-    while (std.mem.indexOfPos(u8, content, search_start, "<summaryFilterItems>")) |block_start_idx| {
+    while (std.mem.indexOfPos(
+        u8,
+        content,
+        search_start,
+        "<summaryFilterItems>",
+    )) |block_start_idx| {
         const block_start = block_start_idx + "<summaryFilterItems>".len;
-        const block_end = std.mem.indexOfPos(u8, content, block_start, "</summaryFilterItems>") orelse break;
+        const block_end = std.mem.indexOfPos(
+            u8,
+            content,
+            block_start,
+            "</summaryFilterItems>",
+        ) orelse break;
         const block = content[block_start..block_end];
         const field = extract_xml_tag_value(block, "field") orelse {
             search_start = block_end + "</summaryFilterItems>".len;
@@ -967,7 +1100,10 @@ fn parse_summary_filters(alloc: std.mem.Allocator, content: []const u8) ![]const
     return try alloc.dupe(evaluator.SummaryFilter, filters.items);
 }
 
-fn parse_picklist_values(alloc: std.mem.Allocator, content: []const u8) ![]const evaluator.PicklistValueMetadata {
+fn parse_picklist_values(
+    alloc: std.mem.Allocator,
+    content: []const u8,
+) ![]const evaluator.PicklistValueMetadata {
     var values = std.ArrayListUnmanaged(evaluator.PicklistValueMetadata).empty;
     var search_start: usize = 0;
     while (std.mem.indexOfPos(u8, content, search_start, "<value>")) |block_start_idx| {
@@ -981,7 +1117,8 @@ fn parse_picklist_values(alloc: std.mem.Allocator, content: []const u8) ![]const
         const raw_value = extract_xml_tag_value(block, "fullName") orelse raw_label;
         const is_default = blk: {
             if (extract_xml_tag_value(block, "default")) |raw_default| {
-                break :blk std.ascii.eqlIgnoreCase(std.mem.trim(u8, raw_default, " \t\n\r"), "true");
+                const value = std.mem.trim(u8, raw_default, " \t\n\r");
+                break :blk std.ascii.eqlIgnoreCase(value, "true");
             }
             break :blk false;
         };
@@ -997,7 +1134,7 @@ fn parse_picklist_values(alloc: std.mem.Allocator, content: []const u8) ![]const
 
 fn put_child_relationship(
     alloc: std.mem.Allocator,
-    child_relationships: *std.StringArrayHashMapUnmanaged(evaluator.CustomChildRelationship),
+    child_relationships: *ChildRelationshipsMap,
     parent_type: []const u8,
     relationship_name: []const u8,
     child_type: []const u8,
@@ -1018,10 +1155,10 @@ fn collect_custom_setting_types(
     alloc: std.mem.Allocator,
     io: std.Io,
     path: []const u8,
-    custom_setting_types: *std.StringArrayHashMapUnmanaged(void),
-    custom_setting_kinds: *std.StringArrayHashMapUnmanaged([]const u8),
-    object_labels: *std.StringArrayHashMapUnmanaged([]const u8),
-    object_label_plurals: *std.StringArrayHashMapUnmanaged([]const u8),
+    custom_setting_types: *CustomSettingTypesMap,
+    custom_setting_kinds: *CustomSettingKindsMap,
+    object_labels: *ObjectLabelsMap,
+    object_label_plurals: *ObjectLabelsMap,
 ) !void {
     var dir = std.Io.Dir.cwd().openDir(io, path, .{ .iterate = true }) catch return;
     defer dir.close(io);
@@ -1035,7 +1172,12 @@ fn collect_custom_setting_types(
 
         const type_name = entry.basename[0 .. entry.basename.len - ".object-meta.xml".len];
         const full_path = std.fs.path.join(alloc, &.{ path, entry.path }) catch continue;
-        const content = std.Io.Dir.cwd().readFileAlloc(io, full_path, alloc, .limited(256 * 1024)) catch continue;
+        const content = std.Io.Dir.cwd().readFileAlloc(
+            io,
+            full_path,
+            alloc,
+            .limited(256 * 1024),
+        ) catch continue;
 
         // Extract <label> — all objects with a label
         if (std.mem.indexOf(u8, content, "<label>")) |start_idx| {
@@ -1078,7 +1220,9 @@ fn collect_custom_setting_types(
     }
 }
 
-fn split_namespaced_metadata_name(name: []const u8) struct { namespace: []const u8, local_name: []const u8 } {
+fn split_namespaced_metadata_name(
+    name: []const u8,
+) struct { namespace: []const u8, local_name: []const u8 } {
     if (std.mem.indexOf(u8, name, "__")) |idx| {
         return .{
             .namespace = name[0..idx],
@@ -1094,7 +1238,7 @@ fn collect_field_sets(
     alloc: std.mem.Allocator,
     io: std.Io,
     path: []const u8,
-    field_sets: *std.StringArrayHashMapUnmanaged(std.StringArrayHashMapUnmanaged(evaluator.FieldSetMetadata)),
+    field_sets: *FieldSetsMap,
 ) !void {
     var dir = std.Io.Dir.cwd().openDir(io, path, .{ .iterate = true }) catch return;
     defer dir.close(io);
@@ -1114,9 +1258,15 @@ fn collect_field_sets(
         const type_name = after_objects[0..sep_idx];
 
         const full_path = std.fs.path.join(alloc, &.{ path, entry_path }) catch continue;
-        const content = std.Io.Dir.cwd().readFileAlloc(io, full_path, alloc, .limited(128 * 1024)) catch continue;
+        const content = std.Io.Dir.cwd().readFileAlloc(
+            io,
+            full_path,
+            alloc,
+            .limited(128 * 1024),
+        ) catch continue;
 
-        var full_name: []const u8 = entry.basename[0 .. entry.basename.len - ".fieldSet-meta.xml".len];
+        const field_set_name_end = entry.basename.len - field_set_meta_xml_suffix.len;
+        var full_name: []const u8 = entry.basename[0..field_set_name_end];
         if (std.mem.indexOf(u8, content, "<fullName>")) |start_idx| {
             const start = start_idx + "<fullName>".len;
             if (std.mem.indexOfPos(u8, content, start, "</fullName>")) |end_idx| {
@@ -1144,10 +1294,15 @@ fn collect_field_sets(
             .qualified_name = field_set_key,
             .label = alloc.dupe(u8, label) catch continue,
             .namespace = alloc.dupe(u8, names.namespace) catch continue,
-            .members = alloc.dupe(evaluator.FieldSetMemberMetadata, members.items) catch continue,
+            .members = alloc.dupe(
+                evaluator.FieldSetMemberMetadata,
+                members.items,
+            ) catch continue,
         }) catch {};
     }
 }
+
+const field_set_meta_xml_suffix = ".fieldSet-meta.xml";
 
 fn collect_field_set_members(
     alloc: std.mem.Allocator,
@@ -1155,9 +1310,19 @@ fn collect_field_set_members(
 ) !std.ArrayListUnmanaged(evaluator.FieldSetMemberMetadata) {
     var members = std.ArrayListUnmanaged(evaluator.FieldSetMemberMetadata).empty;
     var search_start: usize = 0;
-    while (std.mem.indexOfPos(u8, content, search_start, "<displayedFields>")) |block_start_idx| {
+    while (std.mem.indexOfPos(
+        u8,
+        content,
+        search_start,
+        "<displayedFields>",
+    )) |block_start_idx| {
         const block_start = block_start_idx + "<displayedFields>".len;
-        const block_end = std.mem.indexOfPos(u8, content, block_start, "</displayedFields>") orelse break;
+        const block_end = std.mem.indexOfPos(
+            u8,
+            content,
+            block_start,
+            "</displayedFields>",
+        ) orelse break;
         const block = content[block_start..block_end];
 
         const field_start_idx = std.mem.indexOf(u8, block, "<field>") orelse {
@@ -1165,7 +1330,12 @@ fn collect_field_set_members(
             continue;
         };
         const field_start = field_start_idx + "<field>".len;
-        const field_end = std.mem.indexOfPos(u8, block, field_start, "</field>") orelse {
+        const field_end = std.mem.indexOfPos(
+            u8,
+            block,
+            field_start,
+            "</field>",
+        ) orelse {
             search_start = block_end + "</displayedFields>".len;
             continue;
         };
@@ -1191,7 +1361,11 @@ fn collect_field_set_members(
 
 /// XML エンティティをデコードし、Apex 文字列リテラルのクォートを除去する。
 /// e.g., "&apos;FINEST&apos;" → "FINEST", "&amp;test" → "&test"
-fn decode_xml_text(alloc: std.mem.Allocator, raw: []const u8, strip_outer_quotes: bool) ![]const u8 {
+fn decode_xml_text(
+    alloc: std.mem.Allocator,
+    raw: []const u8,
+    strip_outer_quotes: bool,
+) ![]const u8 {
     // First pass: decode XML entities
     var buf: std.ArrayListUnmanaged(u8) = .empty;
     var i: usize = 0;
@@ -1223,7 +1397,11 @@ fn decode_xml_text(alloc: std.mem.Allocator, raw: []const u8, strip_outer_quotes
     }
     const decoded = buf.items;
     // Strip surrounding single quotes (Apex string literal in metadata)
-    if (strip_outer_quotes and decoded.len >= 2 and decoded[0] == '\'' and decoded[decoded.len - 1] == '\'') {
+    if (strip_outer_quotes and
+        decoded.len >= 2 and
+        decoded[0] == '\'' and
+        decoded[decoded.len - 1] == '\'')
+    {
         return alloc.dupe(u8, decoded[1 .. decoded.len - 1]);
     }
     return alloc.dupe(u8, decoded);
@@ -1736,7 +1914,9 @@ test "E2E: Contact describe fields expose LastName token at runtime" {
         \\        String fieldName = String.valueOf(Contact.LastName);
         \\        Schema.SObjectField lastNameField = fields.get(fieldName);
         \\        Schema.DescribeFieldResult describe = lastNameField.getDescribe();
-        \\        return String.valueOf(lastNameField != null) + ':' + String.valueOf(lastNameField) + ':' + describe.getName();
+        \\        return String.valueOf(lastNameField != null) +
+        \\            ':' + String.valueOf(lastNameField) +
+        \\            ':' + describe.getName();
         \\    }
         \\}
     ;
@@ -1778,7 +1958,9 @@ test "E2E: JSON parser tokens can be streamed into a generator" {
     const source =
         \\public class JsonStreamingProbe {
         \\    public static String run() {
-        \\        JSONParser parser = JSON.createParser('[{"Name":"Acme","Count":2,"Flag":true,"Missing":null}]');
+        \\        JSONParser parser = JSON.createParser(
+        \\            '[{"Name":"Acme","Count":2,"Flag":true,"Missing":null}]'
+        \\        );
         \\        JSONGenerator generator = JSON.createGenerator(false);
         \\        while (parser.nextToken() != null) {
         \\            switch on parser.getCurrentToken() {
@@ -1791,7 +1973,8 @@ test "E2E: JSON parser tokens can be streamed into a generator" {
         \\                when FIELD_NAME {
         \\                    generator.writeFieldName(parser.getCurrentName());
         \\                }
-        \\                when VALUE_STRING, VALUE_FALSE, VALUE_TRUE, VALUE_NUMBER_FLOAT, VALUE_NUMBER_INT {
+        \\                when VALUE_STRING, VALUE_FALSE, VALUE_TRUE,
+        \\                     VALUE_NUMBER_FLOAT, VALUE_NUMBER_INT {
         \\                    generator.writeString(parser.getText());
         \\                }
         \\                when VALUE_NULL {
@@ -1815,7 +1998,10 @@ test "E2E: JSON parser tokens can be streamed into a generator" {
     });
     defer result.deinit();
 
-    try std.testing.expectEqualStrings("[{\"Name\":\"Acme\",\"Count\":\"2\",\"Flag\":\"true\",\"Missing\":null}]", result.value.string);
+    try std.testing.expectEqualStrings(
+        "[{\"Name\":\"Acme\",\"Count\":\"2\",\"Flag\":\"true\",\"Missing\":null}]",
+        result.value.string,
+    );
 }
 
 test "E2E: streamed JSON child relationship injection round-trips for typed and generic access" {
@@ -1850,7 +2036,11 @@ test "E2E: streamed JSON child relationship injection round-trips for typed and 
         \\        }
         \\    }
         \\
-        \\    private static void streamTokens(JSONParser fromStream, JSONGenerator toStream, ParserEvents events) {
+        \\    private static void streamTokens(
+        \\        JSONParser fromStream,
+        \\        JSONGenerator toStream,
+        \\        ParserEvents events
+        \\    ) {
         \\        Integer depth = 0;
         \\        while (fromStream.nextToken() != null) {
         \\            if (events != null) {
@@ -1954,7 +2144,11 @@ test "E2E: streamed JSON child relationship injection emits relationship wrapper
         \\        }
         \\    }
         \\
-        \\    private static void streamTokens(JSONParser fromStream, JSONGenerator toStream, ParserEvents events) {
+        \\    private static void streamTokens(
+        \\        JSONParser fromStream,
+        \\        JSONGenerator toStream,
+        \\        ParserEvents events
+        \\    ) {
         \\        Integer depth = 0;
         \\        while (fromStream.nextToken() != null) {
         \\            if (events != null) {
@@ -2018,7 +2212,18 @@ test "E2E: streamed JSON child relationship injection emits relationship wrapper
     });
     defer result.deinit();
 
-    try std.testing.expectEqualStrings("[{\"attributes\":{\"type\":\"Account\"},\"Id\":\"001000000000001AAA\",\"Name\":\"Acme\",\"NumberOfEmployees\":\"7\",\"Contacts\":{\"totalSize\":2,\"done\":true,\"records\":[{\"attributes\":{\"type\":\"Contact\"},\"Id\":\"003000000000001AAA\",\"DoNotCall\":\"true\"},{\"attributes\":{\"type\":\"Contact\"},\"Id\":\"003000000000002AAA\",\"DoNotCall\":\"false\"}]}}]", result.value.string);
+    try std.testing.expectEqualStrings(
+        "[{\"attributes\":{\"type\":\"Account\"}," ++
+            "\"Id\":\"001000000000001AAA\"," ++
+            "\"Name\":\"Acme\"," ++
+            "\"NumberOfEmployees\":\"7\"," ++
+            "\"Contacts\":{\"totalSize\":2,\"done\":true,\"records\":[" ++
+            "{\"attributes\":{\"type\":\"Contact\"}," ++
+            "\"Id\":\"003000000000001AAA\",\"DoNotCall\":\"true\"}," ++
+            "{\"attributes\":{\"type\":\"Contact\"}," ++
+            "\"Id\":\"003000000000002AAA\",\"DoNotCall\":\"false\"}]}}]",
+        result.value.string,
+    );
 }
 
 test "E2E: custom property setters can delegate writes" {
@@ -2413,7 +2618,10 @@ test "E2E: fixture Flow.Interview plugin mock exposes input and output variables
         \\        Map<String, Object> inputs = new Map<String, Object>();
         \\        inputs.put('pluginConfiguration', 'cfg');
         \\        inputs.put('pluginInput', 'input');
-        \\        Flow.Interview interview = Flow.Interview.createInterview('MockLogBatchPurgerPlugin', inputs);
+        \\        Flow.Interview interview = Flow.Interview.createInterview(
+        \\            'MockLogBatchPurgerPlugin',
+        \\            inputs
+        \\        );
         \\        interview.start();
         \\        return (String) interview.getVariableValue('pluginConfiguration') + ':' +
         \\            (String) interview.getVariableValue('pluginInput') + ':' +
@@ -2436,19 +2644,37 @@ test "E2E: FeatureManagement.checkPermission honors assigned custom permissions 
         \\public class FeaturePermissionTest {
         \\    public static Boolean test() {
         \\        Profile p = [SELECT Id FROM Profile WHERE Name = 'Standard User'];
-        \\        User u = new User(ProfileId = p.Id, LastName = 'User', Username = 'perm@example.com', Email = 'perm@example.com', Alias = 'pusr');
+        \\        User u = new User(
+        \\            ProfileId = p.Id,
+        \\            LastName = 'User',
+        \\            Username = 'perm@example.com',
+        \\            Email = 'perm@example.com',
+        \\            Alias = 'pusr'
+        \\        );
         \\        insert u;
-        \\        PermissionSet ps = new PermissionSet(Name = 'CustomPermissionEnabled', Label = 'Custom Permission Enabled');
+        \\        PermissionSet ps = new PermissionSet(
+        \\            Name = 'CustomPermissionEnabled',
+        \\            Label = 'Custom Permission Enabled'
+        \\        );
         \\        insert ps;
         \\        SetupEntityAccess sea = new SetupEntityAccess(
         \\            ParentId = ps.Id,
-        \\            SetupEntityId = [SELECT Id FROM CustomPermission WHERE DeveloperName = 'CanModifyLoggerSettings'].Id
+        \\            SetupEntityId = [
+        \\                SELECT Id
+        \\                FROM CustomPermission
+        \\                WHERE DeveloperName = 'CanModifyLoggerSettings'
+        \\            ].Id
         \\        );
-        \\        PermissionSetAssignment psa = new PermissionSetAssignment(AssigneeId = u.Id, PermissionSetId = ps.Id);
+        \\        PermissionSetAssignment psa = new PermissionSetAssignment(
+        \\            AssigneeId = u.Id,
+        \\            PermissionSetId = ps.Id
+        \\        );
         \\        insert new List<SObject>{ sea, psa };
         \\        Boolean hasPermission = false;
         \\        System.runAs(u) {
-        \\            hasPermission = System.FeatureManagement.checkPermission('CanModifyLoggerSettings');
+        \\            hasPermission = System.FeatureManagement.checkPermission(
+        \\                'CanModifyLoggerSettings'
+        \\            );
         \\        }
         \\        return hasPermission;
         \\    }
@@ -2468,11 +2694,19 @@ test "E2E: standard user custom object describe is not updateable by default" {
         \\public class StandardUserCrudTest {
         \\    public static Boolean test() {
         \\        Profile p = [SELECT Id FROM Profile WHERE Name = 'Standard User'];
-        \\        User u = new User(ProfileId = p.Id, LastName = 'User', Username = 'crud@example.com', Email = 'crud@example.com', Alias = 'cusr');
+        \\        User u = new User(
+        \\            ProfileId = p.Id,
+        \\            LastName = 'User',
+        \\            Username = 'crud@example.com',
+        \\            Email = 'crud@example.com',
+        \\            Alias = 'cusr'
+        \\        );
         \\        insert u;
         \\        Boolean canUpdate = true;
         \\        System.runAs(u) {
-        \\            canUpdate = Schema.LoggerSettings__c.SObjectType.getDescribe().isUpdateable();
+        \\            canUpdate = Schema.LoggerSettings__c.SObjectType
+        \\                .getDescribe()
+        \\                .isUpdateable();
         \\        }
         \\        return canUpdate;
         \\    }
@@ -2492,12 +2726,21 @@ test "E2E: schema-qualified standard user custom object describe is not updateab
         \\public class SchemaQualifiedCrudTest {
         \\    public static String test() {
         \\        Schema.Profile p = [SELECT Id FROM Profile WHERE Name = 'Standard User'];
-        \\        Schema.User u = new Schema.User(ProfileId = p.Id, LastName = 'User', Username = 'schema-crud@example.com', Email = 'schema-crud@example.com', Alias = 'sqru');
+        \\        Schema.User u = new Schema.User(
+        \\            ProfileId = p.Id,
+        \\            LastName = 'User',
+        \\            Username = 'schema-crud@example.com',
+        \\            Email = 'schema-crud@example.com',
+        \\            Alias = 'sqru'
+        \\        );
         \\        insert u;
         \\        String result = '';
         \\        System.runAs(u) {
-        \\            result = String.valueOf(Schema.LoggerSettings__c.SObjectType.getDescribe().isUpdateable()) + ':' +
-        \\                String.valueOf(System.FeatureManagement.checkPermission('CanModifyLoggerSettings'));
+        \\            result = String.valueOf(
+        \\                Schema.LoggerSettings__c.SObjectType.getDescribe().isUpdateable()
+        \\            ) + ':' + String.valueOf(
+        \\                System.FeatureManagement.checkPermission('CanModifyLoggerSettings')
+        \\            );
         \\        }
         \\        return result;
         \\    }
@@ -2516,12 +2759,25 @@ test "E2E: Profile Name IN query preserves standard-user CRUD restrictions in ru
     const source =
         \\public class ProfileInCrudTest {
         \\    public static String test() {
-        \\        Profile p = [SELECT Id FROM Profile WHERE Name IN ('Standard User', 'Usuario estándar', '標準ユーザー')];
-        \\        User u = new User(ProfileId = p.Id, LastName = 'User', Username = 'profile-in@example.com', Email = 'profile-in@example.com', Alias = 'pin');
+        \\        Profile p = [
+        \\            SELECT Id
+        \\            FROM Profile
+        \\            WHERE Name IN ('Standard User', 'Usuario estándar', '標準ユーザー')
+        \\        ];
+        \\        User u = new User(
+        \\            ProfileId = p.Id,
+        \\            LastName = 'User',
+        \\            Username = 'profile-in@example.com',
+        \\            Email = 'profile-in@example.com',
+        \\            Alias = 'pin'
+        \\        );
         \\        String result = '';
         \\        System.runAs(u) {
-        \\            result = String.valueOf(Schema.LoggerSettings__c.SObjectType.getDescribe().isUpdateable()) + ':' +
-        \\                String.valueOf(Schema.Log__c.SObjectType.getDescribe().isDeletable());
+        \\            result = String.valueOf(
+        \\                Schema.LoggerSettings__c.SObjectType.getDescribe().isUpdateable()
+        \\            ) + ':' + String.valueOf(
+        \\                Schema.Log__c.SObjectType.getDescribe().isDeletable()
+        \\            );
         \\        }
         \\        return result;
         \\    }
@@ -2545,8 +2801,14 @@ test "E2E: synthetic Profile LIKE filters no-match and collapses repeated wildca
         \\        List<Profile> noMatches = [SELECT Id FROM Profile WHERE Name LIKE :noMatchSearch];
         \\        String innerSearch = '%' + currentProfile.Name.left(4) + '%';
         \\        String wrappedSearch = '%' + innerSearch + '%';
-        \\        List<Profile> matches = [SELECT Id, Name, UserLicense.Name FROM Profile WHERE Name LIKE :wrappedSearch];
-        \\        return String.valueOf(noMatches.size()) + ':' + matches.get(0).Name + ':' + matches.get(0).UserLicense.Name;
+        \\        List<Profile> matches = [
+        \\            SELECT Id, Name, UserLicense.Name
+        \\            FROM Profile
+        \\            WHERE Name LIKE :wrappedSearch
+        \\        ];
+        \\        return String.valueOf(noMatches.size()) +
+        \\            ':' + matches.get(0).Name +
+        \\            ':' + matches.get(0).UserLicense.Name;
         \\    }
         \\}
     ;
@@ -2564,7 +2826,12 @@ test "E2E: synthetic Profile query honors permission flag predicates" {
         \\public class ProfilePermissionPredicateTest {
         \\    public static String test() {
         \\        Profile p = [
-        \\            SELECT Id, Name, PermissionsPrivacyDataAccess, PermissionsSubmitMacrosAllowed, PermissionsMassInlineEdit
+        \\            SELECT
+        \\                Id,
+        \\                Name,
+        \\                PermissionsPrivacyDataAccess,
+        \\                PermissionsSubmitMacrosAllowed,
+        \\                PermissionsMassInlineEdit
         \\            FROM Profile
         \\            WHERE
         \\                UserType = 'Standard'
@@ -2612,7 +2879,9 @@ test "E2E: inserted users are queryable by CommunityNickname" {
         \\            FROM User
         \\            WHERE CommunityNickname = 'fixture-nick'
         \\        ];
-        \\        return String.valueOf(rows.size()) + ':' + rows[0].CommunityNickname + ':' + String.valueOf(u.Id != null);
+        \\        return String.valueOf(rows.size()) +
+        \\            ':' + rows[0].CommunityNickname +
+        \\            ':' + String.valueOf(u.Id != null);
         \\    }
         \\}
     ;
@@ -2852,7 +3121,11 @@ test "E2E: stripInaccessible READABLE skips root CRUD enforcement when disabled"
         \\    }
         \\    public static String test() {
         \\        User u = makeUser();
-        \\        Thing__c record = new Thing__c(Id = 'a00000000000001AAA', Name = 'Example', Detail__c = 'secret');
+        \\        Thing__c record = new Thing__c(
+        \\            Id = 'a00000000000001AAA',
+        \\            Name = 'Example',
+        \\            Detail__c = 'secret'
+        \\        );
         \\        String json;
         \\        System.runAs(u) {
         \\            SObjectAccessDecision decision = Security.stripInaccessible(
@@ -2873,7 +3146,10 @@ test "E2E: stripInaccessible READABLE skips root CRUD enforcement when disabled"
     });
     defer result.deinit();
 
-    try std.testing.expectEqualStrings("{\"attributes\":{\"type\":\"Thing__c\"},\"Id\":\"a00000000000001AAA\"}", result.value.string);
+    try std.testing.expectEqualStrings(
+        "{\"attributes\":{\"type\":\"Thing__c\"},\"Id\":\"a00000000000001AAA\"}",
+        result.value.string,
+    );
 }
 
 test "E2E: stripInaccessible READABLE enforces root CRUD by default" {
@@ -3187,7 +3463,13 @@ test "E2E: synthetic automated-process User query works when the User store is n
         \\public class AutomatedProcessUserQueryTest {
         \\    public static String test() {
         \\        Profile p = [SELECT Id FROM Profile WHERE Name = 'Standard User'];
-        \\        insert new User(ProfileId = p.Id, LastName = 'StoreUser', Username = 'store-user@example.com', Email = 'store-user@example.com', Alias = 'stor');
+        \\        insert new User(
+        \\            ProfileId = p.Id,
+        \\            LastName = 'StoreUser',
+        \\            Username = 'store-user@example.com',
+        \\            Email = 'store-user@example.com',
+        \\            Alias = 'stor'
+        \\        );
         \\        User autoproc = [SELECT Alias, Username, UserType FROM User WHERE Alias = 'autoproc'];
         \\        return autoproc.Alias + ':' + autoproc.Username + ':' + autoproc.UserType;
         \\    }
@@ -3199,7 +3481,10 @@ test "E2E: synthetic automated-process User query works when the User store is n
     });
     defer result.deinit();
 
-    try std.testing.expectEqualStrings("autoproc:autoproc@example.com:AutomatedProcess", result.value.string);
+    try std.testing.expectEqualStrings(
+        "autoproc:autoproc@example.com:AutomatedProcess",
+        result.value.string,
+    );
 }
 
 test "E2E: UserInfo getters reflect the current runAs user" {
@@ -3219,7 +3504,10 @@ test "E2E: UserInfo getters reflect the current runAs user" {
         \\        insert u;
         \\        String result = '';
         \\        System.runAs(u) {
-        \\            result = UserInfo.getUsername() + ':' + UserInfo.getFirstName() + ':' + UserInfo.getLastName() + ':' + UserInfo.getTimeZone().getId();
+        \\            result = UserInfo.getUsername() +
+        \\                ':' + UserInfo.getFirstName() +
+        \\                ':' + UserInfo.getLastName() +
+        \\                ':' + UserInfo.getTimeZone().getId();
         \\        }
         \\        return result;
         \\    }
@@ -3231,7 +3519,10 @@ test "E2E: UserInfo getters reflect the current runAs user" {
     });
     defer result.deinit();
 
-    try std.testing.expectEqualStrings("casey.runner@example.com:Casey:Runner:Asia/Tokyo", result.value.string);
+    try std.testing.expectEqualStrings(
+        "casey.runner@example.com:Casey:Runner:Asia/Tokyo",
+        result.value.string,
+    );
 }
 
 test "E2E: User query by UserInfo username resolves the current user when other users exist" {
@@ -3239,8 +3530,18 @@ test "E2E: User query by UserInfo username resolves the current user when other 
         \\public class CurrentUserUsernameQueryTest {
         \\    public static String test() {
         \\        Profile p = [SELECT Id FROM Profile WHERE Name = 'Standard User'];
-        \\        insert new User(ProfileId = p.Id, LastName = 'Other', Username = 'other.user@example.com', Email = 'other.user@example.com', Alias = 'othr');
-        \\        User currentUser = [SELECT Id, Username FROM User WHERE Username = :UserInfo.getUsername()];
+        \\        insert new User(
+        \\            ProfileId = p.Id,
+        \\            LastName = 'Other',
+        \\            Username = 'other.user@example.com',
+        \\            Email = 'other.user@example.com',
+        \\            Alias = 'othr'
+        \\        );
+        \\        User currentUser = [
+        \\            SELECT Id, Username
+        \\            FROM User
+        \\            WHERE Username = :UserInfo.getUsername()
+        \\        ];
         \\        return currentUser.Id + ':' + currentUser.Username;
         \\    }
         \\}
@@ -3254,11 +3555,15 @@ test "E2E: User query by UserInfo username resolves the current user when other 
     try std.testing.expectEqualStrings("005000000000001:testuser@example.com", result.value.string);
 }
 
-test "E2E: User query by UserInfo username resolves the current user before any User records exist" {
+test "E2E: User query by UserInfo username resolves seeded current user" {
     const source =
         \\public class SeededCurrentUserUsernameQueryTest {
         \\    public static String test() {
-        \\        User currentUser = [SELECT Id, Username FROM User WHERE Username = :UserInfo.getUsername()];
+        \\        User currentUser = [
+        \\            SELECT Id, Username
+        \\            FROM User
+        \\            WHERE Username = :UserInfo.getUsername()
+        \\        ];
         \\        return currentUser.Id + ':' + currentUser.Username;
         \\    }
         \\}
@@ -3280,7 +3585,11 @@ test "E2E: runAs can query the original current user by username" {
         \\        User autoproc = [SELECT Id FROM User WHERE Alias = 'autoproc'];
         \\        String result = '';
         \\        System.runAs(new User(Id = autoproc.Id)) {
-        \\            User originalUser = [SELECT Id, Username FROM User WHERE Username = :originalUsername];
+        \\            User originalUser = [
+        \\                SELECT Id, Username
+        \\                FROM User
+        \\                WHERE Username = :originalUsername
+        \\            ];
         \\            result = originalUser.Id + ':' + originalUser.Username;
         \\        }
         \\        return result;
@@ -3300,13 +3609,27 @@ test "E2E: standard user cannot access AccountBrand describe fields" {
     const source =
         \\public class AccountBrandAccessTest {
         \\    public static String test() {
-        \\        Profile p = [SELECT Id FROM Profile WHERE Name IN ('Standard User', 'Usuario estándar', '標準ユーザー')];
-        \\        User u = new User(ProfileId = p.Id, LastName = 'User', Username = 'accountbrand@example.com', Email = 'accountbrand@example.com', Alias = 'abrd');
+        \\        Profile p = [
+        \\            SELECT Id
+        \\            FROM Profile
+        \\            WHERE Name IN ('Standard User', 'Usuario estándar', '標準ユーザー')
+        \\        ];
+        \\        User u = new User(
+        \\            ProfileId = p.Id,
+        \\            LastName = 'User',
+        \\            Username = 'accountbrand@example.com',
+        \\            Email = 'accountbrand@example.com',
+        \\            Alias = 'abrd'
+        \\        );
         \\        String result = '';
         \\        System.runAs(u) {
-        \\            result = String.valueOf(Schema.AccountBrand.SObjectType.getDescribe().isAccessible()) + ':' +
-        \\                String.valueOf(Schema.AccountBrand.CompanyName.getDescribe().isAccessible()) + ':' +
-        \\                String.valueOf(Schema.AccountBrand.Name.getDescribe().isAccessible());
+        \\            result = String.valueOf(
+        \\                Schema.AccountBrand.SObjectType.getDescribe().isAccessible()
+        \\            ) + ':' + String.valueOf(
+        \\                Schema.AccountBrand.CompanyName.getDescribe().isAccessible()
+        \\            ) + ':' + String.valueOf(
+        \\                Schema.AccountBrand.Name.getDescribe().isAccessible()
+        \\            );
         \\        }
         \\        return result;
         \\    }
@@ -3446,7 +3769,10 @@ test "E2E: Date/Time helpers for daysBetween pow urlEncode Datetime from Date an
         \\        String enc = EncodingUtil.urlEncode('Hello World');
         \\        Time t = Time.newInstance(0, 0, 0, 0);
         \\        Datetime dt = Datetime.newInstance(d1, t);
-        \\        return String.valueOf(between) + '|' + String.valueOf(pow) + '|' + enc + '|' + String.valueOf(dt);
+        \\        return String.valueOf(between) +
+        \\            '|' + String.valueOf(pow) +
+        \\            '|' + enc +
+        \\            '|' + String.valueOf(dt);
         \\    }
         \\}
     ;
@@ -3468,7 +3794,9 @@ test "E2E: Type literals from distinct classes are not collapsed as map keys" {
         \\        Map<Type, String> byType = new Map<Type, String>();
         \\        byType.put(Alpha.class, 'alpha');
         \\        byType.put(Beta.class, 'beta');
-        \\        return byType.get(Alpha.class) + ',' + byType.get(Beta.class) + ',' + String.valueOf(byType.size());
+        \\        return byType.get(Alpha.class) +
+        \\            ',' + byType.get(Beta.class) +
+        \\            ',' + String.valueOf(byType.size());
         \\    }
         \\}
     ;
@@ -3508,7 +3836,10 @@ test "E2E: String indexOf honours the optional fromIndex argument" {
         \\        Integer b = s.indexOf('ab', 1);
         \\        Integer c = s.indexOf('ab', 5);
         \\        Integer d = s.lastIndexOf('ab');
-        \\        return String.valueOf(a) + ':' + String.valueOf(b) + ':' + String.valueOf(c) + ':' + String.valueOf(d);
+        \\        return String.valueOf(a) +
+        \\            ':' + String.valueOf(b) +
+        \\            ':' + String.valueOf(c) +
+        \\            ':' + String.valueOf(d);
         \\    }
         \\}
     ;
@@ -3577,7 +3908,9 @@ test "E2E: addError on a detached SObject records the error without throwing" {
         \\        Account a = new Account();
         \\        a.addError('shouldnt throw');
         \\        if (!a.hasErrors()) return 'missed';
-        \\        return 'attached:' + String.valueOf(a.getErrors().size()) + ':' + a.getErrors()[0].getMessage();
+        \\        return 'attached:' +
+        \\            String.valueOf(a.getErrors().size()) +
+        \\            ':' + a.getErrors()[0].getMessage();
         \\    }
         \\}
     ;
@@ -3806,7 +4139,9 @@ test "E2E: queueable finalizer sees unhandled exception result" {
         \\            System.enqueueJob(new FailingQueueable());
         \\            return 'no-error';
         \\        } catch (System.Exception ex) {
-        \\            return ProbeFinalizer.resultName + ':' + ProbeFinalizer.exceptionMessage + ':' + ex.getMessage();
+        \\            return ProbeFinalizer.resultName +
+        \\                ':' + ProbeFinalizer.exceptionMessage +
+        \\                ':' + ex.getMessage();
         \\        }
         \\    }
         \\}
@@ -3829,7 +4164,10 @@ test "E2E: Database.upsert with Schema.SObjectField matches existing records" {
         \\            new Thing__c(UniqueId__c = 'u1', Name = 'Updated'),
         \\            new Thing__c(UniqueId__c = 'u2', Name = 'Created')
         \\        };
-        \\        List<Database.UpsertResult> results = Database.upsert(rows, Schema.Thing__c.UniqueId__c);
+        \\        List<Database.UpsertResult> results = Database.upsert(
+        \\            rows,
+        \\            Schema.Thing__c.UniqueId__c
+        \\        );
         \\        List<Thing__c> saved = [SELECT UniqueId__c, Name FROM Thing__c];
         \\        String existingName = null;
         \\        for (Thing__c row : saved) {
@@ -3860,7 +4198,9 @@ test "E2E: Database.upsert with Schema.Id inserts unsaved records" {
         \\    public static String test() {
         \\        Account row = new Account(Name = 'Created via Id token');
         \\        Database.UpsertResult saveResult = Database.upsert(row, Schema.Account.Id);
-        \\        return String.valueOf(saveResult.isSuccess()) + ':' + String.valueOf(saveResult.isCreated()) + ':' + String.valueOf(row.Id != null);
+        \\        return String.valueOf(saveResult.isSuccess()) +
+        \\            ':' + String.valueOf(saveResult.isCreated()) +
+        \\            ':' + String.valueOf(row.Id != null);
         \\    }
         \\}
     ;
@@ -3885,9 +4225,15 @@ test "E2E: custom share objects are queryable" {
         \\            AccessLevel = 'Read'
         \\        );
         \\        insert shareRow;
-        \\        List<Thing__Share> rows = [SELECT ParentId, UserOrGroupId, AccessLevel FROM Thing__Share WHERE ParentId = :parentRecord.Id];
+        \\        List<Thing__Share> rows = [
+        \\            SELECT ParentId, UserOrGroupId, AccessLevel
+        \\            FROM Thing__Share
+        \\            WHERE ParentId = :parentRecord.Id
+        \\        ];
         \\        Thing__Share savedRow = rows[0];
-        \\        return String.valueOf(rows.size()) + ':' + String.valueOf(savedRow.ParentId == parentRecord.Id) + ':' + String.valueOf(savedRow.UserOrGroupId == UserInfo.getUserId());
+        \\        return String.valueOf(rows.size()) +
+        \\            ':' + String.valueOf(savedRow.ParentId == parentRecord.Id) +
+        \\            ':' + String.valueOf(savedRow.UserOrGroupId == UserInfo.getUserId());
         \\    }
         \\}
     ;
@@ -3984,14 +4330,26 @@ test "E2E: getFilteredAttachments full flow" {
         \\            Database.insert(cv, AccessLevel.USER_MODE);
         \\        }
         \\        // queryWithBinds to get CDLs
-        \\        Map<String, Object> recordBind = new Map<String, Object>{ 'recordId' => acct.Id };
-        \\        String qs = 'SELECT ContentDocumentId FROM ContentDocumentLink WHERE LinkedEntityId = :recordId';
-        \\        List<ContentDocumentLink> links = Database.queryWithBinds(qs, recordBind, AccessLevel.USER_MODE);
+        \\        Map<String, Object> recordBind = new Map<String, Object>{
+        \\            'recordId' => acct.Id
+        \\        };
+        \\        String qs =
+        \\            'SELECT ContentDocumentId FROM ContentDocumentLink ' +
+        \\            'WHERE LinkedEntityId = :recordId';
+        \\        List<ContentDocumentLink> links = Database.queryWithBinds(
+        \\            qs,
+        \\            recordBind,
+        \\            AccessLevel.USER_MODE
+        \\        );
         \\        Set<Id> fileIds = new Set<Id>();
         \\        for (ContentDocumentLink cdl : links) {
         \\            fileIds.add(cdl.ContentDocumentId);
         \\        }
-        \\        List<ContentVersion> versions = [SELECT Id, Title FROM ContentVersion WHERE ContentDocumentId IN :fileIds];
+        \\        List<ContentVersion> versions = [
+        \\            SELECT Id, Title
+        \\            FROM ContentVersion
+        \\            WHERE ContentDocumentId IN :fileIds
+        \\        ];
         \\        return links.size() + ':' + fileIds.size() + ':' + versions.size();
         \\    }
         \\}
@@ -4222,7 +4580,13 @@ test "E2E: virtual class with overloaded methods and auto property" {
         \\    public RC(String nc) { this.namedCredentialName = nc; }
         \\    protected RC() { }
         \\    // 5-arg instance
-        \\    protected HttpResponse makeApiCall(HttpVerb method, String path, String query, String body, Map<String, String> headers) {
+        \\    protected HttpResponse makeApiCall(
+        \\        HttpVerb method,
+        \\        String path,
+        \\        String query,
+        \\        String body,
+        \\        Map<String, String> headers
+        \\    ) {
         \\        HttpRequest req = new HttpRequest();
         \\        req.setEndpoint('callout:' + this.namedCredentialName + '/' + path);
         \\        req.setMethod(String.valueOf(method));
@@ -4601,7 +4965,10 @@ test "E2E: constructor overloads prefer declared-variable hint over name-only sc
     });
     defer result.deinit();
 
-    try std.testing.expectEqualStrings("string-enum-bool:Account.Name:A:false", result.value.string);
+    try std.testing.expectEqualStrings(
+        "string-enum-bool:Account.Name:A:false",
+        result.value.string,
+    );
 }
 
 test "E2E: ternary with enum literals carries hint into overload resolution" {
@@ -4719,7 +5086,11 @@ test "E2E: enum-valued string argument disambiguates overloads" {
         \\    public static String test() {
         \\        // Must pick the (String, Direction, Boolean) overload even though the string
         \\        // 'ASC' would otherwise score equally against (String, String, Direction).
-        \\        EnumOverloadProbe.Ordering ord = new EnumOverloadProbe.Ordering('Name', EnumOverloadProbe.Direction.ASC, false);
+        \\        EnumOverloadProbe.Ordering ord = new EnumOverloadProbe.Ordering(
+        \\            'Name',
+        \\            EnumOverloadProbe.Direction.ASC,
+        \\            false
+        \\        );
         \\        return ord.field;
         \\    }
         \\}
@@ -4808,8 +5179,12 @@ test "E2E: Datetime.valueOf accepts loose single-digit components" {
         \\public class DtLooseProbe {
         \\    public static String test() {
         \\        Datetime dt = Datetime.valueOf('2006-5-4 3:2:1');
-        \\        return String.valueOf(dt.year()) + '-' + String.valueOf(dt.month()) + '-' + String.valueOf(dt.day()) +
-        \\            ' ' + String.valueOf(dt.hour()) + ':' + String.valueOf(dt.minute()) + ':' + String.valueOf(dt.second());
+        \\        return String.valueOf(dt.year()) +
+        \\            '-' + String.valueOf(dt.month()) +
+        \\            '-' + String.valueOf(dt.day()) +
+        \\            ' ' + String.valueOf(dt.hour()) +
+        \\            ':' + String.valueOf(dt.minute()) +
+        \\            ':' + String.valueOf(dt.second());
         \\    }
         \\}
     ;
@@ -4834,7 +5209,9 @@ test "E2E: bitwise operators on integers return integer results" {
         \\        Integer andR = 30 & 15;
         \\        Integer orR = 30 | 64;
         \\        Integer xorR = 30 ^ 15;
-        \\        return String.valueOf(andR) + ',' + String.valueOf(orR) + ',' + String.valueOf(xorR);
+        \\        return String.valueOf(andR) +
+        \\            ',' + String.valueOf(orR) +
+        \\            ',' + String.valueOf(xorR);
         \\    }
         \\}
     ;
@@ -4882,9 +5259,18 @@ test "E2E: Map.equals delegates pairwise value comparison" {
     const source =
         \\public class MapEqualsProbe {
         \\    public static String test() {
-        \\        Map<String, Object> a = new Map<String, Object>{ 'name' => 'Bob', 'age' => 42 };
-        \\        Map<String, Object> b = new Map<String, Object>{ 'name' => 'Bob', 'age' => 42 };
-        \\        Map<String, Object> c = new Map<String, Object>{ 'name' => 'Bob', 'age' => 43 };
+        \\        Map<String, Object> a = new Map<String, Object>{
+        \\            'name' => 'Bob',
+        \\            'age' => 42
+        \\        };
+        \\        Map<String, Object> b = new Map<String, Object>{
+        \\            'name' => 'Bob',
+        \\            'age' => 42
+        \\        };
+        \\        Map<String, Object> c = new Map<String, Object>{
+        \\            'name' => 'Bob',
+        \\            'age' => 43
+        \\        };
         \\        return String.valueOf(a.equals(b)) + ',' + String.valueOf(a.equals(c));
         \\    }
         \\}
@@ -4907,10 +5293,18 @@ test "E2E: System.runAs exposes the target user's fields to UserInfo" {
     const source =
         \\public class RunAsUserOverrideProbe {
         \\    public static String test() {
-        \\        User target = new User(FirstName = 'Bob', LastName = 'Smith', Email = 'bob@example.com', LanguageLocaleKey = 'en_US');
+        \\        User target = new User(
+        \\            FirstName = 'Bob',
+        \\            LastName = 'Smith',
+        \\            Email = 'bob@example.com',
+        \\            LanguageLocaleKey = 'en_US'
+        \\        );
         \\        String result = '';
         \\        System.runAs(target) {
-        \\            result = UserInfo.getFirstName() + '|' + UserInfo.getLastName() + '|' + UserInfo.getUserEmail() + '|' + UserInfo.getLanguage();
+        \\            result = UserInfo.getFirstName() +
+        \\                '|' + UserInfo.getLastName() +
+        \\                '|' + UserInfo.getUserEmail() +
+        \\                '|' + UserInfo.getLanguage();
         \\        }
         \\        return result;
         \\    }
@@ -5210,7 +5604,9 @@ test "E2E: relationship-style field names describe as REFERENCE" {
         \\        Schema.DisplayType dt = d.getType();
         \\        String rel = d.getRelationshipName();
         \\        List<Schema.SObjectType> refs = d.getReferenceTo();
-        \\        String refName = (refs != null && refs.size() > 0) ? refs[0].getDescribe().getName() : 'none';
+        \\        String refName = (refs != null && refs.size() > 0)
+        \\            ? refs[0].getDescribe().getName()
+        \\            : 'none';
         \\        return String.valueOf(dt) + '|' + rel + '|' + refName;
         \\    }
         \\}
@@ -5277,12 +5673,19 @@ test "E2E: Schema.SObjectType.<X>.fields.getMap() matches getDescribe().fields.g
     const source =
         \\public class FieldMapParityProbe {
         \\    public static String test() {
-        \\        Map<String, Schema.SObjectField> viaSchemaShortcut = Schema.SObjectType.Account.fields.getMap();
-        \\        Map<String, Schema.SObjectField> viaDescribe = Account.SObjectType.getDescribe().fields.getMap();
+        \\        Map<String, Schema.SObjectField> viaSchemaShortcut =
+        \\            Schema.SObjectType.Account.fields.getMap();
+        \\        Map<String, Schema.SObjectField> viaDescribe =
+        \\            Account.SObjectType.getDescribe().fields.getMap();
         \\        if (viaSchemaShortcut.size() != viaDescribe.size()) {
-        \\            return 'mismatch:' + String.valueOf(viaSchemaShortcut.size()) + '-vs-' + String.valueOf(viaDescribe.size());
+        \\            return 'mismatch:' +
+        \\                String.valueOf(viaSchemaShortcut.size()) +
+        \\                '-vs-' +
+        \\                String.valueOf(viaDescribe.size());
         \\        }
-        \\        if (viaSchemaShortcut.size() < 5) return 'too-small:' + String.valueOf(viaSchemaShortcut.size());
+        \\        if (viaSchemaShortcut.size() < 5) {
+        \\            return 'too-small:' + String.valueOf(viaSchemaShortcut.size());
+        \\        }
         \\        return 'ok';
         \\    }
         \\}
@@ -5613,7 +6016,11 @@ test "E2E: child insert recomputes rollup summaries and fires parent update trig
         \\        Parent__c parentRecord = new Parent__c(Name = 'Parent');
         \\        insert parentRecord;
         \\        insert new Child__c(Parent__c = parentRecord.Id, Status__c = 'Open');
-        \\        Parent__c refreshed = [SELECT OpenChildren__c, TotalChildren__c FROM Parent__c WHERE Id = :parentRecord.Id];
+        \\        Parent__c refreshed = [
+        \\            SELECT OpenChildren__c, TotalChildren__c
+        \\            FROM Parent__c
+        \\            WHERE Id = :parentRecord.Id
+        \\        ];
         \\        return String.valueOf(RollupUpdateCounter.updates) + ':' +
         \\            String.valueOf(refreshed.OpenChildren__c) + ':' +
         \\            String.valueOf(refreshed.TotalChildren__c);
@@ -5687,7 +6094,11 @@ test "E2E: filtered rollup matches enum name string values" {
         \\        Parent__c parentRecord = new Parent__c(Name = 'Parent');
         \\        insert parentRecord;
         \\        insert new Child__c(Parent__c = parentRecord.Id, Level__c = LogLevel.ERROR.name());
-        \\        Parent__c refreshed = [SELECT ErrorChildren__c FROM Parent__c WHERE Id = :parentRecord.Id];
+        \\        Parent__c refreshed = [
+        \\            SELECT ErrorChildren__c
+        \\            FROM Parent__c
+        \\            WHERE Id = :parentRecord.Id
+        \\        ];
         \\        return Integer.valueOf(refreshed.ErrorChildren__c);
         \\    }
         \\}
@@ -5739,7 +6150,9 @@ test "E2E: required field population preserves explicitly set picklist-like valu
         \\    public class RequiredFieldBuilder {
         \\        public static Example__c fill(Example__c record) {
         \\            Map<String, Object> populated = record.getPopulatedFieldsAsMap();
-        \\            for (Schema.SObjectField field : Example__c.SObjectType.getDescribe().fields.getMap().values()) {
+        \\            for (Schema.SObjectField field :
+        \\                Example__c.SObjectType.getDescribe().fields.getMap().values()
+        \\            ) {
         \\                Schema.DescribeFieldResult describe = field.getDescribe();
         \\                if (describe.isCreateable() == false) {
         \\                    continue;
@@ -5866,7 +6279,8 @@ test "E2E: picklist describe preserves metadata order when records only use a su
         \\public class PicklistMetadataOrderTest {
         \\    public static String test() {
         \\        insert new Thing__c(Name = 'One', Priority__c = 'Low');
-        \\        List<Schema.PicklistEntry> values = Schema.Thing__c.Priority__c.getDescribe().getPicklistValues();
+        \\        List<Schema.PicklistEntry> values =
+        \\            Schema.Thing__c.Priority__c.getDescribe().getPicklistValues();
         \\        return String.valueOf(values.size()) + ':' +
         \\            values.get(0).getValue() + ':' +
         \\            values.get(1).getValue() + ':' +
@@ -5957,9 +6371,13 @@ test "E2E: filtered rollup survives builder-populated child inserts" {
         \\    public class Builder {
         \\        public static Child__c fill(Child__c record) {
         \\            Map<String, Object> populated = record.getPopulatedFieldsAsMap();
-        \\            for (Schema.SObjectField field : Child__c.SObjectType.getDescribe().fields.getMap().values()) {
+        \\            for (Schema.SObjectField field :
+        \\                Child__c.SObjectType.getDescribe().fields.getMap().values()
+        \\            ) {
         \\                Schema.DescribeFieldResult describe = field.getDescribe();
-        \\                if (describe.isCreateable() == false || populated.containsKey(describe.getName())) {
+        \\                if (describe.isCreateable() == false ||
+        \\                    populated.containsKey(describe.getName())
+        \\                ) {
         \\                    continue;
         \\                }
         \\                if (describe.isNillable() == false) {
@@ -5972,9 +6390,16 @@ test "E2E: filtered rollup survives builder-populated child inserts" {
         \\    public static Integer test() {
         \\        Parent__c parentRecord = new Parent__c(Name = 'Parent');
         \\        insert parentRecord;
-        \\        Child__c childRecord = new Child__c(Parent__c = parentRecord.Id, Level__c = LogLevel.ERROR.name());
+        \\        Child__c childRecord = new Child__c(
+        \\            Parent__c = parentRecord.Id,
+        \\            Level__c = LogLevel.ERROR.name()
+        \\        );
         \\        insert Builder.fill(childRecord);
-        \\        Parent__c refreshed = [SELECT ErrorChildren__c FROM Parent__c WHERE Id = :parentRecord.Id];
+        \\        Parent__c refreshed = [
+        \\            SELECT ErrorChildren__c
+        \\            FROM Parent__c
+        \\            WHERE Id = :parentRecord.Id
+        \\        ];
         \\        return Integer.valueOf(refreshed.ErrorChildren__c);
         \\    }
         \\}
@@ -6046,7 +6471,9 @@ test "E2E: trigger old snapshot preserves pre-rollup summary values" {
         \\trigger ParentOldSnapshotTrigger on Parent__c (before update) {
         \\    Parent__c oldRecord = Trigger.old[0];
         \\    Parent__c newRecord = Trigger.new[0];
-        \\    RollupOldSnapshotProbe.seen = String.valueOf(oldRecord.ErrorChildren__c) + ':' + String.valueOf(newRecord.ErrorChildren__c);
+        \\    RollupOldSnapshotProbe.seen =
+        \\        String.valueOf(oldRecord.ErrorChildren__c) +
+        \\        ':' + String.valueOf(newRecord.ErrorChildren__c);
         \\}
         \\public class RollupOldSnapshotTest {
         \\    public static String test() {
@@ -6079,7 +6506,10 @@ test "E2E: COUNT queries resolve multi-hop custom parent relationships" {
     const source =
         \\public class MultiHopCountQueryTest {
         \\    public static String test() {
-        \\        Parent__c parent = new Parent__c(Name = 'Parent', RetentionDate__c = System.today().addDays(-1));
+        \\        Parent__c parent = new Parent__c(
+        \\            Name = 'Parent',
+        \\            RetentionDate__c = System.today().addDays(-1)
+        \\        );
         \\        insert parent;
         \\        Child__c child = new Child__c(Parent__c = parent.Id, Status__c = 'Open');
         \\        insert child;
@@ -6227,7 +6657,8 @@ test "E2E: explicit null suppresses hierarchy custom setting field defaults on u
     const source =
         \\public class HierarchySettingNullDefaultTest {
         \\    public static String test() {
-        \\        AppSettings__c settings = (AppSettings__c) AppSettings__c.SObjectType.newSObject(null, true);
+        \\        AppSettings__c settings = (AppSettings__c)
+        \\            AppSettings__c.SObjectType.newSObject(null, true);
         \\        settings.SetupOwnerId = UserInfo.getUserId();
         \\        settings.Mode__c = null;
         \\        upsert settings;
@@ -6340,7 +6771,12 @@ test "E2E: test runner sees hierarchy custom settings before later class static 
 
     var _null_buf: [256]u8 = undefined;
     var _null_writer: std.Io.Writer.Discarding = .init(&_null_buf);
-    var suite = try run_test_suite(alloc, std.testing.io, &.{tmp_path}, &_null_writer.writer);
+    var suite = try run_test_suite(
+        alloc,
+        std.testing.io,
+        &.{tmp_path},
+        &_null_writer.writer,
+    );
     defer suite.deinit();
 
     try std.testing.expectEqual(@as(u32, 1), suite.total);
@@ -6459,7 +6895,8 @@ test "E2E: logical AND short-circuits null receiver checks" {
 test "E2E: Type.forName inner handler retains SObjectType map keys after execute" {
     const source =
         \\public abstract class HandlerBase {
-        \\    private static Map<Schema.SObjectType, List<HandlerBase>> executed = new Map<Schema.SObjectType, List<HandlerBase>>();
+        \\    private static Map<Schema.SObjectType, List<HandlerBase>> executed =
+        \\        new Map<Schema.SObjectType, List<HandlerBase>>();
         \\    public abstract Schema.SObjectType getSObjectType();
         \\    public void execute() {
         \\        if (executed.containsKey(this.getSObjectType()) == false) {
@@ -6485,7 +6922,8 @@ test "E2E: Type.forName inner handler retains SObjectType map keys after execute
         \\}
         \\public class InnerHandlerFactoryTest {
         \\    public static String test() {
-        \\        HandlerBase handler = (HandlerBase) Type.forName('HandlerFactoryHost.AccountHandler').newInstance();
+        \\        HandlerBase handler = (HandlerBase)
+        \\            Type.forName('HandlerFactoryHost.AccountHandler').newInstance();
         \\        handler.execute();
         \\        return String.valueOf(HandlerBase.getExecutionCount(Schema.Account.SObjectType));
         \\    }
@@ -6503,7 +6941,8 @@ test "E2E: Type.forName inner handler retains SObjectType map keys after execute
 test "E2E: Type.forName event handler retains platform event SObjectType map keys after execute" {
     const source =
         \\public abstract class EventHandlerBase {
-        \\    private static Map<Schema.SObjectType, List<EventHandlerBase>> executed = new Map<Schema.SObjectType, List<EventHandlerBase>>();
+        \\    private static Map<Schema.SObjectType, List<EventHandlerBase>> executed =
+        \\        new Map<Schema.SObjectType, List<EventHandlerBase>>();
         \\    public abstract Schema.SObjectType getSObjectType();
         \\    public void execute() {
         \\        if (executed.containsKey(this.getSObjectType()) == false) {
@@ -6529,9 +6968,12 @@ test "E2E: Type.forName event handler retains platform event SObjectType map key
         \\}
         \\public class EventHandlerFactoryTest {
         \\    public static String test() {
-        \\        EventHandlerBase handler = (EventHandlerBase) Type.forName('EventHandlerFactoryHost.PlatformEventHandler').newInstance();
+        \\        EventHandlerBase handler = (EventHandlerBase)
+        \\            Type.forName('EventHandlerFactoryHost.PlatformEventHandler').newInstance();
         \\        handler.execute();
-        \\        return String.valueOf(EventHandlerBase.getExecutionCount(Schema.LogEntryEvent__e.SObjectType));
+        \\        return String.valueOf(
+        \\            EventHandlerBase.getExecutionCount(Schema.LogEntryEvent__e.SObjectType)
+        \\        );
         \\    }
         \\}
     ;
@@ -6550,9 +6992,16 @@ test "E2E: JSON round-trip into SObject preserves setup object fields when addin
         \\    public static String test() {
         \\        SObject record = new ApexClass(Name = 'SomeClass', Body = 'body');
         \\        String serializedRecord = System.JSON.serialize(record);
-        \\        Map<String, Object> deserializedRecordMap = (Map<String, Object>) System.JSON.deserializeUntyped(serializedRecord);
-        \\        deserializedRecordMap.put(Schema.ApexClass.LastModifiedDate.toString(), Datetime.newInstance(2026, 4, 1, 0, 0, 0));
-        \\        SObject updatedRecord = (SObject) System.JSON.deserialize(System.JSON.serialize(deserializedRecordMap), SObject.class);
+        \\        Map<String, Object> deserializedRecordMap =
+        \\            (Map<String, Object>) System.JSON.deserializeUntyped(serializedRecord);
+        \\        deserializedRecordMap.put(
+        \\            Schema.ApexClass.LastModifiedDate.toString(),
+        \\            Datetime.newInstance(2026, 4, 1, 0, 0, 0)
+        \\        );
+        \\        SObject updatedRecord = (SObject) System.JSON.deserialize(
+        \\            System.JSON.serialize(deserializedRecordMap),
+        \\            SObject.class
+        \\        );
         \\        return updatedRecord.getSObjectType().getDescribe().getName() + ':' +
         \\            String.valueOf(updatedRecord.get('Name')) + ':' +
         \\            String.valueOf(updatedRecord.get('Body')) + ':' +
@@ -6566,18 +7015,31 @@ test "E2E: JSON round-trip into SObject preserves setup object fields when addin
     });
     defer result.deinit();
 
-    try std.testing.expectEqualStrings("ApexClass:SomeClass:body:2026-04-01T00:00:00Z", result.value.string);
+    try std.testing.expectEqualStrings(
+        "ApexClass:SomeClass:body:2026-04-01T00:00:00Z",
+        result.value.string,
+    );
 }
 
 test "E2E: JSON read-only round-trip preserves typed ApexClass property access" {
     const source =
         \\public class JsonTypedApexClassRoundTripTest {
         \\    public static String test() {
-        \\        Schema.ApexClass record = new Schema.ApexClass(Name = 'SomeClass', Body = 'body');
+        \\        Schema.ApexClass record = new Schema.ApexClass(
+        \\            Name = 'SomeClass',
+        \\            Body = 'body'
+        \\        );
         \\        String serializedRecord = System.JSON.serialize(record);
-        \\        Map<String, Object> deserializedRecordMap = (Map<String, Object>) System.JSON.deserializeUntyped(serializedRecord);
-        \\        deserializedRecordMap.put(Schema.ApexClass.LastModifiedDate.toString(), Datetime.newInstance(2026, 4, 1, 0, 0, 0));
-        \\        record = (Schema.ApexClass) System.JSON.deserialize(System.JSON.serialize(deserializedRecordMap), SObject.class);
+        \\        Map<String, Object> deserializedRecordMap =
+        \\            (Map<String, Object>) System.JSON.deserializeUntyped(serializedRecord);
+        \\        deserializedRecordMap.put(
+        \\            Schema.ApexClass.LastModifiedDate.toString(),
+        \\            Datetime.newInstance(2026, 4, 1, 0, 0, 0)
+        \\        );
+        \\        record = (Schema.ApexClass) System.JSON.deserialize(
+        \\            System.JSON.serialize(deserializedRecordMap),
+        \\            SObject.class
+        \\        );
         \\        return String.valueOf(record.Name != null) + ':' +
         \\            String.valueOf(record.Name) + ':' +
         \\            String.valueOf(record.Body) + ':' +
@@ -6591,18 +7053,24 @@ test "E2E: JSON read-only round-trip preserves typed ApexClass property access" 
     });
     defer result.deinit();
 
-    try std.testing.expectEqualStrings("true:SomeClass:body:2026-04-01T00:00:00Z", result.value.string);
+    try std.testing.expectEqualStrings(
+        "true:SomeClass:body:2026-04-01T00:00:00Z",
+        result.value.string,
+    );
 }
 
 test "E2E: Map<Schema.SObjectField, Object> preserves setup field tokens through keySet/get" {
     const source =
         \\public class SchemaFieldTokenMapTest {
         \\    public static String test() {
-        \\        Map<Schema.SObjectField, Object> changesToFields = new Map<Schema.SObjectField, Object>{
-        \\            Schema.ApexClass.LastModifiedDate => Datetime.newInstance(2026, 4, 1, 0, 0, 0)
+        \\        Map<Schema.SObjectField, Object> changesToFields =
+        \\            new Map<Schema.SObjectField, Object>{
+        \\                Schema.ApexClass.LastModifiedDate =>
+        \\                    Datetime.newInstance(2026, 4, 1, 0, 0, 0)
         \\        };
         \\        for (Schema.SObjectField sobjectField : changesToFields.keySet()) {
-        \\            return sobjectField.toString() + ':' + String.valueOf(changesToFields.get(sobjectField));
+        \\            return sobjectField.toString() +
+        \\                ':' + String.valueOf(changesToFields.get(sobjectField));
         \\        }
         \\        return 'empty';
         \\    }
@@ -6614,18 +7082,32 @@ test "E2E: Map<Schema.SObjectField, Object> preserves setup field tokens through
     });
     defer result.deinit();
 
-    try std.testing.expectEqualStrings("LastModifiedDate:2026-04-01T00:00:00Z", result.value.string);
+    try std.testing.expectEqualStrings(
+        "LastModifiedDate:2026-04-01T00:00:00Z",
+        result.value.string,
+    );
 }
 
 test "E2E: helper-style read-only field setter preserves ApexClass Name" {
     const source =
         \\public class ReadOnlyFieldSetterProbe {
-        \\    public static SObject setReadOnlyField(SObject record, Schema.SObjectField field, Object value) {
-        \\        return setReadOnlyField(record, new Map<Schema.SObjectField, Object>{ field => value });
+        \\    public static SObject setReadOnlyField(
+        \\        SObject record,
+        \\        Schema.SObjectField field,
+        \\        Object value
+        \\    ) {
+        \\        return setReadOnlyField(
+        \\            record,
+        \\            new Map<Schema.SObjectField, Object>{ field => value }
+        \\        );
         \\    }
-        \\    public static SObject setReadOnlyField(SObject record, Map<Schema.SObjectField, Object> changesToFields) {
+        \\    public static SObject setReadOnlyField(
+        \\        SObject record,
+        \\        Map<Schema.SObjectField, Object> changesToFields
+        \\    ) {
         \\        String serializedRecord = System.JSON.serialize(record);
-        \\        Map<String, Object> deserializedRecordMap = (Map<String, Object>) System.JSON.deserializeUntyped(serializedRecord);
+        \\        Map<String, Object> deserializedRecordMap =
+        \\            (Map<String, Object>) System.JSON.deserializeUntyped(serializedRecord);
         \\        for (Schema.SObjectField sobjectField : changesToFields.keySet()) {
         \\            String fieldName = sobjectField.toString();
         \\            deserializedRecordMap.put(fieldName, changesToFields.get(sobjectField));
@@ -6634,8 +7116,15 @@ test "E2E: helper-style read-only field setter preserves ApexClass Name" {
         \\        return (SObject) System.JSON.deserialize(serializedRecord, SObject.class);
         \\    }
         \\    public static String test() {
-        \\        Schema.ApexClass record = new Schema.ApexClass(Name = 'SomeClass', Body = 'body');
-        \\        record = (Schema.ApexClass) setReadOnlyField(record, Schema.ApexClass.LastModifiedDate, Datetime.newInstance(2026, 4, 1, 0, 0, 0));
+        \\        Schema.ApexClass record = new Schema.ApexClass(
+        \\            Name = 'SomeClass',
+        \\            Body = 'body'
+        \\        );
+        \\        record = (Schema.ApexClass) setReadOnlyField(
+        \\            record,
+        \\            Schema.ApexClass.LastModifiedDate,
+        \\            Datetime.newInstance(2026, 4, 1, 0, 0, 0)
+        \\        );
         \\        return String.valueOf(record.Name != null) + ':' +
         \\            String.valueOf(record.Name) + ':' +
         \\            String.valueOf(record.Body) + ':' +
@@ -6649,18 +7138,32 @@ test "E2E: helper-style read-only field setter preserves ApexClass Name" {
     });
     defer result.deinit();
 
-    try std.testing.expectEqualStrings("true:SomeClass:body:2026-04-01T00:00:00Z", result.value.string);
+    try std.testing.expectEqualStrings(
+        "true:SomeClass:body:2026-04-01T00:00:00Z",
+        result.value.string,
+    );
 }
 
 test "E2E: helper-style read-only field setter preserves comma-containing setup fields" {
     const source =
         \\public class ReadOnlyFieldSetterCommaProbe {
-        \\    public static SObject setReadOnlyField(SObject record, Schema.SObjectField field, Object value) {
-        \\        return setReadOnlyField(record, new Map<Schema.SObjectField, Object>{ field => value });
+        \\    public static SObject setReadOnlyField(
+        \\        SObject record,
+        \\        Schema.SObjectField field,
+        \\        Object value
+        \\    ) {
+        \\        return setReadOnlyField(
+        \\            record,
+        \\            new Map<Schema.SObjectField, Object>{ field => value }
+        \\        );
         \\    }
-        \\    public static SObject setReadOnlyField(SObject record, Map<Schema.SObjectField, Object> changesToFields) {
+        \\    public static SObject setReadOnlyField(
+        \\        SObject record,
+        \\        Map<Schema.SObjectField, Object> changesToFields
+        \\    ) {
         \\        String serializedRecord = System.JSON.serialize(record);
-        \\        Map<String, Object> deserializedRecordMap = (Map<String, Object>) System.JSON.deserializeUntyped(serializedRecord);
+        \\        Map<String, Object> deserializedRecordMap =
+        \\            (Map<String, Object>) System.JSON.deserializeUntyped(serializedRecord);
         \\        for (Schema.SObjectField sobjectField : changesToFields.keySet()) {
         \\            String fieldName = sobjectField.toString();
         \\            deserializedRecordMap.put(fieldName, changesToFields.get(sobjectField));
@@ -6673,7 +7176,11 @@ test "E2E: helper-style read-only field setter preserves comma-containing setup 
         \\            Name = 'SomeClass',
         \\            Body = 'Wow, look at this code for a mock version of apex class SomeClass'
         \\        );
-        \\        record = (Schema.ApexClass) setReadOnlyField(record, Schema.ApexClass.LastModifiedDate, Datetime.newInstance(2026, 4, 1, 0, 0, 0));
+        \\        record = (Schema.ApexClass) setReadOnlyField(
+        \\            record,
+        \\            Schema.ApexClass.LastModifiedDate,
+        \\            Datetime.newInstance(2026, 4, 1, 0, 0, 0)
+        \\        );
         \\        return String.valueOf(record.Name != null) + ':' +
         \\            String.valueOf(record.Name) + ':' +
         \\            String.valueOf(record.Body);
@@ -6686,7 +7193,10 @@ test "E2E: helper-style read-only field setter preserves comma-containing setup 
     });
     defer result.deinit();
 
-    try std.testing.expectEqualStrings("true:SomeClass:Wow, look at this code for a mock version of apex class SomeClass", result.value.string);
+    try std.testing.expectEqualStrings(
+        "true:SomeClass:Wow, look at this code for a mock version of apex class SomeClass",
+        result.value.string,
+    );
 }
 
 test "E2E: qualified Schema setup objects ignore same-named user classes" {
@@ -6705,16 +7215,30 @@ test "E2E: qualified Schema setup objects ignore same-named user classes" {
         \\    }
         \\}
         \\public class QualifiedSchemaSetupObjectProbe {
-        \\    public static SObject setReadOnlyField(SObject record, Schema.SObjectField field, Object value) {
-        \\        return setReadOnlyField(record, new Map<Schema.SObjectField, Object>{ field => value });
+        \\    public static SObject setReadOnlyField(
+        \\        SObject record,
+        \\        Schema.SObjectField field,
+        \\        Object value
+        \\    ) {
+        \\        return setReadOnlyField(
+        \\            record,
+        \\            new Map<Schema.SObjectField, Object>{ field => value }
+        \\        );
         \\    }
-        \\    public static SObject setReadOnlyField(SObject record, Map<Schema.SObjectField, Object> changesToFields) {
+        \\    public static SObject setReadOnlyField(
+        \\        SObject record,
+        \\        Map<Schema.SObjectField, Object> changesToFields
+        \\    ) {
         \\        String serializedRecord = System.JSON.serialize(record);
-        \\        Map<String, Object> deserializedRecordMap = (Map<String, Object>) System.JSON.deserializeUntyped(serializedRecord);
+        \\        Map<String, Object> deserializedRecordMap =
+        \\            (Map<String, Object>) System.JSON.deserializeUntyped(serializedRecord);
         \\        for (Schema.SObjectField sobjectField : changesToFields.keySet()) {
         \\            deserializedRecordMap.put(sobjectField.toString(), changesToFields.get(sobjectField));
         \\        }
-        \\        return (SObject) System.JSON.deserialize(System.JSON.serialize(deserializedRecordMap), SObject.class);
+        \\        return (SObject) System.JSON.deserialize(
+        \\            System.JSON.serialize(deserializedRecordMap),
+        \\            SObject.class
+        \\        );
         \\    }
         \\    public static String test() {
         \\        Schema.ApexClass record = new Schema.ApexClass(
@@ -6747,7 +7271,10 @@ test "E2E: qualified Schema setup objects ignore same-named user classes" {
     });
     defer result.deinit();
 
-    try std.testing.expectEqualStrings("ApexClass:SomeClass:mock body:2026-04-01T00:00:00Z", result.value.string);
+    try std.testing.expectEqualStrings(
+        "ApexClass:SomeClass:mock body:2026-04-01T00:00:00Z",
+        result.value.string,
+    );
 }
 
 test "E2E: qualified inner class literals preserve outer class names" {
@@ -6761,7 +7288,8 @@ test "E2E: qualified inner class literals preserve outer class names" {
         \\}
         \\public class QualifiedInnerNameTest {
         \\    public static String test() {
-        \\        return OuterNameHost.getInnerNameFromInside() + '|' + OuterNameHost.InnerNameTarget.class.getName();
+        \\        return OuterNameHost.getInnerNameFromInside() +
+        \\            '|' + OuterNameHost.InnerNameTarget.class.getName();
         \\    }
         \\}
     ;
@@ -6771,7 +7299,10 @@ test "E2E: qualified inner class literals preserve outer class names" {
     });
     defer result.deinit();
 
-    try std.testing.expectEqualStrings("OuterNameHost.InnerNameTarget|OuterNameHost.InnerNameTarget", result.value.string);
+    try std.testing.expectEqualStrings(
+        "OuterNameHost.InnerNameTarget|OuterNameHost.InnerNameTarget",
+        result.value.string,
+    );
 }
 
 test "E2E: Type.forName(newInstance) preserves qualified inner class identity across duplicates" {
@@ -6798,8 +7329,10 @@ test "E2E: Type.forName(newInstance) preserves qualified inner class identity ac
         \\}
         \\public class QualifiedInnerInstanceTest {
         \\    public static String test() {
-        \\        SharedHandlerBase inside = (SharedHandlerBase) Type.forName(HandlerHostA.getInnerHandlerName()).newInstance();
-        \\        SharedHandlerBase outside = (SharedHandlerBase) Type.forName(HandlerHostA.SharedHandler.class.getName()).newInstance();
+        \\        SharedHandlerBase inside = (SharedHandlerBase)
+        \\            Type.forName(HandlerHostA.getInnerHandlerName()).newInstance();
+        \\        SharedHandlerBase outside = (SharedHandlerBase)
+        \\            Type.forName(HandlerHostA.SharedHandler.class.getName()).newInstance();
         \\        return inside.whoAmI() + outside.whoAmI();
         \\    }
         \\}
@@ -6934,8 +7467,12 @@ test "E2E: Type.forName null-safe fluent execute preserves constructor-initializ
         \\        return (TriggerableHost) Type.forName(className)?.newInstance();
         \\    }
         \\    public static String test() {
-        \\        getHandler(TriggerableFactoryHost.EventTriggerable.class.getName())?.overrideContext('x').execute();
-        \\        return String.valueOf(TriggerableHost.getExecutionCount(Schema.LogEntryEvent__e.SObjectType));
+        \\        getHandler(TriggerableFactoryHost.EventTriggerable.class.getName())
+        \\            ?.overrideContext('x')
+        \\            .execute();
+        \\        return String.valueOf(
+        \\            TriggerableHost.getExecutionCount(Schema.LogEntryEvent__e.SObjectType)
+        \\        );
         \\    }
         \\}
     ;
@@ -6948,7 +7485,7 @@ test "E2E: Type.forName null-safe fluent execute preserves constructor-initializ
     try std.testing.expectEqualStrings("1", result.value.string);
 }
 
-test "E2E: parent constructors can read overridden type getters before child initialization without losing child state" {
+test "E2E: parent constructors can read overridden type getters" {
     const source =
         \\public abstract class ParentCtorTypeHost {
         \\    private static Map<String, String> readings = new Map<String, String>();
@@ -6973,8 +7510,11 @@ test "E2E: parent constructors can read overridden type getters before child ini
         \\}
         \\public class ParentCtorTypeFactoryTest {
         \\    public static String test() {
-        \\        ParentCtorTypeHost child = (ParentCtorTypeHost) Type.forName(ParentCtorTypeFactory.EventChild.class.getName()).newInstance();
-        \\        return ParentCtorTypeHost.getReading('duringParentCtor') + '|' + String.valueOf(child.getSObjectType());
+        \\        ParentCtorTypeHost child = (ParentCtorTypeHost)
+        \\            Type.forName(ParentCtorTypeFactory.EventChild.class.getName())
+        \\            .newInstance();
+        \\        return ParentCtorTypeHost.getReading('duringParentCtor') +
+        \\            '|' + String.valueOf(child.getSObjectType());
         \\    }
         \\}
     ;
@@ -6990,7 +7530,8 @@ test "E2E: parent constructors can read overridden type getters before child ini
 test "E2E: static method returned map supports chained get size and index access" {
     const source =
         \\public class StaticMapChainHost {
-        \\    private static Map<Schema.SObjectType, List<String>> valuesByType = new Map<Schema.SObjectType, List<String>>();
+        \\    private static Map<Schema.SObjectType, List<String>> valuesByType =
+        \\        new Map<Schema.SObjectType, List<String>>();
         \\    static {
         \\        valuesByType.put(Schema.Account.SObjectType, new List<String>{ 'a', 'b' });
         \\    }
@@ -7000,7 +7541,9 @@ test "E2E: static method returned map supports chained get size and index access
         \\}
         \\public class StaticMapChainTest {
         \\    public static String test() {
-        \\        return String.valueOf(StaticMapChainHost.getValuesByType().get(Schema.Account.SObjectType).size()) +
+        \\        return String.valueOf(
+        \\            StaticMapChainHost.getValuesByType().get(Schema.Account.SObjectType).size()
+        \\        ) +
         \\            '|' +
         \\            StaticMapChainHost.getValuesByType().get(Schema.Account.SObjectType).get(0);
         \\    }
@@ -7015,19 +7558,28 @@ test "E2E: static method returned map supports chained get size and index access
     try std.testing.expectEqualStrings("2|a", result.value.string);
 }
 
-test "E2E: Map<Schema.SObjectType, List<Id>> keySet preserves SObjectType keys in loop bodies" {
+test "E2E: SObjectType keySet preserves keys in loop bodies" {
     const source =
         \\public class SObjectTypeKeySetLoopTest {
         \\    public static String test() {
-        \\        User currentUser = [SELECT Id, Username FROM User WHERE Id = :System.UserInfo.getUserId()];
-        \\        Map<Schema.SObjectType, List<Id>> idsByType = new Map<Schema.SObjectType, List<Id>>();
+        \\        User currentUser = [
+        \\            SELECT Id, Username
+        \\            FROM User
+        \\            WHERE Id = :System.UserInfo.getUserId()
+        \\        ];
+        \\        Map<Schema.SObjectType, List<Id>> idsByType =
+        \\            new Map<Schema.SObjectType, List<Id>>();
         \\        idsByType.put(currentUser.Id.getSObjectType(), new List<Id>{ currentUser.Id });
         \\        for (Schema.SObjectType sobjectType : idsByType.keySet()) {
         \\            List<Id> recordIds = idsByType.get(sobjectType);
         \\            List<SObject> results = Database.query(
-        \\                String.format('SELECT Username FROM {0} WHERE Id IN :recordIds', new List<Object>{ sobjectType })
+        \\                String.format(
+        \\                    'SELECT Username FROM {0} WHERE Id IN :recordIds',
+        \\                    new List<Object>{ sobjectType }
+        \\                )
         \\            );
-        \\            return sobjectType.getDescribe().getName() + ':' + (String) results.get(0).get('Username');
+        \\            return sobjectType.getDescribe().getName() +
+        \\                ':' + (String) results.get(0).get('Username');
         \\        }
         \\        return 'empty';
         \\    }
@@ -7049,7 +7601,13 @@ test "E2E: EmailMessage display field selection prefers Subject when Name is abs
         \\        if (sobjectType == Schema.User.SObjectType) {
         \\            return Schema.User.Username.toString();
         \\        }
-        \\        List<String> educatedGuesses = new List<String>{ 'Name', 'DeveloperName', 'ApiName', 'Title', 'Subject' };
+        \\        List<String> educatedGuesses = new List<String>{
+        \\            'Name',
+        \\            'DeveloperName',
+        \\            'ApiName',
+        \\            'Title',
+        \\            'Subject'
+        \\        };
         \\        String displayFieldApiName;
         \\        List<String> fallbackFieldApiNames = new List<String>();
         \\        for (String fieldName : educatedGuesses) {
@@ -7073,12 +7631,18 @@ test "E2E: EmailMessage display field selection prefers Subject when Name is abs
         \\    public static String test() {
         \\        Case supportCase = new Case(Subject = 'Support');
         \\        insert supportCase;
-        \\        EmailMessage emailMessage = new EmailMessage(ParentId = supportCase.Id, Subject = 'Some subject');
+        \\        EmailMessage emailMessage = new EmailMessage(
+        \\            ParentId = supportCase.Id,
+        \\            Subject = 'Some subject'
+        \\        );
         \\        insert emailMessage;
         \\        String displayField = getDisplayFieldApiName(emailMessage.Id.getSObjectType());
         \\        List<Id> recordIds = new List<Id>{ emailMessage.Id };
         \\        List<SObject> results = Database.query(
-        \\            String.format('SELECT {0} FROM {1} WHERE Id IN :recordIds', new List<Object>{ displayField, emailMessage.Id.getSObjectType() })
+        \\            String.format(
+        \\                'SELECT {0} FROM {1} WHERE Id IN :recordIds',
+        \\                new List<Object>{ displayField, emailMessage.Id.getSObjectType() }
+        \\            )
         \\        );
         \\        return displayField + ':' + (String) results.get(0).get(displayField);
         \\    }
@@ -7102,7 +7666,8 @@ test "E2E: static method returned map preserves list values keyed by Schema SObj
         \\    }
         \\}
         \\public class ChainedHandlerStore {
-        \\    private static Map<Schema.SObjectType, List<ChainedHandlerBase>> executed = new Map<Schema.SObjectType, List<ChainedHandlerBase>>();
+        \\    private static Map<Schema.SObjectType, List<ChainedHandlerBase>> executed =
+        \\        new Map<Schema.SObjectType, List<ChainedHandlerBase>>();
         \\    static {
         \\        executed.put(
         \\            Schema.LogEntryEvent__e.SObjectType,
@@ -7118,9 +7683,14 @@ test "E2E: static method returned map preserves list values keyed by Schema SObj
         \\}
         \\public class ChainedHandlerStoreTest {
         \\    public static String test() {
-        \\        return String.valueOf(ChainedHandlerStore.getExecuted().get(Schema.LogEntryEvent__e.SObjectType).size()) +
+        \\        return String.valueOf(
+        \\            ChainedHandlerStore.getExecuted().get(Schema.LogEntryEvent__e.SObjectType).size()
+        \\        ) +
         \\            '|' +
-        \\            ChainedHandlerStore.getExecuted().get(Schema.LogEntryEvent__e.SObjectType).get(1).name;
+        \\            ChainedHandlerStore.getExecuted()
+        \\                .get(Schema.LogEntryEvent__e.SObjectType)
+        \\                .get(1)
+        \\                .name;
         \\    }
         \\}
     ;
@@ -7163,7 +7733,8 @@ test "E2E: overridden methods persist List<SObject> fields on handler instances"
         \\public class HandlerExecutionChildTest {
         \\    public static String test() {
         \\        new HandlerExecutionChild().execute();
-        \\        HandlerExecutionChild child = (HandlerExecutionChild) HandlerExecutionBase.getExecuted().get(0);
+        \\        HandlerExecutionChild child = (HandlerExecutionChild)
+        \\            HandlerExecutionBase.getExecuted().get(0);
         \\        return child.executedOperation + '|' +
         \\            String.valueOf(child.executedTriggerNew.size()) + '|' +
         \\            String.valueOf(child.executedTriggerNew.get(0).get('Name'));
@@ -7282,7 +7853,9 @@ test "E2E: Object-wrapped primitive values support null-safe toString" {
         \\        Object boolValue = true;
         \\        Object intValue = 1;
         \\        Object doubleValue = 1.5;
-        \\        return boolValue?.toString() + '|' + intValue?.toString() + '|' + doubleValue?.toString();
+        \\        return boolValue?.toString() +
+        \\            '|' + intValue?.toString() +
+        \\            '|' + doubleValue?.toString();
         \\    }
         \\}
     ;
@@ -7326,7 +7899,11 @@ test "E2E: SObject.getSObject resolves parent records from a reference field tok
         \\        insert accountRecord;
         \\        Contact contactRecord = new Contact(LastName = 'User', AccountId = accountRecord.Id);
         \\        insert contactRecord;
-        \\        Contact queried = [SELECT AccountId, Account.Name FROM Contact WHERE Id = :contactRecord.Id];
+        \\        Contact queried = [
+        \\            SELECT AccountId, Account.Name
+        \\            FROM Contact
+        \\            WHERE Id = :contactRecord.Id
+        \\        ];
         \\        SObject parentRecord = queried.getSObject(Schema.Contact.AccountId);
         \\        return String.valueOf(parentRecord.get('Name'));
         \\    }
@@ -7345,7 +7922,9 @@ test "E2E: SObject.getSObject resolves unsaved relationship records assigned via
     const source =
         \\public class GetUnsavedParentTest {
         \\    public static String test() {
-        \\        Session__c sessionRecord = new Session__c(Experience__r = new Experience__c(Name = 'Hiking'));
+        \\        Session__c sessionRecord = new Session__c(
+        \\            Experience__r = new Experience__c(Name = 'Hiking')
+        \\        );
         \\        SObject parentRecord = sessionRecord.getSObject(Schema.Session__c.Experience__c);
         \\        return String.valueOf(parentRecord.get('Name'));
         \\    }
@@ -7364,7 +7943,9 @@ test "E2E: direct property access resolves unsaved relationship records assigned
     const source =
         \\public class DirectUnsavedParentTest {
         \\    public static String test() {
-        \\        Session__c sessionRecord = new Session__c(Experience__r = new Experience__c(Name = 'Hiking'));
+        \\        Session__c sessionRecord = new Session__c(
+        \\            Experience__r = new Experience__c(Name = 'Hiking')
+        \\        );
         \\        return sessionRecord.Experience__r.Name;
         \\    }
         \\}
@@ -7378,7 +7959,7 @@ test "E2E: direct property access resolves unsaved relationship records assigned
     try std.testing.expectEqualStrings("Hiking", result.value.string);
 }
 
-test "E2E: member-held direct property access resolves unsaved relationship records assigned via __r" {
+test "E2E: member-held property access resolves unsaved relationships" {
     const source =
         \\public class MemberHeldUnsavedParentTest {
         \\    private Session__c sessionRecord;
@@ -7389,7 +7970,9 @@ test "E2E: member-held direct property access resolves unsaved relationship reco
         \\        return this.sessionRecord.Experience__r.Name;
         \\    }
         \\    public static String test() {
-        \\        Session__c sessionRecord = new Session__c(Experience__r = new Experience__c(Name = 'Hiking'));
+        \\        Session__c sessionRecord = new Session__c(
+        \\            Experience__r = new Experience__c(Name = 'Hiking')
+        \\        );
         \\        return new MemberHeldUnsavedParentTest(sessionRecord).getName();
         \\    }
         \\}
@@ -7403,7 +7986,7 @@ test "E2E: member-held direct property access resolves unsaved relationship reco
     try std.testing.expectEqualStrings("Hiking", result.value.string);
 }
 
-test "E2E: member-held direct property access resolves custom fields on unsaved relationship records" {
+test "E2E: member-held property access resolves unsaved custom fields" {
     const source =
         \\public class MemberHeldUnsavedCustomFieldTest {
         \\    private Session__c sessionRecord;
@@ -7414,7 +7997,12 @@ test "E2E: member-held direct property access resolves custom fields on unsaved 
         \\        return this.sessionRecord.Experience__r.Type__c;
         \\    }
         \\    public static String test() {
-        \\        Session__c sessionRecord = new Session__c(Experience__r = new Experience__c(Name = 'Hiking', Type__c = 'Adventure'));
+        \\        Session__c sessionRecord = new Session__c(
+        \\            Experience__r = new Experience__c(
+        \\                Name = 'Hiking',
+        \\                Type__c = 'Adventure'
+        \\            )
+        \\        );
         \\        return new MemberHeldUnsavedCustomFieldTest(sessionRecord).getType();
         \\    }
         \\}
@@ -7439,7 +8027,12 @@ test "E2E: SObject initializer can read custom fields from member-held relations
         \\        return new Account(Name = this.sessionRecord.Experience__r.Type__c);
         \\    }
         \\    public static String test() {
-        \\        Session__c sessionRecord = new Session__c(Experience__r = new Experience__c(Name = 'Hiking', Type__c = 'Adventure'));
+        \\        Session__c sessionRecord = new Session__c(
+        \\            Experience__r = new Experience__c(
+        \\                Name = 'Hiking',
+        \\                Type__c = 'Adventure'
+        \\            )
+        \\        );
         \\        return new RelatedInitializerReadTest(sessionRecord).build().Name;
         \\    }
         \\}
@@ -8174,8 +8767,14 @@ test "runTestSuite keeps repo-root metadata loading scoped to the requested repo
     defer tmp_dir.cleanup();
 
     try tmp_dir.dir.createDirPath(std.testing.io, "repos/app-a/force-app/main/default/classes");
-    try tmp_dir.dir.createDirPath(std.testing.io, "repos/app-a/force-app/main/default/objects/Widget__c");
-    try tmp_dir.dir.createDirPath(std.testing.io, "repos/app-b/force-app/main/default/objects/Widget__c/fields");
+    try tmp_dir.dir.createDirPath(
+        std.testing.io,
+        "repos/app-a/force-app/main/default/objects/Widget__c",
+    );
+    try tmp_dir.dir.createDirPath(
+        std.testing.io,
+        "repos/app-b/force-app/main/default/objects/Widget__c/fields",
+    );
 
     try tmp_dir.dir.writeFile(std.testing.io, .{
         .sub_path = "repos/app-a/force-app/main/default/classes/WidgetRepoTest.cls",
@@ -8191,7 +8790,8 @@ test "runTestSuite keeps repo-root metadata loading scoped to the requested repo
         ,
     });
     try tmp_dir.dir.writeFile(std.testing.io, .{
-        .sub_path = "repos/app-a/force-app/main/default/objects/Widget__c/Widget__c.object-meta.xml",
+        .sub_path = "repos/app-a/force-app/main/default/objects/Widget__c/" ++
+            "Widget__c.object-meta.xml",
         .data =
         \\<?xml version="1.0" encoding="UTF-8"?>
         \\<CustomObject xmlns="http://soap.sforce.com/2006/04/metadata">
@@ -8211,7 +8811,8 @@ test "runTestSuite keeps repo-root metadata loading scoped to the requested repo
         ,
     });
     try tmp_dir.dir.writeFile(std.testing.io, .{
-        .sub_path = "repos/app-b/force-app/main/default/objects/Widget__c/fields/Required_Text__c.field-meta.xml",
+        .sub_path = "repos/app-b/force-app/main/default/objects/Widget__c/fields/" ++
+            "Required_Text__c.field-meta.xml",
         .data =
         \\<?xml version="1.0" encoding="UTF-8"?>
         \\<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
@@ -8502,7 +9103,8 @@ test "E2E: constructed DmlException stack trace ends at anonymous block" {
     defer result.deinit();
 
     try std.testing.expectEqualStrings(
-        "Class.ConstructedStackTraceTopLevelTest.test: line 3, column 1\nAnonymousBlock: line 1, column 1",
+        "Class.ConstructedStackTraceTopLevelTest.test: line 3, column 1\n" ++
+            "AnonymousBlock: line 1, column 1",
         result.value.string,
     );
 }
@@ -8534,7 +9136,9 @@ test "E2E: constructor-built DmlException stack trace keeps only immediate calle
     defer result.deinit();
 
     try std.testing.expectEqualStrings(
-        "Class.ConstructedStackTraceCtorTest.Holder.<init>: line 5, column 1\nClass.ConstructedStackTraceCtorTest.wrapper: line 12, column 1\nAnonymousBlock: line 1, column 1",
+        "Class.ConstructedStackTraceCtorTest.Holder.<init>: line 5, column 1\n" ++
+            "Class.ConstructedStackTraceCtorTest.wrapper: line 12, column 1\n" ++
+            "AnonymousBlock: line 1, column 1",
         result.value.string,
     );
 }
@@ -8543,7 +9147,10 @@ test "E2E: replaceAll can collapse ignored constructed stack trace frames to emp
     const source =
         \\public class StackTraceCleanupProbe {
         \\    public static String test() {
-        \\        return new DmlException().getStackTraceString().replaceAll('(StackTraceCleanupProbe)\\..+?column 1', '').trim();
+        \\        return new DmlException()
+        \\            .getStackTraceString()
+        \\            .replaceAll('(StackTraceCleanupProbe)\\..+?column 1', '')
+        \\            .trim();
         \\    }
         \\}
     ;
@@ -8613,7 +9220,11 @@ test "SOQL on User with UserInfo.getUserId returns seeded user" {
     const source =
         \\public class UserQueryTest {
         \\    public static void testQuery() {
-        \\        User u = [SELECT Id, FirstName, LastName, Email FROM User WHERE Id = :UserInfo.getUserId()];
+        \\        User u = [
+        \\            SELECT Id, FirstName, LastName, Email
+        \\            FROM User
+        \\            WHERE Id = :UserInfo.getUserId()
+        \\        ];
         \\        System.assertNotEquals(null, u);
         \\        System.assertEquals(UserInfo.getUserId(), u.Id);
         \\        System.assertEquals('Test', u.FirstName);
@@ -8678,7 +9289,11 @@ test "E2E: ContentDocumentLink auto-resolves ContentDocument reference" {
         \\        cv.PathOnClient = 'pic.png';
         \\        cv.VersionData = EncodingUtil.base64Decode('AAAA');
         \\        insert cv;
-        \\        List<ContentDocument> docs = [SELECT Id, Title, LatestPublishedVersionId FROM ContentDocument LIMIT 1];
+        \\        List<ContentDocument> docs = [
+        \\            SELECT Id, Title, LatestPublishedVersionId
+        \\            FROM ContentDocument
+        \\            LIMIT 1
+        \\        ];
         \\        ContentDocumentLink link = new ContentDocumentLink();
         \\        link.LinkedEntityId = property.Id;
         \\        link.ContentDocumentId = docs[0].Id;
@@ -8808,13 +9423,17 @@ test "E2E: DescribeFieldResult.getLocalName keeps schema field keys distinct" {
         \\    }
         \\    public static String test() {
         \\        Map<String, FieldSchema> fields = new Map<String, FieldSchema>();
-        \\        for (Schema.SObjectField field : Schema.User.SObjectType.getDescribe().fields.getMap().values()) {
+        \\        for (Schema.SObjectField field :
+        \\            Schema.User.SObjectType.getDescribe().fields.getMap().values()
+        \\        ) {
         \\            Schema.DescribeFieldResult fieldDescribe = field.getDescribe();
         \\            FieldSchema schema = new FieldSchema();
         \\            schema.localApiName = fieldDescribe.getLocalName();
         \\            fields.put(fieldDescribe.getLocalName(), schema);
         \\        }
-        \\        return String.valueOf(fields.containsKey('Name')) + ':' + fields.get('Name').localApiName + ':' + String.valueOf(fields.containsKey('Username'));
+        \\        return String.valueOf(fields.containsKey('Name')) +
+        \\            ':' + fields.get('Name').localApiName +
+        \\            ':' + String.valueOf(fields.containsKey('Username'));
         \\    }
         \\}
     ;
@@ -8831,8 +9450,10 @@ test "E2E: DescribeSObjectResult fields map includes common User fields" {
     const source =
         \\public class UserDescribeFieldsTest {
         \\    public static String test() {
-        \\        Map<String, Schema.SObjectField> fields = Schema.User.SObjectType.getDescribe().fields.getMap();
-        \\        return String.valueOf(fields.containsKey('Username')) + ':' + fields.get('Username').getDescribe().getName();
+        \\        Map<String, Schema.SObjectField> fields =
+        \\            Schema.User.SObjectType.getDescribe().fields.getMap();
+        \\        return String.valueOf(fields.containsKey('Username')) +
+        \\            ':' + fields.get('Username').getDescribe().getName();
         \\    }
         \\}
     ;
@@ -8849,8 +9470,12 @@ test "E2E: DescribeFieldResult recognizes non-name fallback fields" {
     const source =
         \\public class EmailMessageDescribeFieldTest {
         \\    public static String test() {
-        \\        Map<String, Schema.SObjectField> fields = Schema.EmailMessage.SObjectType.getDescribe().fields.getMap();
-        \\        return String.valueOf(fields.containsKey('Subject')) + ':' + String.valueOf(Schema.EmailMessage.Subject.getDescribe().isNameField());
+        \\        Map<String, Schema.SObjectField> fields =
+        \\            Schema.EmailMessage.SObjectType.getDescribe().fields.getMap();
+        \\        return String.valueOf(fields.containsKey('Subject')) +
+        \\            ':' + String.valueOf(
+        \\                Schema.EmailMessage.Subject.getDescribe().isNameField()
+        \\            );
         \\    }
         \\}
     ;
@@ -8869,7 +9494,9 @@ test "E2E: implicit standard Name fields are treated as required" {
         \\    public static String test() {
         \\        List<String> requiredFields = new List<String>();
         \\        SObject record = Schema.Campaign.SObjectType.newSObject(null, true);
-        \\        for (Schema.SObjectField field : Schema.Campaign.SObjectType.getDescribe().fields.getMap().values()) {
+        \\        for (Schema.SObjectField field :
+        \\            Schema.Campaign.SObjectType.getDescribe().fields.getMap().values()
+        \\        ) {
         \\            Schema.DescribeFieldResult fieldDescribe = field.getDescribe();
         \\            if (fieldDescribe.isCreateable() && !fieldDescribe.isNillable()) {
         \\                requiredFields.add(fieldDescribe.getName());
@@ -8878,7 +9505,8 @@ test "E2E: implicit standard Name fields are treated as required" {
         \\                }
         \\            }
         \\        }
-        \\        return String.valueOf(requiredFields.contains('Name')) + ':' + System.JSON.serializePretty(record);
+        \\        return String.valueOf(requiredFields.contains('Name')) +
+        \\            ':' + System.JSON.serializePretty(record);
         \\    }
         \\}
     ;
@@ -8888,7 +9516,10 @@ test "E2E: implicit standard Name fields are treated as required" {
     });
     defer result.deinit();
 
-    try std.testing.expectEqualStrings("true:{\"attributes\":{\"type\":\"Campaign\"},\"Name\":\"Name value\"}", result.value.string);
+    try std.testing.expectEqualStrings(
+        "true:{\"attributes\":{\"type\":\"Campaign\"},\"Name\":\"Name value\"}",
+        result.value.string,
+    );
 }
 
 test "E2E: fieldSets metadata is available on SObjectType and DescribeSObjectResult" {
@@ -8921,8 +9552,10 @@ test "E2E: fieldSets metadata is available on SObjectType and DescribeSObjectRes
     const source =
         \\public class FieldSetMetadataTest {
         \\    public static String test() {
-        \\        Map<String, Schema.FieldSet> byType = Schema.SObjectType.Thing__c.fieldSets.getMap();
-        \\        Map<String, Schema.FieldSet> byDescribe = Schema.SObjectType.Thing__c.getDescribe().fieldSets.getMap();
+        \\        Map<String, Schema.FieldSet> byType =
+        \\            Schema.SObjectType.Thing__c.fieldSets.getMap();
+        \\        Map<String, Schema.FieldSet> byDescribe =
+        \\            Schema.SObjectType.Thing__c.getDescribe().fieldSets.getMap();
         \\        Schema.FieldSet fieldSet = byType.get('Related_List_Defaults');
         \\        Schema.FieldSet describedFieldSet = byDescribe.get('Related_List_Defaults');
         \\        List<Schema.FieldSetMember> members = fieldSet.getFields();
@@ -8942,7 +9575,10 @@ test "E2E: fieldSets metadata is available on SObjectType and DescribeSObjectRes
     });
     defer result.deinit();
 
-    try std.testing.expectEqualStrings("1:true:Related List Defaults:2:Name:Name", result.value.string);
+    try std.testing.expectEqualStrings(
+        "1:true:Related List Defaults:2:Name:Name",
+        result.value.string,
+    );
 }
 
 test "E2E: SObjectType record type info methods delegate to describe metadata" {
@@ -8950,7 +9586,8 @@ test "E2E: SObjectType record type info methods delegate to describe metadata" {
     const source =
         \\public class SObjectTypeRecordTypeInfoTest {
         \\    public static String test() {
-        \\        Map<Id, Schema.RecordTypeInfo> byId = Schema.SObjectType.Account.getRecordTypeInfosById();
+        \\        Map<Id, Schema.RecordTypeInfo> byId =
+        \\            Schema.SObjectType.Account.getRecordTypeInfosById();
         \\        List<Schema.RecordTypeInfo> infos = Schema.SObjectType.Account.getRecordTypeInfos();
         \\        return String.valueOf(byId != null) + ':' +
         \\            String.valueOf(infos.size()) + ':' +
@@ -8971,8 +9608,10 @@ test "E2E: cached DescribeSObjectResult record type info survives selective map 
     const alloc = std.testing.allocator;
     const source =
         \\public class CachedDescribeRecordTypeInfoProbe {
-        \\    private static Map<String, Schema.DescribeSObjectResult> cached = new Map<String, Schema.DescribeSObjectResult>();
-        \\    private static Map<String, List<Schema.RecordTypeInfo>> nonMasterInfos = new Map<String, List<Schema.RecordTypeInfo>>();
+        \\    private static Map<String, Schema.DescribeSObjectResult> cached =
+        \\        new Map<String, Schema.DescribeSObjectResult>();
+        \\    private static Map<String, List<Schema.RecordTypeInfo>> nonMasterInfos =
+        \\        new Map<String, List<Schema.RecordTypeInfo>>();
         \\
         \\    private static void fill(String objectName) {
         \\        if (!cached.containsKey(objectName)) {
@@ -9045,7 +9684,9 @@ test "E2E: Search.query honors fixed search results and stripInaccessible return
         \\        List<Thing__c> stripped = (List<Thing__c>) System.Security
         \\            .stripInaccessible(System.AccessType.READABLE, matches)
         \\            .getRecords();
-        \\        return String.valueOf(matches.size()) + ':' + String.valueOf(stripped.size()) + ':' + String.valueOf(stripped.get(0).Id == row.Id);
+        \\        return String.valueOf(matches.size()) +
+        \\            ':' + String.valueOf(stripped.size()) +
+        \\            ':' + String.valueOf(stripped.get(0).Id == row.Id);
         \\    }
         \\}
     ;
@@ -9092,7 +9733,9 @@ test "E2E: SObjectField.getDescribe uses metadata-backed field lengths" {
         \\        Integer inlineMaxLength = Schema.Thing__c.ShortText__c.getDescribe().getLength();
         \\        Integer tokenMaxLength = getFieldLength(Schema.Thing__c.ShortText__c);
         \\        String truncatedValue = truncateFieldValue(Schema.Thing__c.ShortText__c, 'abcdef');
-        \\        return String.valueOf(inlineMaxLength) + ':' + String.valueOf(tokenMaxLength) + ':' + truncatedValue;
+        \\        return String.valueOf(inlineMaxLength) +
+        \\            ':' + String.valueOf(tokenMaxLength) +
+        \\            ':' + truncatedValue;
         \\    }
         \\}
     ;
@@ -9131,8 +9774,11 @@ test "E2E: direct field token describe uses metadata-backed soap type" {
     const source =
         \\public class FieldTokenSoapTypeMetadataTest {
         \\    public static String test() {
-        \\        return String.valueOf(Schema.Thing__c.OrganizationId__c.getDescribe().getSoapType()) +
-        \\            ':' + String.valueOf(Schema.Thing__c.OrganizationId__c.getDescribe().getLength());
+        \\        return String.valueOf(
+        \\            Schema.Thing__c.OrganizationId__c.getDescribe().getSoapType()
+        \\        ) + ':' + String.valueOf(
+        \\            Schema.Thing__c.OrganizationId__c.getDescribe().getLength()
+        \\        );
         \\    }
         \\}
     ;
@@ -9215,8 +9861,11 @@ test "E2E: VisualEditor picklist rows can be built from fieldSets metadata" {
     const source =
         \\public class ThingPicklist extends VisualEditor.DynamicPickList {
         \\    public override VisualEditor.DataRow getDefaultValue() {
-        \\        Schema.FieldSet fieldSet = Schema.SObjectType.Thing__c.fieldSets.getMap().get('Related_List_Defaults');
-        \\        return fieldSet == null ? null : new VisualEditor.DataRow(fieldSet.getLabel(), fieldSet.getName());
+        \\        Schema.FieldSet fieldSet = Schema.SObjectType.Thing__c
+        \\            .fieldSets.getMap().get('Related_List_Defaults');
+        \\        return fieldSet == null
+        \\            ? null
+        \\            : new VisualEditor.DataRow(fieldSet.getLabel(), fieldSet.getName());
         \\    }
         \\    public override VisualEditor.DynamicPickListRows getValues() {
         \\        VisualEditor.DynamicPickListRows rows = new VisualEditor.DynamicPickListRows();
@@ -9231,7 +9880,9 @@ test "E2E: VisualEditor picklist rows can be built from fieldSets metadata" {
         \\        ThingPicklist picklist = new ThingPicklist();
         \\        VisualEditor.DataRow row = picklist.getDefaultValue();
         \\        List<VisualEditor.DataRow> rows = picklist.getValues().getDataRows();
-        \\        return (String) row.getLabel() + ':' + String.valueOf(rows.size()) + ':' + (String) rows.get(0).getValue();
+        \\        return (String) row.getLabel()
+        \\            + ':' + String.valueOf(rows.size())
+        \\            + ':' + (String) rows.get(0).getValue();
         \\    }
         \\}
     ;
@@ -9242,7 +9893,10 @@ test "E2E: VisualEditor picklist rows can be built from fieldSets metadata" {
     });
     defer result.deinit();
 
-    try std.testing.expectEqualStrings("Related List Defaults:1:Related_List_Defaults", result.value.string);
+    try std.testing.expectEqualStrings(
+        "Related List Defaults:1:Related_List_Defaults",
+        result.value.string,
+    );
 }
 
 test "E2E: field set members expose lookup labels and relationship describe metadata" {
@@ -9285,7 +9939,11 @@ test "E2E: field set members expose lookup labels and relationship describe meta
     const source =
         \\public class FieldSetLookupMetadataTest {
         \\    public static String test() {
-        \\        Schema.FieldSetMember member = Schema.SObjectType.Child__c.fieldSets.getMap().get('Related_List_Defaults').getFields().get(0);
+        \\        Schema.FieldSetMember member = Schema.SObjectType.Child__c
+        \\            .fieldSets.getMap()
+        \\            .get('Related_List_Defaults')
+        \\            .getFields()
+        \\            .get(0);
         \\        Schema.DescribeFieldResult describe = member.getSObjectField().getDescribe();
         \\        return member.getLabel()
         \\            + ':' + describe.getLabel()
@@ -9303,7 +9961,10 @@ test "E2E: field set members expose lookup labels and relationship describe meta
     });
     defer result.deinit();
 
-    try std.testing.expectEqualStrings("Parent:Parent:Parent__r:true:1:reference", result.value.string);
+    try std.testing.expectEqualStrings(
+        "Parent:Parent:Parent__r:true:1:reference",
+        result.value.string,
+    );
 }
 
 test "E2E: getPopulatedFieldsAsMap excludes selected null fields" {
@@ -9314,7 +9975,8 @@ test "E2E: getPopulatedFieldsAsMap excludes selected null fields" {
         \\        insert record;
         \\        Account queried = [SELECT Name, Type FROM Account WHERE Id = :record.Id];
         \\        Map<String, Object> populated = queried.getPopulatedFieldsAsMap();
-        \\        return String.valueOf(populated.containsKey('Type')) + ':' + String.valueOf(populated.containsKey('Name'));
+        \\        return String.valueOf(populated.containsKey('Type')) +
+        \\            ':' + String.valueOf(populated.containsKey('Name'));
         \\    }
         \\}
     ;
@@ -9391,13 +10053,18 @@ test "E2E: field set queries do not mark null summary fields as populated" {
         \\            '(SELECT Id FROM ThingEntries__r LIMIT 1)',
         \\            'TYPEOF Owner WHEN User THEN Username ELSE Name END'
         \\        };
-        \\        for (Schema.FieldSetMember member : Schema.SObjectType.Thing__c.fieldSets.getMap().get('Notification_Defaults').getFields()) {
+        \\        for (Schema.FieldSetMember member :
+        \\            Schema.SObjectType.Thing__c.fieldSets.getMap()
+        \\                .get('Notification_Defaults').getFields()
+        \\        ) {
         \\            fieldNames.add(member.getFieldPath());
         \\        }
-        \\        String query = 'SELECT ' + String.join(fieldNames, ', ') + ' FROM Thing__c WHERE Id = :thing.Id';
+        \\        String query = 'SELECT ' + String.join(fieldNames, ', ') +
+        \\            ' FROM Thing__c WHERE Id = :thing.Id';
         \\        Thing__c queried = ((List<Thing__c>) Database.query(query)).get(0);
         \\        Map<String, Object> populated = queried.getPopulatedFieldsAsMap();
-        \\        return String.valueOf(populated.containsKey('MaxChildScore__c')) + ':' + String.valueOf(populated.containsKey('Name'));
+        \\        return String.valueOf(populated.containsKey('MaxChildScore__c')) +
+        \\            ':' + String.valueOf(populated.containsKey('Name'));
         \\    }
         \\}
     ;
@@ -9445,10 +10112,14 @@ test "E2E: field set queries materialize formula fields built from rollup counts
         \\            '(SELECT Id FROM Children__r LIMIT 1)',
         \\            'TYPEOF Owner WHEN User THEN Username ELSE Name END'
         \\        };
-        \\        for (Schema.FieldSetMember member : Schema.SObjectType.Parent__c.fieldSets.getMap().get('Notification_Defaults').getFields()) {
+        \\        for (Schema.FieldSetMember member :
+        \\            Schema.SObjectType.Parent__c.fieldSets.getMap()
+        \\                .get('Notification_Defaults').getFields()
+        \\        ) {
         \\            fieldNames.add(member.getFieldPath());
         \\        }
-        \\        String query = 'SELECT ' + String.join(fieldNames, ', ') + ' FROM Parent__c WHERE Id = :parentRecord.Id';
+        \\        String query = 'SELECT ' + String.join(fieldNames, ', ') +
+        \\            ' FROM Parent__c WHERE Id = :parentRecord.Id';
         \\        Parent__c queried = ((List<Parent__c>) Database.query(query)).get(0);
         \\        return String.valueOf(queried.get('TotalChildren__c'));
         \\    }
@@ -9468,13 +10139,21 @@ test "E2E: List<SObject> preserves token-based field access for Apex metadata re
     const source =
         \\public class ApexMetadataListAccessTest {
         \\    public static String test() {
-        \\        Schema.ApexClass apexClassRecord = new Schema.ApexClass(Name = 'ExampleClass', Body = 'public class ExampleClass {}');
-        \\        apexClassRecord.put(Schema.ApexClass.LastModifiedDate, Datetime.newInstance(2026, 4, 1, 0, 0, 0));
+        \\        Schema.ApexClass apexClassRecord = new Schema.ApexClass(
+        \\            Name = 'ExampleClass',
+        \\            Body = 'public class ExampleClass {}'
+        \\        );
+        \\        apexClassRecord.put(
+        \\            Schema.ApexClass.LastModifiedDate,
+        \\            Datetime.newInstance(2026, 4, 1, 0, 0, 0)
+        \\        );
         \\        List<Schema.ApexClass> typedRecords = new List<Schema.ApexClass>{ apexClassRecord };
         \\        List<SObject> metadataRecords = typedRecords;
         \\        SObject metadataRecord = metadataRecords.get(0);
         \\        String body = (String) metadataRecord.get(Schema.ApexClass.Body);
-        \\        Boolean modified = ((Datetime) metadataRecord.get(Schema.ApexClass.LastModifiedDate)) > Datetime.newInstance(2026, 3, 1, 0, 0, 0);
+        \\        Boolean modified =
+        \\            ((Datetime) metadataRecord.get(Schema.ApexClass.LastModifiedDate))
+        \\                > Datetime.newInstance(2026, 3, 1, 0, 0, 0);
         \\        return body + ':' + String.valueOf(modified);
         \\    }
         \\}
@@ -9492,8 +10171,11 @@ test "E2E: Apex metadata describe is accessible by default" {
     const source =
         \\public class ApexMetadataDescribeAccessTest {
         \\    public static String test() {
-        \\        return String.valueOf(Schema.ApexClass.SObjectType.getDescribe().isAccessible()) + ':' +
-        \\            String.valueOf(Schema.ApexTrigger.SObjectType.getDescribe().isAccessible());
+        \\        return String.valueOf(
+        \\            Schema.ApexClass.SObjectType.getDescribe().isAccessible()
+        \\        ) + ':' + String.valueOf(
+        \\            Schema.ApexTrigger.SObjectType.getDescribe().isAccessible()
+        \\        );
         \\    }
         \\}
     ;
@@ -9510,11 +10192,17 @@ test "E2E: JSON round-trip through SObject.class preserves Apex metadata fields"
     const source =
         \\public class SObjectJsonRoundTripTest {
         \\    public static String test() {
-        \\        Schema.ApexClass originalRecord = new Schema.ApexClass(Name = 'ExampleClass', Body = 'public class ExampleClass {}');
+        \\        Schema.ApexClass originalRecord = new Schema.ApexClass(
+        \\            Name = 'ExampleClass',
+        \\            Body = 'public class ExampleClass {}'
+        \\        );
         \\        String serialized = JSON.serialize(originalRecord);
         \\        Map<String, Object> fields = (Map<String, Object>) JSON.deserializeUntyped(serialized);
         \\        fields.put('LastModifiedDate', Datetime.newInstance(2026, 4, 1, 0, 0, 0));
-        \\        SObject roundTripped = (SObject) JSON.deserialize(JSON.serialize(fields), SObject.class);
+        \\        SObject roundTripped = (SObject) JSON.deserialize(
+        \\            JSON.serialize(fields),
+        \\            SObject.class
+        \\        );
         \\        return String.valueOf(roundTripped.get('Name')) + ':' +
         \\            String.valueOf(roundTripped.get('Body')) + ':' +
         \\            String.valueOf(roundTripped.get('LastModifiedDate') != null) + ':' +
@@ -9528,17 +10216,27 @@ test "E2E: JSON round-trip through SObject.class preserves Apex metadata fields"
     });
     defer result.deinit();
 
-    try std.testing.expectEqualStrings("ExampleClass:public class ExampleClass {}:true:ApexClass", result.value.string);
+    try std.testing.expectEqualStrings(
+        "ExampleClass:public class ExampleClass {}:true:ApexClass",
+        result.value.string,
+    );
 }
 
 test "E2E: casted Apex metadata from SObject round-trip keeps concrete sobject type" {
     const source =
         \\public class CastedApexMetadataTypeTest {
         \\    public static String test() {
-        \\        Schema.ApexClass originalRecord = new Schema.ApexClass(Name = 'ExampleClass', Body = 'public class ExampleClass {}');
-        \\        Map<String, Object> fields = (Map<String, Object>) JSON.deserializeUntyped(JSON.serialize(originalRecord));
+        \\        Schema.ApexClass originalRecord = new Schema.ApexClass(
+        \\            Name = 'ExampleClass',
+        \\            Body = 'public class ExampleClass {}'
+        \\        );
+        \\        Map<String, Object> fields = (Map<String, Object>)
+        \\            JSON.deserializeUntyped(JSON.serialize(originalRecord));
         \\        fields.put('LastModifiedDate', Datetime.newInstance(2026, 4, 1, 0, 0, 0));
-        \\        Schema.ApexClass castedRecord = (Schema.ApexClass) JSON.deserialize(JSON.serialize(fields), SObject.class);
+        \\        Schema.ApexClass castedRecord = (Schema.ApexClass) JSON.deserialize(
+        \\            JSON.serialize(fields),
+        \\            SObject.class
+        \\        );
         \\        List<Schema.ApexClass> typedRecords = new List<Schema.ApexClass>{ castedRecord };
         \\        List<SObject> genericRecords = typedRecords;
         \\        return String.valueOf(castedRecord.getSObjectType()) + ':' +
@@ -9553,7 +10251,10 @@ test "E2E: casted Apex metadata from SObject round-trip keeps concrete sobject t
     });
     defer result.deinit();
 
-    try std.testing.expectEqualStrings("ApexClass:ApexClass:public class ExampleClass {}", result.value.string);
+    try std.testing.expectEqualStrings(
+        "ApexClass:ApexClass:public class ExampleClass {}",
+        result.value.string,
+    );
 }
 
 test "E2E: JSON serialize on field tokens throws and callers can fall back to toString" {
@@ -9581,7 +10282,15 @@ test "E2E: JSON deserialize unwraps relationship records and normalizes standard
     const source =
         \\public class JsonRelationshipRoundTripTest {
         \\    public static String test() {
-        \\        String json = '[{"attributes":{"type":"Account"},"Id":"001000000000001AAA","Name":"Acme","NumberOfEmployees":"7","Contacts":{"totalSize":"2","done":"true","records":[{"attributes":{"type":"Contact"},"Id":"003000000000001AAA","DoNotCall":"true"},{"attributes":{"type":"Contact"},"Id":"003000000000002AAA","DoNotCall":"false"}]}}]';
+        \\        String json =
+        \\            '[{"attributes":{"type":"Account"},' +
+        \\            '"Id":"001000000000001AAA","Name":"Acme",' +
+        \\            '"NumberOfEmployees":"7",' +
+        \\            '"Contacts":{"totalSize":"2","done":"true","records":[' +
+        \\            '{"attributes":{"type":"Contact"},' +
+        \\            '"Id":"003000000000001AAA","DoNotCall":"true"},' +
+        \\            '{"attributes":{"type":"Contact"},' +
+        \\            '"Id":"003000000000002AAA","DoNotCall":"false"}]}}]';
         \\        SObject accountRecord = ((List<SObject>) JSON.deserialize(json, List<SObject>.class))[0];
         \\        List<SObject> contacts = accountRecord.getSObjects('Contacts');
         \\        return String.valueOf(accountRecord.get('NumberOfEmployees')) + ':' +
@@ -9604,11 +10313,23 @@ test "E2E: JSON deserialize unwraps relationship records for typed child access"
     const source =
         \\public class JsonTypedRelationshipRoundTripTest {
         \\    public static String test() {
-        \\        String json = '[{"attributes":{"type":"Account"},"Id":"001000000000001AAA","Name":"Acme","Contacts":{"totalSize":"2","done":"true","records":[{"attributes":{"type":"Contact"},"Id":"003000000000001AAA"},{"attributes":{"type":"Contact"},"Id":"003000000000002AAA"}]}}]';
+        \\        String json =
+        \\            '[{"attributes":{"type":"Account"},' +
+        \\            '"Id":"001000000000001AAA","Name":"Acme",' +
+        \\            '"Contacts":{"totalSize":"2","done":"true","records":[' +
+        \\            '{"attributes":{"type":"Contact"},' +
+        \\            '"Id":"003000000000001AAA"},' +
+        \\            '{"attributes":{"type":"Contact"},' +
+        \\            '"Id":"003000000000002AAA"}]}}]';
         \\        Account accountRecord = ((List<Account>) JSON.deserialize(json, List<Account>.class))[0];
         \\        return String.valueOf(accountRecord.Contacts == null) + ':' +
-        \\            String.valueOf(accountRecord.Contacts == null ? null : accountRecord.Contacts.size()) + ':' +
-        \\            String.valueOf(accountRecord.Contacts == null || accountRecord.Contacts.size() == 0 ? null : accountRecord.Contacts[0].Id);
+        \\            String.valueOf(accountRecord.Contacts == null
+        \\                ? null
+        \\                : accountRecord.Contacts.size()) + ':' +
+        \\            String.valueOf(accountRecord.Contacts == null ||
+        \\                accountRecord.Contacts.size() == 0
+        \\                    ? null
+        \\                    : accountRecord.Contacts[0].Id);
         \\    }
         \\}
     ;
@@ -9631,7 +10352,10 @@ test "E2E: DataWeave object conversion returns typed records" {
         \\public class DataWeaveObjectConversionTest {
         \\    public static String test() {
         \\        String csvInput = 'first_name,last_name,email\\nAbel,Maclead,a.m@demo.org';
-        \\        String jsonInput = '[{ "first_name": "Abel", "last_name": "Maclead", "email": "a.m@demo.org" }]';
+        \\        String jsonInput =
+        \\            '[{ "first_name": "Abel", ' +
+        \\            '"last_name": "Maclead", ' +
+        \\            '"email": "a.m@demo.org" }]';
         \\        List<Contact> csvContacts = (List<Contact>) new DataWeaveScriptResource.csvToContacts()
         \\            .execute(new Map<String, Object>{ 'records' => csvInput })
         \\            .getValue();
@@ -9641,7 +10365,8 @@ test "E2E: DataWeave object conversion returns typed records" {
         \\        List<CsvData> rows = (List<CsvData>) new DataWeaveScriptResource.csvToApexObject()
         \\            .execute(new Map<String, Object>{ 'records' => csvInput })
         \\            .getValue();
-        \\        return String.valueOf(csvContacts.size()) + ':' + csvContacts[0].FirstName + ':' +
+        \\        return String.valueOf(csvContacts.size()) +
+        \\            ':' + csvContacts[0].FirstName + ':' +
         \\            jsonContacts[0].Email + ':' + rows[0].LastName;
         \\    }
         \\}
@@ -9698,7 +10423,9 @@ test "E2E: JSON deserialize normalizes standard read-only datetime fields" {
     const source =
         \\public class JsonReadonlyDatetimeProbe {
         \\    public static String test() {
-        \\        String json = '{"attributes":{"type":"Account"},"LastReferencedDate":"2020-01-07T23:30:00.000Z"}';
+        \\        String json =
+        \\            '{"attributes":{"type":"Account"},' +
+        \\            '"LastReferencedDate":"2020-01-07T23:30:00.000Z"}';
         \\        Account accountRecord = (Account) JSON.deserialize(json, Account.class);
         \\        Datetime expected = Datetime.newInstanceGmt(2020, 1, 7, 23, 30, 0);
         \\        return String.valueOf(expected == accountRecord.LastReferencedDate) + ':' +
@@ -9732,7 +10459,12 @@ test "E2E: JSON serialize preserves Id on generic newSObject records" {
     });
     defer result.deinit();
 
-    try std.testing.expectEqualStrings("001000000000001AAA:{\"attributes\":{\"type\":\"Account\"},\"Id\":\"001000000000001AAA\",\"Name\":\"Acme\"}", result.value.string);
+    try std.testing.expectEqualStrings(
+        "001000000000001AAA:" ++
+            "{\"attributes\":{\"type\":\"Account\"}," ++
+            "\"Id\":\"001000000000001AAA\",\"Name\":\"Acme\"}",
+        result.value.string,
+    );
 }
 
 test "E2E: token-keyed sobject match works across list-of-maps comparisons" {
@@ -9759,7 +10491,8 @@ test "E2E: token-keyed sobject match works across list-of-maps comparisons" {
         \\        second.put('Id', '001000000000002AAA');
         \\        second.put('Name', 'Beta');
         \\
-        \\        List<Map<Schema.SObjectField, Object>> expected = new List<Map<Schema.SObjectField, Object>>{
+        \\        List<Map<Schema.SObjectField, Object>> expected =
+        \\            new List<Map<Schema.SObjectField, Object>>{
         \\            new Map<Schema.SObjectField, Object>{
         \\                idField => '001000000000001AAA',
         \\                nameField => 'Acme'
@@ -9771,7 +10504,8 @@ test "E2E: token-keyed sobject match works across list-of-maps comparisons" {
         \\        };
         \\
         \\        List<SObject> actual = new List<SObject>{ first, second };
-        \\        return String.valueOf(sObjectMatches(actual[0], expected[0])) + ':' +
+        \\        return String.valueOf(sObjectMatches(actual[0], expected[0])) +
+        \\            ':' +
         \\            String.valueOf(sObjectMatches(actual[1], expected[1]));
         \\    }
         \\}
@@ -9807,11 +10541,13 @@ test "E2E: token-keyed sobject match works for inserted Group records" {
         \\            new Group(Name = 'Probe1', DeveloperName = 'Probe1', Type = 'Queue')
         \\        };
         \\        insert groups;
-        \\        Map<String, Schema.SObjectField> fields = Group.SObjectType.getDescribe().fields.getMap();
+        \\        Map<String, Schema.SObjectField> fields =
+        \\            Group.SObjectType.getDescribe().fields.getMap();
         \\        Schema.SObjectField idField = fields.get('Id');
         \\        Schema.SObjectField nameField = fields.get('Name');
         \\
-        \\        List<Map<Schema.SObjectField, Object>> expected = new List<Map<Schema.SObjectField, Object>>{
+        \\        List<Map<Schema.SObjectField, Object>> expected =
+        \\            new List<Map<Schema.SObjectField, Object>>{
         \\            new Map<Schema.SObjectField, Object>{
         \\                idField => groups[0].Id,
         \\                nameField => groups[0].get('Name')
@@ -9822,7 +10558,8 @@ test "E2E: token-keyed sobject match works for inserted Group records" {
         \\            }
         \\        };
         \\
-        \\        return String.valueOf(sObjectMatches(groups[0], expected[0])) + ':' +
+        \\        return String.valueOf(sObjectMatches(groups[0], expected[0])) +
+        \\            ':' +
         \\            String.valueOf(sObjectMatches(groups[1], expected[1]));
         \\    }
         \\}
@@ -9917,7 +10654,8 @@ test "E2E: ordered token-keyed sobject list matcher works through Object entrypo
         \\        public Boolean matches(Object arg) {
         \\            if (arg != null && arg instanceof List<SObject>) {
         \\                SObject[] sobjsArg = (SObject[]) arg;
-        \\                List<Map<Schema.SObjectField, Object>> toMatches = new List<Map<Schema.SObjectField, Object>>();
+        \\                List<Map<Schema.SObjectField, Object>> toMatches =
+        \\                    new List<Map<Schema.SObjectField, Object>>();
         \\                for (Map<Schema.SObjectField, Object> matchElem : toMatch) {
         \\                    toMatches.add(matchElem);
         \\                }
@@ -9937,7 +10675,10 @@ test "E2E: ordered token-keyed sobject list matcher works through Object entrypo
         \\        }
         \\    }
         \\
-        \\    private static Boolean sObjectMatches(SObject sobj, Map<Schema.SObjectField, Object> toMatch) {
+        \\    private static Boolean sObjectMatches(
+        \\        SObject sobj,
+        \\        Map<Schema.SObjectField, Object> toMatch
+        \\    ) {
         \\        for (Schema.SObjectField f : toMatch.keySet()) {
         \\            try {
         \\                if (sobj.get(f) != toMatch.get(f)) {
@@ -9956,10 +10697,12 @@ test "E2E: ordered token-keyed sobject list matcher works through Object entrypo
         \\            new Group(Name = 'Probe1', DeveloperName = 'Probe1', Type = 'Queue')
         \\        };
         \\        insert groups;
-        \\        Map<String, Schema.SObjectField> fields = Group.SObjectType.getDescribe().fields.getMap();
+        \\        Map<String, Schema.SObjectField> fields =
+        \\            Group.SObjectType.getDescribe().fields.getMap();
         \\        Schema.SObjectField idField = fields.get('Id');
         \\        Schema.SObjectField nameField = fields.get('Name');
-        \\        List<Map<Schema.SObjectField, Object>> expected = new List<Map<Schema.SObjectField, Object>>{
+        \\        List<Map<Schema.SObjectField, Object>> expected =
+        \\            new List<Map<Schema.SObjectField, Object>>{
         \\            new Map<Schema.SObjectField, Object>{
         \\                idField => groups[0].Id,
         \\                nameField => groups[0].get('Name')
@@ -9988,7 +10731,9 @@ test "E2E: global describe exposes Group sobject type" {
         \\public class GlobalDescribeGroupProbe {
         \\    public static String test() {
         \\        Schema.SObjectType groupType = Schema.getGlobalDescribe().get('Group');
-        \\        return String.valueOf(groupType == null ? null : groupType.getDescribe().getName());
+        \\        return String.valueOf(
+        \\            groupType == null ? null : groupType.getDescribe().getName()
+        \\        );
         \\    }
         \\}
     ;
@@ -10016,7 +10761,10 @@ test "E2E: JSON serialize Datetime keeps Salesforce millisecond suffix" {
     });
     defer result.deinit();
 
-    try std.testing.expectEqualStrings("\"2019-01-01T12:00:00.000Z\"", result.value.string);
+    try std.testing.expectEqualStrings(
+        "\"2019-01-01T12:00:00.000Z\"",
+        result.value.string,
+    );
 }
 
 test "E2E: Apex metadata datetime compares against custom datetime fields" {
@@ -10049,20 +10797,33 @@ test "E2E: Apex metadata datetime compares against custom datetime fields" {
 
     const source =
         \\public class ApexMetadataDateComparisonTest {
-        \\    public static SObject setReadOnlyField(SObject record, Schema.SObjectField field, Object value) {
-        \\        Map<String, Object> fields = (Map<String, Object>) JSON.deserializeUntyped(JSON.serialize(record));
+        \\    public static SObject setReadOnlyField(
+        \\        SObject record,
+        \\        Schema.SObjectField field,
+        \\        Object value
+        \\    ) {
+        \\        Map<String, Object> fields = (Map<String, Object>)
+        \\            JSON.deserializeUntyped(JSON.serialize(record));
         \\        fields.put(field.toString(), value);
         \\        return (SObject) JSON.deserialize(JSON.serialize(fields), SObject.class);
         \\    }
         \\    public static String test() {
-        \\        Schema.ApexClass apexClassRecord = new Schema.ApexClass(Name = 'ExampleClass', Body = 'public class ExampleClass {}');
+        \\        Schema.ApexClass apexClassRecord = new Schema.ApexClass(
+        \\            Name = 'ExampleClass',
+        \\            Body = 'public class ExampleClass {}'
+        \\        );
         \\        apexClassRecord = (Schema.ApexClass) setReadOnlyField(
         \\            apexClassRecord,
         \\            Schema.ApexClass.LastModifiedDate,
         \\            Datetime.newInstance(2026, 4, 1, 0, 0, 0)
         \\        );
-        \\        Thing__c record = new Thing__c(Timestamp__c = Datetime.newInstance(2026, 3, 1, 0, 0, 0));
-        \\        return String.valueOf(((Datetime) ((SObject) apexClassRecord).get(Schema.ApexClass.LastModifiedDate)) > record.Timestamp__c);
+        \\        Thing__c record = new Thing__c(
+        \\            Timestamp__c = Datetime.newInstance(2026, 3, 1, 0, 0, 0)
+        \\        );
+        \\        return String.valueOf(
+        \\            ((Datetime) ((SObject) apexClassRecord)
+        \\                .get(Schema.ApexClass.LastModifiedDate)) > record.Timestamp__c
+        \\        );
         \\    }
         \\}
     ;
@@ -10123,7 +10884,8 @@ test "E2E: inner enum valueOf resolves declared enum members" {
         \\}
         \\public class InnerEnumValueOfTest {
         \\    public static String test() {
-        \\        return String.valueOf(EnumContainer.Kind.valueOf('Alpha')) + ':' + String.valueOf(EnumContainer.Kind.values().size());
+        \\        return String.valueOf(EnumContainer.Kind.valueOf('Alpha')) +
+        \\            ':' + String.valueOf(EnumContainer.Kind.values().size());
         \\    }
         \\}
     ;
@@ -10250,7 +11012,8 @@ test "E2E: RestContext request and response share assigned objects" {
         \\        RestContext.Response = new RestResponse();
         \\        RestContext.request.requestURI = '/services/apexrest/demo';
         \\        RestContext.response.statusCode = 204;
-        \\        return RestContext.Request.requestURI + ':' + String.valueOf(RestContext.Response.statusCode);
+        \\        return RestContext.Request.requestURI
+        \\            + ':' + String.valueOf(RestContext.Response.statusCode);
         \\    }
         \\}
     ;
@@ -10553,7 +11316,8 @@ test "E2E: Salesforce-style id strings satisfy instanceof Id" {
         \\    public static String test() {
         \\        String userId = '005000000000000';
         \\        String queueId = '00G000000000000005';
-        \\        return String.valueOf(userId instanceof Id) + ':' + String.valueOf(queueId instanceof Id);
+        \\        return String.valueOf(userId instanceof Id) +
+        \\            ':' + String.valueOf(queueId instanceof Id);
         \\    }
         \\}
     ;
@@ -10594,8 +11358,11 @@ test "E2E: ApexPages.Message preserves summary when added to page state" {
     const source =
         \\public class ApexPagesMessageSummaryTest {
         \\    public static String test() {
-        \\        ApexPages.addMessage(new ApexPages.Message(ApexPages.Severity.ERROR, 'Denied'));
-        \\        return ApexPages.getMessages().get(0).getSummary() + ':' + ApexPages.getMessages().get(0).getSeverity();
+        \\        ApexPages.addMessage(
+        \\            new ApexPages.Message(ApexPages.Severity.ERROR, 'Denied')
+        \\        );
+        \\        return ApexPages.getMessages().get(0).getSummary() +
+        \\            ':' + ApexPages.getMessages().get(0).getSeverity();
         \\    }
         \\}
     ;
@@ -10655,7 +11422,9 @@ test "E2E: custom equals and hashCode drive map lookup while strict equality sta
         \\        this.values = values;
         \\    }
         \\    public Boolean equals(Object other) {
-        \\        EqualityKey that = other instanceof EqualityKey ? (EqualityKey) other : null;
+        \\        EqualityKey that = other instanceof EqualityKey
+        \\            ? (EqualityKey) other
+        \\            : null;
         \\        return that != null && this.values == that.values;
         \\    }
         \\    public Integer hashCode() {
@@ -10713,7 +11482,7 @@ test "E2E: Map.clear removes both entries and key metadata before reinsertion" {
     try std.testing.expectEqualStrings("true:false:1:true", result.value.string);
 }
 
-test "E2E: String.valueOf respects override toString and List<Type>.toString formats element names" {
+test "E2E: String.valueOf respects override toString and List<Type>.toString" {
     const source =
         \\public class ValuePrinter {
         \\    public override String toString() {
@@ -10722,7 +11491,8 @@ test "E2E: String.valueOf respects override toString and List<Type>.toString for
         \\}
         \\public class ValuePrinterProbe {
         \\    public static String test() {
-        \\        return String.valueOf(new ValuePrinter()) + ':' +
+        \\        return String.valueOf(new ValuePrinter()) +
+        \\            ':' +
         \\            new List<Type>{ Integer.class, String.class }.toString();
         \\    }
         \\}
@@ -10741,7 +11511,9 @@ test "E2E: executeBatch uses QueryLocator records produced from SOQL literals" {
         \\global class QueryLocatorScopeBatch implements Database.Batchable<SObject> {
         \\    public static Integer processed = 0;
         \\    global Database.QueryLocator start(Database.BatchableContext bc) {
-        \\        return Database.getQueryLocator([SELECT Id FROM Account WHERE Name = 'Keep']);
+        \\        return Database.getQueryLocator([
+        \\            SELECT Id FROM Account WHERE Name = 'Keep'
+        \\        ]);
         \\    }
         \\    global void execute(Database.BatchableContext bc, List<SObject> scope) {
         \\        processed = scope.size();
@@ -10784,7 +11556,11 @@ test "E2E: executeBatch queues chained jobs triggered from finish" {
         \\        if (phase == 'Children') {
         \\            return Database.getQueryLocator([SELECT Id FROM Child__c]);
         \\        }
-        \\        return Database.getQueryLocator([SELECT Id FROM Parent__c WHERE TotalChildren__c = 0]);
+        \\        return Database.getQueryLocator([
+        \\            SELECT Id
+        \\            FROM Parent__c
+        \\            WHERE TotalChildren__c = 0
+        \\        ]);
         \\    }
         \\    global void execute(Database.BatchableContext bc, List<SObject> scope) {
         \\        Database.delete(scope);
@@ -10802,7 +11578,9 @@ test "E2E: executeBatch queues chained jobs triggered from finish" {
         \\        insert parent;
         \\        insert new Child__c(Parent__c = parent.Id, Status__c = 'Open');
         \\        Database.executeBatch(new ChainedCleanupBatch());
-        \\        return String.valueOf([SELECT Id FROM Parent__c WHERE Id = :parent.Id].size());
+        \\        return String.valueOf([
+        \\            SELECT Id FROM Parent__c WHERE Id = :parent.Id
+        \\        ].size());
         \\    }
         \\}
     ;
@@ -10883,7 +11661,11 @@ test "E2E: executeBatch chained hard-delete works through a wrapper database cla
         \\        if (phase == 'Children') {
         \\            return Database.getQueryLocator([SELECT Id FROM Child__c]);
         \\        }
-        \\        return Database.getQueryLocator([SELECT Id FROM Parent__c WHERE RetentionDate__c <= :System.today()]);
+        \\        return Database.getQueryLocator([
+        \\            SELECT Id
+        \\            FROM Parent__c
+        \\            WHERE RetentionDate__c <= :System.today()
+        \\        ]);
         \\    }
         \\    global void execute(Database.BatchableContext bc, List<SObject> scope) {
         \\        CleanupGateway.getDatabase().hardDeleteRecords(scope);
@@ -10897,11 +11679,20 @@ test "E2E: executeBatch chained hard-delete works through a wrapper database cla
         \\}
         \\public class WrappedHardDeleteBatchTest {
         \\    public static String test() {
-        \\        Parent__c parent = new Parent__c(Name = 'Parent', RetentionDate__c = System.today().addDays(-1));
+        \\        Parent__c parent = new Parent__c(
+        \\            Name = 'Parent',
+        \\            RetentionDate__c = System.today().addDays(-1)
+        \\        );
         \\        insert parent;
         \\        insert new Child__c(Parent__c = parent.Id, Status__c = 'Open');
         \\        Database.executeBatch(new WrappedHardDeleteBatch());
-        \\        return String.valueOf([SELECT Id FROM Child__c].size()) + ':' + String.valueOf([SELECT Id FROM Parent__c WHERE Id = :parent.Id].size());
+        \\        return String.valueOf([SELECT Id FROM Child__c].size())
+        \\            + ':'
+        \\            + String.valueOf([
+        \\                SELECT Id
+        \\                FROM Parent__c
+        \\                WHERE Id = :parent.Id
+        \\            ].size());
         \\    }
         \\}
     ;
@@ -11064,7 +11855,9 @@ test "E2E: aggregate query groups by multi-hop parent relationship fields" {
         \\                customCount = (Integer) row.get('RecordCount');
         \\            }
         \\        }
-        \\        return String.valueOf(rows.size()) + ':' + String.valueOf(deleteCount) + ':' + String.valueOf(customCount);
+        \\        return String.valueOf(rows.size()) +
+        \\            ':' + String.valueOf(deleteCount) +
+        \\            ':' + String.valueOf(customCount);
         \\    }
         \\}
     ;
@@ -11091,16 +11884,26 @@ test "E2E: executeBatch creates queryable AsyncApexJob records" {
         \\    public static String test() {
         \\        insert new Account(Name = 'Acme');
         \\        String batchClassName = AsyncJobProbeBatch.class.getName();
-        \\        String namespacePrefix = batchClassName.contains('.') ? batchClassName.substringBefore('.') : null;
-        \\        String apexClassName = batchClassName.contains('.') ? batchClassName.substringAfter('.') : batchClassName;
+        \\        String namespacePrefix = batchClassName.contains('.')
+        \\            ? batchClassName.substringBefore('.')
+        \\            : null;
+        \\        String apexClassName = batchClassName.contains('.')
+        \\            ? batchClassName.substringAfter('.')
+        \\            : batchClassName;
         \\        String jobId = Database.executeBatch(new AsyncJobProbeBatch());
         \\        List<AsyncApexJob> jobs = [
         \\            SELECT Id, JobType, Status, CreatedBy.Name
         \\            FROM AsyncApexJob
-        \\            WHERE Id = :jobId AND ApexClass.NamespacePrefix = :namespacePrefix AND ApexClass.Name = :apexClassName
+        \\            WHERE
+        \\                Id = :jobId
+        \\                AND ApexClass.NamespacePrefix = :namespacePrefix
+        \\                AND ApexClass.Name = :apexClassName
         \\        ];
         \\        AsyncApexJob job = jobs.get(0);
-        \\        return String.valueOf(jobs.size()) + ':' + job.JobType + ':' + job.Status + ':' + job.CreatedBy.Name;
+        \\        return String.valueOf(jobs.size()) +
+        \\            ':' + job.JobType +
+        \\            ':' + job.Status +
+        \\            ':' + job.CreatedBy.Name;
         \\    }
         \\}
     ;
@@ -11118,7 +11921,9 @@ test "E2E: executeBatch publishes BatchApexErrorEvent for raises-platform-events
         \\trigger BatchFailureTrigger on BatchApexErrorEvent (after insert) {
         \\    List<Account> insertedAccounts = new List<Account>();
         \\    for (BatchApexErrorEvent evt : Trigger.new) {
-        \\        insertedAccounts.add(new Account(Name = evt.Phase + ':' + evt.ExceptionType + ':' + evt.Message));
+        \\        insertedAccounts.add(new Account(
+        \\            Name = evt.Phase + ':' + evt.ExceptionType + ':' + evt.Message
+        \\        ));
         \\    }
         \\    insert insertedAccounts;
         \\}
@@ -11168,12 +11973,14 @@ test "E2E: executeBatch publishes BatchApexErrorEvent for raises-platform-events
     defer result.deinit();
 
     try std.testing.expectEqualStrings(
-        "EXECUTE:System.IllegalArgumentException:EXECUTE|FINISH:System.IllegalArgumentException:FINISH|START:System.IllegalArgumentException:START",
+        "EXECUTE:System.IllegalArgumentException:EXECUTE|" ++
+            "FINISH:System.IllegalArgumentException:FINISH|" ++
+            "START:System.IllegalArgumentException:START",
         result.value.string,
     );
 }
 
-test "E2E: chained batch with singleton database getter hard-deletes parent records after child cleanup" {
+test "E2E: singleton cleanup batch hard-deletes parent after child cleanup" {
     const alloc = std.testing.allocator;
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
@@ -11228,7 +12035,8 @@ test "E2E: chained batch with singleton database getter hard-deletes parent reco
         \\        Integer childCount = [
         \\            SELECT COUNT()
         \\            FROM Child__c
-        \\            WHERE Parent__r.RetentionDate__c <= :RETENTION_END_DATE AND Parent__r.RetentionDate__c != NULL
+        \\            WHERE Parent__r.RetentionDate__c <= :RETENTION_END_DATE
+        \\            AND Parent__r.RetentionDate__c != NULL
         \\        ];
         \\        return childCount > 0 ? Schema.Child__c.SObjectType : Schema.Parent__c.SObjectType;
         \\    }
@@ -11239,14 +12047,18 @@ test "E2E: chained batch with singleton database getter hard-deletes parent reco
         \\                queryLocator = System.Database.getQueryLocator([
         \\                    SELECT Id
         \\                    FROM Child__c
-        \\                    WHERE Parent__r.RetentionDate__c <= :RETENTION_END_DATE AND Parent__r.RetentionDate__c != NULL
+        \\                    WHERE Parent__r.RetentionDate__c <= :RETENTION_END_DATE
+        \\                    AND Parent__r.RetentionDate__c != NULL
         \\                ]);
         \\            }
         \\            when Parent__c parentRecord {
         \\                queryLocator = System.Database.getQueryLocator([
         \\                    SELECT Id
         \\                    FROM Parent__c
-        \\                    WHERE (RetentionDate__c <= :RETENTION_END_DATE AND RetentionDate__c != NULL) OR TotalChildren__c = 0
+        \\                    WHERE (
+        \\                        RetentionDate__c <= :RETENTION_END_DATE
+        \\                        AND RetentionDate__c != NULL
+        \\                    ) OR TotalChildren__c = 0
         \\                ]);
         \\            }
         \\        }
@@ -11255,11 +12067,20 @@ test "E2E: chained batch with singleton database getter hard-deletes parent reco
         \\}
         \\public class SingletonCleanupBatchTest {
         \\    public static String test() {
-        \\        Parent__c parent = new Parent__c(Name = 'Parent', RetentionDate__c = System.today().addDays(-1));
+        \\        Parent__c parent = new Parent__c(
+        \\            Name = 'Parent',
+        \\            RetentionDate__c = System.today().addDays(-1)
+        \\        );
         \\        insert parent;
         \\        insert new Child__c(Parent__c = parent.Id, Status__c = 'Open');
         \\        Database.executeBatch(new SingletonCleanupBatch());
-        \\        return String.valueOf([SELECT Id FROM Child__c].size()) + ':' + String.valueOf([SELECT Id FROM Parent__c WHERE Id = :parent.Id].size());
+        \\        return String.valueOf([SELECT Id FROM Child__c].size())
+        \\            + ':'
+        \\            + String.valueOf([
+        \\                SELECT Id
+        \\                FROM Parent__c
+        \\                WHERE Id = :parent.Id
+        \\            ].size());
         \\    }
         \\}
     ;
@@ -11351,7 +12172,8 @@ test "E2E: chained batch with direct hard-delete removes parent records after ch
         \\        Integer childCount = [
         \\            SELECT COUNT()
         \\            FROM Child__c
-        \\            WHERE Parent__r.RetentionDate__c <= :RETENTION_END_DATE AND Parent__r.RetentionDate__c != NULL
+        \\            WHERE Parent__r.RetentionDate__c <= :RETENTION_END_DATE
+        \\            AND Parent__r.RetentionDate__c != NULL
         \\        ];
         \\        return childCount > 0 ? Schema.Child__c.SObjectType : Schema.Parent__c.SObjectType;
         \\    }
@@ -11362,14 +12184,18 @@ test "E2E: chained batch with direct hard-delete removes parent records after ch
         \\                queryLocator = System.Database.getQueryLocator([
         \\                    SELECT Id
         \\                    FROM Child__c
-        \\                    WHERE Parent__r.RetentionDate__c <= :RETENTION_END_DATE AND Parent__r.RetentionDate__c != NULL
+        \\                    WHERE Parent__r.RetentionDate__c <= :RETENTION_END_DATE
+        \\                    AND Parent__r.RetentionDate__c != NULL
         \\                ]);
         \\            }
         \\            when Parent__c parentRecord {
         \\                queryLocator = System.Database.getQueryLocator([
         \\                    SELECT Id
         \\                    FROM Parent__c
-        \\                    WHERE (RetentionDate__c <= :RETENTION_END_DATE AND RetentionDate__c != NULL) OR TotalChildren__c = 0
+        \\                    WHERE (
+        \\                        RetentionDate__c <= :RETENTION_END_DATE
+        \\                        AND RetentionDate__c != NULL
+        \\                    ) OR TotalChildren__c = 0
         \\                ]);
         \\            }
         \\        }
@@ -11378,11 +12204,20 @@ test "E2E: chained batch with direct hard-delete removes parent records after ch
         \\}
         \\public class DirectCleanupBatchTest {
         \\    public static String test() {
-        \\        Parent__c parent = new Parent__c(Name = 'Parent', RetentionDate__c = System.today().addDays(-1));
+        \\        Parent__c parent = new Parent__c(
+        \\            Name = 'Parent',
+        \\            RetentionDate__c = System.today().addDays(-1)
+        \\        );
         \\        insert parent;
         \\        insert new Child__c(Parent__c = parent.Id, Status__c = 'Open');
         \\        Database.executeBatch(new DirectCleanupBatch());
-        \\        return String.valueOf([SELECT Id FROM Child__c].size()) + ':' + String.valueOf([SELECT Id FROM Parent__c WHERE Id = :parent.Id].size());
+        \\        return String.valueOf([SELECT Id FROM Child__c].size())
+        \\            + ':'
+        \\            + String.valueOf([
+        \\                SELECT Id
+        \\                FROM Parent__c
+        \\                WHERE Id = :parent.Id
+        \\            ].size());
         \\    }
         \\}
     ;
@@ -11440,7 +12275,10 @@ test "E2E: instance method on null receiver throws NullPointerException" {
     });
     defer result.deinit();
 
-    try std.testing.expectEqualStrings("Attempt to de-reference a null object", result.value.string);
+    try std.testing.expectEqualStrings(
+        "Attempt to de-reference a null object",
+        result.value.string,
+    );
 }
 
 test "E2E: for-each on null collection throws NullPointerException" {
@@ -11465,7 +12303,10 @@ test "E2E: for-each on null collection throws NullPointerException" {
     });
     defer result.deinit();
 
-    try std.testing.expectEqualStrings("Attempt to de-reference a null object", result.value.string);
+    try std.testing.expectEqualStrings(
+        "Attempt to de-reference a null object",
+        result.value.string,
+    );
 }
 
 test "E2E: list index access throws ListException when out of bounds" {
@@ -11615,7 +12456,12 @@ test "E2E: schema-qualified SObjectType ignores local shadowing after nested sta
         \\
         \\    public static String test() {
         \\        User user = createUser();
-        \\        Integer len = Schema.User.SObjectType.getDescribe().fields.getMap().get('Id').getDescribe().getLength();
+        \\        Integer len = Schema.User.SObjectType
+        \\            .getDescribe()
+        \\            .fields.getMap()
+        \\            .get('Id')
+        \\            .getDescribe()
+        \\            .getLength();
         \\        return user == null ? 'null' : String.valueOf(len > 0);
         \\    }
         \\}
@@ -11711,7 +12557,9 @@ test "E2E: qualified system exception constructors are catchable" {
         \\        } catch (System.IllegalArgumentException ex) {
         \\            thrownException = ex;
         \\        }
-        \\        return thrownException == null ? 'missing' : thrownException.getTypeName() + ':' + thrownException.getMessage();
+        \\        return thrownException == null
+        \\            ? 'missing'
+        \\            : thrownException.getTypeName() + ':' + thrownException.getMessage();
         \\    }
         \\}
     ;
@@ -11939,7 +12787,11 @@ test "E2E: parent CreatedDate fields are materialized as Datetime values" {
         \\        System.Test.setCreatedDate(accountRecord.Id, target);
         \\        Contact contactRecord = new Contact(LastName = 'User', AccountId = accountRecord.Id);
         \\        insert contactRecord;
-        \\        Contact queried = [SELECT AccountId, Account.CreatedDate FROM Contact WHERE Id = :contactRecord.Id];
+        \\        Contact queried = [
+        \\            SELECT AccountId, Account.CreatedDate
+        \\            FROM Contact
+        \\            WHERE Id = :contactRecord.Id
+        \\        ];
         \\        Datetime actual = (Datetime) queried.getSObject('Account').get('CreatedDate');
         \\        return String.valueOf(actual == target);
         \\    }
@@ -12089,7 +12941,9 @@ test "E2E: unsaved standard-object lists prefer List<SObject> overloads" {
     const source =
         \\public class StandardObjectListOverloadTest {
         \\    public String pick(Id recordId) { return 'Id'; }
-        \\    public String pick(List<SObject> rows) { return rows == null ? 'List:null' : 'List:' + String.valueOf(rows.size()); }
+        \\    public String pick(List<SObject> rows) {
+        \\        return rows == null ? 'List:null' : 'List:' + String.valueOf(rows.size());
+        \\    }
         \\    public static String test() {
         \\        StandardObjectListOverloadTest helper = new StandardObjectListOverloadTest();
         \\        List<AccountBrand> rows = new List<AccountBrand>{
@@ -12115,7 +12969,9 @@ test "E2E: List.sort keeps strings before numbers for mixed Object values" {
         \\    public static String test() {
         \\        List<Object> values = new List<Object>{ 'some-tag', 'another-tag', 1 };
         \\        values.sort();
-        \\        return String.valueOf(values.get(0)) + '|' + String.valueOf(values.get(1)) + '|' + String.valueOf(values.get(2));
+        \\        return String.valueOf(values.get(0))
+        \\            + '|' + String.valueOf(values.get(1))
+        \\            + '|' + String.valueOf(values.get(2));
         \\    }
         \\}
     ;
@@ -12183,9 +13039,13 @@ test "E2E: Schema field token strings resolve describe map entries for put" {
         \\        Map<String, Object> valuesByFieldName = new Map<String, Object>{
         \\            Schema.Account.Name.toString() => 'Acme'
         \\        };
-        \\        Map<Schema.SObjectField, Object> resolvedFieldToValue = new Map<Schema.SObjectField, Object>();
+        \\        Map<Schema.SObjectField, Object> resolvedFieldToValue =
+        \\            new Map<Schema.SObjectField, Object>();
         \\        for (String fieldName : valuesByFieldName.keySet()) {
-        \\            Schema.SObjectField field = Schema.Account.SObjectType.getDescribe().fields.getMap().get(fieldName);
+        \\            Schema.SObjectField field = Schema.Account.SObjectType
+        \\                .getDescribe()
+        \\                .fields.getMap()
+        \\                .get(fieldName);
         \\            resolvedFieldToValue.put(field, valuesByFieldName.get(fieldName));
         \\        }
         \\        Account accountRecord = new Account();
@@ -12209,11 +13069,14 @@ test "E2E: describe-derived SObject field map keys stay distinct across multiple
     const source =
         \\public class DescribeDerivedFieldKeyTest {
         \\    public static String test() {
-        \\        Map<String, Schema.SObjectField> describeFields = Schema.Account.SObjectType.getDescribe().fields.getMap();
+        \\        Map<String, Schema.SObjectField> describeFields =
+        \\            Schema.Account.SObjectType.getDescribe().fields.getMap();
         \\        Map<Schema.SObjectField, String> valuesByField = new Map<Schema.SObjectField, String>();
         \\        valuesByField.put(describeFields.get('Name'), 'name');
         \\        valuesByField.put(describeFields.get('OwnerId'), 'owner');
-        \\        return valuesByField.size() + ':' + valuesByField.get(describeFields.get('Name')) + ':' + valuesByField.get(describeFields.get('OwnerId'));
+        \\        return valuesByField.size()
+        \\            + ':' + valuesByField.get(describeFields.get('Name'))
+        \\            + ':' + valuesByField.get(describeFields.get('OwnerId'));
         \\    }
         \\}
     ;
@@ -12236,9 +13099,12 @@ test "E2E: UserRecordAccess delete query returns only deletable records" {
         \\        List<UserRecordAccess> accessRows = [
         \\            SELECT RecordId
         \\            FROM UserRecordAccess
-        \\            WHERE UserId = :System.UserInfo.getUserId() AND RecordId IN :recordIds AND HasDeleteAccess = TRUE
+        \\            WHERE UserId = :System.UserInfo.getUserId()
+        \\            AND RecordId IN :recordIds
+        \\            AND HasDeleteAccess = TRUE
         \\        ];
-        \\        return String.valueOf(accessRows.size()) + ':' + String.valueOf(accessRows.get(0).RecordId == account.Id);
+        \\        return String.valueOf(accessRows.size())
+        \\            + ':' + String.valueOf(accessRows.get(0).RecordId == account.Id);
         \\    }
         \\}
     ;
@@ -12337,11 +13203,17 @@ test "E2E: JSON-deserialized DML errors expose message status and fields" {
         \\public class JsonDmlErrorAccessTest {
         \\    public static String test() {
         \\        Database.SaveResult result = (Database.SaveResult) JSON.deserialize(
-        \\            '{"success":false,"errors":[{"message":"Could not save...","statusCode":"FIELD_CUSTOM_VALIDATION_EXCEPTION","fields":["Name","Industry"]}]}',
+        \\            '{"success":false,"errors":[' +
+        \\                '{"message":"Could not save...",' +
+        \\                '"statusCode":"FIELD_CUSTOM_VALIDATION_EXCEPTION",' +
+        \\                '"fields":["Name","Industry"]}' +
+        \\            ']}',
         \\            Database.SaveResult.class
         \\        );
         \\        Database.Error errorRow = result.getErrors().get(0);
-        \\        return String.valueOf(errorRow.getStatusCode()) + ':' + errorRow.getMessage() + ':' + String.join(errorRow.getFields(), ',');
+        \\        return String.valueOf(errorRow.getStatusCode())
+        \\            + ':' + errorRow.getMessage()
+        \\            + ':' + String.join(errorRow.getFields(), ',');
         \\    }
         \\}
     ;
@@ -12351,7 +13223,10 @@ test "E2E: JSON-deserialized DML errors expose message status and fields" {
     });
     defer result.deinit();
 
-    try std.testing.expectEqualStrings("FIELD_CUSTOM_VALIDATION_EXCEPTION:Could not save...:Name,Industry", result.value.string);
+    try std.testing.expectEqualStrings(
+        "FIELD_CUSTOM_VALIDATION_EXCEPTION:Could not save...:Name,Industry",
+        result.value.string,
+    );
 }
 
 test "E2E: direct chained access on JSON-deserialized DML errors keeps getter semantics" {
@@ -12359,10 +13234,15 @@ test "E2E: direct chained access on JSON-deserialized DML errors keeps getter se
         \\public class JsonDmlErrorDirectAccessTest {
         \\    public static String test() {
         \\        Database.SaveResult result = (Database.SaveResult) JSON.deserialize(
-        \\            '{"success":false,"errors":[{"message":"Could not save...","statusCode":"FIELD_CUSTOM_VALIDATION_EXCEPTION","fields":["Name"]}]}',
+        \\            '{"success":false,"errors":[' +
+        \\                '{"message":"Could not save...",' +
+        \\                '"statusCode":"FIELD_CUSTOM_VALIDATION_EXCEPTION",' +
+        \\                '"fields":["Name"]}' +
+        \\            ']}',
         \\            Database.SaveResult.class
         \\        );
-        \\        return result.errors.get(0).getMessage() + ':' + String.join(result.errors.get(0).getFields(), ',');
+        \\        return result.errors.get(0).getMessage()
+        \\            + ':' + String.join(result.errors.get(0).getFields(), ',');
         \\    }
         \\}
     ;
@@ -12392,7 +13272,10 @@ test "E2E: partial undelete preserves bind-list order for ALL ROWS queries" {
         \\            return databaseInstance;
         \\        }
         \\        public virtual class Database {
-        \\            public virtual List<Database.UndeleteResult> undeleteRecords(List<SObject> records, Boolean allOrNone) {
+        \\            public virtual List<Database.UndeleteResult> undeleteRecords(
+        \\                List<SObject> records,
+        \\                Boolean allOrNone
+        \\            ) {
         \\                return System.Database.undelete(records, allOrNone);
         \\            }
         \\        }
@@ -12405,7 +13288,8 @@ test "E2E: partial undelete preserves bind-list order for ALL ROWS queries" {
         \\        insert rows;
         \\        delete rows.get(0);
         \\        rows = [SELECT Id, IsDeleted FROM Account WHERE Id IN :rows ALL ROWS];
-        \\        List<Database.UndeleteResult> results = DataStore.getDatabase().undeleteRecords(rows, false);
+        \\        List<Database.UndeleteResult> results =
+        \\            DataStore.getDatabase().undeleteRecords(rows, false);
         \\        List<Account> persisted = [SELECT Id, IsDeleted FROM Account WHERE Id IN :rows ALL ROWS];
         \\        return String.valueOf(results.size()) + '|' +
         \\            String.valueOf(results.get(0).isSuccess()) + '|' +
@@ -12439,7 +13323,9 @@ test "E2E: Messaging reserveSingleEmailCapacity updates org limits and throws wh
         \\            Messaging.SingleEmailMessage message = new Messaging.SingleEmailMessage();
         \\            message.setHtmlBody('hello');
         \\            Messaging.sendEmail(new List<Messaging.SingleEmailMessage>{ message });
-        \\            return String.valueOf(reservedValue == limitValue - 1) + ':' + message.getHtmlBody() + ':' + String.valueOf(Limits.getEmailInvocations());
+        \\            return String.valueOf(reservedValue == limitValue - 1)
+        \\                + ':' + message.getHtmlBody()
+        \\                + ':' + String.valueOf(Limits.getEmailInvocations());
         \\        }
         \\    }
         \\}
@@ -12553,7 +13439,8 @@ test "E2E: fixture field mapping integration test passes" {
         std.testing.io,
         fixture_paths.slice(),
         "LogEntryEventHandler_Tests_FieldMappings",
-        "it_should_use_field_mappings_on_logger_scenario_and_log_and_log_entry_when_mappings_have_been_configured",
+        "it_should_use_field_mappings_on_logger_scenario_and_log_and_" ++
+            "log_entry_when_mappings_have_been_configured",
         &out.writer,
     );
     defer suite.deinit();
@@ -12676,7 +13563,11 @@ test "E2E: custom object upsert by external id updates existing record" {
         \\        Thing__c secondRow = new Thing__c(Name = 'updated', UniqueId__c = 'txn-1');
         \\        Database.upsert(new List<SObject>{ secondRow }, Schema.Thing__c.UniqueId__c);
         \\
-        \\        List<Thing__c> rows = [SELECT Id, Name, UniqueId__c FROM Thing__c WHERE UniqueId__c = 'txn-1'];
+        \\        List<Thing__c> rows = [
+        \\            SELECT Id, Name, UniqueId__c
+        \\            FROM Thing__c
+        \\            WHERE UniqueId__c = 'txn-1'
+        \\        ];
         \\        return String.valueOf(rows.size()) + ':' + rows.get(0).Name;
         \\    }
         \\}
@@ -12856,8 +13747,14 @@ test "E2E: custom object upsert by external id inserts queryable row" {
         \\            new Thing__c(Name = 'Created', UniqueId__c = 'created-1')
         \\        };
         \\        Database.upsert(rows, Schema.Thing__c.UniqueId__c);
-        \\        List<Thing__c> saved = [SELECT Id, Name, UniqueId__c FROM Thing__c WHERE UniqueId__c = 'created-1'];
-        \\        return String.valueOf(saved.size()) + ':' + String.valueOf(rows.get(0).Id != null) + ':' + saved.get(0).Name;
+        \\        List<Thing__c> saved = [
+        \\            SELECT Id, Name, UniqueId__c
+        \\            FROM Thing__c
+        \\            WHERE UniqueId__c = 'created-1'
+        \\        ];
+        \\        return String.valueOf(saved.size())
+        \\            + ':' + String.valueOf(rows.get(0).Id != null)
+        \\            + ':' + saved.get(0).Name;
         \\    }
         \\}
     ;
@@ -13168,14 +14065,19 @@ test "E2E: inner database gateway upsert writes Ids back to original rows" {
         \\        return databaseInstance;
         \\    }
         \\    public virtual class Database {
-        \\        public virtual List<Database.UpsertResult> upsertRecords(List<SObject> records, Schema.SObjectField externalIdField) {
+        \\        public virtual List<Database.UpsertResult> upsertRecords(
+        \\            List<SObject> records,
+        \\            Schema.SObjectField externalIdField
+        \\        ) {
         \\            return System.Database.upsert(records, externalIdField);
         \\        }
         \\    }
         \\}
         \\public class DataGatewayUpsertProbe {
         \\    public static String test() {
-        \\        List<Thing__c> rows = new List<Thing__c>{ new Thing__c(Name = 'created', UniqueId__c = 'txn-1') };
+        \\        List<Thing__c> rows = new List<Thing__c>{
+        \\            new Thing__c(Name = 'created', UniqueId__c = 'txn-1')
+        \\        };
         \\        List<SObject> copied = new List<SObject>(rows);
         \\        DataGateway.getDatabase().upsertRecords(copied, Schema.Thing__c.UniqueId__c);
         \\        return String.valueOf(rows.get(0).Id) + ':' + String.valueOf(copied.get(0).Id);
@@ -13199,12 +14101,17 @@ test "E2E: concrete custom-object list keeps Ids after List<SObject> upsert call
         \\        return databaseInstance;
         \\    }
         \\    public virtual class Database {
-        \\        public virtual List<Database.UpsertResult> upsertRecords(List<SObject> records, Schema.SObjectField externalIdField) {
+        \\        public virtual List<Database.UpsertResult> upsertRecords(
+        \\            List<SObject> records,
+        \\            Schema.SObjectField externalIdField
+        \\        ) {
         \\            return System.Database.upsert(records, externalIdField);
         \\        }
         \\    }
         \\    public static String test() {
-        \\        List<Thing__c> rows = new List<Thing__c>{ new Thing__c(Name = 'created', UniqueId__c = 'txn-typed') };
+        \\        List<Thing__c> rows = new List<Thing__c>{
+        \\            new Thing__c(Name = 'created', UniqueId__c = 'txn-typed')
+        \\        };
         \\        getDatabase().upsertRecords(rows, Schema.Thing__c.UniqueId__c);
         \\        return String.valueOf(rows.get(0).Id);
         \\    }
@@ -13243,7 +14150,9 @@ test "E2E: Database.upsert list writes Id back to original row" {
     const source =
         \\public class DatabaseUpsertListIdentityProbe {
         \\    public static String test() {
-        \\        List<SObject> rows = new List<SObject>{ new Thing__c(Name = 'created', UniqueId__c = 'txn-1') };
+        \\        List<SObject> rows = new List<SObject>{
+        \\            new Thing__c(Name = 'created', UniqueId__c = 'txn-1')
+        \\        };
         \\        Database.upsert(rows, Schema.Thing__c.UniqueId__c);
         \\        return String.valueOf(rows.get(0).Id);
         \\    }
@@ -13265,7 +14174,9 @@ test "E2E: wrapper method preserves list element identity for Database.upsert" {
         \\        Database.upsert(rows, Schema.Thing__c.UniqueId__c);
         \\    }
         \\    public static String test() {
-        \\        List<Thing__c> rows = new List<Thing__c>{ new Thing__c(Name = 'created', UniqueId__c = 'txn-1') };
+        \\        List<Thing__c> rows = new List<Thing__c>{
+        \\            new Thing__c(Name = 'created', UniqueId__c = 'txn-1')
+        \\        };
         \\        List<SObject> copied = new List<SObject>(rows);
         \\        save(copied);
         \\        return String.valueOf(rows.get(0).Id) + ':' + String.valueOf(copied.get(0).Id);
@@ -13290,7 +14201,9 @@ test "E2E: inner class named Database can call System.Database.upsert" {
         \\        }
         \\    }
         \\    public static String test() {
-        \\        List<SObject> rows = new List<SObject>{ new Thing__c(Name = 'created', UniqueId__c = 'txn-1') };
+        \\        List<SObject> rows = new List<SObject>{
+        \\            new Thing__c(Name = 'created', UniqueId__c = 'txn-1')
+        \\        };
         \\        Database.save(rows);
         \\        return String.valueOf(rows.get(0).Id);
         \\    }
@@ -13529,7 +14442,8 @@ test "E2E: EventBus.publish keeps live platform event Id field unset" {
         \\        MyEvent__e eventRecord = new MyEvent__e();
         \\        eventRecord.put('Message__c', 'hello');
         \\        EventBus.publish(eventRecord);
-        \\        return String.valueOf(eventRecord.Id == null) + ':' + String.valueOf(eventRecord.get('Id') == null);
+        \\        return String.valueOf(eventRecord.Id == null)
+        \\            + ':' + String.valueOf(eventRecord.get('Id') == null);
         \\    }
         \\}
     ;
@@ -13547,7 +14461,9 @@ test "E2E: synthetic AppMenuItem query exposes app order entries" {
         \\public class AppMenuItemQueryTest {
         \\    public static String test() {
         \\        List<AppMenuItem> items = [SELECT ApplicationId, Name FROM AppMenuItem];
-        \\        return String.valueOf(items.size()) + ':' + items[0].Name + ':' + String.valueOf(items[0].ApplicationId != null);
+        \\        return String.valueOf(items.size())
+        \\            + ':' + items[0].Name
+        \\            + ':' + String.valueOf(items[0].ApplicationId != null);
         \\    }
         \\}
     ;
@@ -13710,7 +14626,8 @@ test "E2E: describe maps include common Task date and picklist fields" {
         \\            ActivityDate = Date.today(),
         \\            Priority = 'High'
         \\        );
-        \\        Map<String, Schema.SObjectField> fieldsByName = taskRecord.getSObjectType().getDescribe().fields.getMap();
+        \\        Map<String, Schema.SObjectField> fieldsByName =
+        \\            taskRecord.getSObjectType().getDescribe().fields.getMap();
         \\        return fieldsByName.get('ActivityDate').getDescribe().getType().name()
         \\            + ':' + fieldsByName.get('Priority').getDescribe().getType().name();
         \\    }
@@ -13830,7 +14747,10 @@ test "E2E: multi-level dotted class literal returns non-null Type" {
     // does not name a loaded class (mirrors Apex's "flow doesn't exist"
     // runtime behaviour). The generic Outer.Middle.Inner chain keeps its
     // full path.
-    try std.testing.expectEqualStrings("Flow.Interview.MyFlow|Outer.Middle.Inner|Flow.Interview", result.value.string);
+    try std.testing.expectEqualStrings(
+        "Flow.Interview.MyFlow|Outer.Middle.Inner|Flow.Interview",
+        result.value.string,
+    );
 }
 
 test "E2E: Invocable.Action.Result JSON round-trip exposes getters" {
@@ -13941,7 +14861,10 @@ test "E2E: standard-field describe exposes known default values" {
     });
     defer result.deinit();
 
-    try std.testing.expectEqualStrings("Not Started|Medium|Open - Not Contacted", result.value.string);
+    try std.testing.expectEqualStrings(
+        "Not Started|Medium|Open - Not Contacted",
+        result.value.string,
+    );
 }
 
 test "E2E: Invocable.Action.createCustomAction reports missing flow failures" {
@@ -14131,7 +15054,10 @@ test "E2E: sobject.Field.addError(msg) attaches error to the field" {
     });
     defer result.deinit();
 
-    try std.testing.expectEqualStrings("true|You must provide an Account|AccountId", result.value.string);
+    try std.testing.expectEqualStrings(
+        "true|You must provide an Account|AccountId",
+        result.value.string,
+    );
 }
 
 test "E2E: System.Location.newInstance + getDistance match real-platform values" {
@@ -14162,7 +15088,7 @@ test "E2E: System.Location.newInstance + getDistance match real-platform values"
     try std.testing.expectEqualStrings("28.635308,77.22496|inRange", result.value.string);
 }
 
-test "E2E: Schema.describeTabs returns a non-null list and getGlobalDescribe covers common standards" {
+test "E2E: Schema describe stubs cover tabs and common standards" {
     // Anonymized probe: ActionPlansV4's SectionHeader utility iterates
     //   for (Schema.DescribeTabSetResult tsr : Schema.describeTabs()) {...}
     // before falling back to a default icon, and queries
@@ -14175,10 +15101,16 @@ test "E2E: Schema.describeTabs returns a non-null list and getGlobalDescribe cov
         \\public class SchemaStubProbe {
         \\    public static String test() {
         \\        Integer tabCount = Schema.describeTabs().size();
-        \\        String caseCommentFound = Schema.getGlobalDescribe().get('casecomment') != null ? 'Y' : 'N';
-        \\        String contractFound = Schema.getGlobalDescribe().get('contract') != null ? 'Y' : 'N';
-        \\        String assetFound = Schema.getGlobalDescribe().get('asset') != null ? 'Y' : 'N';
-        \\        return 'tabs=' + tabCount + '|cc=' + caseCommentFound + '|co=' + contractFound + '|as=' + assetFound;
+        \\        String caseCommentFound =
+        \\            Schema.getGlobalDescribe().get('casecomment') != null ? 'Y' : 'N';
+        \\        String contractFound =
+        \\            Schema.getGlobalDescribe().get('contract') != null ? 'Y' : 'N';
+        \\        String assetFound =
+        \\            Schema.getGlobalDescribe().get('asset') != null ? 'Y' : 'N';
+        \\        return 'tabs=' + tabCount
+        \\            + '|cc=' + caseCommentFound
+        \\            + '|co=' + contractFound
+        \\            + '|as=' + assetFound;
         \\    }
         \\}
     ;
@@ -14207,7 +15139,13 @@ test "E2E: User insert defaults IsActive to true and WHERE PermissionsX = TRUE m
         \\public class UserDefaultsWhereProbe {
         \\    public static String test() {
         \\        Integer matchedProfiles = 0;
-        \\        for (Profile p : [SELECT Id, PermissionsModifyAllData FROM Profile WHERE PermissionsModifyAllData = TRUE AND UserType = 'Standard' LIMIT 1]) {
+        \\        for (Profile p : [
+        \\            SELECT Id, PermissionsModifyAllData
+        \\            FROM Profile
+        \\            WHERE PermissionsModifyAllData = TRUE
+        \\            AND UserType = 'Standard'
+        \\            LIMIT 1
+        \\        ]) {
         \\            if (p.PermissionsModifyAllData == true) matchedProfiles++;
         \\            User u = new User();
         \\            u.Email = 'probe@example.com';
@@ -14221,7 +15159,12 @@ test "E2E: User insert defaults IsActive to true and WHERE PermissionsX = TRUE m
         \\            u.EmailEncodingKey = 'UTF-8';
         \\            insert u;
         \\        }
-        \\        Integer activeMatches = [SELECT COUNT() FROM User WHERE Email = 'probe@example.com' AND IsActive = TRUE];
+        \\        Integer activeMatches = [
+        \\            SELECT COUNT()
+        \\            FROM User
+        \\            WHERE Email = 'probe@example.com'
+        \\            AND IsActive = TRUE
+        \\        ];
         \\        return 'profiles=' + matchedProfiles + '|activeUsers=' + activeMatches;
         \\    }
         \\}
@@ -14430,7 +15373,8 @@ test "E2E: try/finally runs after catch rethrows and when no catch matches" {
     defer result.deinit();
 
     try std.testing.expectEqualStrings(
-        "start-rethrow|innerCatch|rethrowFinally|outerCatch|start-nocatch|noCatchFinally|outerNoCatch:noCatchBoom",
+        "start-rethrow|innerCatch|rethrowFinally|outerCatch|" ++
+            "start-nocatch|noCatchFinally|outerNoCatch:noCatchBoom",
         result.value.string,
     );
 }

@@ -223,10 +223,10 @@ fn is_regex_escape_char(c: u8) bool {
 
 /// 再帰バックトラッキングマッチャー。マッチ成功時に入力終了位置を返す。
 ///
-/// `group_base` is the capture-group index of the enclosing group, i.e. the offset that
-/// applies to any `(` encountered while scanning `pat`. The top-level caller passes 0.
-/// Without this offset, recursing on a sub-pattern would restart counting at 1 and
-/// cause sibling/nested groups to collide on the same index.
+/// `group_base` is the capture-group index offset of the enclosing group.
+/// It applies to any `(` encountered while scanning `pat`. The top-level
+/// caller passes 0. Without this offset, recursing on a sub-pattern would
+/// restart counting at 1 and cause sibling/nested groups to collide.
 fn match_at(
     pat: []const u8,
     pat_pos: usize,
@@ -1167,7 +1167,8 @@ test "replaceAll supports non-greedy quantifiers" {
         try replace_all(
             a,
             "(Class\\.Logger)\\..+?column 1",
-            "Class.Logger.newEntry: line 2, column 1\nClass.CallableLogger_Tests.test: line 10, column 1",
+            "Class.Logger.newEntry: line 2, column 1\n" ++
+                "Class.CallableLogger_Tests.test: line 10, column 1",
             "",
         ),
     );
