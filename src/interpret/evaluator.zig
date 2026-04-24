@@ -15731,8 +15731,16 @@ pub const Evaluator = struct {
         type_name: []const u8,
         current_env: *Env,
     ) !?Value {
-        if (try self.new_builtin_exception_value(ne, type_name, current_env)) |result| return result;
-        if (try self.new_standard_controller_value(ne, type_name, current_env)) |result| return result;
+        if (try self.new_builtin_exception_value(
+            ne,
+            type_name,
+            current_env,
+        )) |result| return result;
+        if (try self.new_standard_controller_value(
+            ne,
+            type_name,
+            current_env,
+        )) |result| return result;
         return try self.new_known_non_sobject_value(ne, type_name, current_env);
     }
 
@@ -15777,7 +15785,8 @@ pub const Evaluator = struct {
                 instance.* = .{ .class_name = exc_type };
                 if (ne.args.len > 0) {
                     var arg_copy = ne.args[0];
-                    try instance.fields.put(self.arena, "message", try self.eval_expr(&arg_copy, current_env));
+                    const message = try self.eval_expr(&arg_copy, current_env);
+                    try instance.fields.put(self.arena, "message", message);
                 }
                 return Value{ .object = instance };
             }
@@ -15864,7 +15873,12 @@ pub const Evaluator = struct {
         type_name: []const u8,
         current_env: *Env,
     ) !void {
-        if (try self.populate_new_known_non_sobject_special(instance, ne, type_name, current_env)) return;
+        if (try self.populate_new_known_non_sobject_special(
+            instance,
+            ne,
+            type_name,
+            current_env,
+        )) return;
         if (ne.args.len == 0 or !std.mem.endsWith(u8, type_name, "Exception")) return;
 
         var arg_copy = ne.args[0];
@@ -16077,10 +16091,20 @@ pub const Evaluator = struct {
         is_platform_qualified: bool,
         current_env: *Env,
     ) !?Value {
-        const resolved_class_name = self.resolve_new_user_class_name(type_name, is_platform_qualified, current_env);
+        const resolved_class_name = self.resolve_new_user_class_name(
+            type_name,
+            is_platform_qualified,
+            current_env,
+        );
         const class_name = resolved_class_name orelse return null;
         const class_decl = self.find_class(class_name) orelse return null;
-        return try self.instantiate_new_user_class(class_name, class_decl, ne, type_name, current_env);
+        return try self.instantiate_new_user_class(
+            class_name,
+            class_decl,
+            ne,
+            type_name,
+            current_env,
+        );
     }
 
     fn resolve_new_user_class_name(
@@ -16101,7 +16125,10 @@ pub const Evaluator = struct {
             !is_platform_qualified and std.mem.indexOfScalar(u8, type_name, '.') == null;
         if (!is_platform_qualified) {
             if (!std.ascii.eqlIgnoreCase(simple_name, "Database")) {
-                if (self.resolve_visible_user_class_in_scope(current_env, type_name)) |visible_class| {
+                if (self.resolve_visible_user_class_in_scope(
+                    current_env,
+                    type_name,
+                )) |visible_class| {
                     return visible_class;
                 }
             }
@@ -16112,7 +16139,11 @@ pub const Evaluator = struct {
         }
         if (allow_simple_name_fallback and self.find_class(simple_name) != null) {
             if (self.find_outer_class_name(simple_name)) |outer| {
-                return std.fmt.allocPrint(self.arena, "{s}.{s}", .{ outer, simple_name }) catch simple_name;
+                return std.fmt.allocPrint(
+                    self.arena,
+                    "{s}.{s}",
+                    .{ outer, simple_name },
+                ) catch simple_name;
             }
             return simple_name;
         }
@@ -16138,7 +16169,13 @@ pub const Evaluator = struct {
         self.ensure_static_init(class_decl.name);
         if (class_decl.super_class) |sc| self.ensure_static_init(sc.name);
 
-        if (try self.new_user_exception_without_constructor(class_decl, type_name, instance, ne, current_env)) |result| {
+        if (try self.new_user_exception_without_constructor(
+            class_decl,
+            type_name,
+            instance,
+            ne,
+            current_env,
+        )) |result| {
             return result;
         }
         try self.init_new_user_class_fields(class_decl, instance);
@@ -16150,7 +16187,11 @@ pub const Evaluator = struct {
             self.cast_type_hints = prev_ctor_hints;
         };
 
-        try self.run_implicit_parent_constructor(class_decl, instance, ctor_eval.args.items);
+        try self.run_implicit_parent_constructor(
+            class_decl,
+            instance,
+            ctor_eval.args.items,
+        );
         try self.run_constructor(class_decl, instance, ctor_eval.args.items);
         return Value{ .object = instance };
     }
@@ -16186,11 +16227,18 @@ pub const Evaluator = struct {
         return false;
     }
 
-    fn init_new_user_class_fields(self: *Evaluator, class_decl: *ast.ClassDecl, instance: *types.ObjectInstance) !void {
+    fn init_new_user_class_fields(
+        self: *Evaluator,
+        class_decl: *ast.ClassDecl,
+        instance: *types.ObjectInstance,
+    ) !void {
         var chain: std.ArrayListUnmanaged(*ast.ClassDecl) = .empty;
         defer chain.deinit(self.arena);
 
-        var cursor: ?*ast.ClassDecl = if (class_decl.super_class) |sc| self.find_class(sc.name) else null;
+        var cursor: ?*ast.ClassDecl = if (class_decl.super_class) |sc|
+            self.find_class(sc.name)
+        else
+            null;
         while (cursor) |cd_cursor| {
             try chain.append(self.arena, cd_cursor);
             cursor = if (cd_cursor.super_class) |sc| self.find_class(sc.name) else null;
@@ -16203,7 +16251,11 @@ pub const Evaluator = struct {
         self.init_instance_fields(class_decl, instance) catch {};
     }
 
-    fn evaluate_new_constructor_args(self: *Evaluator, ne: *ast.NewExpr, current_env: *Env) !ConstructorEvalResult {
+    fn evaluate_new_constructor_args(
+        self: *Evaluator,
+        ne: *ast.NewExpr,
+        current_env: *Env,
+    ) !ConstructorEvalResult {
         var eval_args: std.ArrayListUnmanaged(Value) = .empty;
         var ctor_type_hints: std.ArrayListUnmanaged(?[]const u8) = .empty;
         var any_enum_hint = false;
@@ -16241,7 +16293,10 @@ pub const Evaluator = struct {
         if (class_decl.super_class) |sc| {
             if (self.find_class(sc.name)) |parent_decl| {
                 const child_chosen = self.find_matching_constructor(class_decl, eval_args);
-                const child_explicit = if (child_chosen) |cc| ctor_starts_with_super_or_this(cc) else false;
+                const child_explicit = if (child_chosen) |cc|
+                    ctor_starts_with_super_or_this(cc)
+                else
+                    false;
                 if (!child_explicit and class_has_no_arg_ctor(parent_decl)) {
                     try self.run_constructor(parent_decl, instance, &.{});
                 }
@@ -16270,14 +16325,22 @@ pub const Evaluator = struct {
     // フィールドアクセス
     // -----------------------------------------------------------------------
 
-    fn eval_field_access(self: *Evaluator, fa: *ast.FieldAccess, obj: Value, current_env: *Env) !Value {
+    fn eval_field_access(
+        self: *Evaluator,
+        fa: *ast.FieldAccess,
+        obj: Value,
+        current_env: *Env,
+    ) !Value {
         if (try self.eval_field_access_special_cases(fa)) |value| return value;
         if (try self.eval_field_access_value_path(fa, obj)) |value| return value;
         if (try self.eval_field_access_static_path(fa, obj, current_env)) |value| return value;
         return Value.null_val;
     }
 
-    fn eval_field_access_special_cases(self: *Evaluator, fa: *ast.FieldAccess) anyerror!?Value {
+    fn eval_field_access_special_cases(
+        self: *Evaluator,
+        fa: *ast.FieldAccess,
+    ) anyerror!?Value {
         if (fa.object.* == .field_access) {
             const inner_fa = fa.object.field_access;
             if (inner_fa.object.* == .identifier and
@@ -16323,7 +16386,11 @@ pub const Evaluator = struct {
         return null;
     }
 
-    fn eval_field_access_value_path(self: *Evaluator, fa: *ast.FieldAccess, obj: Value) anyerror!?Value {
+    fn eval_field_access_value_path(
+        self: *Evaluator,
+        fa: *ast.FieldAccess,
+        obj: Value,
+    ) anyerror!?Value {
         return switch (obj) {
             .list => try self.eval_list_field_access(fa, obj),
             .sobject => try self.eval_sobject_field_access(fa, obj),
@@ -16333,18 +16400,29 @@ pub const Evaluator = struct {
         };
     }
 
-    fn eval_list_field_access(self: *Evaluator, fa: *ast.FieldAccess, obj: Value) anyerror!Value {
+    fn eval_list_field_access(
+        self: *Evaluator,
+        fa: *ast.FieldAccess,
+        obj: Value,
+    ) anyerror!Value {
         if (obj.list.items.items.len == 0 and fa.object.* == .soql) {
             const exc = try self.arena.create(types.ObjectInstance);
             exc.* = .{ .class_name = "QueryException" };
-            try exc.fields.put(self.arena, "message", Value{ .string = "List has no rows for assignment to SObject" });
+            try exc.fields.put(
+                self.arena,
+                "message",
+                Value{ .string = "List has no rows for assignment to SObject" },
+            );
             self.pending_exception = Value{ .object = exc };
             return error.ApexException;
         }
         if (obj.list.items.items.len > 0) {
             const first = obj.list.items.items[0];
             if (first == .sobject) {
-                return self.get_s_object_field_value_case_insensitive(first.sobject, fa.field) orelse Value.null_val;
+                return self.get_s_object_field_value_case_insensitive(
+                    first.sobject,
+                    fa.field,
+                ) orelse Value.null_val;
             }
         }
         if (std.ascii.eqlIgnoreCase(fa.field, "size")) {
@@ -16353,15 +16431,24 @@ pub const Evaluator = struct {
         return Value.null_val;
     }
 
-    fn eval_sobject_field_access(self: *Evaluator, fa: *ast.FieldAccess, obj: Value) anyerror!Value {
-        if (self.get_s_object_field_value_case_insensitive(obj.sobject, fa.field)) |value| return value;
+    fn eval_sobject_field_access(
+        self: *Evaluator,
+        fa: *ast.FieldAccess,
+        obj: Value,
+    ) anyerror!Value {
+        if (self.get_s_object_field_value_case_insensitive(
+            obj.sobject,
+            fa.field,
+        )) |value| return value;
         if (obj.sobject.is_stripped) {
             const exc = try self.arena.create(types.ObjectInstance);
             exc.* = .{ .class_name = "SObjectException" };
             try exc.fields.put(
                 self.arena,
                 "message",
-                Value{ .string = "SObject row was retrieved via SOQL without querying the requested field: " },
+                Value{
+                    .string = "SObject row was retrieved via SOQL without querying the requested field: ",
+                },
             );
             self.pending_exception = Value{ .object = exc };
             return error.ApexException;
@@ -16369,7 +16456,11 @@ pub const Evaluator = struct {
         return Value.null_val;
     }
 
-    fn eval_object_field_access(self: *Evaluator, fa: *ast.FieldAccess, obj: Value) anyerror!Value {
+    fn eval_object_field_access(
+        self: *Evaluator,
+        fa: *ast.FieldAccess,
+        obj: Value,
+    ) anyerror!Value {
         if (self.find_class(obj.object.class_name)) |cd| {
             if (try self.eval_object_property_getter(obj.object, cd, fa.field)) |value| return value;
         }
@@ -16391,8 +16482,15 @@ pub const Evaluator = struct {
             for (cd.members) |member| {
                 switch (member) {
                     .field_decl => |fd| {
-                        if (std.ascii.eqlIgnoreCase(fd.name, field_name) and fd.getter_body != null) {
-                            return try self.execute_object_property_getter(instance, root_class_decl, cd.name, fd);
+                        if (std.ascii.eqlIgnoreCase(fd.name, field_name) and
+                            fd.getter_body != null)
+                        {
+                            return try self.execute_object_property_getter(
+                                instance,
+                                root_class_decl,
+                                cd.name,
+                                fd,
+                            );
                         }
                     },
                     else => {},
