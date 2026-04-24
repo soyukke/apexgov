@@ -6658,7 +6658,9 @@ fn dispatch_obj_standard_controller(
     }
     if (std.ascii.eqlIgnoreCase(method_name, "getId")) {
         if (obj.fields.get("record")) |rec| {
-            if (rec == .sobject and rec.sobject.id != null) return Value{ .string = rec.sobject.id.? };
+            if (rec == .sobject and rec.sobject.id != null) {
+                return Value{ .string = rec.sobject.id.? };
+            }
         }
         return Value.null_val;
     }
@@ -6685,14 +6687,14 @@ fn dispatch_obj_standard_set_controller(
         return Value.void_val;
     }
     if (std.ascii.eqlIgnoreCase(method_name, "getRecords")) {
-        return obj.fields.get("records") orelse Value{ .list = try empty_list(ctx) };
+        return obj.fields.get("records") orelse try empty_list_value(ctx);
     }
     if (std.ascii.eqlIgnoreCase(method_name, "setSelected") and args.len > 0) {
         try obj.fields.put(ctx.arena, "selected", args[0]);
         return Value.void_val;
     }
     if (std.ascii.eqlIgnoreCase(method_name, "getSelected")) {
-        return obj.fields.get("selected") orelse Value{ .list = try empty_list(ctx) };
+        return obj.fields.get("selected") orelse try empty_list_value(ctx);
     }
     if (std.ascii.eqlIgnoreCase(method_name, "getResultSize")) {
         if (obj.fields.get("records")) |recs| {
@@ -6711,7 +6713,11 @@ fn dispatch_obj_standard_set_controller(
     return null;
 }
 
-fn dispatch_obj_type(ctx: *BuiltinContext, obj: *types.ObjectInstance, method_name: []const u8) !?Value {
+fn dispatch_obj_type(
+    ctx: *BuiltinContext,
+    obj: *types.ObjectInstance,
+    method_name: []const u8,
+) !?Value {
     if (std.ascii.eqlIgnoreCase(method_name, "newInstance")) {
         const type_name = if (obj.fields.get("name")) |n| n.string else "Object";
         if (std.ascii.startsWithIgnoreCase(type_name, "Map")) {
@@ -6781,7 +6787,9 @@ fn dispatch_obj_cache_partition(
     if (std.ascii.eqlIgnoreCase(method_name, "isAvailable")) {
         return obj.fields.get("_is_available") orelse Value{ .boolean = true };
     }
-    if (std.ascii.eqlIgnoreCase(method_name, "getCapacity")) return Value{ .integer = 10000000 };
+    if (std.ascii.eqlIgnoreCase(method_name, "getCapacity")) {
+        return Value{ .integer = 10000000 };
+    }
     if (std.ascii.eqlIgnoreCase(method_name, "getNumKeys")) {
         if (cache_map) |cm| return Value{ .integer = @intCast(cm.entries.count()) };
         return Value{ .integer = 0 };
@@ -6790,11 +6798,17 @@ fn dispatch_obj_cache_partition(
         const set = try ctx.arena.create(types.SetValue);
         set.* = .{};
         if (cache_map) |cm| {
-            for (cm.entries.keys()) |key| try set.entries.put(ctx.arena, key, Value{ .string = key });
+            for (cm.entries.keys()) |key| {
+                try set.entries.put(ctx.arena, key, Value{ .string = key });
+            }
         }
         return Value{ .set = set };
     }
     return null;
+}
+
+fn empty_list_value(ctx: *BuiltinContext) !Value {
+    return Value{ .list = try empty_list(ctx) };
 }
 
 fn cache_partition_map(obj: *types.ObjectInstance) ?*types.MapValue {
@@ -7165,7 +7179,13 @@ fn dispatch_obj_describe_field_result(
     const names = describe_field_names(obj);
     const object_type = names.object_type;
     const field_name = names.field_name;
-    if (describe_field_result_boolean_accessor(ctx, obj, object_type, field_name, method_name)) |v| {
+    if (describe_field_result_boolean_accessor(
+        ctx,
+        obj,
+        object_type,
+        field_name,
+        method_name,
+    )) |v| {
         return v;
     }
     if (describe_field_result_value_accessor(obj, method_name)) |v| return v;
@@ -7286,17 +7306,10 @@ const DescribeFieldNames = struct {
 };
 
 fn describe_field_names(obj: *types.ObjectInstance) DescribeFieldNames {
-    const object_type = if (obj.fields.get("objectType")) |ov|
-        if (ov == .string) ov.string else null
-    else
-        null;
-    const field_name = if (obj.fields.get("fieldName")) |fv|
-        if (fv == .string) fv.string else if (obj.fields.get("name")) |nv| if (nv == .string) nv.string else "" else ""
-    else if (obj.fields.get("name")) |nv|
-        if (nv == .string) nv.string else ""
-    else
-        "";
-    return .{ .object_type = object_type, .field_name = field_name };
+    return .{
+        .object_type = object_string_field(obj, "objectType"),
+        .field_name = describe_field_name_value(obj),
+    };
 }
 
 fn describe_field_reference_to(ctx: *BuiltinContext, obj: *types.ObjectInstance) !Value {
@@ -7304,7 +7317,9 @@ fn describe_field_reference_to(ctx: *BuiltinContext, obj: *types.ObjectInstance)
     list.* = .{};
     const object_type_val = obj.fields.get("objectType") orelse return Value{ .list = list };
     if (object_type_val != .string) return Value{ .list = list };
-    const field_name_val = obj.fields.get("fieldName") orelse obj.fields.get("name") orelse Value{ .string = "" };
+    const field_name_val = obj.fields.get("fieldName") orelse
+        obj.fields.get("name") orelse
+        Value{ .string = "" };
     if (field_name_val != .string) return Value{ .list = list };
 
     if (lookup_field_metadata(ctx, object_type_val.string, field_name_val.string)) |metadata| {
@@ -7317,7 +7332,11 @@ fn describe_field_reference_to(ctx: *BuiltinContext, obj: *types.ObjectInstance)
     return Value{ .list = list };
 }
 
-fn append_s_object_type_token(ctx: *BuiltinContext, list: *types.ListValue, name: []const u8) !void {
+fn append_s_object_type_token(
+    ctx: *BuiltinContext,
+    list: *types.ListValue,
+    name: []const u8,
+) !void {
     const token = try ctx.arena.create(types.ObjectInstance);
     token.* = .{ .class_name = "Schema.SObjectType" };
     try token.fields.put(ctx.arena, "name", Value{ .string = name });
@@ -7329,7 +7348,11 @@ fn describe_field_s_object_type(ctx: *BuiltinContext, obj: *types.ObjectInstance
         if (object_type_val == .string and object_type_val.string.len > 0) {
             const sot = try ctx.arena.create(types.ObjectInstance);
             sot.* = .{ .class_name = "Schema.SObjectType" };
-            try sot.fields.put(ctx.arena, "name", Value{ .string = object_type_val.string });
+            try sot.fields.put(
+                ctx.arena,
+                "name",
+                Value{ .string = object_type_val.string },
+            );
             return Value{ .object = sot };
         }
     }
@@ -7365,87 +7388,132 @@ fn describe_field_external_id(
     return obj.fields.get("isExternalId") orelse Value{ .boolean = false };
 }
 
-fn dispatch_obj_s_object_type(ctx: *BuiltinContext, obj: *types.ObjectInstance, method_name: []const u8, args: []const Value) !?Value {
+fn dispatch_obj_s_object_type(
+    ctx: *BuiltinContext,
+    obj: *types.ObjectInstance,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
     if (std.ascii.eqlIgnoreCase(method_name, "getDescribe")) {
-        const name = if (obj.fields.get("name")) |n| n.string else "Object";
+        const name = object_type_token_name(obj, "Object");
         return try create_describe_result(ctx, name);
     }
-    if (std.ascii.eqlIgnoreCase(method_name, "getLabel") or std.ascii.eqlIgnoreCase(method_name, "getLabelPlural") or
-        std.ascii.eqlIgnoreCase(method_name, "getName"))
-    {
-        const name = if (obj.fields.get("name")) |n| n.string else "Object";
-        if (std.ascii.eqlIgnoreCase(method_name, "getName")) return Value{ .string = name };
-        if (std.ascii.eqlIgnoreCase(method_name, "getLabel")) {
-            if (ctx.eval.object_labels.get(name)) |lbl| return Value{ .string = lbl };
-            return Value{ .string = describe_local_name(name) };
-        }
-        if (ctx.eval.object_label_plurals.get(name)) |lbl| return Value{ .string = lbl };
-        return Value{ .string = try default_describe_label_plural(ctx.arena, name) };
-    }
-    if (std.ascii.eqlIgnoreCase(method_name, "getRecordTypeInfos") or
-        std.ascii.eqlIgnoreCase(method_name, "getRecordTypeInfosById") or
-        std.ascii.eqlIgnoreCase(method_name, "getRecordTypeInfosByName") or
-        std.ascii.eqlIgnoreCase(method_name, "getRecordTypeInfosByDeveloperName"))
-    {
-        const name = if (obj.fields.get("name")) |n| n.string else "Object";
+    if (try s_object_type_label_accessor(ctx, obj, method_name)) |v| return v;
+    if (s_object_type_record_type_method(method_name)) {
+        const name = object_type_token_name(obj, "Object");
         const describe_val = try create_describe_result(ctx, name);
         if (describe_val == .object) {
             return try dispatch_obj_describe_s_object(ctx, describe_val.object, method_name);
         }
     }
-    if (std.ascii.eqlIgnoreCase(method_name, "isAccessible") or std.ascii.eqlIgnoreCase(method_name, "isCreateable") or
-        std.ascii.eqlIgnoreCase(method_name, "isUpdateable") or std.ascii.eqlIgnoreCase(method_name, "isDeletable"))
-    {
-        const sobj_name = if (obj.fields.get("name")) |n| n.string else "Object";
-        const operation = if (std.ascii.eqlIgnoreCase(method_name, "isAccessible"))
-            "read"
-        else if (std.ascii.eqlIgnoreCase(method_name, "isCreateable"))
-            "create"
-        else if (std.ascii.eqlIgnoreCase(method_name, "isUpdateable"))
-            "edit"
-        else
-            "delete";
-        return Value{ .boolean = resolve_object_crud_permission(ctx.eval, sobj_name, operation) };
-    }
-    if (std.ascii.eqlIgnoreCase(method_name, "isQueryable") or std.ascii.eqlIgnoreCase(method_name, "isSearchable"))
+    if (s_object_type_crud_accessor(ctx, obj, method_name)) |v| return v;
+    if (type_matches_any(method_name, &.{ "isQueryable", "isSearchable" })) {
         return Value{ .boolean = true };
+    }
     if (std.ascii.eqlIgnoreCase(method_name, "newSObject")) {
-        const name = if (obj.fields.get("name")) |n| n.string else "SObject";
-        const new_sob = try ctx.arena.create(types.SObject);
-        new_sob.* = .{ .type_name = name };
-        if (args.len >= 1 and args[0] == .string) {
-            new_sob.id = args[0].string;
-            try new_sob.fields.put(ctx.arena, "Id", args[0]);
-        }
-        if (args.len >= 2 and args[1] == .boolean and args[1].boolean) {
-            if (std.mem.endsWith(u8, name, "__e")) {
-                try new_sob.fields.put(ctx.arena, "EventUuid", Value{ .string = "evt-00000001-0000-0000-0000-000000000001" });
-            }
-            if (ctx.eval.field_defaults.get(name)) |defaults| {
-                for (defaults.keys(), defaults.values()) |field_name, default_val| {
-                    try new_sob.fields.put(ctx.arena, field_name, default_val);
-                }
-            }
-        }
-        return Value{ .sobject = new_sob };
+        return try s_object_type_new_s_object(ctx, obj, args);
     }
     return null;
 }
 
-fn dispatch_obj_s_object_access_decision(ctx: *BuiltinContext, obj: *types.ObjectInstance, method_name: []const u8) !?Value {
+fn object_type_token_name(obj: *types.ObjectInstance, default: []const u8) []const u8 {
+    return object_string_field(obj, "name") orelse default;
+}
+
+fn s_object_type_label_accessor(
+    ctx: *BuiltinContext,
+    obj: *types.ObjectInstance,
+    method_name: []const u8,
+) !?Value {
+    if (!type_matches_any(method_name, &.{ "getLabel", "getLabelPlural", "getName" })) {
+        return null;
+    }
+    const name = object_type_token_name(obj, "Object");
+    if (std.ascii.eqlIgnoreCase(method_name, "getName")) return Value{ .string = name };
+    if (std.ascii.eqlIgnoreCase(method_name, "getLabel")) {
+        if (ctx.eval.object_labels.get(name)) |lbl| return Value{ .string = lbl };
+        return Value{ .string = describe_local_name(name) };
+    }
+    if (ctx.eval.object_label_plurals.get(name)) |lbl| return Value{ .string = lbl };
+    return Value{ .string = try default_describe_label_plural(ctx.arena, name) };
+}
+
+fn s_object_type_record_type_method(method_name: []const u8) bool {
+    return type_matches_any(method_name, &.{
+        "getRecordTypeInfos",
+        "getRecordTypeInfosById",
+        "getRecordTypeInfosByName",
+        "getRecordTypeInfosByDeveloperName",
+    });
+}
+
+fn s_object_type_crud_accessor(
+    ctx: *BuiltinContext,
+    obj: *types.ObjectInstance,
+    method_name: []const u8,
+) ?Value {
+    const operation = s_object_type_crud_operation(method_name) orelse return null;
+    const sobj_name = object_type_token_name(obj, "Object");
+    return Value{
+        .boolean = resolve_object_crud_permission(ctx.eval, sobj_name, operation),
+    };
+}
+
+fn s_object_type_crud_operation(method_name: []const u8) ?[]const u8 {
+    if (std.ascii.eqlIgnoreCase(method_name, "isAccessible")) return "read";
+    if (std.ascii.eqlIgnoreCase(method_name, "isCreateable")) return "create";
+    if (std.ascii.eqlIgnoreCase(method_name, "isUpdateable")) return "edit";
+    if (std.ascii.eqlIgnoreCase(method_name, "isDeletable")) return "delete";
+    return null;
+}
+
+fn s_object_type_new_s_object(
+    ctx: *BuiltinContext,
+    obj: *types.ObjectInstance,
+    args: []const Value,
+) !Value {
+    const name = object_type_token_name(obj, "SObject");
+    const new_sob = try ctx.arena.create(types.SObject);
+    new_sob.* = .{ .type_name = name };
+    if (args.len >= 1 and args[0] == .string) {
+        new_sob.id = args[0].string;
+        try new_sob.fields.put(ctx.arena, "Id", args[0]);
+    }
+    if (args.len >= 2 and args[1] == .boolean and args[1].boolean) {
+        try populate_s_object_defaults(ctx, new_sob, name);
+    }
+    return Value{ .sobject = new_sob };
+}
+
+fn populate_s_object_defaults(
+    ctx: *BuiltinContext,
+    sob: *types.SObject,
+    name: []const u8,
+) !void {
+    if (std.mem.endsWith(u8, name, "__e")) {
+        try sob.fields.put(
+            ctx.arena,
+            "EventUuid",
+            Value{ .string = "evt-00000001-0000-0000-0000-000000000001" },
+        );
+    }
+    if (ctx.eval.field_defaults.get(name)) |defaults| {
+        for (defaults.keys(), defaults.values()) |field_name, default_val| {
+            try sob.fields.put(ctx.arena, field_name, default_val);
+        }
+    }
+}
+
+fn dispatch_obj_s_object_access_decision(
+    ctx: *BuiltinContext,
+    obj: *types.ObjectInstance,
+    method_name: []const u8,
+) !?Value {
     if (std.ascii.eqlIgnoreCase(method_name, "getRecords")) {
-        return obj.fields.get("records") orelse blk: {
-            const list = try ctx.arena.create(types.ListValue);
-            list.* = .{};
-            break :blk Value{ .list = list };
-        };
+        return obj.fields.get("records") orelse try empty_list_value(ctx);
     }
     if (std.ascii.eqlIgnoreCase(method_name, "getRemovedFields")) {
-        return obj.fields.get("removedFields") orelse blk: {
-            const m = try ctx.arena.create(types.MapValue);
-            m.* = .{};
-            break :blk Value{ .map = m };
-        };
+        return obj.fields.get("removedFields") orelse Value{ .map = try empty_map(ctx) };
     }
     return null;
 }
@@ -7693,7 +7761,7 @@ fn hex_digit_to_value(c: u8) u8 {
     };
 }
 
-/// Extract the byte content from a Blob Value (ObjectInstance with "value" field, or string).
+/// Extract byte content from a Blob Value.
 fn blob_to_bytes(val: Value) []const u8 {
     if (val == .object) {
         if (val.object.fields.get("value")) |v| {
@@ -7725,56 +7793,86 @@ fn is_system_field(field_name: []const u8) bool {
         std.ascii.eqlIgnoreCase(field_name, "IsDeleted");
 }
 
-fn collect_assigned_permission_set_ids(eval: *evaluator_mod.Evaluator, out: *[64][]const u8) usize {
+fn collect_assigned_permission_set_ids(
+    eval: *evaluator_mod.Evaluator,
+    out: *[64][]const u8,
+) usize {
     var count: usize = 0;
     if (eval.store.get("PermissionSetAssignment")) |psa_records| {
         for (psa_records.items) |psa| {
             if (psa != .sobject) continue;
-            const assignee_id = utils.sobject_get(&psa.sobject.fields, "AssigneeId") orelse continue;
-            if (assignee_id != .string or !std.ascii.eqlIgnoreCase(assignee_id.string, eval.current_user_id)) continue;
+            if (!permission_set_assignment_for_current_user(eval, psa.sobject)) continue;
             if (utils.sobject_get(&psa.sobject.fields, "PermissionSetId")) |permission_set_id| {
                 if (permission_set_id == .string) {
-                    var already_added = false;
-                    for (out[0..count]) |existing_id| {
-                        if (std.ascii.eqlIgnoreCase(existing_id, permission_set_id.string)) {
-                            already_added = true;
-                            break;
-                        }
-                    }
-                    if (!already_added and count < out.len) {
-                        out[count] = permission_set_id.string;
-                        count += 1;
-                    }
+                    append_unique_permission_set_id(out, &count, permission_set_id.string);
                 }
             }
 
-            if (utils.sobject_get(&psa.sobject.fields, "PermissionSetGroupId")) |permission_set_group_id| {
-                if (permission_set_group_id != .string) continue;
-                if (eval.store.get("PermissionSetGroupComponent")) |components| {
-                    for (components.items) |component| {
-                        if (component != .sobject) continue;
-                        const group_id = utils.sobject_get(&component.sobject.fields, "PermissionSetGroupId") orelse continue;
-                        if (group_id != .string or !std.ascii.eqlIgnoreCase(group_id.string, permission_set_group_id.string)) continue;
-                        const component_set_id = utils.sobject_get(&component.sobject.fields, "PermissionSetId") orelse continue;
-                        if (component_set_id != .string) continue;
-
-                        var already_added = false;
-                        for (out[0..count]) |existing_id| {
-                            if (std.ascii.eqlIgnoreCase(existing_id, component_set_id.string)) {
-                                already_added = true;
-                                break;
-                            }
-                        }
-                        if (!already_added and count < out.len) {
-                            out[count] = component_set_id.string;
-                            count += 1;
-                        }
-                    }
-                }
+            const permission_set_group_id = utils.sobject_get(
+                &psa.sobject.fields,
+                "PermissionSetGroupId",
+            );
+            if (permission_set_group_id) |group_id| {
+                if (group_id != .string) continue;
+                collect_permission_set_group_components(
+                    eval,
+                    group_id.string,
+                    out,
+                    &count,
+                );
             }
         }
     }
     return count;
+}
+
+fn permission_set_assignment_for_current_user(
+    eval: *evaluator_mod.Evaluator,
+    psa: *const types.SObject,
+) bool {
+    const assignee_id = utils.sobject_get(&psa.fields, "AssigneeId") orelse return false;
+    return assignee_id == .string and
+        std.ascii.eqlIgnoreCase(assignee_id.string, eval.current_user_id);
+}
+
+fn append_unique_permission_set_id(
+    out: *[64][]const u8,
+    count: *usize,
+    permission_set_id: []const u8,
+) void {
+    for (out[0..count.*]) |existing_id| {
+        if (std.ascii.eqlIgnoreCase(existing_id, permission_set_id)) return;
+    }
+    if (count.* >= out.len) return;
+    out[count.*] = permission_set_id;
+    count.* += 1;
+}
+
+fn collect_permission_set_group_components(
+    eval: *evaluator_mod.Evaluator,
+    group_id: []const u8,
+    out: *[64][]const u8,
+    count: *usize,
+) void {
+    const components = eval.store.get("PermissionSetGroupComponent") orelse return;
+    for (components.items) |component| {
+        if (component != .sobject) continue;
+        const component_group_id = utils.sobject_get(
+            &component.sobject.fields,
+            "PermissionSetGroupId",
+        ) orelse continue;
+        if (component_group_id != .string or
+            !std.ascii.eqlIgnoreCase(component_group_id.string, group_id))
+        {
+            continue;
+        }
+        const component_set_id = utils.sobject_get(
+            &component.sobject.fields,
+            "PermissionSetId",
+        ) orelse continue;
+        if (component_set_id != .string) continue;
+        append_unique_permission_set_id(out, count, component_set_id.string);
+    }
 }
 
 fn has_assigned_permission_set(eval: *evaluator_mod.Evaluator) bool {
@@ -7782,7 +7880,10 @@ fn has_assigned_permission_set(eval: *evaluator_mod.Evaluator) bool {
     return collect_assigned_permission_set_ids(eval, &assigned_ids) > 0;
 }
 
-fn collect_assigned_permission_set_names(eval: *evaluator_mod.Evaluator, out: *[64][]const u8) usize {
+fn collect_assigned_permission_set_names(
+    eval: *evaluator_mod.Evaluator,
+    out: *[64][]const u8,
+) usize {
     var assigned_ids: [64][]const u8 = undefined;
     const assigned_count = collect_assigned_permission_set_ids(eval, &assigned_ids);
     if (assigned_count == 0) return 0;
@@ -7792,32 +7893,24 @@ fn collect_assigned_permission_set_names(eval: *evaluator_mod.Evaluator, out: *[
         for (ps_records.items) |ps| {
             if (ps != .sobject or ps.sobject.id == null) continue;
 
-            var is_assigned = false;
-            for (assigned_ids[0..assigned_count]) |assigned_id| {
-                if (std.ascii.eqlIgnoreCase(assigned_id, ps.sobject.id.?)) {
-                    is_assigned = true;
-                    break;
-                }
+            if (!permission_set_id_in_list(ps.sobject.id.?, assigned_ids[0..assigned_count])) {
+                continue;
             }
-            if (!is_assigned) continue;
 
             const name_val = utils.sobject_get(&ps.sobject.fields, "Name") orelse continue;
             if (name_val != .string) continue;
 
-            var already_added = false;
-            for (out[0..count]) |existing_name| {
-                if (std.ascii.eqlIgnoreCase(existing_name, name_val.string)) {
-                    already_added = true;
-                    break;
-                }
-            }
-            if (!already_added and count < out.len) {
-                out[count] = name_val.string;
-                count += 1;
-            }
+            append_unique_permission_set_id(out, &count, name_val.string);
         }
     }
     return count;
+}
+
+fn permission_set_id_in_list(id: []const u8, ids: []const []const u8) bool {
+    for (ids) |assigned_id| {
+        if (std.ascii.eqlIgnoreCase(assigned_id, id)) return true;
+    }
+    return false;
 }
 
 fn lower_contains(haystack: []const u8, needle: []const u8) bool {
@@ -7853,7 +7946,10 @@ fn append_snake_case(buf: []u8, raw: []const u8) []const u8 {
     return buf[0..len];
 }
 
-fn permission_name_mentions_object(permission_name: []const u8, object_type: []const u8) bool {
+fn permission_name_mentions_object(
+    permission_name: []const u8,
+    object_type: []const u8,
+) bool {
     if (lower_contains(permission_name, object_type)) return true;
 
     var snake_buf: [128]u8 = undefined;
@@ -7862,7 +7958,10 @@ fn permission_name_mentions_object(permission_name: []const u8, object_type: []c
 
     if (snake_name.len > 0 and snake_name[snake_name.len - 1] == 'y') {
         var plural_y_buf: [132]u8 = undefined;
-        @memcpy(plural_y_buf[0 .. snake_name.len - 1], snake_name[0 .. snake_name.len - 1]);
+        @memcpy(
+            plural_y_buf[0 .. snake_name.len - 1],
+            snake_name[0 .. snake_name.len - 1],
+        );
         @memcpy(plural_y_buf[snake_name.len - 1 .. snake_name.len + 2], "ies");
         if (lower_contains(permission_name, plural_y_buf[0 .. snake_name.len + 2])) return true;
     } else if (snake_name.len > 0) {
@@ -7875,25 +7974,47 @@ fn permission_name_mentions_object(permission_name: []const u8, object_type: []c
     return false;
 }
 
-fn permission_name_mentions_field(permission_name: []const u8, object_type: ?[]const u8, field_name: []const u8) bool {
+fn permission_name_mentions_field(
+    permission_name: []const u8,
+    object_type: ?[]const u8,
+    field_name: []const u8,
+) bool {
     if (lower_contains(permission_name, field_name)) return true;
 
     var snake_buf: [128]u8 = undefined;
     const snake_name = append_snake_case(&snake_buf, field_name);
     if (snake_name.len > 0 and lower_contains(permission_name, snake_name)) return true;
 
-    if (std.ascii.eqlIgnoreCase(field_name, "Name") or std.ascii.eqlIgnoreCase(field_name, "LastName")) {
+    if (type_matches_any(field_name, &.{ "Name", "LastName" })) {
         if (lower_contains(permission_name, "name_field")) return true;
         if (object_type) |obj_name| {
-            if (std.ascii.eqlIgnoreCase(obj_name, "Contact") and lower_contains(permission_name, "contact_name")) return true;
-            if (std.ascii.eqlIgnoreCase(obj_name, "Lead") and lower_contains(permission_name, "lead_name")) return true;
+            if (permission_mentions_standard_name_field(permission_name, obj_name)) {
+                return true;
+            }
         }
     }
 
     return false;
 }
 
-fn permission_name_allows_object_operation(permission_name: []const u8, object_type: []const u8, operation: []const u8) bool {
+fn permission_mentions_standard_name_field(
+    permission_name: []const u8,
+    object_type: []const u8,
+) bool {
+    if (std.ascii.eqlIgnoreCase(object_type, "Contact")) {
+        return lower_contains(permission_name, "contact_name");
+    }
+    if (std.ascii.eqlIgnoreCase(object_type, "Lead")) {
+        return lower_contains(permission_name, "lead_name");
+    }
+    return false;
+}
+
+fn permission_name_allows_object_operation(
+    permission_name: []const u8,
+    object_type: []const u8,
+    operation: []const u8,
+) bool {
     if (!permission_name_mentions_object(permission_name, object_type)) return false;
 
     if (std.ascii.eqlIgnoreCase(operation, "read")) {
@@ -7902,22 +8023,29 @@ fn permission_name_allows_object_operation(permission_name: []const u8, object_t
     if (std.ascii.eqlIgnoreCase(operation, "create")) {
         return lower_contains(permission_name, "create");
     }
-    if (std.ascii.eqlIgnoreCase(operation, "edit") or std.ascii.eqlIgnoreCase(operation, "update")) {
+    if (type_matches_any(operation, &.{ "edit", "update" })) {
         return lower_contains_any(permission_name, &.{ "edit", "update" });
     }
-    if (std.ascii.eqlIgnoreCase(operation, "delete") or std.ascii.eqlIgnoreCase(operation, "destroy")) {
+    if (type_matches_any(operation, &.{ "delete", "destroy" })) {
         return lower_contains_any(permission_name, &.{ "delete", "destroy" });
     }
 
     return false;
 }
 
-fn permission_name_allows_field_operation(permission_name: []const u8, object_type: ?[]const u8, field_name: []const u8, operation: []const u8) bool {
+fn permission_name_allows_field_operation(
+    permission_name: []const u8,
+    object_type: ?[]const u8,
+    field_name: []const u8,
+    operation: []const u8,
+) bool {
     const obj_name = object_type orelse return false;
     if (!permission_name_allows_object_operation(permission_name, obj_name, operation)) return false;
 
     if (lower_contains(permission_name, "all_fields")) {
-        if (lower_contains(permission_name, "except") and permission_name_mentions_field(permission_name, object_type, field_name)) {
+        if (lower_contains(permission_name, "except") and
+            permission_name_mentions_field(permission_name, object_type, field_name))
+        {
             return false;
         }
         return true;
