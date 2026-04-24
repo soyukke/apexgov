@@ -1906,7 +1906,8 @@ fn has_setup_entity_custom_permission(
     for (sea_records.items) |sea| {
         if (sea != .sobject) continue;
         const parent_id = utils.sobject_get(&sea.sobject.fields, "ParentId") orelse continue;
-        const setup_entity_id = utils.sobject_get(&sea.sobject.fields, "SetupEntityId") orelse continue;
+        const setup_entity_id =
+            utils.sobject_get(&sea.sobject.fields, "SetupEntityId") orelse continue;
         if (parent_id != .string or setup_entity_id != .string) continue;
 
         var parent_matches = false;
@@ -2024,26 +2025,100 @@ fn dispatch_static_schema(
     return Value.null_val;
 }
 
+const schema_global_describe_known_types = [_][]const u8{
+    "Account",
+    "Contact",
+    "Opportunity",
+    "Task",
+    "Lead",
+    "Case",
+    "User",
+    "Group",
+    "Solution",
+    "Campaign",
+    "Event",
+    "ContentDocument",
+    "ContentVersion",
+    "Asset",
+    "Contract",
+    "Order",
+    "OrderItem",
+    "Product2",
+    "PricebookEntry",
+    "Pricebook2",
+    "Quote",
+    "QuoteLineItem",
+    "CaseComment",
+    "Attachment",
+    "Note",
+    "FeedItem",
+    "FeedComment",
+    "CollaborationGroup",
+    "Idea",
+    "Document",
+    "EmailMessage",
+    "OpportunityLineItem",
+    "CampaignMember",
+    "OpportunityContactRole",
+    "AccountContactRole",
+    "AccountTeamMember",
+    "OpportunityTeamMember",
+    "Partner",
+    "UserRole",
+    "Profile",
+    "PermissionSet",
+    "PermissionSetAssignment",
+    "UserLicense",
+    "Organization",
+    "Topic",
+    "TopicAssignment",
+    "CaseSolution",
+    "CaseHistory",
+    "OpportunityHistory",
+    "AccountHistory",
+    "LeadHistory",
+    "ContactHistory",
+    "CronTrigger",
+    "AsyncApexJob",
+    "ApexClass",
+    "ApexTrigger",
+    "ApexPage",
+    "StaticResource",
+    "RecordType",
+    "BusinessHours",
+    "Holiday",
+    "CustomObject",
+    "CustomField",
+    "EntityDefinition",
+    "FieldDefinition",
+    "Tag",
+    "Domain",
+    "Site",
+    "SetupAuditTrail",
+};
+
+const schema_describe_s_objects_known_types = [_][]const u8{
+    "account",
+    "contact",
+    "opportunity",
+    "task",
+    "lead",
+    "case",
+    "user",
+    "group",
+    "solution",
+    "campaign",
+    "event",
+    "contentdocument",
+    "contentversion",
+    "flowdefinitionview",
+    "flowversionview",
+};
+
 fn dispatch_schema_global_describe(ctx: *BuiltinContext) !Value {
     const map = try ctx.arena.create(types.MapValue);
     map.* = .{};
-    const known_types = [_][]const u8{
-        "Account",           "Contact",                 "Opportunity",        "Task",                   "Lead",
-        "Case",              "User",                    "Group",              "Solution",               "Campaign",
-        "Event",             "ContentDocument",         "ContentVersion",     "Asset",                  "Contract",
-        "Order",             "OrderItem",               "Product2",           "PricebookEntry",         "Pricebook2",
-        "Quote",             "QuoteLineItem",           "CaseComment",        "Attachment",             "Note",
-        "FeedItem",          "FeedComment",             "CollaborationGroup", "Idea",                   "Document",
-        "EmailMessage",      "OpportunityLineItem",     "CampaignMember",     "OpportunityContactRole", "AccountContactRole",
-        "AccountTeamMember", "OpportunityTeamMember",   "Partner",            "UserRole",               "Profile",
-        "PermissionSet",     "PermissionSetAssignment", "UserLicense",        "Organization",           "Topic",
-        "TopicAssignment",   "CaseSolution",            "CaseHistory",        "OpportunityHistory",     "AccountHistory",
-        "LeadHistory",       "ContactHistory",          "CronTrigger",        "AsyncApexJob",           "ApexClass",
-        "ApexTrigger",       "ApexPage",                "StaticResource",     "RecordType",             "BusinessHours",
-        "Holiday",           "CustomObject",            "CustomField",        "EntityDefinition",       "FieldDefinition",
-        "Tag",               "Domain",                  "Site",               "SetupAuditTrail",
-    };
-    for (known_types) |obj_name| {
+    for (schema_global_describe_known_types) |obj_name| {
         try put_schema_s_object_type(ctx, map, obj_name);
     }
 
@@ -2077,11 +2152,6 @@ fn put_schema_s_object_type(
 }
 
 fn dispatch_schema_describe_s_objects(ctx: *BuiltinContext, args: []const Value) !Value {
-    const known_types = [_][]const u8{
-        "account",         "contact",  "opportunity", "task",  "lead",            "case",           "user",
-        "group",           "solution", "campaign",    "event", "contentdocument", "contentversion", "flowdefinitionview",
-        "flowversionview",
-    };
     const list = try ctx.arena.create(types.ListValue);
     list.* = .{};
     const names: []const Value = if (args.len > 0 and args[0] == .list)
@@ -2092,7 +2162,11 @@ fn dispatch_schema_describe_s_objects(ctx: *BuiltinContext, args: []const Value)
         (&[_]Value{})[0..];
     for (names) |item| {
         const obj_name = if (item == .string) item.string else "Object";
-        if (!try is_schema_describe_object_known(ctx, obj_name, &known_types)) {
+        if (!try is_schema_describe_object_known(
+            ctx,
+            obj_name,
+            &schema_describe_s_objects_known_types,
+        )) {
             _ = try ctx.throw_exception(
                 "System.InvalidParameterValueException",
                 try std.fmt.allocPrint(ctx.arena, "Invalid entity: {s}", .{obj_name}),
@@ -2296,8 +2370,11 @@ fn dispatch_static_limits(ctx: *BuiltinContext, method_name: []const u8) !?Value
     if (ci.eqlIgnoreCase(method_name, "getAsyncCalls")) {
         return Value{ .integer = @intCast(ctx.eval.limits_queueable) };
     }
-    if (ci.eqlIgnoreCase(method_name, "getPublishImmediateDml") or ci.eqlIgnoreCase(method_name, "getPublishImmediateDML"))
+    if (ci.eqlIgnoreCase(method_name, "getPublishImmediateDml") or
+        ci.eqlIgnoreCase(method_name, "getPublishImmediateDML"))
+    {
         return Value{ .integer = @intCast(ctx.eval.limits_publish_immediate) };
+    }
     if (ci.eqlIgnoreCase(method_name, "getQueueableJobs")) {
         return Value{ .integer = @intCast(ctx.eval.limits_queueable) };
     }
@@ -2334,7 +2411,10 @@ fn dispatch_static_limits(ctx: *BuiltinContext, method_name: []const u8) !?Value
     return Value{ .integer = 0 };
 }
 
-fn find_stored_record_by_id(eval: *evaluator_mod.Evaluator, record_id: []const u8) ?*types.SObject {
+fn find_stored_record_by_id(
+    eval: *evaluator_mod.Evaluator,
+    record_id: []const u8,
+) ?*types.SObject {
     var store_iter = eval.store.iterator();
     while (store_iter.next()) |entry| {
         for (entry.value_ptr.items) |*item| {
@@ -2421,7 +2501,9 @@ fn dispatch_static_approval(
     if (std.ascii.eqlIgnoreCase(method_name, "isLocked")) {
         if (record) |matched| {
             const is_locked =
-                utils.sobject_get(&matched.fields, "__isLocked") orelse Value{ .boolean = false };
+                utils.sobject_get(&matched.fields, "__isLocked") orelse Value{
+                    .boolean = false,
+                };
             return if (is_locked == .boolean) is_locked else Value{ .boolean = false };
         }
         return Value{ .boolean = false };
@@ -2472,18 +2554,41 @@ fn parse_date_time_to_epoch_millis(s: []const u8) ?i64 {
     const y = std.fmt.parseInt(i64, s[0..4], 10) catch return null;
     const m = std.fmt.parseInt(u8, s[5..7], 10) catch return null;
     const d = std.fmt.parseInt(u8, s[8..10], 10) catch return null;
-    const h: i64 = if (s.len >= 19 and s[10] == 'T') std.fmt.parseInt(i64, s[11..13], 10) catch 0 else 0;
-    const mi: i64 = if (s.len >= 19 and s[10] == 'T') std.fmt.parseInt(i64, s[14..16], 10) catch 0 else 0;
-    const sec: i64 = if (s.len >= 19 and s[10] == 'T') std.fmt.parseInt(i64, s[17..19], 10) catch 0 else 0;
+    const h: i64 = if (s.len >= 19 and s[10] == 'T')
+        std.fmt.parseInt(i64, s[11..13], 10) catch 0
+    else
+        0;
+    const mi: i64 = if (s.len >= 19 and s[10] == 'T')
+        std.fmt.parseInt(i64, s[14..16], 10) catch 0
+    else
+        0;
+    const sec: i64 = if (s.len >= 19 and s[10] == 'T')
+        std.fmt.parseInt(i64, s[17..19], 10) catch 0
+    else
+        0;
     const cumulative = [_]i64{ 0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334 };
     const doy = cumulative[m - 1] + d;
-    const is_leap: i64 = if (@mod(y, 4) == 0 and (@mod(y, 100) != 0 or @mod(y, 400) == 0)) 1 else 0;
+    const is_leap: i64 = if (@mod(y, 4) == 0 and
+        (@mod(y, 100) != 0 or @mod(y, 400) == 0))
+        1
+    else
+        0;
     const leap_adj: i64 = if (m > 2) is_leap else 0;
-    const days_from_epoch = (y - 1970) * 365 + @divFloor(y - 1969, 4) - @divFloor(y - 1901, 100) + @divFloor(y - 1601, 400) + doy - 1 + leap_adj;
+    const days_from_epoch = (y - 1970) * 365 +
+        @divFloor(y - 1969, 4) -
+        @divFloor(y - 1901, 100) +
+        @divFloor(y - 1601, 400) +
+        doy -
+        1 +
+        leap_adj;
     return (days_from_epoch * 86400 + h * 3600 + mi * 60 + sec) * 1000;
 }
 
-fn dispatch_static_business_hours(ctx: *BuiltinContext, method_name: []const u8, args: []const Value) !?Value {
+fn dispatch_static_business_hours(
+    ctx: *BuiltinContext,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
     _ = ctx;
     if (std.ascii.eqlIgnoreCase(method_name, "diff") and args.len >= 3) {
         const start = extract_date_string(args[1]) orelse return Value{ .long = 0 };
@@ -2505,7 +2610,11 @@ fn dispatch_static_data_weave(ctx: *BuiltinContext, args: []const Value) !?Value
     return null;
 }
 
-fn dispatch_static_pattern(ctx: *BuiltinContext, method_name: []const u8, args: []const Value) !?Value {
+fn dispatch_static_pattern(
+    ctx: *BuiltinContext,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
     if (std.ascii.eqlIgnoreCase(method_name, "compile") and args.len > 0 and args[0] == .string) {
         const obj = try ctx.arena.create(types.ObjectInstance);
         obj.* = .{ .class_name = "Pattern" };
@@ -2516,7 +2625,9 @@ fn dispatch_static_pattern(ctx: *BuiltinContext, method_name: []const u8, args: 
     if (std.ascii.eqlIgnoreCase(method_name, "matches") and args.len >= 2 and
         args[0] == .string and args[1] == .string)
     {
-        return Value{ .boolean = try regex.matches(ctx.arena, args[0].string, args[1].string) };
+        return Value{
+            .boolean = try regex.matches(ctx.arena, args[0].string, args[1].string),
+        };
     }
     // Pattern.quote(s) — wrap the input so it matches literally.
     if (std.ascii.eqlIgnoreCase(method_name, "quote") and args.len >= 1 and args[0] == .string) {
@@ -2535,7 +2646,11 @@ fn dispatch_static_pattern(ctx: *BuiltinContext, method_name: []const u8, args: 
 /// Experience Cloud / Communities gate: `Schema.Network` is treated as "not present" so
 /// common runtime feature checks (`Type.forName('Schema.Network') != null`) stay valid for
 /// orgs without Experience Cloud enabled — matches the current NebulaLogger test expectations.
-fn schema_s_object_type_value(ctx: *BuiltinContext, lookup_name: []const u8, inner_name: []const u8) ?Value {
+fn schema_s_object_type_value(
+    ctx: *BuiltinContext,
+    lookup_name: []const u8,
+    inner_name: []const u8,
+) ?Value {
     if (!std.ascii.eqlIgnoreCase(lookup_name, "Schema")) return null;
     if (std.ascii.eqlIgnoreCase(inner_name, "Network")) return null;
     if (!ctx.eval.is_s_object_type_name_public(inner_name)) return null;
@@ -2546,54 +2661,72 @@ fn schema_s_object_type_value(ctx: *BuiltinContext, lookup_name: []const u8, inn
     return Value{ .object = obj };
 }
 
-fn dispatch_static_type(ctx: *BuiltinContext, method_name: []const u8, args: []const Value) !?Value {
+fn make_type_value(ctx: *BuiltinContext, name: Value) !Value {
+    const obj = try ctx.arena.create(types.ObjectInstance);
+    obj.* = .{ .class_name = "Type" };
+    try obj.fields.put(ctx.arena, "name", name);
+    return Value{ .object = obj };
+}
+
+fn lookup_class_ignore_case(ctx: *BuiltinContext, lookup_name: []const u8) ?*ast.ClassDecl {
+    if (ctx.eval.classes.get(lookup_name)) |class_decl| return class_decl;
+    var it = ctx.eval.classes.iterator();
+    while (it.next()) |entry| {
+        if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, lookup_name)) {
+            return entry.value_ptr.*;
+        }
+    }
+    return null;
+}
+
+fn class_has_inner_type(class_decl: *ast.ClassDecl, inner_name: []const u8) bool {
+    for (class_decl.members) |member| {
+        switch (member) {
+            .class_decl => |inner_cd| {
+                if (std.ascii.eqlIgnoreCase(inner_cd.name, inner_name)) return true;
+            },
+            .interface_decl => |iface| {
+                if (std.ascii.eqlIgnoreCase(iface.name, inner_name)) return true;
+            },
+            else => {},
+        }
+    }
+    return false;
+}
+
+fn dispatch_static_type(
+    ctx: *BuiltinContext,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
     if (std.ascii.eqlIgnoreCase(method_name, "forName") and args.len > 0 and args[0] == .string) {
         const requested = args[0].string;
         if (std.ascii.startsWithIgnoreCase(requested, "Map") or
             std.ascii.startsWithIgnoreCase(requested, "List") or
             std.ascii.startsWithIgnoreCase(requested, "Set"))
         {
-            const obj = try ctx.arena.create(types.ObjectInstance);
-            obj.* = .{ .class_name = "Type" };
-            try obj.fields.put(ctx.arena, "name", args[0]);
-            return Value{ .object = obj };
+            return try make_type_value(ctx, args[0]);
         }
-        const lookup_name = if (std.mem.indexOf(u8, requested, ".")) |dot| requested[0..dot] else requested;
-        const inner_name = if (std.mem.indexOf(u8, requested, ".")) |dot| requested[dot + 1 ..] else "";
+        const lookup_name = if (std.mem.indexOf(u8, requested, ".")) |dot|
+            requested[0..dot]
+        else
+            requested;
+        const inner_name = if (std.mem.indexOf(u8, requested, ".")) |dot|
+            requested[dot + 1 ..]
+        else
+            "";
         if (inner_name.len > 0) {
-            const cd_opt: ?*ast.ClassDecl = blk: {
-                if (ctx.eval.classes.get(lookup_name)) |c| break :blk c;
-                var it = ctx.eval.classes.iterator();
-                while (it.next()) |e| {
-                    if (std.ascii.eqlIgnoreCase(e.key_ptr.*, lookup_name)) break :blk e.value_ptr.*;
-                }
-                break :blk null;
-            };
-            if (cd_opt) |cd| {
-                var found_inner = false;
-                for (cd.members) |member| {
-                    switch (member) {
-                        .class_decl => |inner_cd| {
-                            if (std.ascii.eqlIgnoreCase(inner_cd.name, inner_name)) {
-                                found_inner = true;
-                                break;
-                            }
-                        },
-                        .interface_decl => |iface| {
-                            if (std.ascii.eqlIgnoreCase(iface.name, inner_name)) {
-                                found_inner = true;
-                                break;
-                            }
-                        },
-                        else => {},
+            if (lookup_class_ignore_case(ctx, lookup_name)) |class_decl| {
+                if (!class_has_inner_type(class_decl, inner_name)) {
+                    if (schema_s_object_type_value(ctx, lookup_name, inner_name)) |value| {
+                        return value;
                     }
-                }
-                if (!found_inner) {
-                    if (schema_s_object_type_value(ctx, lookup_name, inner_name)) |v| return v;
                     return Value.null_val;
                 }
             } else {
-                if (schema_s_object_type_value(ctx, lookup_name, inner_name)) |v| return v;
+                if (schema_s_object_type_value(ctx, lookup_name, inner_name)) |value| {
+                    return value;
+                }
                 return Value.null_val;
             }
         }
@@ -2603,10 +2736,7 @@ fn dispatch_static_type(ctx: *BuiltinContext, method_name: []const u8, args: []c
         // value. Frameworks downstream can then catch `NullPointerException` on
         // `null.newInstance()` for bogus names.
         if (is_resolvable_type_name(ctx, lookup_name)) {
-            const obj = try ctx.arena.create(types.ObjectInstance);
-            obj.* = .{ .class_name = "Type" };
-            try obj.fields.put(ctx.arena, "name", args[0]);
-            return Value{ .object = obj };
+            return try make_type_value(ctx, args[0]);
         }
         return Value.null_val;
     }
@@ -2626,12 +2756,46 @@ fn is_resolvable_type_name(ctx: *BuiltinContext, name: []const u8) bool {
     }
     if (ctx.eval.is_s_object_type_name_public(name)) return true;
     const primitives = [_][]const u8{
-        "String",       "Integer",           "Long",      "Double",   "Decimal",      "Boolean", "Date",
-        "Datetime",     "Time",              "Id",        "Blob",     "Object",       "Schema",  "System",
-        "SObject",      "Type",              "JSON",      "Test",     "Database",     "Http",    "HttpRequest",
-        "HttpResponse", "UserInfo",          "Limits",    "Assert",   "UUID",         "Pattern", "Matcher",
-        "Messaging",    "EventBus",          "ApexPages", "UserInfo", "EncodingUtil", "Network", "Url",
-        "URL",          "FeatureManagement", "Crypto",    "Request",  "OrgLimits",
+        "String",
+        "Integer",
+        "Long",
+        "Double",
+        "Decimal",
+        "Boolean",
+        "Date",
+        "Datetime",
+        "Time",
+        "Id",
+        "Blob",
+        "Object",
+        "Schema",
+        "System",
+        "SObject",
+        "Type",
+        "JSON",
+        "Test",
+        "Database",
+        "Http",
+        "HttpRequest",
+        "HttpResponse",
+        "UserInfo",
+        "Limits",
+        "Assert",
+        "UUID",
+        "Pattern",
+        "Matcher",
+        "Messaging",
+        "EventBus",
+        "ApexPages",
+        "UserInfo",
+        "EncodingUtil",
+        "Network",
+        "Url",
+        "URL",
+        "FeatureManagement",
+        "Crypto",
+        "Request",
+        "OrgLimits",
     };
     for (primitives) |p| {
         if (std.ascii.eqlIgnoreCase(p, name)) return true;
@@ -2645,16 +2809,40 @@ fn is_resolvable_type_name(ctx: *BuiltinContext, name: []const u8) bool {
     return false;
 }
 
-fn dispatch_static_crypto(ctx: *BuiltinContext, method_name: []const u8, args: []const Value) !?Value {
+fn make_blob_object(ctx: *BuiltinContext, value: Value) !Value {
+    const obj = try ctx.arena.create(types.ObjectInstance);
+    obj.* = .{ .class_name = "Blob" };
+    try obj.fields.put(ctx.arena, "value", value);
+    return Value{ .object = obj };
+}
+
+fn crypto_verify_mac(
+    ctx: *BuiltinContext,
+    args: []const Value,
+) !Value {
+    const data_bytes = if (args.len >= 2) blob_to_bytes(args[1]) else "data";
+    const key_bytes = if (args.len >= 3) blob_to_bytes(args[2]) else "key";
+    const expected_bytes = if (args.len >= 4) blob_to_bytes(args[3]) else "";
+    var mac: [32]u8 = undefined;
+    std.crypto.auth.hmac.sha2.HmacSha256.create(&mac, data_bytes, key_bytes);
+    const computed_hex = try bytes_to_hex_alloc(ctx.arena, &mac);
+    return Value{
+        .boolean = std.mem.eql(u8, computed_hex, expected_bytes) or
+            std.mem.eql(u8, expected_bytes, ""),
+    };
+}
+
+fn dispatch_static_crypto(
+    ctx: *BuiltinContext,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
     if (std.ascii.eqlIgnoreCase(method_name, "generateDigest")) {
         const data_bytes = if (args.len >= 2) blob_to_bytes(args[1]) else "data";
         var hash: [32]u8 = undefined;
         std.crypto.hash.sha2.Sha256.hash(data_bytes, &hash, .{});
         const hex_str = try bytes_to_hex_alloc(ctx.arena, &hash);
-        const obj = try ctx.arena.create(types.ObjectInstance);
-        obj.* = .{ .class_name = "Blob" };
-        try obj.fields.put(ctx.arena, "value", Value{ .string = hex_str });
-        return Value{ .object = obj };
+        return try make_blob_object(ctx, Value{ .string = hex_str });
     }
     if (std.ascii.eqlIgnoreCase(method_name, "generateMac")) {
         const data_bytes = if (args.len >= 2) blob_to_bytes(args[1]) else "data";
@@ -2662,27 +2850,21 @@ fn dispatch_static_crypto(ctx: *BuiltinContext, method_name: []const u8, args: [
         var mac: [32]u8 = undefined;
         std.crypto.auth.hmac.sha2.HmacSha256.create(&mac, data_bytes, key_bytes);
         const hex_str = try bytes_to_hex_alloc(ctx.arena, &mac);
-        const obj = try ctx.arena.create(types.ObjectInstance);
-        obj.* = .{ .class_name = "Blob" };
-        try obj.fields.put(ctx.arena, "value", Value{ .string = hex_str });
-        return Value{ .object = obj };
+        return try make_blob_object(ctx, Value{ .string = hex_str });
     }
     if (std.ascii.eqlIgnoreCase(method_name, "generateAesKey")) {
-        const key_size: usize = if (args.len > 0 and args[0] == .integer) @intCast(@divTrunc(args[0].integer, 8)) else 16;
+        const key_size: usize = if (args.len > 0 and args[0] == .integer)
+            @intCast(@divTrunc(args[0].integer, 8))
+        else
+            16;
         const buf = try ctx.arena.alloc(u8, key_size);
         // 0.16 で `std.crypto.random` は削除。乱数は io 経由 (`std.Io.random`)
         // だが、Apex テストの決定性を優先して 0 埋めするスタブとする。
         @memset(buf, 0);
-        const obj = try ctx.arena.create(types.ObjectInstance);
-        obj.* = .{ .class_name = "Blob" };
-        try obj.fields.put(ctx.arena, "value", Value{ .string = buf });
-        return Value{ .object = obj };
+        return try make_blob_object(ctx, Value{ .string = buf });
     }
     if (std.ascii.eqlIgnoreCase(method_name, "sign")) {
-        const obj = try ctx.arena.create(types.ObjectInstance);
-        obj.* = .{ .class_name = "Blob" };
-        try obj.fields.put(ctx.arena, "value", Value{ .string = "mock-signature" });
-        return Value{ .object = obj };
+        return try make_blob_object(ctx, Value{ .string = "mock-signature" });
     }
     if (std.ascii.eqlIgnoreCase(method_name, "encryptWithManagedIV") or
         std.ascii.eqlIgnoreCase(method_name, "decryptWithManagedIV") or
@@ -2691,17 +2873,15 @@ fn dispatch_static_crypto(ctx: *BuiltinContext, method_name: []const u8, args: [
     {
         return crypto_pass_through_blob(ctx, method_name, args);
     }
-    if (std.ascii.eqlIgnoreCase(method_name, "verifyHMAC") or std.ascii.eqlIgnoreCase(method_name, "verifyMac")) {
-        const data_bytes = if (args.len >= 2) blob_to_bytes(args[1]) else "data";
-        const key_bytes = if (args.len >= 3) blob_to_bytes(args[2]) else "key";
-        const expected_bytes = if (args.len >= 4) blob_to_bytes(args[3]) else "";
-        var mac: [32]u8 = undefined;
-        std.crypto.auth.hmac.sha2.HmacSha256.create(&mac, data_bytes, key_bytes);
-        const computed_hex = try bytes_to_hex_alloc(ctx.arena, &mac);
-        return Value{ .boolean = std.mem.eql(u8, computed_hex, expected_bytes) or std.mem.eql(u8, expected_bytes, "") };
+    if (std.ascii.eqlIgnoreCase(method_name, "verifyHMAC") or
+        std.ascii.eqlIgnoreCase(method_name, "verifyMac"))
+    {
+        return try crypto_verify_mac(ctx, args);
     }
     if (std.ascii.eqlIgnoreCase(method_name, "verify")) return Value{ .boolean = true };
-    if (std.ascii.eqlIgnoreCase(method_name, "getRandomInteger") or std.ascii.eqlIgnoreCase(method_name, "getRandomLong")) {
+    if (std.ascii.eqlIgnoreCase(method_name, "getRandomInteger") or
+        std.ascii.eqlIgnoreCase(method_name, "getRandomLong"))
+    {
         // 0.16 で `std.crypto.random` は削除。決定論スタブとして固定値を返す。
         const buf: [8]u8 = .{ 0, 0, 0, 0, 0, 0, 0, 1 };
         const val: i64 = @bitCast(buf);
@@ -2714,14 +2894,25 @@ fn dispatch_static_crypto(ctx: *BuiltinContext, method_name: []const u8, args: [
 /// `decryptWithManagedIV` 共通のスタブ実装。入力 blob を Blob に包み直して
 /// 返す（実暗号化は行わない — Apex テストで暗号結果を検証するのではなく、
 /// データフローの正しさだけを確認する目的）。
-fn crypto_pass_through_blob(ctx: *BuiltinContext, method_name: []const u8, args: []const Value) !?Value {
+fn crypto_pass_through_blob(
+    ctx: *BuiltinContext,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
     const obj = try ctx.arena.create(types.ObjectInstance);
     obj.* = .{ .class_name = "Blob" };
     const data_arg_idx: usize = if (std.ascii.eqlIgnoreCase(method_name, "encryptWithManagedIV") or
-        std.ascii.eqlIgnoreCase(method_name, "decryptWithManagedIV")) 2 else 3;
-    const val = if (args.len > data_arg_idx and args[data_arg_idx] == .object and args[data_arg_idx].object.fields.get("value") != null)
+        std.ascii.eqlIgnoreCase(method_name, "decryptWithManagedIV"))
+        2
+    else
+        3;
+    const val = if (args.len > data_arg_idx and
+        args[data_arg_idx] == .object and
+        args[data_arg_idx].object.fields.get("value") != null)
         args[data_arg_idx].object.fields.get("value").?
-    else if (args.len > 0 and args[0] == .object and args[0].object.fields.get("value") != null)
+    else if (args.len > 0 and
+        args[0] == .object and
+        args[0].object.fields.get("value") != null)
         args[0].object.fields.get("value").?
     else
         Value{ .string = "encrypted-data" };
@@ -2729,7 +2920,11 @@ fn crypto_pass_through_blob(ctx: *BuiltinContext, method_name: []const u8, args:
     return Value{ .object = obj };
 }
 
-fn dispatch_static_blob(ctx: *BuiltinContext, method_name: []const u8, args: []const Value) !?Value {
+fn dispatch_static_blob(
+    ctx: *BuiltinContext,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
     if (std.ascii.eqlIgnoreCase(method_name, "valueOf")) {
         if (args.len > 0 and args[0] == .string) {
             const blob = try ctx.arena.create(types.ObjectInstance);
@@ -2752,13 +2947,19 @@ fn dispatch_static_blob(ctx: *BuiltinContext, method_name: []const u8, args: []c
     return Value.null_val;
 }
 
-fn dispatch_static_encoding_util(ctx: *BuiltinContext, method_name: []const u8, args: []const Value) !?Value {
+fn dispatch_static_encoding_util(
+    ctx: *BuiltinContext,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
     if (std.ascii.eqlIgnoreCase(method_name, "urlEncode") and args.len > 0 and args[0] == .string) {
         // application/x-www-form-urlencoded: unreserved letters/digits and -_.*
         // pass through, spaces become '+', everything else is percent-encoded.
         var out = std.ArrayListUnmanaged(u8).empty;
         for (args[0].string) |ch| {
-            const is_safe = (ch >= 'A' and ch <= 'Z') or (ch >= 'a' and ch <= 'z') or (ch >= '0' and ch <= '9') or
+            const is_safe = (ch >= 'A' and ch <= 'Z') or
+                (ch >= 'a' and ch <= 'z') or
+                (ch >= '0' and ch <= '9') or
                 ch == '-' or ch == '_' or ch == '.' or ch == '*';
             if (is_safe) {
                 try out.append(ctx.arena, ch);
@@ -2773,10 +2974,14 @@ fn dispatch_static_encoding_util(ctx: *BuiltinContext, method_name: []const u8, 
         return Value{ .string = try out.toOwnedSlice(ctx.arena) };
     }
     if (std.ascii.eqlIgnoreCase(method_name, "base64Encode") and args.len > 0) {
-        if (args[0] == .object) return args[0].object.fields.get("value") orelse Value{ .string = "" };
+        if (args[0] == .object) {
+            return args[0].object.fields.get("value") orelse Value{ .string = "" };
+        }
         return Value{ .string = "base64encoded" };
     }
-    if (std.ascii.eqlIgnoreCase(method_name, "base64Decode") and args.len > 0 and args[0] == .string) {
+    if (std.ascii.eqlIgnoreCase(method_name, "base64Decode") and
+        args.len > 0 and args[0] == .string)
+    {
         const blob = try ctx.arena.create(types.ObjectInstance);
         blob.* = .{ .class_name = "Blob" };
         try blob.fields.put(ctx.arena, "value", args[0]);
@@ -2787,7 +2992,9 @@ fn dispatch_static_encoding_util(ctx: *BuiltinContext, method_name: []const u8, 
         const hex_str = try bytes_to_hex_alloc(ctx.arena, raw_bytes);
         return Value{ .string = hex_str };
     }
-    if (std.ascii.eqlIgnoreCase(method_name, "convertFromHex") and args.len > 0 and args[0] == .string) {
+    if (std.ascii.eqlIgnoreCase(method_name, "convertFromHex") and
+        args.len > 0 and args[0] == .string)
+    {
         const hex = args[0].string;
         const decoded = try hex_to_bytes_alloc(ctx.arena, hex);
         const blob = try ctx.arena.create(types.ObjectInstance);
@@ -2799,7 +3006,11 @@ fn dispatch_static_encoding_util(ctx: *BuiltinContext, method_name: []const u8, 
     return Value{ .string = "" };
 }
 
-fn dispatch_static_messaging(ctx: *BuiltinContext, method_name: []const u8, args: []const Value) !?Value {
+fn dispatch_static_messaging(
+    ctx: *BuiltinContext,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
     if (std.ascii.eqlIgnoreCase(method_name, "reserveSingleEmailCapacity")) {
         const requested: i64 = if (args.len > 0) switch (args[0]) {
             .integer => |i| i,
@@ -2838,7 +3049,8 @@ fn dispatch_static_event_bus(method_name: []const u8) !?Value {
 fn set_created_date_for_record(ctx: *BuiltinContext, args: []const Value) !Value {
     if (args.len < 2) return .void_val;
     const record_id = try utils.coerce_to_string(args[0], ctx.arena);
-    const created_date = extract_date_string(args[1]) orelse try utils.coerce_to_string(args[1], ctx.arena);
+    const created_date =
+        extract_date_string(args[1]) orelse try utils.coerce_to_string(args[1], ctx.arena);
 
     var store_iter = ctx.eval.store.iterator();
     while (store_iter.next()) |entry| {
@@ -2846,7 +3058,9 @@ fn set_created_date_for_record(ctx: *BuiltinContext, args: []const Value) !Value
             if (record != .sobject) continue;
             if (record.sobject.id) |candidate_id| {
                 if (std.ascii.eqlIgnoreCase(candidate_id, record_id)) {
-                    try record.sobject.fields.put(ctx.arena, "CreatedDate", Value{ .string = created_date });
+                    try record.sobject.fields.put(ctx.arena, "CreatedDate", Value{
+                        .string = created_date,
+                    });
                     return .void_val;
                 }
             }
@@ -2855,7 +3069,11 @@ fn set_created_date_for_record(ctx: *BuiltinContext, args: []const Value) !Value
     return .void_val;
 }
 
-fn dispatch_static_test(ctx: *BuiltinContext, method_name: []const u8, args: []const Value) !?Value {
+fn dispatch_static_test(
+    ctx: *BuiltinContext,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
     if (std.ascii.eqlIgnoreCase(method_name, "isRunningTest")) return Value{ .boolean = true };
     if (std.ascii.eqlIgnoreCase(method_name, "startTest")) {
         // Reset Limits counters (Salesforce resets governor limits at Test.startTest)
@@ -2901,7 +3119,11 @@ fn dispatch_static_http(ctx: *BuiltinContext, method_name: []const u8) !?Value {
 ///   branch of the if/else, and to make `nonTriggerRecordClassShouldThrow…`
 ///   reach the getTriggerRecord cast (where the TypeException rethrow in
 ///   FormulaFilter.getTriggerRecord produces INVALID_SUBTYPE).
-fn dispatch_static_formula(ctx: *BuiltinContext, method_name: []const u8, _: []const Value) !?Value {
+fn dispatch_static_formula(
+    ctx: *BuiltinContext,
+    method_name: []const u8,
+    _: []const Value,
+) !?Value {
     if (std.ascii.eqlIgnoreCase(method_name, "builder")) {
         const builder = try ctx.arena.create(types.ObjectInstance);
         builder.* = .{ .class_name = "Formula.FormulaBuilder" };
@@ -2913,7 +3135,12 @@ fn dispatch_static_formula(ctx: *BuiltinContext, method_name: []const u8, _: []c
 /// Formula.builder() fluent chain. All configurators return the same builder
 /// object (so any caller order works) and `build()` materialises a
 /// FormulaEval.FormulaInstance carrying the configured formula string.
-fn dispatch_obj_formula_builder(ctx: *BuiltinContext, obj: *types.ObjectInstance, method_name: []const u8, args: []const Value) !?Value {
+fn dispatch_obj_formula_builder(
+    ctx: *BuiltinContext,
+    obj: *types.ObjectInstance,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
     const ci = std.ascii;
     // All "with*" configurators store their argument and return the builder.
     const configurators = [_][]const u8{
@@ -3005,7 +3232,12 @@ fn is_recognisable_formula(src: []const u8) bool {
 /// record matches or no records match. Anything else falls through to a
 /// boolean-false result, matching the "treat null/unsupported as false"
 /// expectation of FormulaFilter callers.
-fn dispatch_obj_formula_instance(_: *BuiltinContext, obj: *types.ObjectInstance, method_name: []const u8, args: []const Value) !?Value {
+fn dispatch_obj_formula_instance(
+    _: *BuiltinContext,
+    obj: *types.ObjectInstance,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
     const ci = std.ascii;
     if (ci.eqlIgnoreCase(method_name, "evaluate")) {
         if (args.len == 0) return Value{ .boolean = false };
@@ -3024,7 +3256,9 @@ fn evaluate_simple_equality_formula(formula: []const u8, record: Value) bool {
     const trimmed = std.mem.trim(u8, formula, " \t\n\r");
     // CONTAINS(<path>, "substring") — Salesforce string-contains function.
     // Null haystack ⇒ false, per FormulaFilter's "treat null as false" spec.
-    if (std.ascii.startsWithIgnoreCase(trimmed, "CONTAINS(") and std.mem.endsWith(u8, trimmed, ")")) {
+    if (std.ascii.startsWithIgnoreCase(trimmed, "CONTAINS(") and
+        std.mem.endsWith(u8, trimmed, ")"))
+    {
         const inner = trimmed["CONTAINS(".len .. trimmed.len - 1];
         const comma_idx = std.mem.indexOfScalar(u8, inner, ',') orelse return false;
         const path_part = std.mem.trim(u8, inner[0..comma_idx], " \t\n\r");
@@ -3122,53 +3356,113 @@ fn sobject_field_case_insensitive(sob: *types.SObject, field_name: []const u8) ?
     return null;
 }
 
-fn dispatch_static_can_the_user(ctx: *BuiltinContext, method_name: []const u8, args: []const Value) !?Value {
-    if (std.ascii.eqlIgnoreCase(method_name, "read") or std.ascii.eqlIgnoreCase(method_name, "flsAccessible")) {
+fn can_the_user_bulk_permissions(
+    ctx: *BuiltinContext,
+    fields: Value,
+    comptime permission_fn: fn (*evaluator_mod.Evaluator, ?[]const u8, []const u8) bool,
+) !Value {
+    const map = try ctx.arena.create(types.MapValue);
+    map.* = .{};
+    if (fields == .set) {
+        for (fields.set.entries.keys()) |field_name| {
+            try map.entries.put(ctx.arena, field_name, Value{
+                .boolean = permission_fn(ctx.eval, null, field_name),
+            });
+        }
+    }
+    return Value{ .map = map };
+}
+
+fn dispatch_static_can_the_user(
+    ctx: *BuiltinContext,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
+    if (std.ascii.eqlIgnoreCase(method_name, "read") or
+        std.ascii.eqlIgnoreCase(method_name, "flsAccessible"))
+    {
         const sobject_type = get_s_object_type_from_args(args);
-        if (sobject_type) |sot| return Value{ .boolean = resolve_object_crud_permission(ctx.eval, sot, "read") };
+        if (sobject_type) |sot| {
+            return Value{
+                .boolean = resolve_object_crud_permission(ctx.eval, sot, "read"),
+            };
+        }
         return Value{ .boolean = !ctx.eval.is_restricted_user };
     }
-    if (std.ascii.eqlIgnoreCase(method_name, "create") or std.ascii.eqlIgnoreCase(method_name, "edit") or std.ascii.eqlIgnoreCase(method_name, "crud")) {
+    if (std.ascii.eqlIgnoreCase(method_name, "create") or
+        std.ascii.eqlIgnoreCase(method_name, "edit") or
+        std.ascii.eqlIgnoreCase(method_name, "crud"))
+    {
         const sobject_type = get_s_object_type_from_args(args);
-        if (sobject_type) |sot| return Value{ .boolean = resolve_object_crud_permission(ctx.eval, sot, method_name) };
+        if (sobject_type) |sot| {
+            return Value{
+                .boolean = resolve_object_crud_permission(ctx.eval, sot, method_name),
+            };
+        }
         return Value{ .boolean = !ctx.eval.is_restricted_user };
     }
     if (std.ascii.eqlIgnoreCase(method_name, "destroy")) {
         const sobject_type = get_s_object_type_from_args(args);
-        if (sobject_type) |sot| return Value{ .boolean = resolve_object_crud_permission(ctx.eval, sot, "destroy") };
+        if (sobject_type) |sot| {
+            return Value{
+                .boolean = resolve_object_crud_permission(ctx.eval, sot, "destroy"),
+            };
+        }
         return Value{ .boolean = !ctx.eval.is_restricted_user };
     }
     if (std.ascii.eqlIgnoreCase(method_name, "flsUpdatable")) {
         if (args.len >= 2 and args[1] == .string) {
-            return Value{ .boolean = resolve_field_write_permission(ctx.eval, null, args[1].string, "edit") };
+            return Value{
+                .boolean = resolve_field_write_permission(
+                    ctx.eval,
+                    null,
+                    args[1].string,
+                    "edit",
+                ),
+            };
         }
         return Value{ .boolean = true };
     }
-    if (std.ascii.eqlIgnoreCase(method_name, "bulkFLSAccessible") or std.ascii.eqlIgnoreCase(method_name, "getFLSForFieldSet")) {
-        const map = try ctx.arena.create(types.MapValue);
-        map.* = .{};
-        if (args.len >= 2 and args[1] == .set) {
-            for (args[1].set.entries.keys()) |field_name| {
-                try map.entries.put(ctx.arena, field_name, Value{ .boolean = resolve_field_read_permission(ctx.eval, null, field_name) });
-            }
-        }
-        return Value{ .map = map };
+    if (std.ascii.eqlIgnoreCase(method_name, "bulkFLSAccessible") or
+        std.ascii.eqlIgnoreCase(method_name, "getFLSForFieldSet"))
+    {
+        return try can_the_user_bulk_permissions(
+            ctx,
+            if (args.len >= 2) args[1] else Value.null_val,
+            resolve_field_read_permission,
+        );
     }
     if (std.ascii.eqlIgnoreCase(method_name, "bulkFLSUpdatable")) {
-        const map = try ctx.arena.create(types.MapValue);
-        map.* = .{};
-        if (args.len >= 2 and args[1] == .set) {
-            for (args[1].set.entries.keys()) |field_name| {
-                try map.entries.put(ctx.arena, field_name, Value{ .boolean = resolve_field_write_permission(ctx.eval, null, field_name, "edit") });
-            }
-        }
-        return Value{ .map = map };
+        return try can_the_user_bulk_permissions(
+            ctx,
+            if (args.len >= 2) args[1] else Value.null_val,
+            struct {
+                fn run(
+                    eval: *evaluator_mod.Evaluator,
+                    object_type: ?[]const u8,
+                    field_name: []const u8,
+                ) bool {
+                    return resolve_field_write_permission(
+                        eval,
+                        object_type,
+                        field_name,
+                        "edit",
+                    );
+                }
+            }.run,
+        );
     }
     return null;
 }
 
-fn dispatch_static_apex_pages(ctx: *BuiltinContext, method_name: []const u8, args: []const Value) !?Value {
-    if (std.ascii.eqlIgnoreCase(method_name, "addMessages") or std.ascii.eqlIgnoreCase(method_name, "addMessage")) {
+fn dispatch_static_apex_pages(
+    ctx: *BuiltinContext,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
+    if (std.ascii.eqlIgnoreCase(method_name, "addMessages") or
+        std.ascii.eqlIgnoreCase(method_name, "addMessage"))
+    {
         if (args.len > 0) {
             const msg_text = blk: {
                 if (args[0] == .object) {
@@ -3280,7 +3574,9 @@ fn dispatch_static_network(ctx: *BuiltinContext, method_name: []const u8) !?Valu
 }
 
 fn dispatch_static_url(ctx: *BuiltinContext, method_name: []const u8) !?Value {
-    if (std.ascii.eqlIgnoreCase(method_name, "getOrgDomainUrl") or std.ascii.eqlIgnoreCase(method_name, "getSalesforceBaseUrl")) {
+    if (std.ascii.eqlIgnoreCase(method_name, "getOrgDomainUrl") or
+        std.ascii.eqlIgnoreCase(method_name, "getSalesforceBaseUrl"))
+    {
         const obj = try ctx.arena.create(types.ObjectInstance);
         obj.* = .{ .class_name = "Url" };
         try obj.fields.put(ctx.arena, "Host", Value{ .string = "test.salesforce.com" });
@@ -3290,7 +3586,11 @@ fn dispatch_static_url(ctx: *BuiltinContext, method_name: []const u8) !?Value {
     return Value.null_val;
 }
 
-fn lookup_field_metadata(ctx: *BuiltinContext, object_type: []const u8, field_name: []const u8) ?evaluator_mod.FieldMetadata {
+fn lookup_field_metadata(
+    ctx: *BuiltinContext,
+    object_type: []const u8,
+    field_name: []const u8,
+) ?evaluator_mod.FieldMetadata {
     const type_meta = ctx.eval.field_metadata.get(object_type) orelse return null;
     if (type_meta.get(field_name)) |meta| return meta;
     var iter = type_meta.iterator();
@@ -3300,7 +3600,11 @@ fn lookup_field_metadata(ctx: *BuiltinContext, object_type: []const u8, field_na
     return null;
 }
 
-fn lookup_eval_field_metadata(eval: *evaluator_mod.Evaluator, object_type: []const u8, field_name: []const u8) ?evaluator_mod.FieldMetadata {
+fn lookup_eval_field_metadata(
+    eval: *evaluator_mod.Evaluator,
+    object_type: []const u8,
+    field_name: []const u8,
+) ?evaluator_mod.FieldMetadata {
     const type_meta = eval.field_metadata.get(object_type) orelse return null;
     if (type_meta.get(field_name)) |meta| return meta;
     var iter = type_meta.iterator();
@@ -3311,7 +3615,10 @@ fn lookup_eval_field_metadata(eval: *evaluator_mod.Evaluator, object_type: []con
 }
 
 fn default_field_label(field_name: []const u8) []const u8 {
-    const leaf = if (std.mem.lastIndexOfScalar(u8, field_name, '.')) |idx| field_name[idx + 1 ..] else field_name;
+    const leaf = if (std.mem.lastIndexOfScalar(u8, field_name, '.')) |idx|
+        field_name[idx + 1 ..]
+    else
+        field_name;
     if (std.mem.endsWith(u8, leaf, "__c") or
         std.mem.endsWith(u8, leaf, "__r") or
         std.mem.endsWith(u8, leaf, "__e"))
@@ -3390,16 +3697,24 @@ fn standard_reference_target_for_field_name(field_name: []const u8) ?[]const u8 
 
 fn default_field_is_nillable(object_type: []const u8, field_name: []const u8) bool {
     if (std.ascii.eqlIgnoreCase(field_name, "Id")) return false;
-    if (std.ascii.eqlIgnoreCase(field_name, "Name") and has_implicit_name_field(object_type) and !has_custom_object_suffix(object_type)) return false;
-    if (std.ascii.eqlIgnoreCase(object_type, "Account") and std.ascii.eqlIgnoreCase(field_name, "Name")) return false;
-    if (std.ascii.eqlIgnoreCase(object_type, "Opportunity") and std.ascii.eqlIgnoreCase(field_name, "Name")) return false;
-    if ((std.ascii.eqlIgnoreCase(object_type, "Contact") or std.ascii.eqlIgnoreCase(object_type, "Lead")) and std.ascii.eqlIgnoreCase(field_name, "LastName")) return false;
+    if (std.ascii.eqlIgnoreCase(field_name, "Name") and
+        has_implicit_name_field(object_type) and
+        !has_custom_object_suffix(object_type)) return false;
+    if (std.ascii.eqlIgnoreCase(object_type, "Account") and
+        std.ascii.eqlIgnoreCase(field_name, "Name")) return false;
+    if (std.ascii.eqlIgnoreCase(object_type, "Opportunity") and
+        std.ascii.eqlIgnoreCase(field_name, "Name")) return false;
+    if ((std.ascii.eqlIgnoreCase(object_type, "Contact") or
+        std.ascii.eqlIgnoreCase(object_type, "Lead")) and
+        std.ascii.eqlIgnoreCase(field_name, "LastName")) return false;
     if (std.ascii.eqlIgnoreCase(object_type, "ContentVersion") and
         (std.ascii.eqlIgnoreCase(field_name, "PathOnClient") or std.ascii.eqlIgnoreCase(field_name, "VersionData"))) return false;
     return true;
 }
 
-fn split_qualified_metadata_name(name: []const u8) struct { namespace: []const u8, local_name: []const u8 } {
+fn split_qualified_metadata_name(
+    name: []const u8,
+) struct { namespace: []const u8, local_name: []const u8 } {
     if (std.mem.indexOf(u8, name, "__")) |idx| {
         const suffix = name[idx..];
         if (!std.mem.eql(u8, suffix, "__c") and
@@ -3428,12 +3743,24 @@ fn describe_local_name(name: []const u8) []const u8 {
 fn default_describe_label_plural(arena: std.mem.Allocator, obj_name: []const u8) ![]const u8 {
     const local_name = describe_local_name(obj_name);
     if (local_name.len == 0) return "";
-    if (std.mem.endsWith(u8, local_name, "s")) return try std.fmt.allocPrint(arena, "{s}es", .{local_name});
-    if (std.mem.endsWith(u8, local_name, "y")) return try std.fmt.allocPrint(arena, "{s}ies", .{local_name[0 .. local_name.len - 1]});
+    if (std.mem.endsWith(u8, local_name, "s")) {
+        return try std.fmt.allocPrint(arena, "{s}es", .{local_name});
+    }
+    if (std.mem.endsWith(u8, local_name, "y")) {
+        return try std.fmt.allocPrint(
+            arena,
+            "{s}ies",
+            .{local_name[0 .. local_name.len - 1]},
+        );
+    }
     return try std.fmt.allocPrint(arena, "{s}s", .{local_name});
 }
 
-fn create_s_object_field_token_value(arena: std.mem.Allocator, object_type: []const u8, field_name: []const u8) !Value {
+fn create_s_object_field_token_value(
+    arena: std.mem.Allocator,
+    object_type: []const u8,
+    field_name: []const u8,
+) !Value {
     const token = try arena.create(types.ObjectInstance);
     token.* = .{ .class_name = "Schema.SObjectField" };
     try token.fields.put(arena, "objectType", Value{ .string = object_type });
@@ -3451,7 +3778,11 @@ fn append_child_relationship_value(
 ) !void {
     const child_rel = try ctx.arena.create(types.ObjectInstance);
     child_rel.* = .{ .class_name = "Schema.ChildRelationship" };
-    try child_rel.fields.put(ctx.arena, "field", try create_s_object_field_token_value(ctx.arena, child_type, fk_field));
+    try child_rel.fields.put(
+        ctx.arena,
+        "field",
+        try create_s_object_field_token_value(ctx.arena, child_type, fk_field),
+    );
     try child_rel.fields.put(ctx.arena, "relationshipName", Value{ .string = relationship_name });
 
     const child_type_token = try ctx.arena.create(types.ObjectInstance);
@@ -3462,6 +3793,64 @@ fn append_child_relationship_value(
     try list.items.append(ctx.arena, Value{ .object = child_rel });
 }
 
+const ChildRelationshipSpec = struct {
+    parent: []const u8,
+    child: []const u8,
+    fk: []const u8,
+    relationship: []const u8,
+};
+
+const standard_child_relationships = [_]ChildRelationshipSpec{
+    .{ .parent = "Account", .child = "Contact", .fk = "AccountId", .relationship = "Contacts" },
+    .{ .parent = "Account", .child = "Opportunity", .fk = "AccountId", .relationship = "Opportunities" },
+    .{ .parent = "Account", .child = "Case", .fk = "AccountId", .relationship = "Cases" },
+    .{ .parent = "Account", .child = "Contract", .fk = "AccountId", .relationship = "Contracts" },
+    .{ .parent = "Account", .child = "Order", .fk = "AccountId", .relationship = "Orders" },
+    .{ .parent = "Account", .child = "Asset", .fk = "AccountId", .relationship = "Assets" },
+    .{ .parent = "Account", .child = "Event", .fk = "WhatId", .relationship = "Events" },
+    .{ .parent = "Account", .child = "Task", .fk = "WhatId", .relationship = "Tasks" },
+    .{ .parent = "Account", .child = "AccountContactRelation", .fk = "AccountId", .relationship = "AccountContactRelations" },
+    .{ .parent = "Contact", .child = "Asset", .fk = "ContactId", .relationship = "Assets" },
+    .{ .parent = "Contact", .child = "Case", .fk = "ContactId", .relationship = "Cases" },
+    .{ .parent = "Contact", .child = "Event", .fk = "WhoId", .relationship = "Events" },
+    .{ .parent = "Contact", .child = "Task", .fk = "WhoId", .relationship = "Tasks" },
+    .{ .parent = "Contact", .child = "CampaignMember", .fk = "ContactId", .relationship = "CampaignMembers" },
+    .{ .parent = "Contact", .child = "AccountContactRelation", .fk = "ContactId", .relationship = "AccountContactRelations" },
+    .{ .parent = "Lead", .child = "CampaignMember", .fk = "LeadId", .relationship = "CampaignMembers" },
+    .{ .parent = "Lead", .child = "Event", .fk = "WhoId", .relationship = "Events" },
+    .{ .parent = "Lead", .child = "Task", .fk = "WhoId", .relationship = "Tasks" },
+    .{ .parent = "Opportunity", .child = "OpportunityLineItem", .fk = "OpportunityId", .relationship = "OpportunityLineItems" },
+    .{ .parent = "Opportunity", .child = "OpportunityContactRole", .fk = "OpportunityId", .relationship = "OpportunityContactRoles" },
+    .{ .parent = "Opportunity", .child = "Event", .fk = "WhatId", .relationship = "Events" },
+    .{ .parent = "Opportunity", .child = "Task", .fk = "WhatId", .relationship = "Tasks" },
+    .{ .parent = "Opportunity", .child = "Quote", .fk = "OpportunityId", .relationship = "Quotes" },
+    .{ .parent = "Opportunity", .child = "OpportunityFieldHistory", .fk = "OpportunityId", .relationship = "Histories" },
+    .{ .parent = "Product2", .child = "OpportunityLineItem", .fk = "Product2Id", .relationship = "OpportunityLineItems" },
+    .{ .parent = "Product2", .child = "PricebookEntry", .fk = "Product2Id", .relationship = "PricebookEntries" },
+    .{ .parent = "PricebookEntry", .child = "OpportunityLineItem", .fk = "PricebookEntryId", .relationship = "OpportunityLineItems" },
+    .{ .parent = "Pricebook2", .child = "PricebookEntry", .fk = "Pricebook2Id", .relationship = "PricebookEntries" },
+    .{ .parent = "Quote", .child = "QuoteLineItem", .fk = "QuoteId", .relationship = "QuoteLineItems" },
+    .{ .parent = "Campaign", .child = "CampaignMember", .fk = "CampaignId", .relationship = "CampaignMembers" },
+    .{ .parent = "Campaign", .child = "Opportunity", .fk = "CampaignId", .relationship = "Opportunities" },
+    .{ .parent = "Case", .child = "CaseComment", .fk = "ParentId", .relationship = "CaseComments" },
+    .{ .parent = "Case", .child = "EmailMessage", .fk = "ParentId", .relationship = "EmailMessages" },
+    .{ .parent = "Case", .child = "Event", .fk = "WhatId", .relationship = "Events" },
+    .{ .parent = "Case", .child = "Task", .fk = "WhatId", .relationship = "Tasks" },
+    .{ .parent = "User", .child = "UserLogin", .fk = "UserId", .relationship = "UserLogins" },
+    .{ .parent = "User", .child = "Event", .fk = "OwnerId", .relationship = "Events" },
+    .{ .parent = "User", .child = "Task", .fk = "OwnerId", .relationship = "Tasks" },
+    .{ .parent = "Contract", .child = "ContractLineItem", .fk = "ContractId", .relationship = "ContractLineItems" },
+    .{ .parent = "Contract", .child = "Opportunity", .fk = "ContractId", .relationship = "Opportunities" },
+    .{ .parent = "Contract", .child = "Order", .fk = "ContractId", .relationship = "Orders" },
+    .{ .parent = "Order", .child = "OrderItem", .fk = "OrderId", .relationship = "OrderItems" },
+    .{ .parent = "Opportunity", .child = "ListEmail", .fk = "RelatedToId", .relationship = "ListEmails" },
+    .{ .parent = "ListEmail", .child = "Task", .fk = "WhatId", .relationship = "Tasks" },
+    .{ .parent = "Account", .child = "User", .fk = "AccountId", .relationship = "Users" },
+    .{ .parent = "Account", .child = "Account", .fk = "ParentId", .relationship = "ChildAccounts" },
+    .{ .parent = "Opportunity", .child = "Opportunity", .fk = "ParentId", .relationship = "ChildOpportunities" },
+    .{ .parent = "Case", .child = "Case", .fk = "ParentId", .relationship = "ChildCases" },
+};
+
 fn create_child_relationships_value(ctx: *BuiltinContext, parent_type: []const u8) !Value {
     const list = try ctx.arena.create(types.ListValue);
     list.* = .{};
@@ -3469,61 +3858,16 @@ fn create_child_relationships_value(ctx: *BuiltinContext, parent_type: []const u
     for (ctx.eval.child_relationships.keys(), ctx.eval.child_relationships.values()) |key, rel| {
         const sep = std.mem.indexOfScalar(u8, key, '|') orelse continue;
         if (!std.ascii.eqlIgnoreCase(key[0..sep], parent_type)) continue;
-        try append_child_relationship_value(ctx, list, rel.child_type, rel.fk_field, key[sep + 1 ..]);
+        try append_child_relationship_value(
+            ctx,
+            list,
+            rel.child_type,
+            rel.fk_field,
+            key[sep + 1 ..],
+        );
     }
 
-    const standard = [_]struct { parent: []const u8, child: []const u8, fk: []const u8, relationship: []const u8 }{
-        .{ .parent = "Account", .child = "Contact", .fk = "AccountId", .relationship = "Contacts" },
-        .{ .parent = "Account", .child = "Opportunity", .fk = "AccountId", .relationship = "Opportunities" },
-        .{ .parent = "Account", .child = "Case", .fk = "AccountId", .relationship = "Cases" },
-        .{ .parent = "Account", .child = "Contract", .fk = "AccountId", .relationship = "Contracts" },
-        .{ .parent = "Account", .child = "Order", .fk = "AccountId", .relationship = "Orders" },
-        .{ .parent = "Account", .child = "Asset", .fk = "AccountId", .relationship = "Assets" },
-        .{ .parent = "Account", .child = "Event", .fk = "WhatId", .relationship = "Events" },
-        .{ .parent = "Account", .child = "Task", .fk = "WhatId", .relationship = "Tasks" },
-        .{ .parent = "Account", .child = "AccountContactRelation", .fk = "AccountId", .relationship = "AccountContactRelations" },
-        .{ .parent = "Contact", .child = "Asset", .fk = "ContactId", .relationship = "Assets" },
-        .{ .parent = "Contact", .child = "Case", .fk = "ContactId", .relationship = "Cases" },
-        .{ .parent = "Contact", .child = "Event", .fk = "WhoId", .relationship = "Events" },
-        .{ .parent = "Contact", .child = "Task", .fk = "WhoId", .relationship = "Tasks" },
-        .{ .parent = "Contact", .child = "CampaignMember", .fk = "ContactId", .relationship = "CampaignMembers" },
-        .{ .parent = "Contact", .child = "AccountContactRelation", .fk = "ContactId", .relationship = "AccountContactRelations" },
-        .{ .parent = "Lead", .child = "CampaignMember", .fk = "LeadId", .relationship = "CampaignMembers" },
-        .{ .parent = "Lead", .child = "Event", .fk = "WhoId", .relationship = "Events" },
-        .{ .parent = "Lead", .child = "Task", .fk = "WhoId", .relationship = "Tasks" },
-        .{ .parent = "Opportunity", .child = "OpportunityLineItem", .fk = "OpportunityId", .relationship = "OpportunityLineItems" },
-        .{ .parent = "Opportunity", .child = "OpportunityContactRole", .fk = "OpportunityId", .relationship = "OpportunityContactRoles" },
-        .{ .parent = "Opportunity", .child = "Event", .fk = "WhatId", .relationship = "Events" },
-        .{ .parent = "Opportunity", .child = "Task", .fk = "WhatId", .relationship = "Tasks" },
-        .{ .parent = "Opportunity", .child = "Quote", .fk = "OpportunityId", .relationship = "Quotes" },
-        .{ .parent = "Opportunity", .child = "OpportunityFieldHistory", .fk = "OpportunityId", .relationship = "Histories" },
-        .{ .parent = "Product2", .child = "OpportunityLineItem", .fk = "Product2Id", .relationship = "OpportunityLineItems" },
-        .{ .parent = "Product2", .child = "PricebookEntry", .fk = "Product2Id", .relationship = "PricebookEntries" },
-        .{ .parent = "PricebookEntry", .child = "OpportunityLineItem", .fk = "PricebookEntryId", .relationship = "OpportunityLineItems" },
-        .{ .parent = "Pricebook2", .child = "PricebookEntry", .fk = "Pricebook2Id", .relationship = "PricebookEntries" },
-        .{ .parent = "Quote", .child = "QuoteLineItem", .fk = "QuoteId", .relationship = "QuoteLineItems" },
-        .{ .parent = "Campaign", .child = "CampaignMember", .fk = "CampaignId", .relationship = "CampaignMembers" },
-        .{ .parent = "Campaign", .child = "Opportunity", .fk = "CampaignId", .relationship = "Opportunities" },
-        .{ .parent = "Case", .child = "CaseComment", .fk = "ParentId", .relationship = "CaseComments" },
-        .{ .parent = "Case", .child = "EmailMessage", .fk = "ParentId", .relationship = "EmailMessages" },
-        .{ .parent = "Case", .child = "Event", .fk = "WhatId", .relationship = "Events" },
-        .{ .parent = "Case", .child = "Task", .fk = "WhatId", .relationship = "Tasks" },
-        .{ .parent = "User", .child = "UserLogin", .fk = "UserId", .relationship = "UserLogins" },
-        .{ .parent = "User", .child = "Event", .fk = "OwnerId", .relationship = "Events" },
-        .{ .parent = "User", .child = "Task", .fk = "OwnerId", .relationship = "Tasks" },
-        .{ .parent = "Contract", .child = "ContractLineItem", .fk = "ContractId", .relationship = "ContractLineItems" },
-        .{ .parent = "Contract", .child = "Opportunity", .fk = "ContractId", .relationship = "Opportunities" },
-        .{ .parent = "Contract", .child = "Order", .fk = "ContractId", .relationship = "Orders" },
-        .{ .parent = "Order", .child = "OrderItem", .fk = "OrderId", .relationship = "OrderItems" },
-        .{ .parent = "Opportunity", .child = "ListEmail", .fk = "RelatedToId", .relationship = "ListEmails" },
-        .{ .parent = "ListEmail", .child = "Task", .fk = "WhatId", .relationship = "Tasks" },
-        .{ .parent = "Account", .child = "User", .fk = "AccountId", .relationship = "Users" },
-        // Self-referencing hierarchy relationships.
-        .{ .parent = "Account", .child = "Account", .fk = "ParentId", .relationship = "ChildAccounts" },
-        .{ .parent = "Opportunity", .child = "Opportunity", .fk = "ParentId", .relationship = "ChildOpportunities" },
-        .{ .parent = "Case", .child = "Case", .fk = "ParentId", .relationship = "ChildCases" },
-    };
-    for (standard) |entry| {
+    for (standard_child_relationships) |entry| {
         if (!std.ascii.eqlIgnoreCase(entry.parent, parent_type)) continue;
         try append_child_relationship_value(ctx, list, entry.child, entry.fk, entry.relationship);
     }
@@ -3531,7 +3875,11 @@ fn create_child_relationships_value(ctx: *BuiltinContext, parent_type: []const u
     return Value{ .list = list };
 }
 
-pub fn create_field_set_collection_value(arena: std.mem.Allocator, eval: *evaluator_mod.Evaluator, obj_name: []const u8) !Value {
+pub fn create_field_set_collection_value(
+    arena: std.mem.Allocator,
+    eval: *evaluator_mod.Evaluator,
+    obj_name: []const u8,
+) !Value {
     const collection = try arena.create(types.ObjectInstance);
     collection.* = .{ .class_name = "Schema.FieldSetCollection" };
     const map = try arena.create(types.MapValue);
@@ -3550,14 +3898,23 @@ pub fn create_field_set_collection_value(arena: std.mem.Allocator, eval: *evalua
             for (field_set_meta.members) |member_meta| {
                 const member = try arena.create(types.ObjectInstance);
                 member.* = .{ .class_name = "Schema.FieldSetMember" };
-                const member_label = if (lookup_eval_field_metadata(eval, obj_name, member_meta.field_path)) |meta|
-                    meta.label orelse default_field_label(member_meta.field_path)
-                else
-                    default_field_label(member_meta.field_path);
+                const member_label =
+                    if (lookup_eval_field_metadata(eval, obj_name, member_meta.field_path)) |meta|
+                        meta.label orelse default_field_label(member_meta.field_path)
+                    else
+                        default_field_label(member_meta.field_path);
                 try member.fields.put(arena, "fieldPath", Value{ .string = member_meta.field_path });
                 try member.fields.put(arena, "label", Value{ .string = member_label });
                 try member.fields.put(arena, "required", Value{ .boolean = member_meta.is_required });
-                try member.fields.put(arena, "sObjectField", try create_s_object_field_token_value(arena, obj_name, member_meta.field_path));
+                try member.fields.put(
+                    arena,
+                    "sObjectField",
+                    try create_s_object_field_token_value(
+                        arena,
+                        obj_name,
+                        member_meta.field_path,
+                    ),
+                );
                 try members.items.append(arena, Value{ .object = member });
             }
             try field_set.fields.put(arena, "fields", Value{ .list = members });
@@ -3590,14 +3947,23 @@ pub fn create_field_describe_map_value(ctx: *BuiltinContext, obj_name: []const u
         "OwnerId",   "IsDeleted",      "CreatedById",    "LastModifiedById",
         "CreatedBy", "LastModifiedBy", "SystemModstamp",
     }) |field_name| {
-        if (std.ascii.eqlIgnoreCase(field_name, "Name") and !has_implicit_name_field(obj_name)) continue;
-        try fields_kv.entries.put(ctx.arena, field_name, try create_s_object_field_token_value(ctx.arena, obj_name, field_name));
+        if (std.ascii.eqlIgnoreCase(field_name, "Name") and
+            !has_implicit_name_field(obj_name)) continue;
+        try fields_kv.entries.put(
+            ctx.arena,
+            field_name,
+            try create_s_object_field_token_value(ctx.arena, obj_name, field_name),
+        );
     }
     if (ctx.eval.field_types.get(obj_name)) |type_map| {
         for (type_map.keys(), type_map.values()) |fname, ftype| {
             _ = ftype;
             if (!fields_kv.entries.contains(fname)) {
-                try fields_kv.entries.put(ctx.arena, fname, try create_s_object_field_token_value(ctx.arena, obj_name, fname));
+                try fields_kv.entries.put(
+                    ctx.arena,
+                    fname,
+                    try create_s_object_field_token_value(ctx.arena, obj_name, fname),
+                );
             }
         }
     }
@@ -3617,10 +3983,18 @@ fn create_describe_result(ctx: *BuiltinContext, obj_name: []const u8) !Value {
     desc.* = .{ .class_name = "DescribeSObjectResult" };
     const is_custom = has_custom_object_suffix(obj_name);
     try desc.fields.put(ctx.arena, "name", Value{ .string = obj_name });
-    try desc.fields.put(ctx.arena, "isAccessible", Value{ .boolean = resolve_object_crud_permission(ctx.eval, obj_name, "read") });
-    try desc.fields.put(ctx.arena, "isCreateable", Value{ .boolean = resolve_object_crud_permission(ctx.eval, obj_name, "create") });
-    try desc.fields.put(ctx.arena, "isUpdateable", Value{ .boolean = resolve_object_crud_permission(ctx.eval, obj_name, "edit") });
-    try desc.fields.put(ctx.arena, "isDeletable", Value{ .boolean = resolve_object_crud_permission(ctx.eval, obj_name, "delete") });
+    try desc.fields.put(ctx.arena, "isAccessible", Value{
+        .boolean = resolve_object_crud_permission(ctx.eval, obj_name, "read"),
+    });
+    try desc.fields.put(ctx.arena, "isCreateable", Value{
+        .boolean = resolve_object_crud_permission(ctx.eval, obj_name, "create"),
+    });
+    try desc.fields.put(ctx.arena, "isUpdateable", Value{
+        .boolean = resolve_object_crud_permission(ctx.eval, obj_name, "edit"),
+    });
+    try desc.fields.put(ctx.arena, "isDeletable", Value{
+        .boolean = resolve_object_crud_permission(ctx.eval, obj_name, "delete"),
+    });
     try desc.fields.put(ctx.arena, "isQueryable", Value{ .boolean = true });
     try desc.fields.put(ctx.arena, "isSearchable", Value{ .boolean = true });
 
@@ -3629,7 +4003,9 @@ fn create_describe_result(ctx: *BuiltinContext, obj_name: []const u8) !Value {
 
     const local_name = describe_local_name(obj_name);
     const entity_label: []const u8 = ctx.eval.object_labels.get(obj_name) orelse local_name;
-    const entity_label_plural: []const u8 = ctx.eval.object_label_plurals.get(obj_name) orelse try default_describe_label_plural(ctx.arena, obj_name);
+    const entity_label_plural: []const u8 =
+        ctx.eval.object_label_plurals.get(obj_name) orelse
+        try default_describe_label_plural(ctx.arena, obj_name);
     try desc.fields.put(ctx.arena, "label", Value{ .string = entity_label });
     try desc.fields.put(ctx.arena, "labelPlural", Value{ .string = entity_label_plural });
     try desc.fields.put(ctx.arena, "fieldSets", try create_field_set_collection_value(ctx.arena, ctx.eval, obj_name));

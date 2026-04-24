@@ -1132,9 +1132,21 @@ pub const Evaluator = struct {
                 default_rt.id = def_id;
                 try default_rt.fields.put(self.arena, "Id", Value{ .string = def_id });
                 try default_rt.fields.put(self.arena, "Name", Value{ .string = "Default" });
-                try default_rt.fields.put(self.arena, "DeveloperName", Value{ .string = "Default" });
-                try default_rt.fields.put(self.arena, "SobjectType", Value{ .string = obj_name });
-                try default_rt.fields.put(self.arena, "IsActive", Value{ .boolean = true });
+                try default_rt.fields.put(
+                    self.arena,
+                    "DeveloperName",
+                    Value{ .string = "Default" },
+                );
+                try default_rt.fields.put(
+                    self.arena,
+                    "SobjectType",
+                    Value{ .string = obj_name },
+                );
+                try default_rt.fields.put(
+                    self.arena,
+                    "IsActive",
+                    Value{ .boolean = true },
+                );
                 try gop.value_ptr.append(self.arena, Value{ .sobject = default_rt });
             }
         }
@@ -1427,62 +1439,7 @@ pub const Evaluator = struct {
         for (cd.members) |member| {
             switch (member) {
                 .static_init => |body| {
-                    const init_env = self.global_env.child() catch continue;
-                    var static_keys: std.ArrayListUnmanaged([]const u8) = .empty;
-                    var original_values: std.ArrayListUnmanaged(Value) = .empty;
-                    for (cd.members) |m2| {
-                        switch (m2) {
-                            .field_decl => |fd| {
-                                if (fd.modifiers.is_static) {
-                                    const key = std.fmt.allocPrint(
-                                        self.arena,
-                                        "{s}.{s}",
-                                        .{ cd.name, fd.name },
-                                    ) catch continue;
-                                    const cur = self.global_env.get(key) orelse Value.null_val;
-                                    static_keys.append(self.arena, key) catch continue;
-                                    original_values.append(self.arena, cur) catch continue;
-                                    init_env.define(fd.name, cur) catch {};
-                                }
-                            },
-                            else => {},
-                        }
-                    }
-                    _ = self.exec_block(body, init_env) catch {};
-                    var static_index: usize = 0;
-                    for (cd.members) |m2| {
-                        switch (m2) {
-                            .field_decl => |fd| {
-                                if (fd.modifiers.is_static) {
-                                    const key = if (static_index < static_keys.items.len)
-                                        static_keys.items[static_index]
-                                    else
-                                        std.fmt.allocPrint(
-                                            self.arena,
-                                            "{s}.{s}",
-                                            .{ cd.name, fd.name },
-                                        ) catch continue;
-                                    const original_value = if (static_index < original_values.items.len)
-                                        original_values.items[static_index]
-                                    else
-                                        Value.null_val;
-                                    static_index += 1;
-                                    const local_value = init_env.get(fd.name) orelse Value.null_val;
-                                    const global_value =
-                                        self.global_env.get(key) orelse Value.null_val;
-                                    const writeback_value =
-                                        if (!utils.value_eql(local_value, original_value))
-                                            local_value
-                                        else
-                                            global_value;
-                                    self.global_env.set(key, writeback_value) catch {
-                                        self.global_env.define(key, writeback_value) catch {};
-                                    };
-                                }
-                            },
-                            else => {},
-                        }
-                    }
+                    self.run_static_init_body(cd, body);
                 },
                 else => {},
             }
@@ -1915,9 +1872,13 @@ pub const Evaluator = struct {
                     switch (member) {
                         .enum_decl => |ed| {
                             if (std.ascii.eqlIgnoreCase(ed.name, class_name)) {
-                                if (std.ascii.eqlIgnoreCase(method_name, "valueOf") and args.len > 0 and args[0] == .string) {
+                                if (std.ascii.eqlIgnoreCase(method_name, "valueOf") and
+                                    args.len > 0 and args[0] == .string)
+                                {
                                     for (ed.values) |v| {
-                                        if (std.ascii.eqlIgnoreCase(v, args[0].string)) return Value{ .string = v };
+                                        if (std.ascii.eqlIgnoreCase(v, args[0].string)) {
+                                            return Value{ .string = v };
+                                        }
                                     }
                                     const exc = try self.arena.create(types.ObjectInstance);
                                     exc.* = .{ .class_name = "System.NoSuchElementException" };
@@ -1940,7 +1901,9 @@ pub const Evaluator = struct {
                                     return Value{ .list = list };
                                 }
                                 for (ed.values) |v| {
-                                    if (std.ascii.eqlIgnoreCase(v, method_name)) return Value{ .string = v };
+                                    if (std.ascii.eqlIgnoreCase(v, method_name)) {
+                                        return Value{ .string = v };
+                                    }
                                 }
                             }
                         },
@@ -2038,7 +2001,11 @@ pub const Evaluator = struct {
             try self.eval_expr(init_expr, current_env)
         else
             default_value(vd.type_ref);
-        val = try self.coerce_soql_assignment_to_declared_type(val, vd.initializer, vd.type_ref.name);
+        val = try self.coerce_soql_assignment_to_declared_type(
+            val,
+            vd.initializer,
+            vd.type_ref.name,
+        );
         const declared_type = self.render_type_ref(vd.type_ref);
         val = self.annotate_declared_collection_type(val, declared_type);
         try current_env.define_typed(vd.name, val, declared_type);
@@ -2190,7 +2157,12 @@ pub const Evaluator = struct {
     ) !StmtResult {
         const loop_env = try current_env.child();
         for (items) |item| {
-            const result = try self.execute_bound_loop_body(loop_env, fes.elem_name, item, fes.body);
+            const result = try self.execute_bound_loop_body(
+                loop_env,
+                fes.elem_name,
+                item,
+                fes.body,
+            );
             switch (result) {
                 .break_signal => break,
                 .continue_signal => {},
@@ -2211,7 +2183,12 @@ pub const Evaluator = struct {
         var values_copy: std.ArrayListUnmanaged(Value) = .empty;
         for (set.entries.values()) |item| try values_copy.append(self.arena, item);
         for (values_copy.items) |item| {
-            const result = try self.execute_bound_loop_body(loop_env, fes.elem_name, item, fes.body);
+            const result = try self.execute_bound_loop_body(
+                loop_env,
+                fes.elem_name,
+                item,
+                fes.body,
+            );
             switch (result) {
                 .break_signal => break,
                 .continue_signal => {},
@@ -2263,8 +2240,18 @@ pub const Evaluator = struct {
                 &.{},
             ) catch break;
             if (!(utils.coerce_to_bool(has_next) catch false)) break;
-            const next_val = try self.call_instance_method(iter_cd.?, iterator_obj.object, "next", &.{});
-            const result = try self.execute_bound_loop_body(loop_env, fes.elem_name, next_val, fes.body);
+            const next_val = try self.call_instance_method(
+                iter_cd.?,
+                iterator_obj.object,
+                "next",
+                &.{},
+            );
+            const result = try self.execute_bound_loop_body(
+                loop_env,
+                fes.elem_name,
+                next_val,
+                fes.body,
+            );
             switch (result) {
                 .break_signal => break,
                 .continue_signal => {},
@@ -2519,7 +2506,11 @@ pub const Evaluator = struct {
         if (!is_user_mode or !self.is_min_access_user or has_permset_dml) return;
 
         const from_type = self.get_target_object_type(target) orelse "SObject";
-        const msg = try std.fmt.allocPrint(self.arena, "No Access: Access to entity '{s}' denied", .{from_type});
+        const msg = try std.fmt.allocPrint(
+            self.arena,
+            "No Access: Access to entity '{s}' denied",
+            .{from_type},
+        );
         const exc = try self.arena.create(types.ObjectInstance);
         exc.* = .{ .class_name = "System.NoAccessException" };
         try exc.fields.put(self.arena, "message", Value{ .string = msg });
@@ -2578,10 +2569,14 @@ pub const Evaluator = struct {
 
     fn apply_run_as_s_object_flags(self: *Evaluator, user: *types.SObject) void {
         if (user.id) |uid| self.current_user_id = uid;
-        if (utils.sobject_get(&user.fields, "ProfileId") orelse utils.sobject_get(&user.fields, "profileId")) |pv| {
+        if (utils.sobject_get(&user.fields, "ProfileId") orelse
+            utils.sobject_get(&user.fields, "profileId")) |pv|
+        {
             if (pv == .string) self.current_profile_id = pv.string;
         } else if (utils.sobject_get(&user.fields, "Profile")) |prof| {
-            if (prof == .sobject and prof.sobject.id != null) self.current_profile_id = prof.sobject.id.?;
+            if (prof == .sobject and prof.sobject.id != null) {
+                self.current_profile_id = prof.sobject.id.?;
+            }
         }
 
         if (self.lookup_run_as_profile_name(user)) |pn| {
@@ -2611,7 +2606,9 @@ pub const Evaluator = struct {
     fn throw_null_pointer_exception(self: *Evaluator) !void {
         const exc = try self.arena.create(types.ObjectInstance);
         exc.* = .{ .class_name = "System.NullPointerException" };
-        try exc.fields.put(self.arena, "message", Value{ .string = "Attempt to de-reference a null object" });
+        try exc.fields.put(self.arena, "message", Value{
+            .string = "Attempt to de-reference a null object",
+        });
         self.pending_exception = Value{ .object = exc };
         return error.ApexException;
     }
@@ -2633,7 +2630,12 @@ pub const Evaluator = struct {
         try self.execute_dml_with_external_id_internal(op, target, null, true, null);
     }
 
-    fn execute_dml_with_external_id(self: *Evaluator, op: ast.DmlOp, target: Value, external_id_field: ?[]const u8) anyerror!void {
+    fn execute_dml_with_external_id(
+        self: *Evaluator,
+        op: ast.DmlOp,
+        target: Value,
+        external_id_field: ?[]const u8,
+    ) anyerror!void {
         try self.execute_dml_with_external_id_internal(op, target, external_id_field, true, null);
     }
 
@@ -2698,7 +2700,9 @@ pub const Evaluator = struct {
         if (target != .null_val) return;
         const exc = try self.arena.create(types.ObjectInstance);
         exc.* = .{ .class_name = "System.NullPointerException" };
-        try exc.fields.put(self.arena, "message", Value{ .string = "Attempt to de-reference a null object" });
+        try exc.fields.put(self.arena, "message", Value{
+            .string = "Attempt to de-reference a null object",
+        });
         self.pending_exception = Value{ .object = exc };
         return error.ApexException;
     }
@@ -2796,7 +2800,12 @@ pub const Evaluator = struct {
         return error.ApexException;
     }
 
-    fn execute_dml_records(self: *Evaluator, op: ast.DmlOp, target: Value, external_id_field: ?[]const u8) !void {
+    fn execute_dml_records(
+        self: *Evaluator,
+        op: ast.DmlOp,
+        target: Value,
+        external_id_field: ?[]const u8,
+    ) !void {
         switch (op) {
             .insert => try self.execute_insert_records(target),
             .update => {
@@ -2813,7 +2822,9 @@ pub const Evaluator = struct {
                     try self.upsert_record(target.sobject, external_id_field);
                 } else if (target == .list) {
                     for (target.list.items.items) |item| {
-                        if (item == .sobject) try self.upsert_record(item.sobject, external_id_field);
+                        if (item == .sobject) {
+                            try self.upsert_record(item.sobject, external_id_field);
+                        }
                     }
                 }
             },
