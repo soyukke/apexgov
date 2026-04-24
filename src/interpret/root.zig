@@ -4,6 +4,7 @@
 //! パイプライン: Lexer → Parser → Evaluator
 
 const std = @import("std");
+const builtin = @import("builtin");
 
 // サブモジュール
 pub const types = @import("types.zig");
@@ -150,19 +151,18 @@ const SampleAppFixturePaths = struct {
     }
 };
 
-// POSIX libc が crt 経由で初期化する環境変数ブロック。
-// Zig 0.16 で `std.process.getEnvVarOwned` が削除され、test runner は
-// `std.process.Environ` を引数として渡さないため、環境変数を読むには
-// この extern シンボルを直接 walk するのが最も軽い手段になる。libc の
-// 明示リンク (-lc) は不要で、POSIX crt がシンボルを提供する。
-extern var environ: [*:null]const ?[*:0]const u8;
-
 /// `KEY=VALUE` 形式の environ ブロックから `key` に対応する値を返す。
 /// 見つからなければ null。戻り値は environ ブロックをそのまま指すスライスで、
 /// プロセス終了まで有効。
 fn getenv_posix(key: []const u8) ?[]const u8 {
+    if (comptime builtin.os.tag == .linux and !builtin.link_libc) return null;
+    if (comptime builtin.os.tag == .windows or builtin.os.tag == .wasi) return null;
+
+    const process_env = struct {
+        extern var environ: [*:null]const ?[*:0]const u8;
+    };
     var i: usize = 0;
-    while (environ[i]) |entry| : (i += 1) {
+    while (process_env.environ[i]) |entry| : (i += 1) {
         const e = std.mem.span(entry);
         const eq = std.mem.indexOfScalar(u8, e, '=') orelse continue;
         if (std.mem.eql(u8, e[0..eq], key)) return e[eq + 1 ..];
