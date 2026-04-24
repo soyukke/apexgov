@@ -6581,29 +6581,14 @@ fn get_http_header_value(obj: *types.ObjectInstance, header_name: []const u8) Va
     return Value{ .string = "" };
 }
 
-fn dispatch_obj_page_reference(ctx: *BuiltinContext, obj: *types.ObjectInstance, method_name: []const u8, args: []const Value) !?Value {
+fn dispatch_obj_page_reference(
+    ctx: *BuiltinContext,
+    obj: *types.ObjectInstance,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
     if (std.ascii.eqlIgnoreCase(method_name, "getUrl")) {
-        const base_url = if (obj.fields.get("url")) |url_val|
-            if (url_val == .string) url_val.string else ""
-        else
-            "";
-        const params_val = obj.fields.get("parameters") orelse return Value{ .string = base_url };
-        if (params_val != .map or params_val.map.entries.count() == 0) return Value{ .string = base_url };
-
-        var buf = std.ArrayListUnmanaged(u8).empty;
-        try buf.appendSlice(ctx.arena, base_url);
-        try buf.append(ctx.arena, if (std.mem.indexOfScalar(u8, base_url, '?') == null) '?' else '&');
-        for (params_val.map.entries.keys(), params_val.map.entries.values(), 0..) |key, value, idx| {
-            if (idx > 0) try buf.append(ctx.arena, '&');
-            try buf.appendSlice(ctx.arena, key);
-            try buf.append(ctx.arena, '=');
-            if (value == .string) {
-                try buf.appendSlice(ctx.arena, value.string);
-            } else {
-                try buf.appendSlice(ctx.arena, try utils.coerce_to_string(value, ctx.arena));
-            }
-        }
-        return Value{ .string = buf.items };
+        return Value{ .string = try page_reference_url(ctx, obj) };
     }
     if (std.ascii.eqlIgnoreCase(method_name, "setRedirect") and args.len > 0) {
         try obj.fields.put(ctx.arena, "redirect", args[0]);
@@ -6619,22 +6604,65 @@ fn dispatch_obj_page_reference(ctx: *BuiltinContext, obj: *types.ObjectInstance,
     return null;
 }
 
-fn dispatch_obj_apex_pages_message(obj: *types.ObjectInstance, method_name: []const u8) !?Value {
-    if (std.ascii.eqlIgnoreCase(method_name, "getSummary")) return obj.fields.get("summary") orelse Value{ .string = "" };
-    if (std.ascii.eqlIgnoreCase(method_name, "getSeverity")) return obj.fields.get("severity") orelse Value{ .string = "ERROR" };
-    if (std.ascii.eqlIgnoreCase(method_name, "getDetail")) return obj.fields.get("detail") orelse Value{ .string = "" };
+fn page_reference_url(ctx: *BuiltinContext, obj: *types.ObjectInstance) ![]const u8 {
+    const base_url = object_string_field(obj, "url") orelse "";
+    const params_val = obj.fields.get("parameters") orelse return base_url;
+    if (params_val != .map or params_val.map.entries.count() == 0) return base_url;
+
+    var buf = std.ArrayListUnmanaged(u8).empty;
+    try buf.appendSlice(ctx.arena, base_url);
+    try buf.append(ctx.arena, query_separator(base_url));
+    for (params_val.map.entries.keys(), params_val.map.entries.values(), 0..) |key, value, idx| {
+        if (idx > 0) try buf.append(ctx.arena, '&');
+        try buf.appendSlice(ctx.arena, key);
+        try buf.append(ctx.arena, '=');
+        try buf.appendSlice(ctx.arena, try page_reference_param_value(ctx, value));
+    }
+    return buf.items;
+}
+
+fn query_separator(base_url: []const u8) u8 {
+    return if (std.mem.indexOfScalar(u8, base_url, '?') == null) '?' else '&';
+}
+
+fn page_reference_param_value(ctx: *BuiltinContext, value: Value) ![]const u8 {
+    return if (value == .string)
+        value.string
+    else
+        try utils.coerce_to_string(value, ctx.arena);
+}
+
+fn dispatch_obj_apex_pages_message(
+    obj: *types.ObjectInstance,
+    method_name: []const u8,
+) !?Value {
+    if (std.ascii.eqlIgnoreCase(method_name, "getSummary")) {
+        return obj.fields.get("summary") orelse Value{ .string = "" };
+    }
+    if (std.ascii.eqlIgnoreCase(method_name, "getSeverity")) {
+        return obj.fields.get("severity") orelse Value{ .string = "ERROR" };
+    }
+    if (std.ascii.eqlIgnoreCase(method_name, "getDetail")) {
+        return obj.fields.get("detail") orelse Value{ .string = "" };
+    }
     return null;
 }
 
-fn dispatch_obj_standard_controller(ctx: *BuiltinContext, obj: *types.ObjectInstance, method_name: []const u8) !?Value {
-    if (std.ascii.eqlIgnoreCase(method_name, "getRecord")) return obj.fields.get("record") orelse Value.null_val;
+fn dispatch_obj_standard_controller(
+    ctx: *BuiltinContext,
+    obj: *types.ObjectInstance,
+    method_name: []const u8,
+) !?Value {
+    if (std.ascii.eqlIgnoreCase(method_name, "getRecord")) {
+        return obj.fields.get("record") orelse Value.null_val;
+    }
     if (std.ascii.eqlIgnoreCase(method_name, "getId")) {
         if (obj.fields.get("record")) |rec| {
             if (rec == .sobject and rec.sobject.id != null) return Value{ .string = rec.sobject.id.? };
         }
         return Value.null_val;
     }
-    if (std.ascii.eqlIgnoreCase(method_name, "save") or std.ascii.eqlIgnoreCase(method_name, "cancel")) {
+    if (type_matches_any(method_name, &.{ "save", "cancel" })) {
         const pr = try ctx.arena.create(types.ObjectInstance);
         pr.* = .{ .class_name = "PageReference" };
         try pr.fields.put(ctx.arena, "url", Value{ .string = "" });
@@ -6643,41 +6671,43 @@ fn dispatch_obj_standard_controller(ctx: *BuiltinContext, obj: *types.ObjectInst
     return null;
 }
 
-fn dispatch_obj_standard_set_controller(ctx: *BuiltinContext, obj: *types.ObjectInstance, method_name: []const u8, args: []const Value) !?Value {
-    if (std.ascii.eqlIgnoreCase(method_name, "getPageSize")) return obj.fields.get("pageSize") orelse Value{ .integer = 20 };
+fn dispatch_obj_standard_set_controller(
+    ctx: *BuiltinContext,
+    obj: *types.ObjectInstance,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
+    if (std.ascii.eqlIgnoreCase(method_name, "getPageSize")) {
+        return obj.fields.get("pageSize") orelse Value{ .integer = 20 };
+    }
     if (std.ascii.eqlIgnoreCase(method_name, "setPageSize") and args.len > 0) {
         try obj.fields.put(ctx.arena, "pageSize", args[0]);
         return Value.void_val;
     }
     if (std.ascii.eqlIgnoreCase(method_name, "getRecords")) {
-        return obj.fields.get("records") orelse blk: {
-            const empty = try ctx.arena.create(types.ListValue);
-            empty.* = .{};
-            break :blk Value{ .list = empty };
-        };
+        return obj.fields.get("records") orelse Value{ .list = try empty_list(ctx) };
     }
     if (std.ascii.eqlIgnoreCase(method_name, "setSelected") and args.len > 0) {
         try obj.fields.put(ctx.arena, "selected", args[0]);
         return Value.void_val;
     }
     if (std.ascii.eqlIgnoreCase(method_name, "getSelected")) {
-        return obj.fields.get("selected") orelse blk: {
-            const empty = try ctx.arena.create(types.ListValue);
-            empty.* = .{};
-            break :blk Value{ .list = empty };
-        };
+        return obj.fields.get("selected") orelse Value{ .list = try empty_list(ctx) };
     }
     if (std.ascii.eqlIgnoreCase(method_name, "getResultSize")) {
         if (obj.fields.get("records")) |recs| {
-            if (recs == .list) return Value{ .integer = @intCast(recs.list.items.items.len) };
+            if (recs == .list) {
+                return Value{ .integer = @intCast(recs.list.items.items.len) };
+            }
         }
         return Value{ .integer = 0 };
     }
-    if (std.ascii.eqlIgnoreCase(method_name, "first") or std.ascii.eqlIgnoreCase(method_name, "last") or
-        std.ascii.eqlIgnoreCase(method_name, "next") or std.ascii.eqlIgnoreCase(method_name, "previous"))
+    if (type_matches_any(method_name, &.{ "first", "last", "next", "previous" })) {
         return Value.void_val;
-    if (std.ascii.eqlIgnoreCase(method_name, "getHasNext") or std.ascii.eqlIgnoreCase(method_name, "getHasPrevious"))
+    }
+    if (type_matches_any(method_name, &.{ "getHasNext", "getHasPrevious" })) {
         return Value{ .boolean = false };
+    }
     return null;
 }
 
@@ -6701,12 +6731,19 @@ fn dispatch_obj_type(ctx: *BuiltinContext, obj: *types.ObjectInstance, method_na
         }
         return try ctx.eval.instantiate_class_public(type_name);
     }
-    if (std.ascii.eqlIgnoreCase(method_name, "getName")) return obj.fields.get("name") orelse Value{ .string = "Object" };
+    if (std.ascii.eqlIgnoreCase(method_name, "getName")) {
+        return obj.fields.get("name") orelse Value{ .string = "Object" };
+    }
     return null;
 }
 
-fn dispatch_obj_cache_partition(ctx: *BuiltinContext, obj: *types.ObjectInstance, method_name: []const u8, args: []const Value) !?Value {
-    const cache_map = if (obj.fields.get("_cache")) |cm| if (cm == .map) cm.map else null else null;
+fn dispatch_obj_cache_partition(
+    ctx: *BuiltinContext,
+    obj: *types.ObjectInstance,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
+    const cache_map = cache_partition_map(obj);
     if (std.ascii.eqlIgnoreCase(method_name, "put") and args.len >= 2) {
         if (cache_map) |cm| {
             const key = try utils.coerce_to_string(args[0], ctx.arena);
@@ -6727,13 +6764,12 @@ fn dispatch_obj_cache_partition(ctx: *BuiltinContext, obj: *types.ObjectInstance
     if (std.ascii.eqlIgnoreCase(method_name, "remove") and args.len >= 1) {
         if (cache_map) |cm| {
             if (args.len >= 2 and args[1] == .string) {
-                const builder_name = if (args[0] == .object) blk: {
-                    if (args[0].object.fields.get("name")) |n| {
-                        if (n == .string) break :blk n.string;
-                    }
-                    break :blk args[0].object.class_name;
-                } else try utils.coerce_to_string(args[0], ctx.arena);
-                const cache_key = try std.fmt.allocPrint(ctx.arena, "{s}:{s}", .{ builder_name, args[1].string });
+                const builder_name = try cache_partition_remove_builder_name(ctx, args[0]);
+                const cache_key = try std.fmt.allocPrint(
+                    ctx.arena,
+                    "{s}:{s}",
+                    .{ builder_name, args[1].string },
+                );
                 _ = cm.entries.orderedRemove(cache_key);
             } else {
                 const key = try utils.coerce_to_string(args[0], ctx.arena);
@@ -6761,7 +6797,27 @@ fn dispatch_obj_cache_partition(ctx: *BuiltinContext, obj: *types.ObjectInstance
     return null;
 }
 
-fn cache_partition_get(ctx: *BuiltinContext, cache_map: ?*types.MapValue, args: []const Value) !Value {
+fn cache_partition_map(obj: *types.ObjectInstance) ?*types.MapValue {
+    const cm = obj.fields.get("_cache") orelse return null;
+    return if (cm == .map) cm.map else null;
+}
+
+fn cache_partition_remove_builder_name(
+    ctx: *BuiltinContext,
+    builder_value: Value,
+) ![]const u8 {
+    if (builder_value != .object) {
+        return try utils.coerce_to_string(builder_value, ctx.arena);
+    }
+    return object_string_field(builder_value.object, "name") orelse
+        builder_value.object.class_name;
+}
+
+fn cache_partition_get(
+    ctx: *BuiltinContext,
+    cache_map: ?*types.MapValue,
+    args: []const Value,
+) !Value {
     if (args.len >= 2 and args[1] == .string) {
         if (cache_map) |cm| {
             return try cache_partition_get_by_builder(ctx, cm, args[0], args[1].string);
@@ -6782,22 +6838,38 @@ fn cache_partition_get_by_builder(
     key: []const u8,
 ) !Value {
     const builder_name = cache_partition_builder_name(builder_type);
-    const cache_key = try std.fmt.allocPrint(ctx.arena, "{s}:{s}", .{ builder_name, key });
+    const cache_key = try std.fmt.allocPrint(ctx.arena, "{s}:{s}", .{
+        builder_name,
+        key,
+    });
     if (cache_map.entries.get(cache_key)) |cached| return cached;
     if (builder_name.len == 0) return Value.null_val;
 
-    const class_name = if (std.mem.startsWith(u8, builder_name, "Type:")) builder_name[5..] else builder_name;
+    const class_name = if (std.mem.startsWith(u8, builder_name, "Type:"))
+        builder_name[5..]
+    else
+        builder_name;
     const resolved_class_name = ctx.eval.resolve_full_class_name_public(class_name);
-    const resolved_cache_key = try std.fmt.allocPrint(ctx.arena, "{s}:{s}", .{ resolved_class_name, key });
+    const resolved_cache_key = try std.fmt.allocPrint(ctx.arena, "{s}:{s}", .{
+        resolved_class_name,
+        key,
+    });
     if (cache_map.entries.get(resolved_cache_key)) |cached| return cached;
-    const result = ctx.eval.call_instance_method_by_name(resolved_class_name, "doLoad", &.{Value{ .string = key }}) catch Value.null_val;
+    const result = call_cache_loader(ctx, resolved_class_name, key);
     if (result != .null_val) {
         try cache_map.entries.put(ctx.arena, resolved_cache_key, result);
         try cache_map.entries.put(ctx.arena, cache_key, result);
         return result;
     }
 
-    return try cache_partition_get_by_simple_class(ctx, cache_map, class_name, key, resolved_cache_key, cache_key);
+    return try cache_partition_get_by_simple_class(
+        ctx,
+        cache_map,
+        class_name,
+        key,
+        resolved_cache_key,
+        cache_key,
+    );
 }
 
 fn cache_partition_builder_name(builder_type: Value) []const u8 {
@@ -6824,9 +6896,12 @@ fn cache_partition_get_by_simple_class(
         else
             entry.key_ptr.*;
         if (!std.ascii.eqlIgnoreCase(simple_name, class_name)) continue;
-        const fallback_cache_key = try std.fmt.allocPrint(ctx.arena, "{s}:{s}", .{ entry.key_ptr.*, key });
+        const fallback_cache_key = try std.fmt.allocPrint(ctx.arena, "{s}:{s}", .{
+            entry.key_ptr.*,
+            key,
+        });
         if (cache_map.entries.get(fallback_cache_key)) |cached| return cached;
-        const fallback_result = ctx.eval.call_instance_method_by_name(entry.key_ptr.*, "doLoad", &.{Value{ .string = key }}) catch Value.null_val;
+        const fallback_result = call_cache_loader(ctx, entry.key_ptr.*, key);
         if (fallback_result == .null_val) continue;
         try cache_map.entries.put(ctx.arena, fallback_cache_key, fallback_result);
         try cache_map.entries.put(ctx.arena, resolved_cache_key, fallback_result);
@@ -6836,12 +6911,27 @@ fn cache_partition_get_by_simple_class(
     return Value.null_val;
 }
 
-fn dispatch_obj_flow_interview(ctx: *BuiltinContext, obj: *types.ObjectInstance, method_name: []const u8, args: []const Value) !?Value {
+fn call_cache_loader(
+    ctx: *BuiltinContext,
+    class_name: []const u8,
+    key: []const u8,
+) Value {
+    return ctx.eval.call_instance_method_by_name(
+        class_name,
+        "doLoad",
+        &.{Value{ .string = key }},
+    ) catch Value.null_val;
+}
+
+fn dispatch_obj_flow_interview(
+    ctx: *BuiltinContext,
+    obj: *types.ObjectInstance,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
     if (std.ascii.eqlIgnoreCase(method_name, "start")) {
-        const flow_name = if (obj.fields.get("flowName")) |fv| if (fv == .string) fv.string else "" else "";
-        if (std.ascii.eqlIgnoreCase(flow_name, "MockLoggerSObjectHandlerPlugin") or
-            std.ascii.eqlIgnoreCase(flow_name, "MockLogBatchPurgerPlugin"))
-        {
+        const flow_name = object_string_field(obj, "flowName") orelse "";
+        if (mock_logger_flow_name(flow_name)) {
             try obj.fields.put(ctx.arena, "someExampleVariable", Value{ .string = "Hello, world" });
         }
         return .void_val;
@@ -6856,68 +6946,157 @@ fn dispatch_obj_flow_interview(ctx: *BuiltinContext, obj: *types.ObjectInstance,
     return null;
 }
 
-fn dispatch_obj_describe_s_object(ctx: *BuiltinContext, obj: *types.ObjectInstance, method_name: []const u8) !?Value {
+fn mock_logger_flow_name(flow_name: []const u8) bool {
+    return type_matches_any(flow_name, &.{
+        "MockLoggerSObjectHandlerPlugin",
+        "MockLogBatchPurgerPlugin",
+    });
+}
+
+fn dispatch_obj_describe_s_object(
+    ctx: *BuiltinContext,
+    obj: *types.ObjectInstance,
+    method_name: []const u8,
+) !?Value {
     const desc_name = if (obj.fields.get("name")) |n| n.string else "";
-    if (std.ascii.eqlIgnoreCase(method_name, "isAccessible")) return obj.fields.get("isAccessible") orelse Value{ .boolean = resolve_object_crud_permission(ctx.eval, desc_name, "read") };
-    if (std.ascii.eqlIgnoreCase(method_name, "isCreateable")) return obj.fields.get("isCreateable") orelse Value{ .boolean = resolve_object_crud_permission(ctx.eval, desc_name, "create") };
-    if (std.ascii.eqlIgnoreCase(method_name, "isUpdateable")) return obj.fields.get("isUpdateable") orelse Value{ .boolean = resolve_object_crud_permission(ctx.eval, desc_name, "edit") };
-    if (std.ascii.eqlIgnoreCase(method_name, "isDeletable")) return obj.fields.get("isDeletable") orelse Value{ .boolean = resolve_object_crud_permission(ctx.eval, desc_name, "delete") };
+    if (describe_s_object_crud_accessor(ctx, obj, desc_name, method_name)) |v| return v;
     if (std.ascii.eqlIgnoreCase(method_name, "isUndeletable")) {
         // Undelete requires delete-equivalent CRUD on standard objects; mirror
         // Apex's behaviour by returning the same result as isDeletable so that
         // domain frameworks (fflib_SObjectDomain etc.) gate handleAfterUndelete
         // correctly.
-        return obj.fields.get("isUndeletable") orelse Value{ .boolean = resolve_object_crud_permission(ctx.eval, desc_name, "delete") };
+        return describe_s_object_crud_value(ctx, obj, desc_name, "isUndeletable", "delete");
     }
     if (std.ascii.eqlIgnoreCase(method_name, "isMergeable")) {
-        return obj.fields.get("isMergeable") orelse Value{ .boolean = resolve_object_crud_permission(ctx.eval, desc_name, "delete") };
+        return describe_s_object_crud_value(ctx, obj, desc_name, "isMergeable", "delete");
     }
-    if (std.ascii.eqlIgnoreCase(method_name, "isQueryable")) return Value{ .boolean = true };
-    if (std.ascii.eqlIgnoreCase(method_name, "isSearchable")) return Value{ .boolean = true };
-    if (std.ascii.eqlIgnoreCase(method_name, "getName")) return obj.fields.get("name") orelse Value{ .string = "Object" };
-    if (std.ascii.eqlIgnoreCase(method_name, "getLocalName")) {
-        const name_val = obj.fields.get("name") orelse Value{ .string = "Object" };
-        if (name_val == .string) return Value{ .string = describe_local_name(name_val.string) };
-        return name_val;
-    }
+    if (describe_s_object_basic_accessor(obj, method_name)) |v| return v;
     if (std.ascii.eqlIgnoreCase(method_name, "getSObjectType")) {
-        const sot = try ctx.arena.create(types.ObjectInstance);
-        sot.* = .{ .class_name = "Schema.SObjectType" };
-        try sot.fields.put(ctx.arena, "name", obj.fields.get("name") orelse Value{ .string = "Object" });
-        return Value{ .object = sot };
+        return try describe_s_object_type_value(ctx, obj);
     }
-    if (std.ascii.eqlIgnoreCase(method_name, "getLabel")) return obj.fields.get("label") orelse obj.fields.get("name") orelse Value{ .string = "Object" };
-    if (std.ascii.eqlIgnoreCase(method_name, "getLabelPlural")) return obj.fields.get("labelPlural") orelse obj.fields.get("label") orelse obj.fields.get("name") orelse Value{ .string = "Objects" };
     if (std.ascii.eqlIgnoreCase(method_name, "getChildRelationships")) {
         if (obj.fields.get("childRelationships")) |existing| return existing;
         const relationships = try create_child_relationships_value(ctx, desc_name);
         try obj.fields.put(ctx.arena, "childRelationships", relationships);
         return relationships;
     }
-    if (std.ascii.eqlIgnoreCase(method_name, "isCustom")) return obj.fields.get("isCustom") orelse Value{ .boolean = false };
-    if (std.ascii.eqlIgnoreCase(method_name, "isCustomSetting")) return obj.fields.get("isCustomSetting") orelse Value{ .boolean = false };
+    if (std.ascii.eqlIgnoreCase(method_name, "isCustom")) {
+        return obj.fields.get("isCustom") orelse Value{ .boolean = false };
+    }
+    if (std.ascii.eqlIgnoreCase(method_name, "isCustomSetting")) {
+        return obj.fields.get("isCustomSetting") orelse Value{ .boolean = false };
+    }
     if (std.ascii.eqlIgnoreCase(method_name, "getKeyPrefix")) {
         const name = if (obj.fields.get("name")) |n| n.string else "000";
         const prefix = evaluator_mod.Evaluator.sobject_key_prefix(name);
         return Value{ .string = try ctx.arena.dupe(u8, &prefix) };
     }
-    if (std.ascii.eqlIgnoreCase(method_name, "getRecordTypeInfos")) {
-        const name = if (obj.fields.get("name")) |n| n.string else "Object";
-        return (try build_record_type_info_artifacts(ctx, name)).list;
+    if (try describe_s_object_record_type_accessor(ctx, obj, method_name)) |v| return v;
+    return null;
+}
+
+fn describe_s_object_basic_accessor(
+    obj: *types.ObjectInstance,
+    method_name: []const u8,
+) ?Value {
+    if (type_matches_any(method_name, &.{ "isQueryable", "isSearchable" })) {
+        return Value{ .boolean = true };
     }
-    if (std.ascii.eqlIgnoreCase(method_name, "getRecordTypeInfosById")) {
-        const name = if (obj.fields.get("name")) |n| n.string else "Object";
-        return (try build_record_type_info_artifacts(ctx, name)).by_id;
+    if (std.ascii.eqlIgnoreCase(method_name, "getName")) {
+        return obj.fields.get("name") orelse Value{ .string = "Object" };
     }
-    if (std.ascii.eqlIgnoreCase(method_name, "getRecordTypeInfosByName")) {
-        const name = if (obj.fields.get("name")) |n| n.string else "Object";
-        return (try build_record_type_info_artifacts(ctx, name)).by_name;
+    if (std.ascii.eqlIgnoreCase(method_name, "getLocalName")) {
+        const name_val = obj.fields.get("name") orelse Value{ .string = "Object" };
+        if (name_val == .string) return Value{ .string = describe_local_name(name_val.string) };
+        return name_val;
     }
-    if (std.ascii.eqlIgnoreCase(method_name, "getRecordTypeInfosByDeveloperName")) {
-        const name = if (obj.fields.get("name")) |n| n.string else "Object";
-        return (try build_record_type_info_artifacts(ctx, name)).by_dev_name;
+    if (std.ascii.eqlIgnoreCase(method_name, "getLabel")) {
+        return obj.fields.get("label") orelse
+            obj.fields.get("name") orelse
+            Value{ .string = "Object" };
+    }
+    if (std.ascii.eqlIgnoreCase(method_name, "getLabelPlural")) {
+        return obj.fields.get("labelPlural") orelse
+            obj.fields.get("label") orelse
+            obj.fields.get("name") orelse
+            Value{ .string = "Objects" };
     }
     return null;
+}
+
+fn describe_s_object_type_value(
+    ctx: *BuiltinContext,
+    obj: *types.ObjectInstance,
+) !Value {
+    const sot = try ctx.arena.create(types.ObjectInstance);
+    sot.* = .{ .class_name = "Schema.SObjectType" };
+    try sot.fields.put(
+        ctx.arena,
+        "name",
+        obj.fields.get("name") orelse Value{ .string = "Object" },
+    );
+    return Value{ .object = sot };
+}
+
+fn describe_s_object_record_type_accessor(
+    ctx: *BuiltinContext,
+    obj: *types.ObjectInstance,
+    method_name: []const u8,
+) !?Value {
+    if (!type_matches_any(method_name, &.{
+        "getRecordTypeInfos",
+        "getRecordTypeInfosById",
+        "getRecordTypeInfosByName",
+        "getRecordTypeInfosByDeveloperName",
+    })) return null;
+    const name = if (obj.fields.get("name")) |n| n.string else "Object";
+    const artifacts = try build_record_type_info_artifacts(ctx, name);
+    if (std.ascii.eqlIgnoreCase(method_name, "getRecordTypeInfos")) {
+        return artifacts.list;
+    }
+    if (std.ascii.eqlIgnoreCase(method_name, "getRecordTypeInfosById")) {
+        return artifacts.by_id;
+    }
+    if (std.ascii.eqlIgnoreCase(method_name, "getRecordTypeInfosByName")) {
+        return artifacts.by_name;
+    }
+    if (std.ascii.eqlIgnoreCase(method_name, "getRecordTypeInfosByDeveloperName")) {
+        return artifacts.by_dev_name;
+    }
+    return null;
+}
+
+fn describe_s_object_crud_accessor(
+    ctx: *BuiltinContext,
+    obj: *types.ObjectInstance,
+    desc_name: []const u8,
+    method_name: []const u8,
+) ?Value {
+    if (std.ascii.eqlIgnoreCase(method_name, "isAccessible")) {
+        return describe_s_object_crud_value(ctx, obj, desc_name, "isAccessible", "read");
+    }
+    if (std.ascii.eqlIgnoreCase(method_name, "isCreateable")) {
+        return describe_s_object_crud_value(ctx, obj, desc_name, "isCreateable", "create");
+    }
+    if (std.ascii.eqlIgnoreCase(method_name, "isUpdateable")) {
+        return describe_s_object_crud_value(ctx, obj, desc_name, "isUpdateable", "edit");
+    }
+    if (std.ascii.eqlIgnoreCase(method_name, "isDeletable")) {
+        return describe_s_object_crud_value(ctx, obj, desc_name, "isDeletable", "delete");
+    }
+    return null;
+}
+
+fn describe_s_object_crud_value(
+    ctx: *BuiltinContext,
+    obj: *types.ObjectInstance,
+    desc_name: []const u8,
+    field_name: []const u8,
+    permission: []const u8,
+) Value {
+    return obj.fields.get(field_name) orelse Value{
+        .boolean = resolve_object_crud_permission(ctx.eval, desc_name, permission),
+    };
 }
 
 fn dispatch_obj_record_type_info(obj: *types.ObjectInstance, method_name: []const u8) !?Value {
