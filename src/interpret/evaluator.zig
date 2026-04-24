@@ -21323,7 +21323,7 @@ pub const Evaluator = struct {
     /// Accepts either simple inner class name ("Inner") or FQ form ("Outer.Inner");
     /// when FQ is passed and the prefix matches an outer class, returns it directly.
     fn find_outer_class_name(self: *Evaluator, inner_class_name: []const u8) ?[]const u8 {
-        // Fast path: FQ form "Outer.Inner" → return prefix if it's a registered top-level class
+        // Fast path: FQ form "Outer.Inner" returns a registered top-level prefix.
         if (std.mem.lastIndexOfScalar(u8, inner_class_name, '.')) |di| {
             const outer = inner_class_name[0..di];
             if (self.find_class(outer)) |_| return outer;
@@ -21334,7 +21334,7 @@ pub const Evaluator = struct {
             inner_class_name;
         var iter = self.classes.iterator();
         while (iter.next()) |entry| {
-            // Skip fully-qualified names (e.g. "Outer.Inner") — only check top-level class entries
+            // Skip fully-qualified names; only top-level class entries own inner classes.
             if (std.mem.indexOfScalar(u8, entry.key_ptr.*, '.') != null) continue;
             for (entry.value_ptr.*.members) |member| {
                 switch (member) {
@@ -21349,7 +21349,12 @@ pub const Evaluator = struct {
         return null;
     }
 
-    fn register_class_recursive(self: *Evaluator, ca: std.mem.Allocator, cd: *ast.ClassDecl, fq_name: ?[]const u8) !void {
+    fn register_class_recursive(
+        self: *Evaluator,
+        ca: std.mem.Allocator,
+        cd: *ast.ClassDecl,
+        fq_name: ?[]const u8,
+    ) !void {
         try self.classes.put(ca, cd.name, cd);
         if (fq_name) |fq| {
             try self.classes.put(ca, fq, cd);
@@ -21358,21 +21363,37 @@ pub const Evaluator = struct {
             switch (member) {
                 .field_decl => |fd| {
                     if (fd.modifiers.is_static) {
-                        const key = std.fmt.allocPrint(self.arena, "{s}.{s}", .{ cd.name, fd.name }) catch continue;
+                        const key = std.fmt.allocPrint(
+                            self.arena,
+                            "{s}.{s}",
+                            .{ cd.name, fd.name },
+                        ) catch continue;
                         self.global_env.define(key, default_value(fd.type_ref)) catch {};
                     }
                 },
                 .class_decl => |inner_cd| {
                     const parent_name = fq_name orelse cd.name;
-                    const inner_fq = std.fmt.allocPrint(ca, "{s}.{s}", .{ parent_name, inner_cd.name }) catch continue;
+                    const inner_fq = std.fmt.allocPrint(
+                        ca,
+                        "{s}.{s}",
+                        .{ parent_name, inner_cd.name },
+                    ) catch continue;
                     try self.register_class_recursive(ca, inner_cd, inner_fq);
                 },
                 .enum_decl => |ed| {
                     for (ed.values) |v| {
-                        const ekey = std.fmt.allocPrint(self.arena, "{s}.{s}", .{ ed.name, v }) catch continue;
+                        const ekey = std.fmt.allocPrint(
+                            self.arena,
+                            "{s}.{s}",
+                            .{ ed.name, v },
+                        ) catch continue;
                         self.global_env.define(ekey, Value{ .string = v }) catch {};
                         const enum_owner = fq_name orelse cd.name;
-                        const fq_key = std.fmt.allocPrint(self.arena, "{s}.{s}.{s}", .{ enum_owner, ed.name, v }) catch continue;
+                        const fq_key = std.fmt.allocPrint(
+                            self.arena,
+                            "{s}.{s}.{s}",
+                            .{ enum_owner, ed.name, v },
+                        ) catch continue;
                         self.global_env.define(fq_key, Value{ .string = v }) catch {};
                     }
                 },
@@ -21381,15 +21402,32 @@ pub const Evaluator = struct {
         }
     }
 
-    fn create_async_apex_job(self: *Evaluator, apex_job_type: []const u8, class_name: []const u8, method_name: ?[]const u8) ![]const u8 {
+    fn create_async_apex_job(
+        self: *Evaluator,
+        apex_job_type: []const u8,
+        class_name: []const u8,
+        method_name: ?[]const u8,
+    ) ![]const u8 {
         const job_id = try std.fmt.allocPrint(self.arena, "707{d:0>15}", .{self.next_id});
         self.next_id += 1;
 
         const top_level_class = self.find_outer_class_name(class_name) orelse class_name;
-        const apex_class_name = if (std.mem.lastIndexOfScalar(u8, top_level_class, '.')) |di| top_level_class[di + 1 ..] else top_level_class;
+        const apex_class_name = if (std.mem.lastIndexOfScalar(u8, top_level_class, '.')) |di|
+            top_level_class[di + 1 ..]
+        else
+            top_level_class;
         const apex_class = try self.arena.create(types.SObject);
         apex_class.* = .{ .type_name = "ApexClass" };
-        try apex_class.fields.put(self.arena, "Id", Value{ .string = try std.fmt.allocPrint(self.arena, "01p{d:0>15}", .{self.next_id}) });
+        const generated_apex_class_id = try std.fmt.allocPrint(
+            self.arena,
+            "01p{d:0>15}",
+            .{self.next_id},
+        );
+        try apex_class.fields.put(
+            self.arena,
+            "Id",
+            Value{ .string = generated_apex_class_id },
+        );
         try apex_class.fields.put(self.arena, "Name", Value{ .string = apex_class_name });
         try apex_class.fields.put(self.arena, "NamespacePrefix", Value.null_val);
 
@@ -21398,19 +21436,28 @@ pub const Evaluator = struct {
         try async_job.fields.put(self.arena, "Id", Value{ .string = job_id });
         try async_job.fields.put(self.arena, "Status", Value{ .string = "Completed" });
         try async_job.fields.put(self.arena, "JobType", Value{ .string = apex_job_type });
-        try async_job.fields.put(self.arena, "MethodName", if (method_name) |name| Value{ .string = name } else Value.null_val);
+        try async_job.fields.put(
+            self.arena,
+            "MethodName",
+            if (method_name) |name| Value{ .string = name } else Value.null_val,
+        );
         try async_job.fields.put(self.arena, "JobItemsProcessed", Value{ .integer = 0 });
         try async_job.fields.put(self.arena, "NumberOfErrors", Value{ .integer = 0 });
         try async_job.fields.put(self.arena, "ApexClass", Value{ .sobject = apex_class });
         if (utils.sobject_get(&apex_class.fields, "Id")) |apex_class_id| {
             try async_job.fields.put(self.arena, "ApexClassId", apex_class_id);
         }
-        try async_job.fields.put(self.arena, "CreatedById", Value{ .string = self.current_user_id });
+        try async_job.fields.put(
+            self.arena,
+            "CreatedById",
+            Value{ .string = self.current_user_id },
+        );
         const created_by = try self.create_current_user_record();
         if (created_by == .sobject) {
             try async_job.fields.put(self.arena, "CreatedBy", created_by);
         }
-        const now_str = builtins.current_date_time_string(self.arena) catch "2026-01-01T00:00:00Z";
+        const now_str =
+            builtins.current_date_time_string(self.arena) catch "2026-01-01T00:00:00Z";
         try async_job.fields.put(self.arena, "CreatedDate", Value{ .string = now_str });
 
         const gop = try self.store.getOrPut(self.arena, "AsyncApexJob");
@@ -21420,22 +21467,39 @@ pub const Evaluator = struct {
         return job_id;
     }
 
-    fn update_async_apex_job(self: *Evaluator, job_id: []const u8, status: []const u8, number_of_errors: i64) void {
+    fn update_async_apex_job(
+        self: *Evaluator,
+        job_id: []const u8,
+        status: []const u8,
+        number_of_errors: i64,
+    ) void {
         const jobs = self.store.getPtr("AsyncApexJob") orelse return;
         for (jobs.items) |item| {
             if (item != .sobject or item.sobject.id == null) continue;
             if (!std.ascii.eqlIgnoreCase(item.sobject.id.?, job_id)) continue;
             item.sobject.fields.put(self.arena, "Status", Value{ .string = status }) catch {};
-            item.sobject.fields.put(self.arena, "NumberOfErrors", Value{ .integer = number_of_errors }) catch {};
+            item.sobject.fields.put(
+                self.arena,
+                "NumberOfErrors",
+                Value{ .integer = number_of_errors },
+            ) catch {};
             break;
         }
     }
 
-    fn build_batchable_context(self: *Evaluator, job_id: []const u8, child_job_id: ?[]const u8) !Value {
+    fn build_batchable_context(
+        self: *Evaluator,
+        job_id: []const u8,
+        child_job_id: ?[]const u8,
+    ) !Value {
         const ctx = try self.arena.create(types.ObjectInstance);
         ctx.* = .{ .class_name = "Database.BatchableContext" };
         try ctx.fields.put(self.arena, "JobId", Value{ .string = job_id });
-        try ctx.fields.put(self.arena, "ChildJobId", if (child_job_id) |child| Value{ .string = child } else Value.null_val);
+        try ctx.fields.put(
+            self.arena,
+            "ChildJobId",
+            if (child_job_id) |child| Value{ .string = child } else Value.null_val,
+        );
         return Value{ .object = ctx };
     }
 
@@ -21446,20 +21510,35 @@ pub const Evaluator = struct {
         return Value{ .object = ctx };
     }
 
-    fn build_finalizer_context(self: *Evaluator, job_id: []const u8, exception_value: ?Value) !Value {
+    fn build_finalizer_context(
+        self: *Evaluator,
+        job_id: []const u8,
+        exception_value: ?Value,
+    ) !Value {
         const ctx = try self.arena.create(types.ObjectInstance);
         ctx.* = .{ .class_name = "System.FinalizerContext" };
         try ctx.fields.put(self.arena, "AsyncApexJobId", Value{ .string = job_id });
         try ctx.fields.put(self.arena, "Exception", exception_value orelse Value.null_val);
-        try ctx.fields.put(self.arena, "Result", Value{ .string = if (exception_value == null) "SUCCESS" else "UNHANDLED_EXCEPTION" });
+        try ctx.fields.put(
+            self.arena,
+            "Result",
+            Value{ .string = if (exception_value == null) "SUCCESS" else "UNHANDLED_EXCEPTION" },
+        );
         try ctx.fields.put(self.arena, "RequestId", Value{ .string = "4eR000000000001" });
         return Value{ .object = ctx };
     }
 
-    fn publish_batch_apex_error_event(self: *Evaluator, batch_obj: *types.ObjectInstance, job_id: []const u8, phase: []const u8, exception_value: Value) !void {
-        if (!(self.class_implements_interface(batch_obj.class_name, "Database.RaisesPlatformEvents") or
-            self.class_implements_interface(batch_obj.class_name, "RaisesPlatformEvents")))
-        {
+    fn publish_batch_apex_error_event(
+        self: *Evaluator,
+        batch_obj: *types.ObjectInstance,
+        job_id: []const u8,
+        phase: []const u8,
+        exception_value: Value,
+    ) !void {
+        const raises_events =
+            self.class_implements_interface(batch_obj.class_name, "Database.RaisesPlatformEvents") or
+            self.class_implements_interface(batch_obj.class_name, "RaisesPlatformEvents");
+        if (!raises_events) {
             return;
         }
 
@@ -21476,14 +21555,17 @@ pub const Evaluator = struct {
                 message_value = obj.fields.get("message") orelse Value.null_val;
                 exception_type = try self.qualify_builtin_exception_type(obj.class_name);
                 if (obj.fields.get("stackTraceString")) |stack_val| {
-                    if (stack_val == .string and stack_val.string.len > 0) stack_trace = stack_val.string;
+                    if (stack_val == .string and stack_val.string.len > 0) {
+                        stack_trace = stack_val.string;
+                    }
                 }
             },
             .string => |s| {
                 message_value = Value{ .string = s };
             },
             else => {
-                message_value = Value{ .string = try utils.coerce_to_string(exception_value, self.arena) };
+                const message = try utils.coerce_to_string(exception_value, self.arena);
+                message_value = Value{ .string = message };
             },
         }
         try evt.fields.put(self.arena, "ExceptionType", Value{ .string = exception_type });
@@ -21536,13 +21618,22 @@ pub const Evaluator = struct {
         return type_name;
     }
 
-    fn invoke_attached_finalizer(self: *Evaluator, job_id: []const u8, exception_value: ?Value) !void {
+    fn invoke_attached_finalizer(
+        self: *Evaluator,
+        job_id: []const u8,
+        exception_value: ?Value,
+    ) !void {
         const finalizer_obj = self.attached_finalizer orelse return;
         const finalizer_class = self.find_class(finalizer_obj.class_name) orelse return;
         const finalizer_context = try self.build_finalizer_context(job_id, exception_value);
         const saved_pending_exception = self.pending_exception;
         self.pending_exception = null;
-        _ = self.call_instance_method(finalizer_class, finalizer_obj, "execute", &.{finalizer_context}) catch |err| {
+        _ = self.call_instance_method(
+            finalizer_class,
+            finalizer_obj,
+            "execute",
+            &.{finalizer_context},
+        ) catch |err| {
             if (exception_value != null) {
                 self.pending_exception = exception_value;
                 return;
@@ -21558,7 +21649,11 @@ pub const Evaluator = struct {
         const batch_job_id = if (batch_obj.fields.get("__batchJobId")) |job_id_val|
             switch (job_id_val) {
                 .string => job_id_val.string,
-                else => try self.create_async_apex_job("BatchApex", batch_obj.class_name, "execute"),
+                else => try self.create_async_apex_job(
+                    "BatchApex",
+                    batch_obj.class_name,
+                    "execute",
+                ),
             }
         else
             try self.create_async_apex_job("BatchApex", batch_obj.class_name, "execute");
@@ -21574,10 +21669,20 @@ pub const Evaluator = struct {
             self.active_batch_job_id = saved_batch_job_id;
         }
 
-        const start_scope = self.call_instance_method(batch_class, batch_obj, "start", &.{batch_context_value}) catch |err| {
+        const start_scope = self.call_instance_method(
+            batch_class,
+            batch_obj,
+            "start",
+            &.{batch_context_value},
+        ) catch |err| {
             self.update_async_apex_job(batch_job_id, "Failed", 1);
             if (self.pending_exception) |exception_value| {
-                try self.publish_batch_apex_error_event(batch_obj, batch_job_id, "START", exception_value);
+                try self.publish_batch_apex_error_event(
+                    batch_obj,
+                    batch_job_id,
+                    "START",
+                    exception_value,
+                );
             }
             return err;
         };
