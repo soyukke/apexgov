@@ -18997,7 +18997,10 @@ pub const Evaluator = struct {
             std.mem.eql(u8, item.sobject.id.?, sec_id);
     }
 
-    fn remove_duplicate_record_items_for_merge(self: *Evaluator, secondary_ids: []const []const u8) void {
+    fn remove_duplicate_record_items_for_merge(
+        self: *Evaluator,
+        secondary_ids: []const []const u8,
+    ) void {
         if (self.store.getPtr("DuplicateRecordItem")) |dri_records| {
             var i: usize = 0;
             while (i < dri_records.items.len) {
@@ -19081,7 +19084,7 @@ pub const Evaluator = struct {
         if (std.ascii.eqlIgnoreCase(inner, "Database")) {
             return self.handle_database_method(method, args, current_env);
         }
-        // System.EventBus.publish → delegate to callMethod so it goes through the EventBus.publish handler
+        // Delegate System.EventBus.publish through the EventBus handler.
         if (std.ascii.eqlIgnoreCase(inner, "EventBus") and
             std.ascii.eqlIgnoreCase(method, "publish"))
         {
@@ -19091,7 +19094,9 @@ pub const Evaluator = struct {
         // This covers System.UserInfo, System.Type, System.Assert, System.URL, etc.
         {
             var bctx = self.make_builtin_context();
-            if (try builtins.dispatch_static(&bctx, inner, method, args)) |result| return result;
+            if (try builtins.dispatch_static(&bctx, inner, method, args)) |result| {
+                return result;
+            }
         }
         return .void_val;
     }
@@ -19247,7 +19252,9 @@ pub const Evaluator = struct {
             (std.ascii.eqlIgnoreCase(args[0].object.class_name, "Schema.SObjectField") or
                 std.ascii.eqlIgnoreCase(args[0].object.class_name, "SObjectField")))
         {
-            return self.throw_system_json_exception("Apex Type unsupported in JSON: Schema.SObjectField");
+            return self.throw_system_json_exception(
+                "Apex Type unsupported in JSON: Schema.SObjectField",
+            );
         }
         return Value{ .string = try utils.to_json(args[0], self.arena) };
     }
@@ -19371,12 +19378,20 @@ pub const Evaluator = struct {
     fn create_test_factory_s_object(self: *Evaluator, args: []const Value) !Value {
         if (args.len < 1 or args[0] != .sobject) return Value.null_val;
         if (utils.sobject_get(&args[0].sobject.fields, "Name") == null) {
-            try args[0].sobject.fields.put(self.arena, "Name", Value{ .string = "Test Record" });
+            try args[0].sobject.fields.put(
+                self.arena,
+                "Name",
+                Value{ .string = "Test Record" },
+            );
         }
         if (std.ascii.eqlIgnoreCase(args[0].sobject.type_name, "Contact") and
             utils.sobject_get(&args[0].sobject.fields, "LastName") == null)
         {
-            try args[0].sobject.fields.put(self.arena, "LastName", Value{ .string = "Test Record" });
+            try args[0].sobject.fields.put(
+                self.arena,
+                "LastName",
+                Value{ .string = "Test Record" },
+            );
         }
         if (args.len >= 2 and args[1] == .boolean and args[1].boolean) {
             try self.insert_record(args[0].sobject);
@@ -20506,7 +20521,11 @@ pub const Evaluator = struct {
                     std.ascii.eqlIgnoreCase(pt, "List") and
                     param.type_ref.params.len > 0)
                 {
-                    arg_score = self.score_list_argument_for_param(arg.list, arg_hint, param.type_ref);
+                    arg_score = self.score_list_argument_for_param(
+                        arg.list,
+                        arg_hint,
+                        param.type_ref,
+                    );
                 }
                 score += arg_score;
             }
@@ -20589,7 +20608,11 @@ pub const Evaluator = struct {
                 if (std.ascii.eqlIgnoreCase(param_base, "List") or
                     std.ascii.eqlIgnoreCase(param_base, "Iterable"))
                 {
-                    arg_score = self.score_list_argument_for_param(arg.list, arg_hint, param.type_ref);
+                    arg_score = self.score_list_argument_for_param(
+                        arg.list,
+                        arg_hint,
+                        param.type_ref,
+                    );
                 } else if (std.ascii.eqlIgnoreCase(param_base, "Object")) {
                     arg_score = 1;
                 } else {
@@ -22611,18 +22634,13 @@ pub const Evaluator = struct {
 
     fn skip_json_spacing(source: []const u8, start: usize) usize {
         var i = start;
-        while (i < source.len and
-            (source[i] == ' ' or source[i] == '\t' or source[i] == '\n' or source[i] == '\r')) : (i += 1)
-        {}
+        while (i < source.len and is_soql_whitespace(source[i])) : (i += 1) {}
         return i;
     }
 
     fn skip_json_spacing_and_commas(source: []const u8, start: usize) usize {
         var i = start;
-        while (i < source.len and
-            (source[i] == ' ' or source[i] == '\t' or source[i] == '\n' or
-                source[i] == '\r' or source[i] == ',')) : (i += 1)
-        {}
+        while (i < source.len and (is_soql_whitespace(source[i]) or source[i] == ',')) : (i += 1) {}
         return i;
     }
 
@@ -22655,10 +22673,12 @@ pub const Evaluator = struct {
         }
 
         var i = start;
-        while (i < source.len and source[i] != ',' and source[i] != '}' and source[i] != ']' and
-            source[i] != ' ' and source[i] != '\t' and source[i] != '\n' and source[i] != '\r') : (i += 1)
-        {}
+        while (i < source.len and json_scalar_char(source[i])) : (i += 1) {}
         return i;
+    }
+
+    fn json_scalar_char(ch: u8) bool {
+        return ch != ',' and ch != '}' and ch != ']' and !is_soql_whitespace(ch);
     }
 
     fn scan_json_string_end(source: []const u8, start: usize) usize {
@@ -23776,16 +23796,23 @@ fn extract_sub_query(soql: []const u8) ?SubQueryInfo {
             }
             if (close_idx >= soql.len or depth != 0) continue;
             const inner_query = std.mem.trim(u8, soql[i + 1 .. close_idx], " \t\n\r");
-            if (inner_query.len > 6 and std.ascii.eqlIgnoreCase(inner_query[0..6], "SELECT")) {
+            if (inner_query.len > 6 and
+                std.ascii.eqlIgnoreCase(inner_query[0..6], "SELECT"))
+            {
                 if (std.ascii.indexOfIgnoreCase(inner_query, "FROM")) |from_pos| {
                     var start = from_pos + 4;
-                    while (start < inner_query.len and (inner_query[start] == ' ' or inner_query[start] == '\t' or inner_query[start] == '\n')) start += 1;
+                    while (start < inner_query.len and is_soql_whitespace(inner_query[start])) {
+                        start += 1;
+                    }
                     var end = start;
-                    while (end < inner_query.len and inner_query[end] != ' ' and inner_query[end] != ')' and inner_query[end] != '\n' and inner_query[end] != '\t') end += 1;
+                    while (end < inner_query.len and
+                        sub_query_relationship_char(inner_query[end]))
+                    {
+                        end += 1;
+                    }
                     if (end > start) {
                         const raw_rel = inner_query[start..end];
-                        // Strip parent prefix: "Account.Contacts" → "Contacts"
-                        const rel = if (std.mem.lastIndexOfScalar(u8, raw_rel, '.')) |dot_pos| raw_rel[dot_pos + 1 ..] else raw_rel;
+                        const rel = strip_parent_relationship_prefix(raw_rel);
                         return SubQueryInfo{ .relationship = rel, .query = inner_query };
                     }
                 }
@@ -23795,9 +23822,23 @@ fn extract_sub_query(soql: []const u8) ?SubQueryInfo {
     return null;
 }
 
+fn sub_query_relationship_char(ch: u8) bool {
+    return ch != ' ' and ch != ')' and ch != '\n' and ch != '\t';
+}
+
+fn strip_parent_relationship_prefix(raw_rel: []const u8) []const u8 {
+    return if (std.mem.lastIndexOfScalar(u8, raw_rel, '.')) |dot_pos|
+        raw_rel[dot_pos + 1 ..]
+    else
+        raw_rel;
+}
+
 fn extract_parent_fields(soql: []const u8) ?[]const u8 {
     // Extract SELECT clause
-    const select_start = if (std.ascii.indexOfIgnoreCase(soql, "SELECT")) |si| si + 6 else return null;
+    const select_start = if (std.ascii.indexOfIgnoreCase(soql, "SELECT")) |si|
+        si + 6
+    else
+        return null;
     // Find outer FROM (not inside parens)
     var from_end: usize = soql.len;
     var depth: u32 = 0;
@@ -23807,8 +23848,9 @@ fn extract_parent_fields(soql: []const u8) ?[]const u8 {
         if (soql[idx] == ')') {
             if (depth > 0) depth -= 1;
         }
-        if (depth == 0 and std.ascii.eqlIgnoreCase(soql[idx .. idx + 4], "FROM") and
-            (idx == 0 or soql[idx - 1] == ' ' or soql[idx - 1] == '\n' or soql[idx - 1] == '\t'))
+        if (depth == 0 and
+            std.ascii.eqlIgnoreCase(soql[idx .. idx + 4], "FROM") and
+            (idx == 0 or is_soql_whitespace(soql[idx - 1])))
         {
             from_end = idx;
             break;
@@ -23834,7 +23876,11 @@ const EvalTestResult = struct {
     }
 };
 
-fn eval_source(source: []const u8, class_name: []const u8, method_name: []const u8) !EvalTestResult {
+fn eval_source(
+    source: []const u8,
+    class_name: []const u8,
+    method_name: []const u8,
+) !EvalTestResult {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     errdefer arena.deinit();
 
@@ -24342,7 +24388,8 @@ test "mock singleton override feeds nested inner-class getter" {
         \\}
         \\public class Runner {
         \\    public static String run() {
-        \\        LoggerSObjectProxy.LoginHistory mockLoginHistoryProxy = new LoggerSObjectProxy.LoginHistory();
+        \\        LoggerSObjectProxy.LoginHistory mockLoginHistoryProxy =
+        \\            new LoggerSObjectProxy.LoginHistory();
         \\        mockLoginHistoryProxy.Application = 'Application';
         \\        LoggerSObjectProxy.AuthSession mockAuthSessionProxy = new LoggerSObjectProxy.AuthSession();
         \\        mockAuthSessionProxy.LoginHistory = mockLoginHistoryProxy;
@@ -24449,7 +24496,10 @@ test "createStub forwards declared param types for typed null helper arguments" 
         \\}
         \\public class StubProbe {
         \\    public static String run() {
-        \\        StubTarget stubbed = (StubTarget) Test.createStub(StubTarget.class, new StubRecorder());
+        \\        StubTarget stubbed = (StubTarget) Test.createStub(
+        \\            StubTarget.class,
+        \\            new StubRecorder()
+        \\        );
         \\        stubbed.take(StubMatcherHelper.anyString());
         \\        return StubRecorder.seenType;
         \\    }
@@ -24477,7 +24527,10 @@ test "String.valueOf on Test.createStub proxy does not invoke stubbed Object met
         \\}
         \\public class StubStringProbe {
         \\    public static String run() {
-        \\        StubStringTarget stubbed = (StubStringTarget) Test.createStub(StubStringTarget.class, new StubStringRecorder());
+        \\        StubStringTarget stubbed = (StubStringTarget) Test.createStub(
+        \\            StubStringTarget.class,
+        \\            new StubStringRecorder()
+        \\        );
         \\        String rendered = String.valueOf(stubbed);
         \\        System.assert(rendered != null);
         \\        System.assertEquals(0, StubStringRecorder.callCount);
@@ -24488,7 +24541,10 @@ test "String.valueOf on Test.createStub proxy does not invoke stubbed Object met
     var r = try eval_source(source, "StubStringProbe", "run");
     defer r.deinit();
 
-    try std.testing.expectEqualStrings("StubStringTarget__sfdc_ApexStub:[instance]", r.value.string);
+    try std.testing.expectEqualStrings(
+        "StubStringTarget__sfdc_ApexStub:[instance]",
+        r.value.string,
+    );
 }
 
 test "List.add with explicit index inserts the provided value" {
@@ -24498,7 +24554,8 @@ test "List.add with explicit index inserts the provided value" {
         \\        List<Object> values = new List<Object>();
         \\        values.add('tail');
         \\        values.add(0, 'head');
-        \\        return String.valueOf(values.get(0)) + '|' + String.valueOf(values.get(1)) + '|' + values.size();
+        \\        return String.valueOf(values.get(0)) + '|' +
+        \\            String.valueOf(values.get(1)) + '|' + values.size();
         \\    }
         \\}
     ;
