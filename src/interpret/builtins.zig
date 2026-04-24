@@ -4693,16 +4693,19 @@ fn type_matches_any(value: []const u8, candidates: []const []const u8) bool {
     return false;
 }
 
-/// フィールド名からフィールド型を推測する。field-meta.xml の type 情報がない場合のフォールバック。
+/// フィールド名からフィールド型を推測する。
+/// field-meta.xml の type 情報がない場合のフォールバック。
 fn infer_field_type(field_name: []const u8) []const u8 {
     return infer_field_type_for_object("", field_name);
 }
 
 /// Infer an xml-form type for a standard SObject field.
-/// `object_type` is optional ("" for unknown); when provided, well-known object/field pairs
-/// resolve to their real DisplayType so `DescribeFieldResult.getType()` reports something
-/// sensible even without field-meta.xml being loaded.
-fn infer_field_type_for_object(object_type: []const u8, field_name: []const u8) []const u8 {
+/// `object_type` is optional ("" for unknown); well-known object/field pairs
+/// resolve to their real DisplayType even without field-meta.xml.
+fn infer_field_type_for_object(
+    object_type: []const u8,
+    field_name: []const u8,
+) []const u8 {
     if (object_type.len > 0) {
         if (infer_standard_picklist_type(object_type, field_name)) |t| return t;
     }
@@ -4713,12 +4716,13 @@ fn infer_field_type_for_object(object_type: []const u8, field_name: []const u8) 
     if (std.ascii.eqlIgnoreCase(field_name, "ActivityDate")) return "Date";
     if (std.ascii.eqlIgnoreCase(field_name, "Id")) return "Id";
     // Well-known lookup fields report as REFERENCE so that relationshipName resolves.
-    // A generic "<xxx>Id" is treated as a reference only when the prefix looks like an SObject.
+    // A generic "<xxx>Id" is treated as reference only when the prefix looks
+    // like an SObject.
     if (std.mem.endsWith(u8, field_name, "Id") or std.mem.endsWith(u8, field_name, "Id__c")) {
         return "REFERENCE";
     }
-    // Standard relationship names ("CreatedBy", "Owner", etc.) are REFERENCE even though
-    // they don't end with "Id" — they're the dot-path prefix used for cross-object SOQL.
+    // Standard relationship names ("CreatedBy", "Owner", etc.) are dot-path
+    // prefixes used for cross-object SOQL, so they are REFERENCE.
     if (standard_reference_target_for_field_name(field_name) != null) {
         return "REFERENCE";
     }
@@ -4735,7 +4739,7 @@ fn infer_field_type_for_object(object_type: []const u8, field_name: []const u8) 
         std.mem.endsWith(u8, field_name, "Date__c") or
         std.mem.endsWith(u8, field_name, "Timestamp__c"))
         return "DateTime";
-    if (std.ascii.eqlIgnoreCase(field_name, "Priority") or std.ascii.eqlIgnoreCase(field_name, "Status")) return "Picklist";
+    if (type_matches_any(field_name, &.{ "Priority", "Status" })) return "Picklist";
     return "String";
 }
 
@@ -4782,14 +4786,20 @@ fn infer_standard_picklist_type(object_type: []const u8, field_name: []const u8)
         .{ .object = "User", .field = "EmailEncodingKey", .xml_type = "Picklist" },
     };
     for (picklists) |e| {
-        if (std.ascii.eqlIgnoreCase(e.object, object_type) and std.ascii.eqlIgnoreCase(e.field, field_name)) {
+        if (std.ascii.eqlIgnoreCase(e.object, object_type) and
+            std.ascii.eqlIgnoreCase(e.field, field_name))
+        {
             return e.xml_type;
         }
     }
     return null;
 }
 
-pub fn get_s_object_field_display_type(ctx: *BuiltinContext, sob: *types.SObject, field_name: []const u8) []const u8 {
+pub fn get_s_object_field_display_type(
+    ctx: *BuiltinContext,
+    sob: *types.SObject,
+    field_name: []const u8,
+) []const u8 {
     if (ctx.eval.field_types.get(sob.type_name)) |type_map| {
         for (type_map.keys(), type_map.values()) |known_field_name, raw_type| {
             if (std.ascii.eqlIgnoreCase(known_field_name, field_name)) {
@@ -4797,10 +4807,17 @@ pub fn get_s_object_field_display_type(ctx: *BuiltinContext, sob: *types.SObject
             }
         }
     }
-    return map_xml_type_to_display_type(infer_field_type_for_object(sob.type_name, field_name));
+    return map_xml_type_to_display_type(
+        infer_field_type_for_object(sob.type_name, field_name),
+    );
 }
 
-pub fn normalize_s_object_field_assignment(ctx: *BuiltinContext, sob: *types.SObject, field_name: []const u8, value: Value) !Value {
+pub fn normalize_s_object_field_assignment(
+    ctx: *BuiltinContext,
+    sob: *types.SObject,
+    field_name: []const u8,
+    value: Value,
+) !Value {
     if (value == .null_val) return value;
 
     const display_type = get_s_object_field_display_type(ctx, sob, field_name);
@@ -4825,7 +4842,7 @@ pub fn normalize_s_object_field_assignment(ctx: *BuiltinContext, sob: *types.SOb
         return try normalize_boolean_field_assignment(ctx, value);
     }
 
-    if (std.ascii.eqlIgnoreCase(display_type, "INTEGER") or std.ascii.eqlIgnoreCase(display_type, "LONG")) {
+    if (type_matches_any(display_type, &.{ "INTEGER", "LONG" })) {
         return try normalize_integer_field_assignment(ctx, value);
     }
 
@@ -4836,7 +4853,7 @@ pub fn normalize_s_object_field_assignment(ctx: *BuiltinContext, sob: *types.SOb
         return try normalize_decimal_field_assignment(ctx, value);
     }
 
-    if (std.ascii.eqlIgnoreCase(display_type, "ID") or std.ascii.eqlIgnoreCase(display_type, "REFERENCE")) {
+    if (type_matches_any(display_type, &.{ "ID", "REFERENCE" })) {
         return try normalize_id_field_assignment(ctx, value);
     }
 
@@ -4906,35 +4923,49 @@ fn normalize_id_field_assignment(ctx: *BuiltinContext, value: Value) !Value {
     };
 }
 
-fn dispatch_database(ctx: *BuiltinContext, method_name: []const u8, args: []const Value) !?Value {
+fn dispatch_database(
+    ctx: *BuiltinContext,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
     // NOTE: evaluator.handleDatabaseMethod is the primary handler and is called first
     // in both callMethod and evalMethodCall paths. This builtin path is only reached as
     // a last-resort fallback (e.g. from dispatchStatic when class_name is "Database"
     // but the evaluator path was not taken). Route to the evaluator implementation so
     // overloads like Database.insert(records, dmlOptions) keep the same behavior here.
-    if (std.ascii.eqlIgnoreCase(method_name, "insert") or
-        std.ascii.eqlIgnoreCase(method_name, "update") or
-        std.ascii.eqlIgnoreCase(method_name, "upsert") or
-        std.ascii.eqlIgnoreCase(method_name, "delete") or
-        std.ascii.eqlIgnoreCase(method_name, "undelete") or
-        std.ascii.eqlIgnoreCase(method_name, "query") or
-        std.ascii.eqlIgnoreCase(method_name, "countQuery") or
-        std.ascii.eqlIgnoreCase(method_name, "countQueryWithBinds") or
-        std.ascii.eqlIgnoreCase(method_name, "queryWithBinds") or
-        std.ascii.eqlIgnoreCase(method_name, "getQueryLocator") or
-        std.ascii.eqlIgnoreCase(method_name, "setSavepoint") or
-        std.ascii.eqlIgnoreCase(method_name, "rollback") or
-        std.ascii.eqlIgnoreCase(method_name, "emptyRecycleBin") or
-        std.ascii.eqlIgnoreCase(method_name, "executeBatch") or
-        std.ascii.eqlIgnoreCase(method_name, "merge"))
-    {
+    if (database_method_delegates_to_evaluator(method_name)) {
         return try ctx.eval.handle_database_method_public(method_name, args, ctx.eval.global_env);
     }
     return Value.null_val;
 }
 
+fn database_method_delegates_to_evaluator(method_name: []const u8) bool {
+    return type_matches_any(method_name, &.{
+        "insert",
+        "update",
+        "upsert",
+        "delete",
+        "undelete",
+        "query",
+        "countQuery",
+        "countQueryWithBinds",
+        "queryWithBinds",
+        "getQueryLocator",
+        "setSavepoint",
+        "rollback",
+        "emptyRecycleBin",
+        "executeBatch",
+        "merge",
+    });
+}
+
 /// インスタンスメソッド呼び出しを試行する。
-pub fn dispatch_instance(ctx: *BuiltinContext, receiver: Value, method_name: []const u8, args: []const Value) !?Value {
+pub fn dispatch_instance(
+    ctx: *BuiltinContext,
+    receiver: Value,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
     switch (receiver) {
         .string => |s| return dispatch_string_instance(ctx, s, method_name, args),
         .list => |list| return dispatch_list_instance(ctx, list, method_name, args),
@@ -4943,33 +4974,61 @@ pub fn dispatch_instance(ctx: *BuiltinContext, receiver: Value, method_name: []c
         .object => |obj| return dispatch_object_instance(ctx, obj, method_name, args),
         .sobject => |sob| return dispatch_s_object_instance(ctx, sob, method_name, args),
         .double => |d| return dispatch_double_instance(ctx, d, method_name, args),
-        .integer => |i| return dispatch_double_instance(ctx, @floatFromInt(i), method_name, args),
-        .long => |i| return dispatch_double_instance(ctx, @floatFromInt(i), method_name, args),
+        .integer => |i| return dispatch_double_instance(
+            ctx,
+            @floatFromInt(i),
+            method_name,
+            args,
+        ),
+        .long => |i| return dispatch_double_instance(
+            ctx,
+            @floatFromInt(i),
+            method_name,
+            args,
+        ),
         else => return null,
     }
 }
 
-fn dispatch_string_instance(ctx: *BuiltinContext, s: []const u8, method_name: []const u8, args: []const Value) !?Value {
+fn dispatch_string_instance(
+    ctx: *BuiltinContext,
+    s: []const u8,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
     _ = ctx;
     _ = args;
-    if (std.ascii.eqlIgnoreCase(method_name, "length")) return Value{ .integer = @intCast(s.len) };
+    if (std.ascii.eqlIgnoreCase(method_name, "length")) {
+        return Value{ .integer = @intCast(s.len) };
+    }
     return null; // Let evaluator handle more string methods
 }
 
-/// Double / Decimal インスタンスメソッド: setScale, doubleValue, intValue, round, abs 等
-fn dispatch_double_instance(ctx: *BuiltinContext, d: f64, method_name: []const u8, args: []const Value) !?Value {
-    // setScale(scale) / setScale(scale, RoundingMode) — 小数点以下桁数を丸める (Decimal)
+/// Double / Decimal インスタンスメソッド。
+fn dispatch_double_instance(
+    ctx: *BuiltinContext,
+    d: f64,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
+    // setScale(scale) / setScale(scale, RoundingMode)
     if (std.ascii.eqlIgnoreCase(method_name, "setScale")) {
         return dispatch_double_set_scale(d, args);
     }
     // doubleValue()
     if (std.ascii.eqlIgnoreCase(method_name, "doubleValue")) return Value{ .double = d };
     // intValue()
-    if (std.ascii.eqlIgnoreCase(method_name, "intValue")) return Value{ .integer = @intFromFloat(d) };
+    if (std.ascii.eqlIgnoreCase(method_name, "intValue")) {
+        return Value{ .integer = @intFromFloat(d) };
+    }
     // longValue()
-    if (std.ascii.eqlIgnoreCase(method_name, "longValue")) return Value{ .long = @intFromFloat(d) };
+    if (std.ascii.eqlIgnoreCase(method_name, "longValue")) {
+        return Value{ .long = @intFromFloat(d) };
+    }
     // round()
-    if (std.ascii.eqlIgnoreCase(method_name, "round")) return Value{ .integer = @intFromFloat(@round(d)) };
+    if (std.ascii.eqlIgnoreCase(method_name, "round")) {
+        return Value{ .integer = @intFromFloat(@round(d)) };
+    }
     // abs()
     if (std.ascii.eqlIgnoreCase(method_name, "abs")) return Value{ .double = @abs(d) };
     // pow(exponent) — Decimal raised to the given integer exponent
@@ -4981,7 +5040,7 @@ fn dispatch_double_instance(ctx: *BuiltinContext, d: f64, method_name: []const u
             else => 0,
         };
         const result = std.math.pow(f64, d, exp);
-        if (@floor(result) == result and !std.math.isNan(result) and !std.math.isInf(result) and @abs(result) < 9_007_199_254_740_992.0) {
+        if (double_fits_exact_integer(result)) {
             return Value{ .integer = @intFromFloat(result) };
         }
         return Value{ .double = result };
@@ -4991,7 +5050,9 @@ fn dispatch_double_instance(ctx: *BuiltinContext, d: f64, method_name: []const u
         return Value{ .string = try std.fmt.allocPrint(ctx.arena, "{d}", .{d}) };
     }
     // stripTrailingZeros() — 値自体は変わらない（文字列変換時に効く）
-    if (std.ascii.eqlIgnoreCase(method_name, "stripTrailingZeros")) return Value{ .double = d };
+    if (std.ascii.eqlIgnoreCase(method_name, "stripTrailingZeros")) {
+        return Value{ .double = d };
+    }
     // scale() — 小数点以下の桁数を返す
     if (std.ascii.eqlIgnoreCase(method_name, "scale")) {
         const s = try std.fmt.allocPrint(ctx.arena, "{d}", .{d});
@@ -5001,6 +5062,13 @@ fn dispatch_double_instance(ctx: *BuiltinContext, d: f64, method_name: []const u
         return Value{ .integer = 0 };
     }
     return null;
+}
+
+fn double_fits_exact_integer(value: f64) bool {
+    return @floor(value) == value and
+        !std.math.isNan(value) and
+        !std.math.isInf(value) and
+        @abs(value) < 9_007_199_254_740_992.0;
 }
 
 fn dispatch_double_set_scale(d: f64, args: []const Value) Value {
@@ -5039,7 +5107,8 @@ fn dispatch_double_set_scale(d: f64, args: []const Value) Value {
         const frac = scaled - f;
         if (frac == 0.5 or frac == -0.5) {
             if (@mod(rounded, 2.0) != 0) {
-                break :blk rounded - (if (scaled > 0) @as(f64, 1) else @as(f64, -1));
+                const parity_adjustment: f64 = if (scaled > 0) 1 else -1;
+                break :blk rounded - parity_adjustment;
             }
         }
         break :blk rounded;
@@ -5047,25 +5116,45 @@ fn dispatch_double_set_scale(d: f64, args: []const Value) Value {
     return Value{ .double = adjusted / factor };
 }
 
-/// List メソッドは evaluator.evalListMethod (完全版) で処理されるため、ここでは null を返す。
-fn dispatch_list_instance(ctx: *BuiltinContext, list: *types.ListValue, method_name: []const u8, args: []const Value) !?Value {
+/// List メソッドは evaluator.evalListMethod で処理される。
+fn dispatch_list_instance(
+    ctx: *BuiltinContext,
+    list: *types.ListValue,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
     _ = .{ ctx, list, method_name, args };
     return null;
 }
 
-/// Map メソッドは evaluator.evalMapMethod (完全版) で処理されるため、ここでは null を返す。
-fn dispatch_map_instance(ctx: *BuiltinContext, map: *types.MapValue, method_name: []const u8, args: []const Value) !?Value {
+/// Map メソッドは evaluator.evalMapMethod で処理される。
+fn dispatch_map_instance(
+    ctx: *BuiltinContext,
+    map: *types.MapValue,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
     _ = .{ ctx, map, method_name, args };
     return null;
 }
 
-/// Set メソッドは evaluator.evalSetMethod (完全版) で処理されるため、ここでは null を返す。
-fn dispatch_set_instance(ctx: *BuiltinContext, set: *types.SetValue, method_name: []const u8, args: []const Value) !?Value {
+/// Set メソッドは evaluator.evalSetMethod で処理される。
+fn dispatch_set_instance(
+    ctx: *BuiltinContext,
+    set: *types.SetValue,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
     _ = .{ ctx, set, method_name, args };
     return null;
 }
 
-fn dispatch_object_instance(ctx: *BuiltinContext, obj: *types.ObjectInstance, method_name: []const u8, args: []const Value) !?Value {
+fn dispatch_object_instance(
+    ctx: *BuiltinContext,
+    obj: *types.ObjectInstance,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
     if (try dispatch_obj_iterator(ctx, obj, method_name)) |v| return v;
     if (try dispatch_obj_platform_classes(ctx, obj, method_name, args)) |v| return v;
     if (try dispatch_obj_schema_classes(ctx, obj, method_name, args)) |v| return v;
@@ -5080,10 +5169,13 @@ fn dispatch_obj_platform_classes(
 ) !?Value {
     const ci = std.ascii;
     const cn = obj.class_name;
-    if (ci.eqlIgnoreCase(cn, "Formula.FormulaBuilder") or ci.eqlIgnoreCase(cn, "FormulaBuilder")) {
+    if (type_matches_any(cn, &.{ "Formula.FormulaBuilder", "FormulaBuilder" })) {
         if (try dispatch_obj_formula_builder(ctx, obj, method_name, args)) |v| return v;
     }
-    if (ci.eqlIgnoreCase(cn, "FormulaEval.FormulaInstance") or ci.eqlIgnoreCase(cn, "FormulaInstance")) {
+    if (type_matches_any(cn, &.{
+        "FormulaEval.FormulaInstance",
+        "FormulaInstance",
+    })) {
         if (try dispatch_obj_formula_instance(ctx, obj, method_name, args)) |v| return v;
     }
     if (ci.eqlIgnoreCase(cn, "Pattern")) return dispatch_obj_pattern(ctx, obj, method_name, args);
@@ -5096,7 +5188,9 @@ fn dispatch_obj_platform_classes(
     if (ci.eqlIgnoreCase(cn, "EventBus")) {
         if (try dispatch_obj_event_bus(ctx, obj, method_name, args)) |v| return v;
     }
-    if (ci.eqlIgnoreCase(cn, "DataWeave.Script")) return dispatch_obj_data_weave_script(ctx, obj, method_name, args);
+    if (ci.eqlIgnoreCase(cn, "DataWeave.Script")) {
+        return dispatch_obj_data_weave_script(ctx, obj, method_name, args);
+    }
     if (try dispatch_obj_data_weave_result(ctx, obj, method_name)) |v| return v;
     if (try dispatch_obj_rest_headers(ctx, obj, method_name, args)) |v| return v;
     if (ci.eqlIgnoreCase(cn, "HttpResponse") or std.mem.startsWith(u8, cn, "Http")) {
@@ -5108,10 +5202,16 @@ fn dispatch_obj_platform_classes(
     if (ci.eqlIgnoreCase(cn, "ApexPages.Message")) {
         if (try dispatch_obj_apex_pages_message(obj, method_name)) |v| return v;
     }
-    if (ci.eqlIgnoreCase(cn, "ApexPages.StandardController") or ci.eqlIgnoreCase(cn, "StandardController")) {
+    if (type_matches_any(cn, &.{
+        "ApexPages.StandardController",
+        "StandardController",
+    })) {
         if (try dispatch_obj_standard_controller(ctx, obj, method_name)) |v| return v;
     }
-    if (ci.eqlIgnoreCase(cn, "ApexPages.StandardSetController") or ci.eqlIgnoreCase(cn, "StandardSetController")) {
+    if (type_matches_any(cn, &.{
+        "ApexPages.StandardSetController",
+        "StandardSetController",
+    })) {
         if (try dispatch_obj_standard_set_controller(ctx, obj, method_name, args)) |v| return v;
     }
     if (try dispatch_obj_query_locator(ctx, obj, method_name)) |v| return v;
@@ -5146,19 +5246,18 @@ fn dispatch_obj_schema_classes(
         if (try dispatch_obj_schema_describe_field(ctx, obj, method_name)) |v| return v;
     }
     if (ci.eqlIgnoreCase(cn, "Schema.PicklistEntry")) {
-        if (ci.eqlIgnoreCase(method_name, "getLabel")) return obj.fields.get("label") orelse Value{ .string = "" };
-        if (ci.eqlIgnoreCase(method_name, "getValue")) return obj.fields.get("value") orelse Value{ .string = "" };
-        if (ci.eqlIgnoreCase(method_name, "isActive")) return obj.fields.get("active") orelse Value{ .boolean = true };
+        if (dispatch_picklist_entry_accessor(obj, method_name)) |v| return v;
     }
     if (ci.eqlIgnoreCase(cn, "System.OrgLimit") or ci.eqlIgnoreCase(cn, "OrgLimit")) {
-        if (ci.eqlIgnoreCase(method_name, "getName")) return obj.fields.get("name") orelse Value{ .string = "" };
-        if (ci.eqlIgnoreCase(method_name, "getValue")) return obj.fields.get("value") orelse Value{ .integer = 0 };
-        if (ci.eqlIgnoreCase(method_name, "getLimit")) return obj.fields.get("limit") orelse Value{ .integer = 0 };
+        if (dispatch_org_limit_accessor(obj, method_name)) |v| return v;
     }
-    if (ci.eqlIgnoreCase(cn, "DescribeSObjectResult") or ci.eqlIgnoreCase(cn, "Schema.DescribeSObjectResult")) {
+    if (type_matches_any(cn, &.{
+        "DescribeSObjectResult",
+        "Schema.DescribeSObjectResult",
+    })) {
         if (try dispatch_obj_describe_s_object(ctx, obj, method_name)) |v| return v;
     }
-    if (ci.eqlIgnoreCase(cn, "Schema.RecordTypeInfo") or ci.eqlIgnoreCase(cn, "RecordTypeInfo")) {
+    if (type_matches_any(cn, &.{ "Schema.RecordTypeInfo", "RecordTypeInfo" })) {
         if (try dispatch_obj_record_type_info(obj, method_name)) |v| return v;
     }
     if (ci.eqlIgnoreCase(cn, "SelectOption")) {
@@ -5181,6 +5280,38 @@ fn dispatch_obj_schema_classes(
     }
     if (ci.eqlIgnoreCase(cn, "SObjectAccessDecision")) {
         if (try dispatch_obj_s_object_access_decision(ctx, obj, method_name)) |v| return v;
+    }
+    return null;
+}
+
+fn dispatch_picklist_entry_accessor(
+    obj: *types.ObjectInstance,
+    method_name: []const u8,
+) ?Value {
+    if (std.ascii.eqlIgnoreCase(method_name, "getLabel")) {
+        return obj.fields.get("label") orelse Value{ .string = "" };
+    }
+    if (std.ascii.eqlIgnoreCase(method_name, "getValue")) {
+        return obj.fields.get("value") orelse Value{ .string = "" };
+    }
+    if (std.ascii.eqlIgnoreCase(method_name, "isActive")) {
+        return obj.fields.get("active") orelse Value{ .boolean = true };
+    }
+    return null;
+}
+
+fn dispatch_org_limit_accessor(
+    obj: *types.ObjectInstance,
+    method_name: []const u8,
+) ?Value {
+    if (std.ascii.eqlIgnoreCase(method_name, "getName")) {
+        return obj.fields.get("name") orelse Value{ .string = "" };
+    }
+    if (std.ascii.eqlIgnoreCase(method_name, "getValue")) {
+        return obj.fields.get("value") orelse Value{ .integer = 0 };
+    }
+    if (std.ascii.eqlIgnoreCase(method_name, "getLimit")) {
+        return obj.fields.get("limit") orelse Value{ .integer = 0 };
     }
     return null;
 }
