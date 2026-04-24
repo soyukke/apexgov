@@ -18433,9 +18433,18 @@ pub const Evaluator = struct {
         );
     }
 
-    fn handle_database_method(self: *Evaluator, method: []const u8, args: []const Value, env: *Env) anyerror!Value {
-        if (database_dml_method(method)) return try self.handle_database_dml_method(method, args);
-        if (std.ascii.eqlIgnoreCase(method, "query")) return try self.handle_database_query(args, env);
+    fn handle_database_method(
+        self: *Evaluator,
+        method: []const u8,
+        args: []const Value,
+        env: *Env,
+    ) anyerror!Value {
+        if (database_dml_method(method)) {
+            return try self.handle_database_dml_method(method, args);
+        }
+        if (std.ascii.eqlIgnoreCase(method, "query")) {
+            return try self.handle_database_query(args, env);
+        }
         if (std.ascii.eqlIgnoreCase(method, "queryWithBinds")) {
             return try self.handle_database_query_with_binds(args, env);
         }
@@ -18469,7 +18478,11 @@ pub const Evaluator = struct {
             std.ascii.eqlIgnoreCase(method, "undelete");
     }
 
-    fn handle_database_dml_method(self: *Evaluator, method: []const u8, args: []const Value) anyerror!Value {
+    fn handle_database_dml_method(
+        self: *Evaluator,
+        method: []const u8,
+        args: []const Value,
+    ) anyerror!Value {
         const result_class = database_dml_result_class(method);
         const is_upsert = std.ascii.eqlIgnoreCase(method, "upsert");
         const external_id_field = if (is_upsert and args.len >= 2 and args[1] != .boolean)
@@ -18479,11 +18492,20 @@ pub const Evaluator = struct {
         const all_or_nothing = self.database_dml_all_or_nothing(args, is_upsert);
 
         try self.reject_user_mode_database_dml(args);
-        const upsert_creates = try self.collect_upsert_creates(args, is_upsert, external_id_field);
+        const upsert_creates = try self.collect_upsert_creates(
+            args,
+            is_upsert,
+            external_id_field,
+        );
         if (args.len > 0) {
             const op = database_dml_op(method);
             if (all_or_nothing) {
-                try self.execute_database_dml_all_or_nothing(op, args[0], is_upsert, external_id_field);
+                try self.execute_database_dml_all_or_nothing(
+                    op,
+                    args[0],
+                    is_upsert,
+                    external_id_field,
+                );
             } else {
                 return try self.execute_database_dml_best_effort(
                     op,
@@ -18517,7 +18539,11 @@ pub const Evaluator = struct {
         return .delete;
     }
 
-    fn database_dml_all_or_nothing(self: *Evaluator, args: []const Value, is_upsert: bool) bool {
+    fn database_dml_all_or_nothing(
+        self: *Evaluator,
+        args: []const Value,
+        is_upsert: bool,
+    ) bool {
         if (is_upsert and args.len >= 3 and args[2] == .boolean) return args[2].boolean;
         if (is_upsert and args.len >= 3) {
             if (self.get_dml_options_all_or_none(args[2])) |opt| return opt;
@@ -18530,7 +18556,10 @@ pub const Evaluator = struct {
     }
 
     fn reject_user_mode_database_dml(self: *Evaluator, args: []const Value) anyerror!void {
-        const has_permset_db = if (self.store.get("PermissionSetAssignment")) |psa| psa.items.len > 0 else false;
+        const has_permset_db = if (self.store.get("PermissionSetAssignment")) |psa|
+            psa.items.len > 0
+        else
+            false;
         if (!self.is_min_access_user or has_permset_db or args.len < 2) return;
         if (!is_database_user_mode_arg(args[1])) return;
 
@@ -18576,7 +18605,8 @@ pub const Evaluator = struct {
             try creates.append(self.arena, self.will_upsert_create_record(args[0].sobject, external_id_field));
         } else if (args[0] == .list) {
             for (args[0].list.items.items) |item| {
-                const will_create = item != .sobject or self.will_upsert_create_record(item.sobject, external_id_field);
+                const will_create = item != .sobject or
+                    self.will_upsert_create_record(item.sobject, external_id_field);
                 try creates.append(self.arena, will_create);
             }
         }
@@ -18605,7 +18635,12 @@ pub const Evaluator = struct {
         external_id_field: ?[]const u8,
         is_upsert: bool,
     ) anyerror!Value {
-        return self.execute_partial_database_method(op, result_class, target, external_id_field) catch |err| {
+        return self.execute_partial_database_method(
+            op,
+            result_class,
+            target,
+            external_id_field,
+        ) catch |err| {
             if (err == error.ApexException and target == .sobject) {
                 const failed = try self.build_failed_dml_result(result_class, target, is_upsert);
                 self.pending_exception = null;
@@ -18637,7 +18672,13 @@ pub const Evaluator = struct {
         const list = try self.arena.create(types.ListValue);
         list.* = .{};
         if (args.len > 0 and args[0] == .list) {
-            try self.append_database_dml_success_results(list, result_class, args[0].list, is_upsert, upsert_creates);
+            try self.append_database_dml_success_results(
+                list,
+                result_class,
+                args[0].list,
+                is_upsert,
+                upsert_creates,
+            );
         } else {
             const sr = try self.make_database_dml_success_result(
                 result_class,
@@ -18659,7 +18700,10 @@ pub const Evaluator = struct {
         upsert_creates: []const bool,
     ) anyerror!void {
         for (records.items.items, 0..) |item, idx| {
-            const was_created = is_upsert and if (idx < upsert_creates.len) upsert_creates[idx] else true;
+            const was_created = is_upsert and if (idx < upsert_creates.len)
+                upsert_creates[idx]
+            else
+                true;
             const sr = try self.make_database_dml_success_result(
                 result_class,
                 database_dml_item_id(item),
@@ -18683,8 +18727,16 @@ pub const Evaluator = struct {
         try sr.fields.put(self.arena, "success", Value{ .boolean = true });
         try sr.fields.put(self.arena, "Id", Value{ .string = id });
         if (is_upsert) {
-            try sr.fields.put(self.arena, "isCreated", Value{ .boolean = was_created });
-            try sr.fields.put(self.arena, "created", Value{ .boolean = was_created });
+            try sr.fields.put(
+                self.arena,
+                "isCreated",
+                Value{ .boolean = was_created },
+            );
+            try sr.fields.put(
+                self.arena,
+                "created",
+                Value{ .boolean = was_created },
+            );
         }
         return sr;
     }
@@ -18701,7 +18753,11 @@ pub const Evaluator = struct {
         return Value{ .list = list };
     }
 
-    fn handle_database_query_with_binds(self: *Evaluator, args: []const Value, env: *Env) anyerror!Value {
+    fn handle_database_query_with_binds(
+        self: *Evaluator,
+        args: []const Value,
+        env: *Env,
+    ) anyerror!Value {
         if (args.len >= 2 and args[0] == .string) {
             var soql_str = args[0].string;
             if (args[1] == .map) {
@@ -18712,7 +18768,11 @@ pub const Evaluator = struct {
         return try self.make_empty_list();
     }
 
-    fn database_query_with_bound_map(self: *Evaluator, soql_str: []const u8, bind_arg: Value) anyerror![]const u8 {
+    fn database_query_with_bound_map(
+        self: *Evaluator,
+        soql_str: []const u8,
+        bind_arg: Value,
+    ) anyerror![]const u8 {
         var result_buf: std.ArrayListUnmanaged(u8) = .empty;
         var pos: usize = 0;
         while (pos < soql_str.len) {
@@ -18723,7 +18783,10 @@ pub const Evaluator = struct {
             }
             var end = pos + 1;
             while (end < soql_str.len and
-                (std.ascii.isAlphanumeric(soql_str[end]) or soql_str[end] == '_')) end += 1;
+                (std.ascii.isAlphanumeric(soql_str[end]) or soql_str[end] == '_'))
+            {
+                end += 1;
+            }
             const bind_name = soql_str[pos + 1 .. end];
             if (bind_arg.map.entries.get(bind_name)) |bind_val| {
                 const s = try utils.coerce_to_string(bind_val, self.arena);
@@ -18738,7 +18801,11 @@ pub const Evaluator = struct {
         return try result_buf.toOwnedSlice(self.arena);
     }
 
-    fn handle_database_count_query(self: *Evaluator, args: []const Value, env: *Env) anyerror!Value {
+    fn handle_database_count_query(
+        self: *Evaluator,
+        args: []const Value,
+        env: *Env,
+    ) anyerror!Value {
         if (args.len == 0 or args[0] != .string) return Value{ .integer = 0 };
 
         const soql = args[0].string;
@@ -18746,7 +18813,9 @@ pub const Evaluator = struct {
             return self.execute_soql(soql, env);
         }
         const count_result = try self.execute_soql(soql, env);
-        if (count_result == .list) return Value{ .integer = @intCast(count_result.list.items.items.len) };
+        if (count_result == .list) {
+            return Value{ .integer = @intCast(count_result.list.items.items.len) };
+        }
         return count_result;
     }
 
@@ -18819,7 +18888,10 @@ pub const Evaluator = struct {
         return Value{ .string = try self.alloc_id() };
     }
 
-    fn execute_database_batch_object(self: *Evaluator, batch: *types.ObjectInstance) anyerror![]const u8 {
+    fn execute_database_batch_object(
+        self: *Evaluator,
+        batch: *types.ObjectInstance,
+    ) anyerror![]const u8 {
         if (self.batch_job_runner_active or self.batch_lifecycle_depth > 0) {
             return try self.enqueue_nested_database_batch(batch);
         }
@@ -18842,7 +18914,10 @@ pub const Evaluator = struct {
         return job_id;
     }
 
-    fn enqueue_nested_database_batch(self: *Evaluator, batch: *types.ObjectInstance) anyerror![]const u8 {
+    fn enqueue_nested_database_batch(
+        self: *Evaluator,
+        batch: *types.ObjectInstance,
+    ) anyerror![]const u8 {
         const job_id = try self.create_async_apex_job("BatchApex", batch.class_name, "execute");
         try batch.fields.put(self.arena, "__batchJobId", Value{ .string = job_id });
         if (self.active_batch_context) |batch_context| {
@@ -18938,18 +19013,28 @@ pub const Evaluator = struct {
         return Value{ .list = mr_list };
     }
 
-    fn handle_system_method(self: *Evaluator, inner: []const u8, method: []const u8, args: []const Value, current_env: *Env) !Value {
+    fn handle_system_method(
+        self: *Evaluator,
+        inner: []const u8,
+        method: []const u8,
+        args: []const Value,
+        current_env: *Env,
+    ) !Value {
         if (try self.handle_system_runtime_method(inner, args)) |result| return result;
         // System.Request.getCurrent() → return a Request object
         if (std.ascii.eqlIgnoreCase(inner, "Request")) {
             return self.handle_system_request(method, args);
         }
         // System.AccessType/AccessLevel
-        if (std.ascii.eqlIgnoreCase(inner, "AccessType") or std.ascii.eqlIgnoreCase(inner, "AccessLevel")) {
+        if (std.ascii.eqlIgnoreCase(inner, "AccessType") or
+            std.ascii.eqlIgnoreCase(inner, "AccessLevel"))
+        {
             return Value{ .string = method };
         }
         // System.LoggingLevel / System.TriggerOperation
-        if (std.ascii.eqlIgnoreCase(inner, "LoggingLevel") or std.ascii.eqlIgnoreCase(inner, "TriggerOperation")) {
+        if (std.ascii.eqlIgnoreCase(inner, "LoggingLevel") or
+            std.ascii.eqlIgnoreCase(inner, "TriggerOperation"))
+        {
             return self.handle_system_enum(inner, method, args);
         }
         // System.SObjectAccessDecision
@@ -18975,7 +19060,9 @@ pub const Evaluator = struct {
             return self.handle_database_method(method, args, current_env);
         }
         // System.EventBus.publish → delegate to callMethod so it goes through the EventBus.publish handler
-        if (std.ascii.eqlIgnoreCase(inner, "EventBus") and std.ascii.eqlIgnoreCase(method, "publish")) {
+        if (std.ascii.eqlIgnoreCase(inner, "EventBus") and
+            std.ascii.eqlIgnoreCase(method, "publish"))
+        {
             return self.call_method("EventBus", "publish", args) catch .void_val;
         }
         // Generic fallback: delegate System.X.method to builtins.dispatchStatic(X, method, args)
@@ -18992,12 +19079,18 @@ pub const Evaluator = struct {
         inner: []const u8,
         args: []const Value,
     ) !?Value {
-        if (std.ascii.eqlIgnoreCase(inner, "enqueueJob") and args.len > 0 and args[0] == .object) {
+        if (std.ascii.eqlIgnoreCase(inner, "enqueueJob") and
+            args.len > 0 and
+            args[0] == .object)
+        {
             return try self.enqueue_job(args[0].object);
         }
         if (std.ascii.eqlIgnoreCase(inner, "enqueueJob")) return .void_val;
         if (std.ascii.eqlIgnoreCase(inner, "attachFinalizer")) {
-            if (self.active_queueable_job_id != null and args.len > 0 and args[0] == .object) {
+            if (self.active_queueable_job_id != null and
+                args.len > 0 and
+                args[0] == .object)
+            {
                 self.attached_finalizer = args[0].object;
             }
             return .void_val;
@@ -19040,7 +19133,10 @@ pub const Evaluator = struct {
         method: []const u8,
         args: []const Value,
     ) !Value {
-        if (std.ascii.eqlIgnoreCase(method, "valueOf") and args.len > 0 and args[0] == .string) {
+        if (std.ascii.eqlIgnoreCase(method, "valueOf") and
+            args.len > 0 and
+            args[0] == .string)
+        {
             return try self.system_enum_value_of(inner, args[0].string);
         }
         if (std.ascii.eqlIgnoreCase(method, "values")) {
@@ -19076,9 +19172,27 @@ pub const Evaluator = struct {
 
     fn system_enum_values_for(inner: []const u8) []const []const u8 {
         if (std.ascii.eqlIgnoreCase(inner, "LoggingLevel")) {
-            return &.{ "INTERNAL", "FINEST", "FINER", "FINE", "DEBUG", "INFO", "WARN", "ERROR", "NONE" };
+            return &.{
+                "INTERNAL",
+                "FINEST",
+                "FINER",
+                "FINE",
+                "DEBUG",
+                "INFO",
+                "WARN",
+                "ERROR",
+                "NONE",
+            };
         }
-        return &.{ "BEFORE_INSERT", "BEFORE_UPDATE", "BEFORE_DELETE", "AFTER_INSERT", "AFTER_UPDATE", "AFTER_DELETE", "AFTER_UNDELETE" };
+        return &.{
+            "BEFORE_INSERT",
+            "BEFORE_UPDATE",
+            "BEFORE_DELETE",
+            "AFTER_INSERT",
+            "AFTER_UPDATE",
+            "AFTER_DELETE",
+            "AFTER_UNDELETE",
+        };
     }
 
     fn handle_system_json(
