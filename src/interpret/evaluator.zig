@@ -18035,12 +18035,21 @@ pub const Evaluator = struct {
         if (std.ascii.eqlIgnoreCase(method, "isRunningTest")) {
             return Value{ .boolean = true };
         }
-        if (std.ascii.eqlIgnoreCase(method, "testInstall") and args.len >= 1 and args[0] == .object) {
+        if (std.ascii.eqlIgnoreCase(method, "testInstall") and
+            args.len >= 1 and
+            args[0] == .object)
+        {
             try self.handle_test_install(args);
             return .void_val;
         }
         if (std.ascii.eqlIgnoreCase(method, "setCreatedDate")) {
-            var bctx = builtins.BuiltinContext{ .arena = self.arena, .stdout = &self.stdout, .pending_exception = &self.pending_exception, .see_all_data = self.see_all_data, .eval = self };
+            var bctx = builtins.BuiltinContext{
+                .arena = self.arena,
+                .stdout = &self.stdout,
+                .pending_exception = &self.pending_exception,
+                .see_all_data = self.see_all_data,
+                .eval = self,
+            };
             _ = try builtins.dispatch_static(&bctx, "Test", method, args);
             return .void_val;
         }
@@ -18065,8 +18074,17 @@ pub const Evaluator = struct {
                 if (self.find_class(sched.object.class_name)) |class_decl| {
                     const ctx_obj = try self.arena.create(types.ObjectInstance);
                     ctx_obj.* = .{ .class_name = "System.SchedulableContext" };
-                    try ctx_obj.fields.put(self.arena, "triggerId", Value{ .string = "08e000000000001" });
-                    _ = self.call_instance_method(class_decl, sched.object, "execute", &.{Value{ .object = ctx_obj }}) catch {};
+                    try ctx_obj.fields.put(
+                        self.arena,
+                        "triggerId",
+                        Value{ .string = "08e000000000001" },
+                    );
+                    _ = self.call_instance_method(
+                        class_decl,
+                        sched.object,
+                        "execute",
+                        &.{Value{ .object = ctx_obj }},
+                    ) catch {};
                 }
             }
         }
@@ -18076,10 +18094,16 @@ pub const Evaluator = struct {
         const install_handler_class = self.find_class(args[0].object.class_name) orelse return;
         const install_context = try self.arena.create(types.ObjectInstance);
         install_context.* = .{ .class_name = "System.InstallContext" };
-        if (args.len >= 2) try install_context.fields.put(self.arena, "previousVersion", args[1]);
+        if (args.len >= 2) {
+            try install_context.fields.put(self.arena, "previousVersion", args[1]);
+        }
         if (args.len >= 3) try install_context.fields.put(self.arena, "upgrade", args[2]);
         if (args.len >= 3 and args[2] == .boolean) {
-            try install_context.fields.put(self.arena, "firstInstall", Value{ .boolean = !args[2].boolean });
+            try install_context.fields.put(
+                self.arena,
+                "firstInstall",
+                Value{ .boolean = !args[2].boolean },
+            );
         }
         _ = try self.call_instance_method(
             install_handler_class,
@@ -18093,7 +18117,10 @@ pub const Evaluator = struct {
         const type_val = args[0]; // Type object
         const provider = args[1]; // StubProvider instance
         const type_name: []const u8 = if (type_val == .object)
-            (if (type_val.object.fields.get("name")) |n| (if (n == .string) n.string else "Object") else "Object")
+            (if (type_val.object.fields.get("name")) |n|
+                (if (n == .string) n.string else "Object")
+            else
+                "Object")
         else
             "Object";
         const stub = try self.arena.create(types.ObjectInstance);
@@ -18102,7 +18129,11 @@ pub const Evaluator = struct {
         try stub.fields.put(
             self.arena,
             "__stubDisplayClassName__",
-            Value{ .string = try std.fmt.allocPrint(self.arena, "{s}__sfdc_ApexStub", .{type_name}) },
+            Value{ .string = try std.fmt.allocPrint(
+                self.arena,
+                "{s}__sfdc_ApexStub",
+                .{type_name},
+            ) },
         );
         self.initialize_stub_instance_fields(type_name, stub);
         return Value{ .object = stub };
@@ -18123,7 +18154,10 @@ pub const Evaluator = struct {
     }
 
     fn handle_trigger_handler(self: *Evaluator, method: []const u8, args: []const Value) !Value {
-        if (std.ascii.eqlIgnoreCase(method, "bypass") and args.len > 0 and args[0] == .string) {
+        if (std.ascii.eqlIgnoreCase(method, "bypass") and
+            args.len > 0 and
+            args[0] == .string)
+        {
             try self.bypasses.put(self.arena, args[0].string, {});
         }
         return .void_val;
@@ -18139,7 +18173,9 @@ pub const Evaluator = struct {
             if (opt == .boolean) return opt.boolean;
         }
         for (fields.keys(), fields.values()) |k, v| {
-            if (std.ascii.eqlIgnoreCase(k, "OptAllOrNone") and v == .boolean) return v.boolean;
+            if (std.ascii.eqlIgnoreCase(k, "OptAllOrNone") and v == .boolean) {
+                return v.boolean;
+            }
         }
         return null;
     }
@@ -18152,7 +18188,13 @@ pub const Evaluator = struct {
         return null;
     }
 
-    fn create_dml_result_value(self: *Evaluator, result_class: []const u8, success: bool, id: ?[]const u8, is_created: ?bool) !Value {
+    fn create_dml_result_value(
+        self: *Evaluator,
+        result_class: []const u8,
+        success: bool,
+        id: ?[]const u8,
+        is_created: ?bool,
+    ) !Value {
         const sr = try self.arena.create(types.ObjectInstance);
         sr.* = .{ .class_name = result_class };
         try sr.fields.put(self.arena, "isSuccess", Value{ .boolean = success });
@@ -18174,9 +18216,19 @@ pub const Evaluator = struct {
         return Value{ .list = empty };
     }
 
-    fn build_failed_dml_result(self: *Evaluator, result_class: []const u8, target: Value, is_upsert: bool) !Value {
+    fn build_failed_dml_result(
+        self: *Evaluator,
+        result_class: []const u8,
+        target: Value,
+        is_upsert: bool,
+    ) !Value {
         const result_id = if (target == .sobject) self.sobject_id_for_result(target.sobject) else null;
-        const result = try self.create_dml_result_value(result_class, false, result_id, if (is_upsert) false else null);
+        const result = try self.create_dml_result_value(
+            result_class,
+            false,
+            result_id,
+            if (is_upsert) false else null,
+        );
         if (self.pending_exception) |pe| {
             const errors_list = try self.arena.create(types.ListValue);
             errors_list.* = .{};
@@ -18202,7 +18254,11 @@ pub const Evaluator = struct {
                 message_val = pe;
             }
             try err_obj.fields.put(self.arena, "message", message_val);
-            try err_obj.fields.put(self.arena, "statusCode", Value{ .string = "FIELD_CUSTOM_VALIDATION_EXCEPTION" });
+            try err_obj.fields.put(
+                self.arena,
+                "statusCode",
+                Value{ .string = "FIELD_CUSTOM_VALIDATION_EXCEPTION" },
+            );
             try err_obj.fields.put(self.arena, "fields", fields_val);
             try errors_list.items.append(self.arena, Value{ .object = err_obj });
             if (result == .object) {
@@ -18212,45 +18268,21 @@ pub const Evaluator = struct {
         return result;
     }
 
-    fn execute_partial_database_method(self: *Evaluator, op: ast.DmlOp, result_class: []const u8, target: Value, external_id_field: ?[]const u8) !Value {
+    fn execute_partial_database_method(
+        self: *Evaluator,
+        op: ast.DmlOp,
+        result_class: []const u8,
+        target: Value,
+        external_id_field: ?[]const u8,
+    ) !Value {
         const appendFailure = struct {
-            fn build(self_eval: *Evaluator, cls: []const u8, item: Value, op_kind: ast.DmlOp) !Value {
-                const result_id = if (item == .sobject) self_eval.sobject_id_for_result(item.sobject) else null;
-                const result = try self_eval.create_dml_result_value(cls, false, result_id, if (op_kind == .upsert) false else null);
-                // Capture pending exception as Database.Error on the failed result
-                if (self_eval.pending_exception) |pe| {
-                    const errors_list = try self_eval.arena.create(types.ListValue);
-                    errors_list.* = .{};
-                    const err_obj = try self_eval.arena.create(types.ObjectInstance);
-                    err_obj.* = .{ .class_name = "Database.Error" };
-                    var message_val: Value = Value{ .string = "" };
-                    var fields_val: Value = Value{ .list = blk: {
-                        const empty = try self_eval.arena.create(types.ListValue);
-                        empty.* = .{};
-                        break :blk empty;
-                    } };
-                    if (pe == .object) {
-                        if (pe.object.fields.get("message")) |m| message_val = m;
-                        if (pe.object.fields.get("field")) |f| {
-                            if (f == .string) {
-                                const fl = try self_eval.arena.create(types.ListValue);
-                                fl.* = .{};
-                                try fl.items.append(self_eval.arena, f);
-                                fields_val = Value{ .list = fl };
-                            }
-                        }
-                    } else if (pe == .string) {
-                        message_val = pe;
-                    }
-                    try err_obj.fields.put(self_eval.arena, "message", message_val);
-                    try err_obj.fields.put(self_eval.arena, "statusCode", Value{ .string = "FIELD_CUSTOM_VALIDATION_EXCEPTION" });
-                    try err_obj.fields.put(self_eval.arena, "fields", fields_val);
-                    try errors_list.items.append(self_eval.arena, Value{ .object = err_obj });
-                    if (result == .object) {
-                        try result.object.fields.put(self_eval.arena, "errors", Value{ .list = errors_list });
-                    }
-                }
-                return result;
+            fn build(
+                self_eval: *Evaluator,
+                cls: []const u8,
+                item: Value,
+                op_kind: ast.DmlOp,
+            ) !Value {
+                return self_eval.build_failed_dml_result(cls, item, op_kind == .upsert);
             }
         };
 
@@ -18259,30 +18291,12 @@ pub const Evaluator = struct {
             .sobject => {
                 self.limits_dml += 1;
                 self.limits_dml_rows += 1;
-                return switch (op) {
-                    .insert => blk: {
-                        try self.execute_dml_with_external_id_internal(.insert, target, null, false, null);
-                        break :blk try self.create_dml_result_value(result_class, true, self.sobject_id_for_result(target.sobject), null);
-                    },
-                    .update => blk: {
-                        try self.execute_dml_with_external_id_internal(.update, target, null, false, null);
-                        break :blk try self.create_dml_result_value(result_class, true, self.sobject_id_for_result(target.sobject), null);
-                    },
-                    .upsert => blk: {
-                        const was_created = self.will_upsert_create_record(target.sobject, external_id_field);
-                        try self.execute_dml_with_external_id_internal(.upsert, target, external_id_field, false, null);
-                        break :blk try self.create_dml_result_value(result_class, true, self.sobject_id_for_result(target.sobject), was_created);
-                    },
-                    .delete => blk: {
-                        try self.execute_dml_with_external_id_internal(.delete, target, null, false, null);
-                        break :blk try self.create_dml_result_value(result_class, true, self.sobject_id_for_result(target.sobject), null);
-                    },
-                    .undelete => blk: {
-                        try self.execute_dml_with_external_id_internal(.undelete, target, null, false, null);
-                        break :blk try self.create_dml_result_value(result_class, true, self.sobject_id_for_result(target.sobject), null);
-                    },
-                    else => Value.null_val,
-                };
+                return try self.execute_partial_single_sobject_dml(
+                    op,
+                    result_class,
+                    target,
+                    external_id_field,
+                );
             },
             .list => |records| {
                 const items = records.items.items;
@@ -18415,6 +18429,76 @@ pub const Evaluator = struct {
                 return Value{ .list = list };
             },
         }
+    }
+
+    fn execute_partial_single_sobject_dml(
+        self: *Evaluator,
+        op: ast.DmlOp,
+        result_class: []const u8,
+        target: Value,
+        external_id_field: ?[]const u8,
+    ) !Value {
+        return switch (op) {
+            .insert => try self.execute_successful_partial_dml(
+                .insert,
+                result_class,
+                target,
+                null,
+                null,
+            ),
+            .update => try self.execute_successful_partial_dml(
+                .update,
+                result_class,
+                target,
+                null,
+                null,
+            ),
+            .upsert => try self.execute_successful_partial_dml(
+                .upsert,
+                result_class,
+                target,
+                external_id_field,
+                self.will_upsert_create_record(target.sobject, external_id_field),
+            ),
+            .delete => try self.execute_successful_partial_dml(
+                .delete,
+                result_class,
+                target,
+                null,
+                null,
+            ),
+            .undelete => try self.execute_successful_partial_dml(
+                .undelete,
+                result_class,
+                target,
+                null,
+                null,
+            ),
+            else => Value.null_val,
+        };
+    }
+
+    fn execute_successful_partial_dml(
+        self: *Evaluator,
+        op: ast.DmlOp,
+        result_class: []const u8,
+        target: Value,
+        external_id_field: ?[]const u8,
+        is_created: ?bool,
+    ) !Value {
+        try self.execute_dml_with_external_id_internal(
+            op,
+            target,
+            external_id_field,
+            false,
+            null,
+        );
+        return try self.create_dml_result_value(
+            result_class,
+            true,
+            self.sobject_id_for_result(target.sobject),
+            is_created,
+        );
     }
 
     fn handle_database_method(self: *Evaluator, method: []const u8, args: []const Value, env: *Env) anyerror!Value {
