@@ -16462,9 +16462,16 @@ pub const Evaluator = struct {
         obj: Value,
     ) anyerror!Value {
         if (self.find_class(obj.object.class_name)) |cd| {
-            if (try self.eval_object_property_getter(obj.object, cd, fa.field)) |value| return value;
+            if (try self.eval_object_property_getter(
+                obj.object,
+                cd,
+                fa.field,
+            )) |value| return value;
         }
-        if (try self.eval_schema_object_field_access(obj.object, fa.field)) |value| return value;
+        if (try self.eval_schema_object_field_access(
+            obj.object,
+            fa.field,
+        )) |value| return value;
         for (obj.object.fields.keys(), obj.object.fields.values()) |k, v| {
             if (std.ascii.eqlIgnoreCase(k, fa.field)) return v;
         }
@@ -16578,7 +16585,9 @@ pub const Evaluator = struct {
             for (cd.members) |member| {
                 switch (member) {
                     .field_decl => |fd| {
-                        if (std.ascii.eqlIgnoreCase(fd.name, field_name) and fd.getter_body != null) {
+                        if (std.ascii.eqlIgnoreCase(fd.name, field_name) and
+                            fd.getter_body != null)
+                        {
                             return true;
                         }
                     },
@@ -16739,7 +16748,11 @@ pub const Evaluator = struct {
         obj: Value,
         current_env: *Env,
     ) anyerror!?Value {
-        if (try self.eval_field_access_null_identifier_base(fa, obj, current_env)) |value| return value;
+        if (try self.eval_field_access_null_identifier_base(
+            fa,
+            obj,
+            current_env,
+        )) |value| return value;
         if (try self.eval_field_access_identifier_static(fa)) |value| return value;
         if (try self.eval_field_access_nested_static(fa)) |value| return value;
         if (try self.eval_field_access_dotted_class_literal(fa)) |value| return value;
@@ -16758,13 +16771,21 @@ pub const Evaluator = struct {
         if (self.current_class) |cc| {
             if (self.resolve_static_field_value_on_class(cc, base_name)) |base| {
                 if (base != .null_val) {
-                    return try self.eval_field_access_on_resolved_value(base, fa.field, current_env);
+                    return try self.eval_field_access_on_resolved_value(
+                        base,
+                        fa.field,
+                        current_env,
+                    );
                 }
             }
             if (self.find_outer_class_name(cc)) |outer| {
                 if (self.resolve_static_field_value_on_class(outer, base_name)) |base| {
                     if (base != .null_val) {
-                        return try self.eval_field_access_on_resolved_value(base, fa.field, current_env);
+                        return try self.eval_field_access_on_resolved_value(
+                            base,
+                            fa.field,
+                            current_env,
+                        );
                     }
                 }
             }
@@ -16780,13 +16801,23 @@ pub const Evaluator = struct {
         const class_name = fa.object.identifier.name;
         self.ensure_static_init(class_name);
 
-        if (try self.eval_schema_identifier_static_access(class_name, fa.field)) |value| return value;
-        if (try self.eval_builtin_identifier_static_access(class_name, fa.field)) |value| return value;
+        if (try self.eval_schema_identifier_static_access(
+            class_name,
+            fa.field,
+        )) |value| return value;
+        if (try self.eval_builtin_identifier_static_access(
+            class_name,
+            fa.field,
+        )) |value| return value;
         if (try self.eval_rest_context_static_field(class_name, fa.field)) |value| return value;
         if (try self.eval_trigger_static_field_access(class_name, fa.field)) |value| return value;
         if (try self.eval_class_member_static_access(class_name, fa.field)) |value| return value;
 
-        const key = try std.fmt.allocPrint(self.arena, "{s}.{s}", .{ class_name, fa.field });
+        const key = try std.fmt.allocPrint(
+            self.arena,
+            "{s}.{s}",
+            .{ class_name, fa.field },
+        );
         if (self.global_env.get(key)) |value| return value;
         return Value{ .string = fa.field };
     }
@@ -16843,7 +16874,11 @@ pub const Evaluator = struct {
         if (std.ascii.eqlIgnoreCase(field_name, "class")) {
             const type_name: []const u8 = if (self.current_class) |cc| blk: {
                 if (std.mem.indexOfScalar(u8, class_name, '.') == null) {
-                    const fq = std.fmt.allocPrint(self.arena, "{s}.{s}", .{ cc, class_name }) catch class_name;
+                    const fq = std.fmt.allocPrint(
+                        self.arena,
+                        "{s}.{s}",
+                        .{ cc, class_name },
+                    ) catch class_name;
                     if (self.find_class(fq) != null) break :blk fq;
                 }
                 break :blk self.resolve_full_class_name(class_name);
@@ -16867,7 +16902,11 @@ pub const Evaluator = struct {
             if (self.global_env.get(key)) |existing| return existing;
             const req = try self.arena.create(types.ObjectInstance);
             req.* = .{ .class_name = "RestRequest" };
-            try req.fields.put(self.arena, "requestURI", Value{ .string = "/services/apexrest/test" });
+            try req.fields.put(
+                self.arena,
+                "requestURI",
+                Value{ .string = "/services/apexrest/test" },
+            );
             try req.fields.put(self.arena, "httpMethod", Value{ .string = "GET" });
             try self.populate_new_rest_request(req);
             const value = Value{ .object = req };
@@ -16905,17 +16944,39 @@ pub const Evaluator = struct {
         field_name: []const u8,
     ) ?Value {
         _ = self;
-        if (std.ascii.eqlIgnoreCase(field_name, "new")) return tc.new_list orelse Value.null_val;
-        if (std.ascii.eqlIgnoreCase(field_name, "old")) return tc.old_list orelse Value.null_val;
-        if (std.ascii.eqlIgnoreCase(field_name, "newMap")) return tc.new_map orelse Value.null_val;
-        if (std.ascii.eqlIgnoreCase(field_name, "oldMap")) return tc.old_map orelse Value.null_val;
-        if (std.ascii.eqlIgnoreCase(field_name, "isBefore")) return Value{ .boolean = tc.is_before };
-        if (std.ascii.eqlIgnoreCase(field_name, "isAfter")) return Value{ .boolean = tc.is_after };
-        if (std.ascii.eqlIgnoreCase(field_name, "isInsert")) return Value{ .boolean = tc.is_insert };
-        if (std.ascii.eqlIgnoreCase(field_name, "isUpdate")) return Value{ .boolean = tc.is_update };
-        if (std.ascii.eqlIgnoreCase(field_name, "isDelete")) return Value{ .boolean = tc.is_delete };
-        if (std.ascii.eqlIgnoreCase(field_name, "isUndelete")) return Value{ .boolean = tc.is_undelete };
-        if (std.ascii.eqlIgnoreCase(field_name, "isExecuting")) return Value{ .boolean = tc.is_executing };
+        if (std.ascii.eqlIgnoreCase(field_name, "new")) {
+            return tc.new_list orelse Value.null_val;
+        }
+        if (std.ascii.eqlIgnoreCase(field_name, "old")) {
+            return tc.old_list orelse Value.null_val;
+        }
+        if (std.ascii.eqlIgnoreCase(field_name, "newMap")) {
+            return tc.new_map orelse Value.null_val;
+        }
+        if (std.ascii.eqlIgnoreCase(field_name, "oldMap")) {
+            return tc.old_map orelse Value.null_val;
+        }
+        if (std.ascii.eqlIgnoreCase(field_name, "isBefore")) {
+            return Value{ .boolean = tc.is_before };
+        }
+        if (std.ascii.eqlIgnoreCase(field_name, "isAfter")) {
+            return Value{ .boolean = tc.is_after };
+        }
+        if (std.ascii.eqlIgnoreCase(field_name, "isInsert")) {
+            return Value{ .boolean = tc.is_insert };
+        }
+        if (std.ascii.eqlIgnoreCase(field_name, "isUpdate")) {
+            return Value{ .boolean = tc.is_update };
+        }
+        if (std.ascii.eqlIgnoreCase(field_name, "isDelete")) {
+            return Value{ .boolean = tc.is_delete };
+        }
+        if (std.ascii.eqlIgnoreCase(field_name, "isUndelete")) {
+            return Value{ .boolean = tc.is_undelete };
+        }
+        if (std.ascii.eqlIgnoreCase(field_name, "isExecuting")) {
+            return Value{ .boolean = tc.is_executing };
+        }
         if (std.ascii.eqlIgnoreCase(field_name, "size")) return Value{ .integer = tc.size };
         if (std.ascii.eqlIgnoreCase(field_name, "operationType")) {
             return if (tc.operation_type) |op| Value{ .string = op } else Value.null_val;
@@ -16967,18 +17028,33 @@ pub const Evaluator = struct {
                     }
                 },
                 .field_decl => |fd| {
-                    if (std.ascii.eqlIgnoreCase(fd.name, field_name) and fd.modifiers.is_static) {
-                        return self.resolve_static_field_value_on_class(class_name, field_name) orelse Value.null_val;
+                    if (std.ascii.eqlIgnoreCase(fd.name, field_name) and
+                        fd.modifiers.is_static)
+                    {
+                        return self.resolve_static_field_value_on_class(
+                            class_name,
+                            field_name,
+                        ) orelse Value.null_val;
                     }
                 },
                 .class_decl => |inner_cd| {
                     if (std.ascii.eqlIgnoreCase(inner_cd.name, field_name)) {
-                        return Value{ .string = try std.fmt.allocPrint(self.arena, "{s}.{s}", .{ class_name, inner_cd.name }) };
+                        const fq_name = try std.fmt.allocPrint(
+                            self.arena,
+                            "{s}.{s}",
+                            .{ class_name, inner_cd.name },
+                        );
+                        return Value{ .string = fq_name };
                     }
                 },
                 .interface_decl => |inner_iface| {
                     if (std.ascii.eqlIgnoreCase(inner_iface.name, field_name)) {
-                        return Value{ .string = try std.fmt.allocPrint(self.arena, "{s}.{s}", .{ class_name, inner_iface.name }) };
+                        const fq_name = try std.fmt.allocPrint(
+                            self.arena,
+                            "{s}.{s}",
+                            .{ class_name, inner_iface.name },
+                        );
+                        return Value{ .string = fq_name };
                     }
                 },
                 else => {},
@@ -17012,9 +17088,21 @@ pub const Evaluator = struct {
         const outer_name = inner_fa.object.identifier.name;
         const inner_name = inner_fa.field;
 
-        if (try self.eval_nested_class_member_access(outer_name, inner_name, fa.field)) |value| return value;
-        if (try self.eval_system_nested_static_access(outer_name, inner_name, fa.field)) |value| return value;
-        if (try self.eval_schema_nested_static_access(outer_name, inner_name, fa.field)) |value| return value;
+        if (try self.eval_nested_class_member_access(
+            outer_name,
+            inner_name,
+            fa.field,
+        )) |value| return value;
+        if (try self.eval_system_nested_static_access(
+            outer_name,
+            inner_name,
+            fa.field,
+        )) |value| return value;
+        if (try self.eval_schema_nested_static_access(
+            outer_name,
+            inner_name,
+            fa.field,
+        )) |value| return value;
         return null;
     }
 
@@ -17034,11 +17122,19 @@ pub const Evaluator = struct {
                 },
                 .class_decl => |inner_cd| {
                     if (std.ascii.eqlIgnoreCase(inner_cd.name, inner_name)) {
-                        const fq_name = try std.fmt.allocPrint(self.arena, "{s}.{s}", .{ outer_name, inner_cd.name });
+                        const fq_name = try std.fmt.allocPrint(
+                            self.arena,
+                            "{s}.{s}",
+                            .{ outer_name, inner_cd.name },
+                        );
                         if (std.ascii.eqlIgnoreCase(field_name, "class")) {
                             return try self.make_type_value(fq_name);
                         }
-                        const static_key = try std.fmt.allocPrint(self.arena, "{s}.{s}", .{ fq_name, field_name });
+                        const static_key = try std.fmt.allocPrint(
+                            self.arena,
+                            "{s}.{s}",
+                            .{ fq_name, field_name },
+                        );
                         if (self.global_env.get(static_key)) |value| return value;
                         return Value{ .string = field_name };
                     }
@@ -17047,7 +17143,11 @@ pub const Evaluator = struct {
                     if (std.ascii.eqlIgnoreCase(inner_iface.name, inner_name) and
                         std.ascii.eqlIgnoreCase(field_name, "class"))
                     {
-                        const fq_name = try std.fmt.allocPrint(self.arena, "{s}.{s}", .{ outer_name, inner_iface.name });
+                        const fq_name = try std.fmt.allocPrint(
+                            self.arena,
+                            "{s}.{s}",
+                            .{ outer_name, inner_iface.name },
+                        );
                         return try self.make_type_value(fq_name);
                     }
                 },

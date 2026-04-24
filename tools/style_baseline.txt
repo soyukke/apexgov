@@ -7,4 +7,4 @@
 #
 # Format: <path>\t<rule>\t<count>
 src/interpret/builtins.zig	line_too_long	288
-src/interpret/evaluator.zig	line_too_long	379
+src/interpret/evaluator.zig	line_too_long	355
