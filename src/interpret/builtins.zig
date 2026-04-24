@@ -8316,17 +8316,25 @@ fn resolve_object_crud_permission(
     return allowed;
 }
 
-fn resolve_field_read_permission(eval: *evaluator_mod.Evaluator, object_type: ?[]const u8, field_name: []const u8) bool {
+fn resolve_field_read_permission(
+    eval: *evaluator_mod.Evaluator,
+    object_type: ?[]const u8,
+    field_name: []const u8,
+) bool {
     if (is_id_field(field_name)) return true;
     if (object_type) |obj_name| {
         if (!resolve_object_crud_permission(eval, obj_name, "read")) return false;
     }
     if (relationship_read_target(field_name)) |child_type| {
-        if (eval.is_restricted_user) return resolve_object_crud_permission(eval, child_type, "read");
+        if (eval.is_restricted_user) {
+            return resolve_object_crud_permission(eval, child_type, "read");
+        }
         return true;
     }
     if (eval.is_restricted_user) {
-        if (check_field_permission(eval, object_type, field_name, "PermissionsRead")) |perm| return perm;
+        if (check_field_permission(eval, object_type, field_name, "PermissionsRead")) |perm| {
+            return perm;
+        }
         if (is_field_allowed_by_perm_sets(eval, object_type, field_name, "read")) return true;
         if (restricted_core_field_allowed(object_type, field_name)) return true;
         return false;
@@ -8334,7 +8342,12 @@ fn resolve_field_read_permission(eval: *evaluator_mod.Evaluator, object_type: ?[
     return true;
 }
 
-fn resolve_field_write_permission(eval: *evaluator_mod.Evaluator, object_type: ?[]const u8, field_name: []const u8, operation: []const u8) bool {
+fn resolve_field_write_permission(
+    eval: *evaluator_mod.Evaluator,
+    object_type: ?[]const u8,
+    field_name: []const u8,
+    operation: []const u8,
+) bool {
     if (is_system_field(field_name)) return false;
     if (object_type) |obj_name| {
         if (!resolve_object_crud_permission(eval, obj_name, operation)) return false;
@@ -8520,10 +8533,10 @@ fn handle_reserved_keywords(ctx: *BuiltinContext, args: []const Value) ![]const 
         var pos: usize = 0;
         const haystack = result.items;
         while (pos < haystack.len) {
-            if (pos + search.len <= haystack.len and std.mem.eql(u8, haystack[pos .. pos + search.len], search)) {
+            if (json_key_search_matches(haystack, pos, search)) {
                 // Check if followed by whitespace+colon (JSON key context)
                 var check = pos + search.len;
-                while (check < haystack.len and (haystack[check] == ' ' or haystack[check] == '\t')) check += 1;
+                check = skip_json_inline_whitespace(haystack, check);
                 if (check < haystack.len and haystack[check] == ':') {
                     try new_result.appendSlice(ctx.arena, replace);
                     pos += search.len;
@@ -8536,6 +8549,19 @@ fn handle_reserved_keywords(ctx: *BuiltinContext, args: []const Value) ![]const 
         result = new_result;
     }
     return result.items;
+}
+
+fn json_key_search_matches(haystack: []const u8, pos: usize, search: []const u8) bool {
+    return pos + search.len <= haystack.len and
+        std.mem.eql(u8, haystack[pos .. pos + search.len], search);
+}
+
+fn skip_json_inline_whitespace(haystack: []const u8, start: usize) usize {
+    var pos = start;
+    while (pos < haystack.len and (haystack[pos] == ' ' or haystack[pos] == '\t')) {
+        pos += 1;
+    }
+    return pos;
 }
 
 fn data_weave_payload_field(obj: *types.ObjectInstance) ?Value {
@@ -8623,7 +8649,11 @@ fn handle_csv_to_json(
     // Parse CSV fields from a row, handling quoted fields
     // Returns a list of field values
     const parseCsvFields = struct {
-        fn parse(arena: std.mem.Allocator, row: []const u8, sep: u8) !std.ArrayListUnmanaged([]const u8) {
+        fn parse(
+            arena: std.mem.Allocator,
+            row: []const u8,
+            sep: u8,
+        ) !std.ArrayListUnmanaged([]const u8) {
             var fields: std.ArrayListUnmanaged([]const u8) = .empty;
             var ci: usize = 0;
             while (ci <= row.len) {
@@ -8731,17 +8761,31 @@ fn handle_csv_to_json(
 }
 
 fn rename_field(name: []const u8) []const u8 {
-    // Common field renames for CSV to JSON conversion
-    if (std.ascii.eqlIgnoreCase(name, "first_name") or std.ascii.eqlIgnoreCase(name, "First Name")) return "FirstName";
-    if (std.ascii.eqlIgnoreCase(name, "last_name") or std.ascii.eqlIgnoreCase(name, "Last Name")) return "LastName";
-    if (std.ascii.eqlIgnoreCase(name, "email_address") or std.ascii.eqlIgnoreCase(name, "Email Address")) return "Email";
-    if (std.ascii.eqlIgnoreCase(name, "company_name") or std.ascii.eqlIgnoreCase(name, "Company Name") or std.ascii.eqlIgnoreCase(name, "company")) return "Company";
-    if (std.ascii.eqlIgnoreCase(name, "phone_number") or std.ascii.eqlIgnoreCase(name, "Phone Number")) return "Phone";
-    if (std.ascii.eqlIgnoreCase(name, "address") or std.ascii.eqlIgnoreCase(name, "mailing_address")) return "MailingStreet";
+    const renames = [_]struct { from: []const u8, to: []const u8 }{
+        .{ .from = "first_name", .to = "FirstName" },
+        .{ .from = "First Name", .to = "FirstName" },
+        .{ .from = "last_name", .to = "LastName" },
+        .{ .from = "Last Name", .to = "LastName" },
+        .{ .from = "email_address", .to = "Email" },
+        .{ .from = "Email Address", .to = "Email" },
+        .{ .from = "company_name", .to = "Company" },
+        .{ .from = "Company Name", .to = "Company" },
+        .{ .from = "company", .to = "Company" },
+        .{ .from = "phone_number", .to = "Phone" },
+        .{ .from = "Phone Number", .to = "Phone" },
+        .{ .from = "address", .to = "MailingStreet" },
+        .{ .from = "mailing_address", .to = "MailingStreet" },
+    };
+    for (renames) |entry| {
+        if (std.ascii.eqlIgnoreCase(name, entry.from)) return entry.to;
+    }
     return name;
 }
 
-fn extract_data_weave_input_string(args: []const Value, field_name: []const u8) ?[]const u8 {
+fn extract_data_weave_input_string(
+    args: []const Value,
+    field_name: []const u8,
+) ?[]const u8 {
     if (args.len == 0) return null;
     if (args[0] == .object) {
         if (args[0].object.fields.get(field_name)) |value| {
@@ -8750,7 +8794,9 @@ fn extract_data_weave_input_string(args: []const Value, field_name: []const u8) 
     } else if (args[0] == .map) {
         var iter = args[0].map.entries.iterator();
         while (iter.next()) |entry| {
-            if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, field_name) and entry.value_ptr.* == .string) {
+            if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, field_name) and
+                entry.value_ptr.* == .string)
+            {
                 return entry.value_ptr.*.string;
             }
         }
@@ -8758,14 +8804,19 @@ fn extract_data_weave_input_string(args: []const Value, field_name: []const u8) 
     return null;
 }
 
-fn map_lookup_case_insensitive_string(map: *types.MapValue, aliases: []const []const u8) ?[]const u8 {
+fn map_lookup_case_insensitive_string(
+    map: *types.MapValue,
+    aliases: []const []const u8,
+) ?[]const u8 {
     for (aliases) |alias| {
         if (map.entries.get(alias)) |value| {
             if (value == .string) return value.string;
         }
         var iter = map.entries.iterator();
         while (iter.next()) |entry| {
-            if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, alias) and entry.value_ptr.* == .string) {
+            if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, alias) and
+                entry.value_ptr.* == .string)
+            {
                 return entry.value_ptr.*.string;
             }
         }
@@ -8797,17 +8848,30 @@ fn build_typed_data_weave_record(
     return Value{ .object = instance };
 }
 
-fn convert_parsed_data_weave_rows(ctx: *BuiltinContext, parsed: Value, output_class: []const u8) !Value {
+fn convert_parsed_data_weave_rows(
+    ctx: *BuiltinContext,
+    parsed: Value,
+    output_class: []const u8,
+) !Value {
     const list = try ctx.arena.create(types.ListValue);
     list.* = .{};
     if (parsed != .list) return Value{ .list = list };
 
     for (parsed.list.items.items) |row| {
         if (row != .map) continue;
-        const first_name = map_lookup_case_insensitive_string(row.map, &.{ "FirstName", "first_name" }) orelse "";
-        const last_name = map_lookup_case_insensitive_string(row.map, &.{ "LastName", "last_name" }) orelse "";
+        const first_name =
+            map_lookup_case_insensitive_string(row.map, &.{ "FirstName", "first_name" }) orelse "";
+        const last_name =
+            map_lookup_case_insensitive_string(row.map, &.{ "LastName", "last_name" }) orelse "";
         const email = map_lookup_case_insensitive_string(row.map, &.{ "Email", "email" }) orelse "";
-        try list.items.append(ctx.arena, try build_typed_data_weave_record(ctx, output_class, first_name, last_name, email));
+        const record = try build_typed_data_weave_record(
+            ctx,
+            output_class,
+            first_name,
+            last_name,
+            email,
+        );
+        try list.items.append(ctx.arena, record);
     }
     return Value{ .list = list };
 }
@@ -8819,13 +8883,27 @@ fn handle_csv_to_typed_records(
     output_class: []const u8,
 ) !Value {
     const csv_json = try handle_csv_to_json(ctx, args, script_name);
-    const parsed = (try dispatch_static_json(ctx, "deserializeUntyped", &.{Value{ .string = csv_json }})) orelse Value.null_val;
+    const parsed = (try dispatch_static_json(
+        ctx,
+        "deserializeUntyped",
+        &.{Value{ .string = csv_json }},
+    )) orelse Value.null_val;
     return convert_parsed_data_weave_rows(ctx, parsed, output_class);
 }
 
-fn handle_json_to_typed_records(ctx: *BuiltinContext, args: []const Value, output_class: []const u8) !Value {
-    const input_json = extract_data_weave_input_string(args, "records") orelse return try convert_parsed_data_weave_rows(ctx, Value.null_val, output_class);
-    const parsed = (try dispatch_static_json(ctx, "deserializeUntyped", &.{Value{ .string = input_json }})) orelse Value.null_val;
+fn handle_json_to_typed_records(
+    ctx: *BuiltinContext,
+    args: []const Value,
+    output_class: []const u8,
+) !Value {
+    const input_json = extract_data_weave_input_string(args, "records") orelse {
+        return try convert_parsed_data_weave_rows(ctx, Value.null_val, output_class);
+    };
+    const parsed = (try dispatch_static_json(
+        ctx,
+        "deserializeUntyped",
+        &.{Value{ .string = input_json }},
+    )) orelse Value.null_val;
     return convert_parsed_data_weave_rows(ctx, parsed, output_class);
 }
 
@@ -8854,29 +8932,10 @@ fn handle_json_date_format(ctx: *BuiltinContext, args: []const Value) ![]const u
                 if (!first) try buf.appendSlice(ctx.arena, ",\n");
                 first = false;
                 try buf.appendSlice(ctx.arena, "    {\n");
-                const first_name = if (item == .sobject) (if (utils.sobject_get(&item.sobject.fields, "FirstName")) |v| (if (v == .string) v.string else "") else "") else "";
-                const last_name = if (item == .sobject) (if (utils.sobject_get(&item.sobject.fields, "LastName")) |v| (if (v == .string) v.string else "") else "") else "";
-                const raw_date = if (item == .sobject)
-                    (if (utils.sobject_get(&item.sobject.fields, "CreatedDate")) |v| extract_date_string(v) orelse "2024-01-01T00:00:00.000Z" else "2024-01-01T00:00:00.000Z")
-                else
-                    "2024-01-01T00:00:00.000Z";
-                // Format date: YYYY-MM-DDTHH:MM:SS → hh:mm:ss a, MMMM dd, yyyy
-                const created_date = blk: {
-                    if (raw_date.len >= 19 and raw_date[4] == '-' and raw_date[7] == '-' and raw_date[10] == 'T') {
-                        const year = raw_date[0..4];
-                        const month_num = std.fmt.parseInt(u8, raw_date[5..7], 10) catch 1;
-                        const day = raw_date[8..10];
-                        const hour24 = std.fmt.parseInt(u8, raw_date[11..13], 10) catch 0;
-                        const minute = raw_date[14..16];
-                        const second = raw_date[17..19];
-                        const month_names = [_][]const u8{ "January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December" };
-                        const month_name = if (month_num >= 1 and month_num <= 12) month_names[month_num - 1] else "January";
-                        const hour12: u8 = if (hour24 == 0) 12 else if (hour24 > 12) hour24 - 12 else hour24;
-                        const am_pm: []const u8 = if (hour24 < 12) "AM" else "PM";
-                        break :blk try std.fmt.allocPrint(ctx.arena, "{d:0>2}:{s}:{s} {s}, {s} {s}, {s}", .{ hour12, minute, second, am_pm, month_name, day, year });
-                    }
-                    break :blk raw_date;
-                };
+                const first_name = sobject_string_field_or_empty(item, "FirstName");
+                const last_name = sobject_string_field_or_empty(item, "LastName");
+                const raw_date = sobject_created_date_or_default(item);
+                const created_date = try format_data_weave_created_date(ctx.arena, raw_date);
 
                 try buf.appendSlice(ctx.arena, "      \"firstName\": \"");
                 try buf.appendSlice(ctx.arena, first_name);
@@ -8896,7 +8955,65 @@ fn handle_json_date_format(ctx: *BuiltinContext, args: []const Value) ![]const u
     return buf.items;
 }
 
-/// Handle DataWeave logFilter / filterWinners: filter JSON array keeping only items where isWinner == true.
+fn sobject_string_field_or_empty(item: Value, field_name: []const u8) []const u8 {
+    if (item != .sobject) return "";
+    const value = utils.sobject_get(&item.sobject.fields, field_name) orelse return "";
+    return if (value == .string) value.string else "";
+}
+
+fn sobject_created_date_or_default(item: Value) []const u8 {
+    const fallback = "2024-01-01T00:00:00.000Z";
+    if (item != .sobject) return fallback;
+    const value = utils.sobject_get(&item.sobject.fields, "CreatedDate") orelse return fallback;
+    return extract_date_string(value) orelse fallback;
+}
+
+fn format_data_weave_created_date(
+    arena: std.mem.Allocator,
+    raw_date: []const u8,
+) ![]const u8 {
+    if (raw_date.len < 19 or raw_date[4] != '-' or raw_date[7] != '-' or
+        raw_date[10] != 'T')
+    {
+        return raw_date;
+    }
+
+    const year = raw_date[0..4];
+    const month_num = std.fmt.parseInt(u8, raw_date[5..7], 10) catch 1;
+    const day = raw_date[8..10];
+    const hour24 = std.fmt.parseInt(u8, raw_date[11..13], 10) catch 0;
+    const minute = raw_date[14..16];
+    const second = raw_date[17..19];
+    const month_name = data_weave_month_name(month_num);
+    const hour12: u8 = if (hour24 == 0) 12 else if (hour24 > 12) hour24 - 12 else hour24;
+    const am_pm: []const u8 = if (hour24 < 12) "AM" else "PM";
+    return try std.fmt.allocPrint(
+        arena,
+        "{d:0>2}:{s}:{s} {s}, {s} {s}, {s}",
+        .{ hour12, minute, second, am_pm, month_name, day, year },
+    );
+}
+
+fn data_weave_month_name(month_num: u8) []const u8 {
+    const month_names = [_][]const u8{
+        "January",
+        "February",
+        "March",
+        "April",
+        "May",
+        "June",
+        "July",
+        "August",
+        "September",
+        "October",
+        "November",
+        "December",
+    };
+    if (month_num >= 1 and month_num <= 12) return month_names[month_num - 1];
+    return "January";
+}
+
+/// Handle DataWeave logFilter / filterWinners.
 fn handle_log_filter(ctx: *BuiltinContext, args: []const Value) ![]const u8 {
     // Extract the payload string from the input map
     const payload_str = blk: {
@@ -8935,10 +9052,7 @@ fn handle_log_filter(ctx: *BuiltinContext, args: []const Value) ![]const u8 {
             depth -= 1;
             if (depth == 0) {
                 const elem = payload_str[elem_start .. i + 1];
-                // Check if this element has "isWinner": true
-                if (std.mem.indexOf(u8, elem, "\"isWinner\": true") != null or
-                    std.mem.indexOf(u8, elem, "\"isWinner\":true") != null)
-                {
+                if (json_object_has_winner_true(elem)) {
                     if (!first) try buf.append(ctx.arena, ',');
                     first = false;
                     try buf.appendSlice(ctx.arena, elem);
@@ -8950,13 +9064,18 @@ fn handle_log_filter(ctx: *BuiltinContext, args: []const Value) ![]const u8 {
     return buf.items;
 }
 
-/// Handle DataWeave multipleInputs: filter books by publishedAfter year and convert to XML with exchange rates.
+fn json_object_has_winner_true(elem: []const u8) bool {
+    return std.mem.indexOf(u8, elem, "\"isWinner\": true") != null or
+        std.mem.indexOf(u8, elem, "\"isWinner\":true") != null;
+}
+
+/// Handle DataWeave multipleInputs.
 fn handle_multiple_inputs(ctx: *BuiltinContext, args: []const Value) ![]const u8 {
     _ = args;
     // The test asserts:
     //   output.contains('<author>Giada De Laurentiis</author>')
     //   output.contains('<price currency="ARS">262.8</price>')
-    // The script filters books published after 2004 and adds ARS exchange rate (30 * 8.76 = 262.8)
+    // The script filters books published after 2004 and adds the ARS rate.
     // We produce a minimal XML that satisfies the assertions.
     var buf: std.ArrayListUnmanaged(u8) = .empty;
     try buf.appendSlice(ctx.arena, "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<books>\n");
@@ -8987,7 +9106,11 @@ fn find_json_string_end(json: []const u8, start: usize) ?struct { end: usize, va
     return find_json_string_end_alloc(json, start, null);
 }
 
-fn find_json_string_end_alloc(json: []const u8, start: usize, arena_opt: ?std.mem.Allocator) ?struct { end: usize, value: []const u8 } {
+fn find_json_string_end_alloc(
+    json: []const u8,
+    start: usize,
+    arena_opt: ?std.mem.Allocator,
+) ?struct { end: usize, value: []const u8 } {
     var i = start;
     var needs_unescape = false;
     while (i < json.len) {
@@ -9045,12 +9168,23 @@ test "String.length instance method" {
 }
 
 /// SFDX メタデータ XML からピックリスト値を読み取る。
-/// source_paths (e.g. ".../main/default/classes") から "../../objects/<SObjectType>/fields/<FieldName>.field-meta.xml" を探す。
-fn append_picklist_entry(ctx: *BuiltinContext, list: *types.ListValue, label: []const u8, value: []const u8) !void {
+/// source_paths から対応する field-meta.xml を探す。
+fn append_picklist_entry(
+    ctx: *BuiltinContext,
+    list: *types.ListValue,
+    label: []const u8,
+    value: []const u8,
+) !void {
     for (list.items.items) |existing| {
         if (existing != .object) continue;
-        const existing_value = existing.object.fields.get("value") orelse existing.object.fields.get("label") orelse Value.null_val;
-        if (existing_value == .string and std.ascii.eqlIgnoreCase(existing_value.string, value)) return;
+        const existing_value = existing.object.fields.get("value") orelse
+            existing.object.fields.get("label") orelse
+            Value.null_val;
+        if (existing_value == .string and
+            std.ascii.eqlIgnoreCase(existing_value.string, value))
+        {
+            return;
+        }
     }
 
     const pe = try ctx.arena.create(types.ObjectInstance);
@@ -9061,28 +9195,54 @@ fn append_picklist_entry(ctx: *BuiltinContext, list: *types.ListValue, label: []
     try list.items.append(ctx.arena, Value{ .object = pe });
 }
 
-fn append_picklist_values_from_store(ctx: *BuiltinContext, list: *types.ListValue, object_type: []const u8, field_name: []const u8) !void {
+fn append_picklist_values_from_store(
+    ctx: *BuiltinContext,
+    list: *types.ListValue,
+    object_type: []const u8,
+    field_name: []const u8,
+) !void {
     var store_iter = ctx.eval.store.iterator();
     while (store_iter.next()) |entry| {
         if (!std.ascii.eqlIgnoreCase(entry.key_ptr.*, object_type)) continue;
         for (entry.value_ptr.items) |record| {
             if (record != .sobject) continue;
             if (utils.sobject_get(&record.sobject.fields, field_name)) |val| {
-                if (val == .string) try append_picklist_entry(ctx, list, val.string, val.string);
+                if (val == .string) {
+                    try append_picklist_entry(ctx, list, val.string, val.string);
+                }
             }
         }
     }
 }
 
-fn load_picklist_from_metadata(ctx: *BuiltinContext, list: *types.ListValue, obj_type: []const u8, field_name: []const u8) !bool {
+fn load_picklist_from_metadata(
+    ctx: *BuiltinContext,
+    list: *types.ListValue,
+    obj_type: []const u8,
+    field_name: []const u8,
+) !bool {
     const initial_len = list.items.items.len;
     for (ctx.eval.source_paths) |path| {
         // Try multiple path patterns to find the field-meta.xml
         const candidates = [_][]const u8{
             // Pattern 1: path is "classes" dir → sibling "objects" dir
-            try std.fs.path.join(ctx.arena, &.{ std.fs.path.dirname(path) orelse ".", "objects", obj_type, "fields", field_name }),
+            try std.fs.path.join(ctx.arena, &.{
+                std.fs.path.dirname(path) orelse ".",
+                "objects",
+                obj_type,
+                "fields",
+                field_name,
+            }),
             // Pattern 2: path is package root (e.g. "cc-base-app") → "main/default/objects/..."
-            try std.fs.path.join(ctx.arena, &.{ path, "main", "default", "objects", obj_type, "fields", field_name }),
+            try std.fs.path.join(ctx.arena, &.{
+                path,
+                "main",
+                "default",
+                "objects",
+                obj_type,
+                "fields",
+                field_name,
+            }),
             // Pattern 3: path itself contains objects
             try std.fs.path.join(ctx.arena, &.{ path, "objects", obj_type, "fields", field_name }),
         };
@@ -9098,7 +9258,16 @@ fn load_picklist_from_metadata(ctx: *BuiltinContext, list: *types.ListValue, obj
         var it = dir.iterate();
         while (it.next(ctx.eval.io) catch null) |entry| {
             if (entry.kind != .directory) continue;
-            const sub_path = std.fs.path.join(ctx.arena, &.{ path, entry.name, "main", "default", "objects", obj_type, "fields", field_name }) catch continue;
+            const sub_path = std.fs.path.join(ctx.arena, &.{
+                path,
+                entry.name,
+                "main",
+                "default",
+                "objects",
+                obj_type,
+                "fields",
+                field_name,
+            }) catch continue;
             if (try try_load_field_meta(ctx, list, sub_path)) return true;
         }
     }
@@ -9106,9 +9275,22 @@ fn load_picklist_from_metadata(ctx: *BuiltinContext, list: *types.ListValue, obj
 }
 
 /// field-meta.xml を読み込んでパースする。成功したら true を返す。
-fn try_load_field_meta(ctx: *BuiltinContext, list: *types.ListValue, meta_path: []const u8) !bool {
-    const xml_path = std.fmt.allocPrint(ctx.arena, "{s}.field-meta.xml", .{meta_path}) catch return false;
-    const content = std.Io.Dir.cwd().readFileAlloc(ctx.eval.io, xml_path, ctx.arena, .limited(512 * 1024)) catch return false;
+fn try_load_field_meta(
+    ctx: *BuiltinContext,
+    list: *types.ListValue,
+    meta_path: []const u8,
+) !bool {
+    const xml_path = std.fmt.allocPrint(
+        ctx.arena,
+        "{s}.field-meta.xml",
+        .{meta_path},
+    ) catch return false;
+    const content = std.Io.Dir.cwd().readFileAlloc(
+        ctx.eval.io,
+        xml_path,
+        ctx.arena,
+        .limited(512 * 1024),
+    ) catch return false;
     try parse_picklist_xml(ctx, list, content);
     return list.items.items.len > 0;
 }
