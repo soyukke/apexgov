@@ -19096,7 +19096,9 @@ pub const Evaluator = struct {
             return .void_val;
         }
         if (std.ascii.eqlIgnoreCase(inner, "runAs")) return .void_val;
-        if (std.ascii.eqlIgnoreCase(inner, "schedule")) return try self.handle_system_schedule(args);
+        if (std.ascii.eqlIgnoreCase(inner, "schedule")) {
+            return try self.handle_system_schedule(args);
+        }
         if (std.ascii.eqlIgnoreCase(inner, "abortJob")) return .void_val;
         if (std.ascii.eqlIgnoreCase(inner, "debug") and args.len > 0) {
             const msg = try utils.coerce_to_string(args[0], self.arena);
@@ -19253,7 +19255,9 @@ pub const Evaluator = struct {
             return self.throw_system_json_exception("Unexpected end-of-input");
         }
         var bctx = self.make_builtin_context();
-        if (try builtins.dispatch_static(&bctx, "JSON", method, args)) |result| return result;
+        if (try builtins.dispatch_static(&bctx, "JSON", method, args)) |result| {
+            return result;
+        }
         if (self.parse_json_value(json_str, system_json_type_name(args))) |pv| return pv;
         return Value.null_val;
     }
@@ -19302,7 +19306,12 @@ pub const Evaluator = struct {
     // ヘルパー
     // -----------------------------------------------------------------------
 
-    fn handle_test_factory(self: *Evaluator, class_name: []const u8, method_name: []const u8, args: []const Value) !?Value {
+    fn handle_test_factory(
+        self: *Evaluator,
+        class_name: []const u8,
+        method_name: []const u8,
+        args: []const Value,
+    ) !?Value {
         if (std.ascii.eqlIgnoreCase(class_name, "TestFactory")) {
             return try self.handle_test_factory_class(method_name, args);
         }
@@ -19315,7 +19324,11 @@ pub const Evaluator = struct {
         return null;
     }
 
-    fn handle_test_factory_class(self: *Evaluator, method_name: []const u8, args: []const Value) !?Value {
+    fn handle_test_factory_class(
+        self: *Evaluator,
+        method_name: []const u8,
+        args: []const Value,
+    ) !?Value {
         if (std.ascii.eqlIgnoreCase(method_name, "createSObject")) {
             return try self.create_test_factory_s_object(args);
         }
@@ -19353,7 +19366,10 @@ pub const Evaluator = struct {
     }
 
     fn create_test_factory_s_object_list(self: *Evaluator, args: []const Value) !Value {
-        const template: ?*types.SObject = if (args.len >= 1 and args[0] == .sobject) args[0].sobject else null;
+        const template: ?*types.SObject = if (args.len >= 1 and args[0] == .sobject)
+            args[0].sobject
+        else
+            null;
         const count = if (args.len >= 2 and args[1] == .integer) args[1].integer else 5;
         const do_insert = args.len >= 3 and args[2] == .boolean and args[2].boolean;
         const list = try self.arena.create(types.ListValue);
@@ -19385,10 +19401,14 @@ pub const Evaluator = struct {
         }
         const name = try std.fmt.allocPrint(self.arena, "Test Record {d}", .{index});
         try obj.fields.put(self.arena, "Name", Value{ .string = name });
-        if (std.ascii.eqlIgnoreCase(obj.type_name, "Contact") and utils.sobject_get(&obj.fields, "LastName") == null) {
+        if (std.ascii.eqlIgnoreCase(obj.type_name, "Contact") and
+            utils.sobject_get(&obj.fields, "LastName") == null)
+        {
             try obj.fields.put(self.arena, "LastName", Value{ .string = name });
         }
-        if (std.ascii.eqlIgnoreCase(obj.type_name, "Opportunity") and utils.sobject_get(&obj.fields, "StageName") == null) {
+        if (std.ascii.eqlIgnoreCase(obj.type_name, "Opportunity") and
+            utils.sobject_get(&obj.fields, "StageName") == null)
+        {
             try obj.fields.put(self.arena, "StageName", Value{ .string = "Prospecting" });
         }
         return obj;
@@ -19400,7 +19420,11 @@ pub const Evaluator = struct {
             std.ascii.eqlIgnoreCase(method_name, "createMarketingUser");
     }
 
-    fn create_test_factory_user(self: *Evaluator, method_name: []const u8, args: []const Value) !Value {
+    fn create_test_factory_user(
+        self: *Evaluator,
+        method_name: []const u8,
+        args: []const Value,
+    ) !Value {
         const user = try self.arena.create(types.SObject);
         user.* = .{ .type_name = "User" };
         try user.fields.put(self.arena, "Name", Value{ .string = "Test User" });
@@ -19411,7 +19435,11 @@ pub const Evaluator = struct {
         const profile = try self.arena.create(types.SObject);
         profile.* = .{ .type_name = "Profile" };
         if (std.ascii.eqlIgnoreCase(method_name, "createMinAccessUser")) {
-            try profile.fields.put(self.arena, "Name", Value{ .string = "Minimum Access - Salesforce" });
+            try profile.fields.put(
+                self.arena,
+                "Name",
+                Value{ .string = "Minimum Access - Salesforce" },
+            );
         } else if (std.ascii.eqlIgnoreCase(method_name, "createMarketingUser")) {
             try profile.fields.put(self.arena, "Name", Value{ .string = "Marketing User" });
         } else {
@@ -19424,7 +19452,11 @@ pub const Evaluator = struct {
         return Value{ .sobject = user };
     }
 
-    fn handle_test_data_helpers(self: *Evaluator, method_name: []const u8, args: []const Value) !?Value {
+    fn handle_test_data_helpers(
+        self: *Evaluator,
+        method_name: []const u8,
+        args: []const Value,
+    ) !?Value {
         if (self.user_class_has_method("TestDataHelpers", method_name, args)) return null;
         if (std.ascii.eqlIgnoreCase(method_name, "createAccount")) {
             return try self.create_test_data_account(args);
@@ -19517,17 +19549,31 @@ pub const Evaluator = struct {
         };
     }
 
-    fn user_class_has_method(self: *Evaluator, class_name: []const u8, method_name: []const u8, args: []const Value) bool {
+    fn user_class_has_method(
+        self: *Evaluator,
+        class_name: []const u8,
+        method_name: []const u8,
+        args: []const Value,
+    ) bool {
         var class_iter = self.classes.iterator();
         while (class_iter.next()) |entry| {
             if (!std.ascii.eqlIgnoreCase(entry.key_ptr.*, class_name)) continue;
-            if (self.find_best_method_in_class(entry.value_ptr.*, method_name, args) != null) return true;
+            if (self.find_best_method_in_class(
+                entry.value_ptr.*,
+                method_name,
+                args,
+            ) != null) return true;
         }
         return false;
     }
 
     /// Create a new instance of the named class and call a method on it.
-    pub fn call_instance_method_by_name(self: *Evaluator, class_name: []const u8, method_name: []const u8, args: []const Value) anyerror!Value {
+    pub fn call_instance_method_by_name(
+        self: *Evaluator,
+        class_name: []const u8,
+        method_name: []const u8,
+        args: []const Value,
+    ) anyerror!Value {
         const class_decl = self.find_class(class_name) orelse return Value.null_val;
         const instance = try self.arena.create(types.ObjectInstance);
         instance.* = .{ .class_name = class_name };
@@ -19548,7 +19594,13 @@ pub const Evaluator = struct {
         return self.call_instance_method(class_decl, instance, method_name, args);
     }
 
-    pub fn call_instance_method_public(self: *Evaluator, class_decl: *ast.ClassDecl, instance: *types.ObjectInstance, method_name: []const u8, args: []const Value) anyerror!Value {
+    pub fn call_instance_method_public(
+        self: *Evaluator,
+        class_decl: *ast.ClassDecl,
+        instance: *types.ObjectInstance,
+        method_name: []const u8,
+        args: []const Value,
+    ) anyerror!Value {
         return self.call_instance_method(class_decl, instance, method_name, args);
     }
 
@@ -19556,7 +19608,12 @@ pub const Evaluator = struct {
         return self.resolve_full_class_name(name);
     }
 
-    pub fn handle_database_method_public(self: *Evaluator, method: []const u8, args: []const Value, env: *Env) anyerror!Value {
+    pub fn handle_database_method_public(
+        self: *Evaluator,
+        method: []const u8,
+        args: []const Value,
+        env: *Env,
+    ) anyerror!Value {
         return self.handle_database_method(method, args, env);
     }
 
@@ -19584,7 +19641,11 @@ pub const Evaluator = struct {
             if (value.object.fields.get("__stubProvider__") != null) {
                 if (value.object.fields.get("__stubDisplayClassName__")) |display_name| {
                     if (display_name == .string) {
-                        return try std.fmt.allocPrint(self.arena, "{s}:[instance]", .{display_name.string});
+                        return try std.fmt.allocPrint(
+                            self.arena,
+                            "{s}:[instance]",
+                            .{display_name.string},
+                        );
                     }
                 }
                 return utils.coerce_to_string(value, self.arena);
@@ -19593,7 +19654,12 @@ pub const Evaluator = struct {
 
         switch (value) {
             .object, .list, .map, .set, .sobject => {
-                const result = self.eval_instance_method(value, "toString", &.{}, self.global_env) catch return utils.coerce_to_string(value, self.arena);
+                const result = self.eval_instance_method(
+                    value,
+                    "toString",
+                    &.{},
+                    self.global_env,
+                ) catch return utils.coerce_to_string(value, self.arena);
                 if (result == .string) return result.string;
             },
             else => {},
@@ -19664,7 +19730,11 @@ pub const Evaluator = struct {
     /// 2) Date / Datetime / Time / Blob の built-in value class は "value"
     ///    フィールドで比較、
     /// 3) ユーザ定義クラスが `equals(Object)` を持つ場合はそれを呼び出す。
-    fn objects_equal(self: *Evaluator, left: *types.ObjectInstance, right: *types.ObjectInstance) bool {
+    fn objects_equal(
+        self: *Evaluator,
+        left: *types.ObjectInstance,
+        right: *types.ObjectInstance,
+    ) bool {
         if (utils.value_eql(Value{ .object = left }, Value{ .object = right })) return true;
 
         // Built-in value classes (Date / Datetime / Time / Blob) compare by
@@ -19688,18 +19758,38 @@ pub const Evaluator = struct {
         const right_val = Value{ .object = right };
         const left_val = Value{ .object = left };
         if (self.find_class(left.class_name)) |left_class| {
-            if (self.find_method_in_hierarchy_typed(null, left_class, "equals", &.{right_val}) != null or
+            if (self.find_method_in_hierarchy_typed(
+                null,
+                left_class,
+                "equals",
+                &.{right_val},
+            ) != null or
                 self.find_method_in_hierarchy(null, left_class, "equals", 1) != null)
             {
-                const result = self.call_instance_method(left_class, left, "equals", &.{right_val}) catch return false;
+                const result = self.call_instance_method(
+                    left_class,
+                    left,
+                    "equals",
+                    &.{right_val},
+                ) catch return false;
                 return result == .boolean and result.boolean;
             }
         }
         if (self.find_class(right.class_name)) |right_class| {
-            if (self.find_method_in_hierarchy_typed(null, right_class, "equals", &.{left_val}) != null or
+            if (self.find_method_in_hierarchy_typed(
+                null,
+                right_class,
+                "equals",
+                &.{left_val},
+            ) != null or
                 self.find_method_in_hierarchy(null, right_class, "equals", 1) != null)
             {
-                const result = self.call_instance_method(right_class, right, "equals", &.{left_val}) catch return false;
+                const result = self.call_instance_method(
+                    right_class,
+                    right,
+                    "equals",
+                    &.{left_val},
+                ) catch return false;
                 return result == .boolean and result.boolean;
             }
         }
@@ -19757,7 +19847,9 @@ pub const Evaluator = struct {
             std.ascii.eqlIgnoreCase(obj.class_name, "Schema.SObjectField") or
             std.ascii.eqlIgnoreCase(obj.class_name, "SObjectField"))
         {
-            const name_value = obj.fields.get("name") orelse obj.fields.get("fieldName") orelse Value.null_val;
+            const name_value = obj.fields.get("name") orelse
+                obj.fields.get("fieldName") orelse
+                Value.null_val;
             if (name_value == .string) return self.string_hash_code(name_value.string);
         }
 
@@ -19771,10 +19863,20 @@ pub const Evaluator = struct {
         }
 
         if (self.find_class(obj.class_name)) |class_decl| {
-            if (self.find_method_in_hierarchy_typed(null, class_decl, "hashCode", &.{}) != null or
+            if (self.find_method_in_hierarchy_typed(
+                null,
+                class_decl,
+                "hashCode",
+                &.{},
+            ) != null or
                 self.find_method_in_hierarchy(null, class_decl, "hashCode", 0) != null)
             {
-                const result = self.call_instance_method(class_decl, obj, "hashCode", &.{}) catch Value{ .integer = 0 };
+                const result = self.call_instance_method(
+                    class_decl,
+                    obj,
+                    "hashCode",
+                    &.{},
+                ) catch Value{ .integer = 0 };
                 switch (result) {
                     .integer => |i| return i,
                     .double => |d| return @intFromFloat(d),
@@ -19799,7 +19901,13 @@ pub const Evaluator = struct {
         args: []const Value,
     ) anyerror!Value {
         const actual_class = self.find_class(instance.class_name);
-        return self.call_instance_method_resolved(class_decl, actual_class, instance, method_name, args);
+        return self.call_instance_method_resolved(
+            class_decl,
+            actual_class,
+            instance,
+            method_name,
+            args,
+        );
     }
 
     fn call_super_instance_method(
@@ -19809,7 +19917,13 @@ pub const Evaluator = struct {
         method_name: []const u8,
         args: []const Value,
     ) anyerror!Value {
-        return self.call_instance_method_resolved(super_decl, null, instance, method_name, args);
+        return self.call_instance_method_resolved(
+            super_decl,
+            null,
+            instance,
+            method_name,
+            args,
+        );
     }
 
     fn call_instance_method_resolved(
