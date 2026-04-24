@@ -233,7 +233,11 @@ pub fn coerce_to_string(v: Value, arena: std.mem.Allocator) ![]const u8 {
             try buf.appendSlice(arena, "}");
             break :blk buf.items;
         },
-        .sobject => |sob| try std.fmt.allocPrint(arena, "{s}({s})", .{ sob.type_name, sob.id orelse "null" }),
+        .sobject => |sob| try std.fmt.allocPrint(
+            arena,
+            "{s}({s})",
+            .{ sob.type_name, sob.id orelse "null" },
+        ),
         .object => |obj| try coerce_object_to_string(obj, arena),
     };
 }
@@ -322,7 +326,14 @@ pub fn to_json(v: Value, arena: std.mem.Allocator) ![]const u8 {
             var buf: std.ArrayListUnmanaged(u8) = .empty;
             try buf.append(arena, '{');
             // Always output attributes with type
-            try buf.appendSlice(arena, try std.fmt.allocPrint(arena, "\"attributes\":{{\"type\":\"{s}\"}}", .{sob.type_name}));
+            try buf.appendSlice(
+                arena,
+                try std.fmt.allocPrint(
+                    arena,
+                    "\"attributes\":{{\"type\":\"{s}\"}}",
+                    .{sob.type_name},
+                ),
+            );
             // Output Id if present
             if (sob.id) |id| {
                 try buf.appendSlice(arena, try std.fmt.allocPrint(arena, ",\"Id\":\"{s}\"", .{id}));
@@ -427,7 +438,12 @@ pub fn sobject_get(fields: *const std.StringArrayHashMapUnmanaged(Value), name: 
 
 /// SObject フィールドをケースインセンシティブに設定する。
 /// 既存のキーがある場合はそのキー名を維持し、値だけ更新する。
-pub fn sobject_put(fields: *std.StringArrayHashMapUnmanaged(Value), arena: std.mem.Allocator, name: []const u8, value: Value) !void {
+pub fn sobject_put(
+    fields: *std.StringArrayHashMapUnmanaged(Value),
+    arena: std.mem.Allocator,
+    name: []const u8,
+    value: Value,
+) !void {
     // Check if there's an existing key with different case
     var existing_key: ?[]const u8 = null;
     for (fields.keys()) |k| {
@@ -456,9 +472,18 @@ pub fn format_apex_double(arena: std.mem.Allocator, d: f64) ![]const u8 {
 }
 
 test "coerceToString" {
-    try std.testing.expectEqualStrings("null", try coerce_to_string(Value.null_val, std.testing.allocator));
-    try std.testing.expectEqualStrings("true", try coerce_to_string(Value{ .boolean = true }, std.testing.allocator));
-    try std.testing.expectEqualStrings("hello", try coerce_to_string(Value{ .string = "hello" }, std.testing.allocator));
+    try std.testing.expectEqualStrings(
+        "null",
+        try coerce_to_string(Value.null_val, std.testing.allocator),
+    );
+    try std.testing.expectEqualStrings(
+        "true",
+        try coerce_to_string(Value{ .boolean = true }, std.testing.allocator),
+    );
+    try std.testing.expectEqualStrings(
+        "hello",
+        try coerce_to_string(Value{ .string = "hello" }, std.testing.allocator),
+    );
 
     const s = try coerce_to_string(Value{ .integer = 42 }, std.testing.allocator);
     defer std.testing.allocator.free(s);
@@ -505,7 +530,17 @@ pub fn is_json_balanced(json: []const u8) bool {
                 in_str = false;
             }
         } else {
-            if (json[i] == '"') in_str = true else if (json[i] == '{') brace_depth += 1 else if (json[i] == '}') brace_depth -= 1 else if (json[i] == '[') bracket_depth += 1 else if (json[i] == ']') bracket_depth -= 1;
+            if (json[i] == '"') {
+                in_str = true;
+            } else if (json[i] == '{') {
+                brace_depth += 1;
+            } else if (json[i] == '}') {
+                brace_depth -= 1;
+            } else if (json[i] == '[') {
+                bracket_depth += 1;
+            } else if (json[i] == ']') {
+                bracket_depth -= 1;
+            }
         }
     }
     return brace_depth == 0 and bracket_depth == 0 and !in_str;

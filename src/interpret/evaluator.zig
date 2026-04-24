@@ -93,47 +93,66 @@ pub const Evaluator = struct {
     callout_mock: ?Value = null,
     // Current class name for static field resolution
     current_class: ?[]const u8 = null,
-    // Property getter currently being evaluated (to prevent infinite recursion in self-referencing getters)
+    // Property getter currently being evaluated
+    // (to prevent infinite recursion in self-referencing getters)
     evaluating_getter: ?[]const u8 = null,
     // JSON round-trip: store last serialized value for deserialize
     last_json_value: ?Value = null,
     // SOSL fixed search results (set by Test.setFixedSearchResults)
     fixed_search_results: ?Value = null,
-    // Class name of the currently executing constructor (for correct super() dispatch)
+    // Class name of the currently executing constructor
+    // (for correct super() dispatch)
     current_constructor_class: ?[]const u8 = null,
     // Call depth counter (stack overflow guard)
     call_depth: u32 = 0,
     max_call_depth: u32 = 500,
     // Scheduled jobs store (System.schedule → CronTrigger queries)
     scheduled_jobs: std.StringArrayHashMapUnmanaged([]const u8) = .empty,
-    // Schedulable instances queued during Test.startTest(); executed on Test.stopTest()
+    // Schedulable instances queued during Test.startTest();
+    // executed on Test.stopTest()
     pending_schedulables: std.ArrayListUnmanaged(Value) = .empty,
-    // Class source code (class name → source text, for ApexClass.Body queries)
+    // Class source code
+    // (class name → source text, for ApexClass.Body queries)
     class_sources: std.StringArrayHashMapUnmanaged([]const u8) = .empty,
-    // Trigger source code (trigger name → source text, for ApexTrigger.Body queries)
+    // Trigger source code
+    // (trigger name → source text, for ApexTrigger.Body queries)
     trigger_sources: std.StringArrayHashMapUnmanaged([]const u8) = .empty,
     // Whether current test has @isTest(SeeAllData=true) annotation
     see_all_data: bool = false,
-    // Whether running as a restricted user (System.runAs with min-access or marketing user)
+    // Whether running as a restricted user
+    // (System.runAs with min-access or marketing user)
     is_restricted_user: bool = false,
-    // Whether running as a minimum-access user specifically (stricter than is_restricted_user)
+    // Whether running as a minimum-access user specifically
+    // (stricter than is_restricted_user)
     is_min_access_user: bool = false,
-    // Whether running as a standard user (has CRUD on business objects but not setup objects)
+    // Whether running as a standard user
+    // (has CRUD on business objects but not setup objects)
     is_standard_user: bool = false,
-    // ApexPages message store (for ApexPages.addMessages / hasMessages / getMessages)
+    // ApexPages message store
+    // (for ApexPages.addMessages / hasMessages / getMessages)
     apex_pages_messages: std.ArrayListUnmanaged(Value) = .empty,
     // Trigger declarations (object name → list of triggers)
     triggers: std.StringArrayHashMapUnmanaged(std.ArrayListUnmanaged(*ast.TriggerDecl)) = .empty,
     // Trigger context variables
     trigger_context: ?TriggerContext = null,
-    // Source paths for metadata lookup (e.g., picklist values from field-meta.xml)
+    // Source paths for metadata lookup
+    // (e.g., picklist values from field-meta.xml)
     source_paths: []const []const u8 = &.{},
-    // SObject field default values from field-meta.xml (type_name → field_name → default Value)
-    field_defaults: std.StringArrayHashMapUnmanaged(std.StringArrayHashMapUnmanaged(Value)) = .empty,
-    /// field-meta.xml から読み取ったフィールド型情報。field_types[TypeName][FieldName] = "DateTime" 等。
-    field_types: std.StringArrayHashMapUnmanaged(std.StringArrayHashMapUnmanaged([]const u8)) = .empty,
-    /// field-meta.xml から読み取ったフィールド制約・参照先。field_metadata[TypeName][FieldName] = metadata。
-    field_metadata: std.StringArrayHashMapUnmanaged(std.StringArrayHashMapUnmanaged(FieldMetadata)) = .empty,
+    // SObject field default values from field-meta.xml
+    // (type_name → field_name → default Value)
+    field_defaults: std.StringArrayHashMapUnmanaged(
+        std.StringArrayHashMapUnmanaged(Value),
+    ) = .empty,
+    /// field-meta.xml から読み取ったフィールド型情報。
+    /// field_types[TypeName][FieldName] = "DateTime" 等。
+    field_types: std.StringArrayHashMapUnmanaged(
+        std.StringArrayHashMapUnmanaged([]const u8),
+    ) = .empty,
+    /// field-meta.xml から読み取ったフィールド制約・参照先。
+    /// field_metadata[TypeName][FieldName] = metadata。
+    field_metadata: std.StringArrayHashMapUnmanaged(
+        std.StringArrayHashMapUnmanaged(FieldMetadata),
+    ) = .empty,
     /// field-meta.xml から読み取った child relationship 情報。key = lowercase("{parent}|{relationship}").
     child_relationships: std.StringArrayHashMapUnmanaged(CustomChildRelationship) = .empty,
     /// object-meta.xml で `<customSettingsType>` が指定されている Custom Setting オブジェクト名の集合。
@@ -144,8 +163,11 @@ pub const Evaluator = struct {
     object_labels: std.StringArrayHashMapUnmanaged([]const u8) = .empty,
     /// object-meta.xml `<pluralLabel>` を格納。object_label_plurals[TypeName] = plural label.
     object_label_plurals: std.StringArrayHashMapUnmanaged([]const u8) = .empty,
-    /// fieldSet-meta.xml から読み取った field set 情報。field_sets[TypeName][QualifiedFieldSetName] = metadata。
-    field_sets: std.StringArrayHashMapUnmanaged(std.StringArrayHashMapUnmanaged(FieldSetMetadata)) = .empty,
+    /// fieldSet-meta.xml から読み取った field set 情報。
+    /// field_sets[TypeName][QualifiedFieldSetName] = metadata。
+    field_sets: std.StringArrayHashMapUnmanaged(
+        std.StringArrayHashMapUnmanaged(FieldSetMetadata),
+    ) = .empty,
     // System.Limits counters
     limits_dml: u32 = 0,
     limits_dml_rows: u32 = 0,
@@ -157,7 +179,8 @@ pub const Evaluator = struct {
     reserved_single_email_capacity: i64 = 0,
     // Trigger recursion depth counter
     trigger_depth: u32 = 0,
-    // Cast type hints for method overload resolution (set by evalMethodCall, consumed by findBestMethodInClassFiltered)
+    // Cast type hints for method overload resolution
+    // (set by evalMethodCall, consumed by findBestMethodInClassFiltered)
     cast_type_hints: ?[]const ?[]const u8 = null,
     // Pending event callback for Test.getEventBus().fail() support
     pending_event_callback: ?struct {
@@ -346,16 +369,28 @@ pub const Evaluator = struct {
             if (std.ascii.eqlIgnoreCase(user_id, self.current_user_id)) return true;
         }
         if (self.extract_where_field_value(soql, "Alias", current_env)) |alias| {
-            if (std.ascii.startsWithIgnoreCase(alias, "autoproc") or std.ascii.eqlIgnoreCase(alias, "tuser")) return true;
+            if (std.ascii.startsWithIgnoreCase(alias, "autoproc") or
+                std.ascii.eqlIgnoreCase(alias, "tuser"))
+            {
+                return true;
+            }
         }
         if (self.extract_where_field_value(soql, "Username", current_env)) |username| {
-            if (std.ascii.startsWithIgnoreCase(username, "autoproc@") or std.ascii.eqlIgnoreCase(username, "testuser@example.com")) return true;
+            if (std.ascii.startsWithIgnoreCase(username, "autoproc@") or
+                std.ascii.eqlIgnoreCase(username, "testuser@example.com"))
+            {
+                return true;
+            }
             if (std.ascii.startsWithIgnoreCase(username, "autoproc")) return true;
         }
         return false;
     }
 
-    fn current_user_field_value(self: *Evaluator, field_name: []const u8, fallback: []const u8) []const u8 {
+    fn current_user_field_value(
+        self: *Evaluator,
+        field_name: []const u8,
+        fallback: []const u8,
+    ) []const u8 {
         if (self.store.get("User")) |users| {
             for (users.items) |existing| {
                 if (existing != .sobject or existing.sobject.id == null) continue;
@@ -368,7 +403,11 @@ pub const Evaluator = struct {
         return fallback;
     }
 
-    fn query_matches_default_synthetic_user(self: *Evaluator, soql: []const u8, current_env: *Env) bool {
+    fn query_matches_default_synthetic_user(
+        self: *Evaluator,
+        soql: []const u8,
+        current_env: *Env,
+    ) bool {
         if (self.extract_where_field_value(soql, "Id", current_env)) |user_id| {
             if (std.ascii.eqlIgnoreCase(user_id, "005000000000001")) return true;
         }
@@ -390,20 +429,40 @@ pub const Evaluator = struct {
             if (std.ascii.eqlIgnoreCase(alias, current_alias)) return true;
         }
         if (self.extract_where_field_value(soql, "Username", current_env)) |username| {
-            const current_username = self.current_user_field_value("Username", "testuser@example.com");
+            const current_username = self.current_user_field_value(
+                "Username",
+                "testuser@example.com",
+            );
             if (std.ascii.eqlIgnoreCase(username, current_username)) return true;
         }
         return false;
     }
 
     /// Resolve picklist API name to label using field-meta.xml
-    fn resolve_picklist_label(self: *Evaluator, obj_type: []const u8, field_name: []const u8, api_name: []const u8) ?[]const u8 {
+    fn resolve_picklist_label(
+        self: *Evaluator,
+        obj_type: []const u8,
+        field_name: []const u8,
+        api_name: []const u8,
+    ) ?[]const u8 {
         if (self.get_field_metadata(obj_type, field_name)) |metadata| {
             for (metadata.picklist_values) |picklist_value| {
                 if (std.mem.eql(u8, picklist_value.value, api_name)) return picklist_value.label;
             }
         }
-        const suffix = std.fmt.allocPrint(self.arena, "objects/{s}/fields/{s}.field-meta.xml", .{ obj_type, field_name }) catch return null;
+        const suffix = std.fmt.allocPrint(
+            self.arena,
+            "objects/{s}/fields/{s}.field-meta.xml",
+            .{ obj_type, field_name },
+        ) catch return null;
+        return self.resolve_picklist_label_from_sources(suffix, api_name);
+    }
+
+    fn resolve_picklist_label_from_sources(
+        self: *Evaluator,
+        suffix: []const u8,
+        api_name: []const u8,
+    ) ?[]const u8 {
         for (self.source_paths) |base_path| {
             // Try to find the field-meta.xml by walking common SFDX paths
             // Also try parent directories (e.g., "force-app/main/default/classes" → "force-app")
@@ -420,40 +479,64 @@ pub const Evaluator = struct {
             const base_paths = [_][]const u8{ base_path, parent1, parent2, parent3 };
             for (base_paths) |bp| {
                 for (candidates) |sub| {
-                    const xml_path = std.fs.path.join(self.arena, &.{ bp, sub, suffix }) catch continue;
-                    const content = std.Io.Dir.cwd().readFileAlloc(self.io, xml_path, self.arena, .limited(512 * 1024)) catch continue;
-
-                    // Parse <value> blocks: find <fullName> matching api_name, return corresponding <label>
-                    var pos: usize = 0;
-                    while (pos < content.len) {
-                        const value_start = std.mem.indexOfPos(u8, content, pos, "<value>") orelse break;
-                        const value_end = std.mem.indexOfPos(u8, content, value_start, "</value>") orelse break;
-                        const block = content[value_start..value_end];
-
-                        const fn_tag = "<fullName>";
-                        const fn_end_tag = "</fullName>";
-                        if (std.mem.indexOf(u8, block, fn_tag)) |fn_start| {
-                            const fn_content_start = fn_start + fn_tag.len;
-                            if (std.mem.indexOfPos(u8, block, fn_content_start, fn_end_tag)) |fn_end| {
-                                const full_name = block[fn_content_start..fn_end];
-                                if (std.mem.eql(u8, full_name, api_name)) {
-                                    const lbl_tag = "<label>";
-                                    const lbl_end_tag = "</label>";
-                                    if (std.mem.indexOf(u8, block, lbl_tag)) |lbl_start| {
-                                        const lbl_content_start = lbl_start + lbl_tag.len;
-                                        if (std.mem.indexOfPos(u8, block, lbl_content_start, lbl_end_tag)) |lbl_end| {
-                                            return block[lbl_content_start..lbl_end];
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        pos = value_end + 8;
+                    const xml_path = std.fs.path.join(
+                        self.arena,
+                        &.{ bp, sub, suffix },
+                    ) catch continue;
+                    const content = std.Io.Dir.cwd().readFileAlloc(
+                        self.io,
+                        xml_path,
+                        self.arena,
+                        .limited(512 * 1024),
+                    ) catch continue;
+                    if (find_picklist_label_in_xml(content, api_name)) |label| {
+                        return label;
                     }
                 }
             }
         }
         return null;
+    }
+
+    fn find_picklist_label_in_xml(content: []const u8, api_name: []const u8) ?[]const u8 {
+        var pos: usize = 0;
+        while (pos < content.len) {
+            const value_start = std.mem.indexOfPos(
+                u8,
+                content,
+                pos,
+                "<value>",
+            ) orelse break;
+            const value_end = std.mem.indexOfPos(
+                u8,
+                content,
+                value_start,
+                "</value>",
+            ) orelse break;
+            const block = content[value_start..value_end];
+            if (find_picklist_label_in_value_block(block, api_name)) |label| {
+                return label;
+            }
+            pos = value_end + 8;
+        }
+        return null;
+    }
+
+    fn find_picklist_label_in_value_block(block: []const u8, api_name: []const u8) ?[]const u8 {
+        const fn_tag = "<fullName>";
+        const fn_end_tag = "</fullName>";
+        const fn_start = std.mem.indexOf(u8, block, fn_tag) orelse return null;
+        const fn_content_start = fn_start + fn_tag.len;
+        const fn_end = std.mem.indexOfPos(u8, block, fn_content_start, fn_end_tag) orelse return null;
+        const full_name = block[fn_content_start..fn_end];
+        if (!std.mem.eql(u8, full_name, api_name)) return null;
+
+        const lbl_tag = "<label>";
+        const lbl_end_tag = "</label>";
+        const lbl_start = std.mem.indexOf(u8, block, lbl_tag) orelse return null;
+        const lbl_content_start = lbl_start + lbl_tag.len;
+        const lbl_end = std.mem.indexOfPos(u8, block, lbl_content_start, lbl_end_tag) orelse return null;
+        return block[lbl_content_start..lbl_end];
     }
 
     /// Create a synthetic Profile record — used by SOQL when no Profile records exist in store

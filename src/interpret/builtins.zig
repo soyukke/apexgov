@@ -29,7 +29,11 @@ pub fn current_date_string(arena: std.mem.Allocator) ![]const u8 {
     const es = std.time.epoch.EpochSeconds{ .secs = epoch_secs };
     const day = es.getEpochDay().calculateYearDay();
     const md = day.calculateMonthDay();
-    return std.fmt.allocPrint(arena, "{d}-{d:0>2}-{d:0>2}", .{ day.year, md.month.numeric(), md.day_index + 1 });
+    return std.fmt.allocPrint(
+        arena,
+        "{d}-{d:0>2}-{d:0>2}",
+        .{ day.year, md.month.numeric(), md.day_index + 1 },
+    );
 }
 
 /// Return the current datetime as "YYYY-MM-DDThh:mm:ssZ" string.
@@ -53,7 +57,11 @@ pub const BuiltinContext = struct {
     see_all_data: bool = false,
     eval: *evaluator_mod.Evaluator = undefined,
 
-    fn throw_exception(self: *BuiltinContext, class_name: []const u8, message: []const u8) anyerror!?Value {
+    fn throw_exception(
+        self: *BuiltinContext,
+        class_name: []const u8,
+        message: []const u8,
+    ) anyerror!?Value {
         const exc = try self.arena.create(types.ObjectInstance);
         exc.* = .{ .class_name = class_name };
         try exc.fields.put(self.arena, "message", Value{ .string = message });
@@ -170,41 +178,79 @@ fn parse_loose_date_time(arena: std.mem.Allocator, raw: []const u8) ?[]const u8 
             if (!std.ascii.isDigit(ch)) break idx;
         } else s_s.len;
         const s_clean = s_s[0..s_clean_end];
-        second = if (s_clean.len == 0) 0 else (std.fmt.parseInt(i32, s_clean, 10) catch return null);
-        if (hour < 0 or hour > 23 or minute < 0 or minute > 59 or second < 0 or second > 59) return null;
+        second = if (s_clean.len == 0)
+            0
+        else
+            (std.fmt.parseInt(i32, s_clean, 10) catch return null);
+        if (hour < 0 or hour > 23 or
+            minute < 0 or minute > 59 or
+            second < 0 or second > 59)
+        {
+            return null;
+        }
     }
-    return std.fmt.allocPrint(arena, "{d:0>4}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}Z", .{ @as(u32, @intCast(year)), @as(u32, @intCast(month)), @as(u32, @intCast(day)), @as(u32, @intCast(hour)), @as(u32, @intCast(minute)), @as(u32, @intCast(second)) }) catch null;
+    return std.fmt.allocPrint(
+        arena,
+        "{d:0>4}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}Z",
+        .{
+            @as(u32, @intCast(year)),
+            @as(u32, @intCast(month)),
+            @as(u32, @intCast(day)),
+            @as(u32, @intCast(hour)),
+            @as(u32, @intCast(minute)),
+            @as(u32, @intCast(second)),
+        },
+    ) catch null;
 }
 
 /// 静的メソッド呼び出しを試行する。
 /// 静的メソッド呼び出しを試行する。
-pub fn dispatch_static(ctx: *BuiltinContext, class_name: []const u8, method_name: []const u8, args: []const Value) !?Value {
+pub fn dispatch_static(
+    ctx: *BuiltinContext,
+    class_name: []const u8,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
     const ci = std.ascii;
-    if (ci.eqlIgnoreCase(class_name, "System")) return dispatch_static_system(ctx, method_name, args);
-    if (ci.eqlIgnoreCase(class_name, "String")) return dispatch_static_string(ctx, method_name, args);
+    if (ci.eqlIgnoreCase(class_name, "System"))
+        return dispatch_static_system(ctx, method_name, args);
+    if (ci.eqlIgnoreCase(class_name, "String"))
+        return dispatch_static_string(ctx, method_name, args);
     if (ci.eqlIgnoreCase(class_name, "Id")) return dispatch_static_id(ctx, method_name, args);
-    if (ci.eqlIgnoreCase(class_name, "Integer")) return dispatch_static_integer(ctx, method_name, args);
+    if (ci.eqlIgnoreCase(class_name, "Integer"))
+        return dispatch_static_integer(ctx, method_name, args);
     if (ci.eqlIgnoreCase(class_name, "Long")) return dispatch_static_long(ctx, method_name, args);
     if (ci.eqlIgnoreCase(class_name, "Boolean")) return dispatch_static_boolean(method_name, args);
-    if (ci.eqlIgnoreCase(class_name, "Decimal")) return dispatch_static_decimal(ctx, method_name, args);
-    if (ci.eqlIgnoreCase(class_name, "Double")) return dispatch_static_double_class(ctx, method_name, args);
+    if (ci.eqlIgnoreCase(class_name, "Decimal"))
+        return dispatch_static_decimal(ctx, method_name, args);
+    if (ci.eqlIgnoreCase(class_name, "Double"))
+        return dispatch_static_double_class(ctx, method_name, args);
     if (ci.eqlIgnoreCase(class_name, "Date")) return dispatch_static_date(ctx, method_name, args);
     if (ci.eqlIgnoreCase(class_name, "Math")) return dispatch_static_math(method_name, args);
     if (ci.eqlIgnoreCase(class_name, "Time")) return dispatch_static_time(ctx, method_name, args);
-    if (ci.eqlIgnoreCase(class_name, "TimeZone")) return dispatch_static_time_zone(ctx, method_name, args);
-    if (ci.eqlIgnoreCase(class_name, "DateTime")) return dispatch_static_date_time(ctx, method_name, args);
-    if (ci.eqlIgnoreCase(class_name, "Approval")) return dispatch_static_approval(ctx, method_name, args);
-    if (ci.eqlIgnoreCase(class_name, "BusinessHours")) return dispatch_static_business_hours(ctx, method_name, args);
+    if (ci.eqlIgnoreCase(class_name, "TimeZone"))
+        return dispatch_static_time_zone(ctx, method_name, args);
+    if (ci.eqlIgnoreCase(class_name, "DateTime"))
+        return dispatch_static_date_time(ctx, method_name, args);
+    if (ci.eqlIgnoreCase(class_name, "Approval"))
+        return dispatch_static_approval(ctx, method_name, args);
+    if (ci.eqlIgnoreCase(class_name, "BusinessHours"))
+        return dispatch_static_business_hours(ctx, method_name, args);
     if (ci.eqlIgnoreCase(class_name, "JSON")) return dispatch_static_json(ctx, method_name, args);
     if (ci.eqlIgnoreCase(class_name, "UserInfo")) return dispatch_static_user_info(ctx, method_name);
-    if (ci.eqlIgnoreCase(class_name, "LoggingLevel")) return dispatch_static_logging_level(ctx, method_name, args);
+    if (ci.eqlIgnoreCase(class_name, "LoggingLevel"))
+        return dispatch_static_logging_level(ctx, method_name, args);
     if (ci.eqlIgnoreCase(class_name, "Quiddity")) return Value{ .string = method_name };
     if (ci.eqlIgnoreCase(class_name, "UUID")) {
         if (ci.eqlIgnoreCase(method_name, "randomUUID")) {
             // Generate a deterministic pseudo-UUID based on a counter
             const id = ctx.eval.next_id;
             ctx.eval.next_id += 1;
-            const uuid_str = try std.fmt.allocPrint(ctx.arena, "{x:0>8}-0000-4000-8000-{x:0>12}", .{ id, id });
+            const uuid_str = try std.fmt.allocPrint(
+                ctx.arena,
+                "{x:0>8}-0000-4000-8000-{x:0>12}",
+                .{ id, id },
+            );
             const uuid_obj = try ctx.arena.create(types.ObjectInstance);
             uuid_obj.* = .{ .class_name = "UUID" };
             try uuid_obj.fields.put(ctx.arena, "value", Value{ .string = uuid_str });
@@ -245,36 +291,52 @@ pub fn dispatch_static(ctx: *BuiltinContext, class_name: []const u8, method_name
         }
         return null;
     }
-    if (ci.eqlIgnoreCase(class_name, "Database")) return dispatch_database(ctx, method_name, args);
-    if (ci.eqlIgnoreCase(class_name, "RestContext")) return dispatch_static_rest_context(ctx, method_name);
-    if (ci.eqlIgnoreCase(class_name, "HttpResponse") or ci.eqlIgnoreCase(class_name, "HttpRequest")) {
+    if (ci.eqlIgnoreCase(class_name, "Database"))
+        return dispatch_database(ctx, method_name, args);
+    if (ci.eqlIgnoreCase(class_name, "RestContext"))
+        return dispatch_static_rest_context(ctx, method_name);
+    if (ci.eqlIgnoreCase(class_name, "HttpResponse") or
+        ci.eqlIgnoreCase(class_name, "HttpRequest"))
+    {
         const obj = try ctx.arena.create(types.ObjectInstance);
         obj.* = .{ .class_name = class_name };
         return Value{ .object = obj };
     }
-    if (ci.eqlIgnoreCase(class_name, "Schema")) return dispatch_static_schema(ctx, method_name, args);
-    if (ci.eqlIgnoreCase(class_name, "Security")) return dispatch_static_security(ctx, method_name, args);
+    if (ci.eqlIgnoreCase(class_name, "Schema"))
+        return dispatch_static_schema(ctx, method_name, args);
+    if (ci.eqlIgnoreCase(class_name, "Security"))
+        return dispatch_static_security(ctx, method_name, args);
     if (ci.eqlIgnoreCase(class_name, "AccessLevel")) return Value{ .string = method_name };
-    if (std.mem.startsWith(u8, class_name, "ConnectApi") or ci.eqlIgnoreCase(class_name, "ConnectApi")) {
+    if (std.mem.startsWith(u8, class_name, "ConnectApi") or
+        ci.eqlIgnoreCase(class_name, "ConnectApi"))
+    {
         if (ctx.see_all_data) return Value.null_val;
-        return ctx.throw_exception("UnsupportedOperationException", "ConnectApi is not supported in data-siloed tests");
+        return ctx.throw_exception(
+            "UnsupportedOperationException",
+            "ConnectApi is not supported in data-siloed tests",
+        );
     }
-    if (ci.eqlIgnoreCase(class_name, "FeatureManagement")) return dispatch_static_feature_management(ctx, method_name, args);
+    if (ci.eqlIgnoreCase(class_name, "FeatureManagement"))
+        return dispatch_static_feature_management(ctx, method_name, args);
     if (ci.eqlIgnoreCase(class_name, "Limits")) return dispatch_static_limits(ctx, method_name);
     if (ci.eqlIgnoreCase(class_name, "Script") or
         (std.mem.startsWith(u8, class_name, "DataWeave") and ci.eqlIgnoreCase(method_name, "createScript")))
         return dispatch_static_data_weave(ctx, args);
-    if (ci.eqlIgnoreCase(class_name, "Pattern")) return dispatch_static_pattern(ctx, method_name, args);
+    if (ci.eqlIgnoreCase(class_name, "Pattern"))
+        return dispatch_static_pattern(ctx, method_name, args);
     if (ci.eqlIgnoreCase(class_name, "Type")) return dispatch_static_type(ctx, method_name, args);
     if (ci.eqlIgnoreCase(class_name, "Request")) {
         const obj = try ctx.arena.create(types.ObjectInstance);
         obj.* = .{ .class_name = "Request" };
         return Value{ .object = obj };
     }
-    if (ci.eqlIgnoreCase(class_name, "Crypto")) return dispatch_static_crypto(ctx, method_name, args);
+    if (ci.eqlIgnoreCase(class_name, "Crypto"))
+        return dispatch_static_crypto(ctx, method_name, args);
     if (ci.eqlIgnoreCase(class_name, "Blob")) return dispatch_static_blob(ctx, method_name, args);
-    if (ci.eqlIgnoreCase(class_name, "EncodingUtil")) return dispatch_static_encoding_util(ctx, method_name, args);
-    if (ci.eqlIgnoreCase(class_name, "Messaging")) return dispatch_static_messaging(ctx, method_name, args);
+    if (ci.eqlIgnoreCase(class_name, "EncodingUtil"))
+        return dispatch_static_encoding_util(ctx, method_name, args);
+    if (ci.eqlIgnoreCase(class_name, "Messaging"))
+        return dispatch_static_messaging(ctx, method_name, args);
     if (ci.eqlIgnoreCase(class_name, "EventBus")) return dispatch_static_event_bus(method_name);
     if (ci.eqlIgnoreCase(class_name, "Invocable.Action")) {
         if (ci.eqlIgnoreCase(method_name, "createCustomAction") and args.len >= 2) {
@@ -302,8 +364,11 @@ pub fn dispatch_static(ctx: *BuiltinContext, class_name: []const u8, method_name
             return Value{ .object = action };
         }
     }
-    if (ci.eqlIgnoreCase(class_name, "Test")) return dispatch_static_test(ctx, method_name, args);
-    if (ci.eqlIgnoreCase(class_name, "Location") or ci.eqlIgnoreCase(class_name, "System.Location")) {
+    if (ci.eqlIgnoreCase(class_name, "Test"))
+        return dispatch_static_test(ctx, method_name, args);
+    if (ci.eqlIgnoreCase(class_name, "Location") or
+        ci.eqlIgnoreCase(class_name, "System.Location"))
+    {
         if (ci.eqlIgnoreCase(method_name, "newInstance") and args.len >= 2) {
             const loc = try ctx.arena.create(types.ObjectInstance);
             loc.* = .{ .class_name = "System.Location" };
@@ -340,20 +405,29 @@ pub fn dispatch_static(ctx: *BuiltinContext, class_name: []const u8, method_name
             return Value{ .double = radius * c };
         }
     }
-    if (ci.eqlIgnoreCase(class_name, "Formula")) return dispatch_static_formula(ctx, method_name, args);
+    if (ci.eqlIgnoreCase(class_name, "Formula"))
+        return dispatch_static_formula(ctx, method_name, args);
     if (ci.eqlIgnoreCase(class_name, "Cache")) return .void_val;
     if (ci.eqlIgnoreCase(class_name, "Http")) return dispatch_static_http(ctx, method_name);
-    if (ci.eqlIgnoreCase(class_name, "CanTheUser")) return dispatch_static_can_the_user(ctx, method_name, args);
+    if (ci.eqlIgnoreCase(class_name, "CanTheUser"))
+        return dispatch_static_can_the_user(ctx, method_name, args);
     if (ci.eqlIgnoreCase(class_name, "OrgShape")) return null;
-    if (ci.eqlIgnoreCase(class_name, "ApexPages")) return dispatch_static_apex_pages(ctx, method_name, args);
+    if (ci.eqlIgnoreCase(class_name, "ApexPages"))
+        return dispatch_static_apex_pages(ctx, method_name, args);
     if (ci.eqlIgnoreCase(class_name, "Network")) return dispatch_static_network(ctx, method_name);
-    if (ci.eqlIgnoreCase(class_name, "Url") or ci.eqlIgnoreCase(class_name, "URL")) return dispatch_static_url(ctx, method_name);
+    if (ci.eqlIgnoreCase(class_name, "Url") or
+        ci.eqlIgnoreCase(class_name, "URL"))
+    {
+        return dispatch_static_url(ctx, method_name);
+    }
     if (ci.eqlIgnoreCase(class_name, "AccessType")) return Value{ .string = method_name };
     // Stubbed utility classes — only provided when the user hasn't supplied a copy.
     // fflib_IDGenerator lives in fflib-apex-mocks, but fflib-apex-common's tests call
     // it even when the mock source isn't co-loaded. Emitting a deterministic fake Id
     // keeps those tests on the happy path.
-    if (ci.eqlIgnoreCase(class_name, "fflib_IDGenerator") and ctx.eval.classes.get("fflib_IDGenerator") == null) {
+    if (ci.eqlIgnoreCase(class_name, "fflib_IDGenerator") and
+        ctx.eval.classes.get("fflib_IDGenerator") == null)
+    {
         if (ci.eqlIgnoreCase(method_name, "generate") and args.len > 0) {
             const sobj_name: []const u8 = if (args[0] == .object and
                 (ci.eqlIgnoreCase(args[0].object.class_name, "Schema.SObjectType") or
@@ -364,7 +438,11 @@ pub fn dispatch_static(ctx: *BuiltinContext, class_name: []const u8, method_name
             } else if (args[0] == .string) args[0].string else "SObject";
             const prefix = builtins_key_prefix_for_name(sobj_name);
             ctx.eval.next_id += 1;
-            const id_str = try std.fmt.allocPrint(ctx.arena, "{s}{x:0>12}", .{ prefix, ctx.eval.next_id });
+            const id_str = try std.fmt.allocPrint(
+                ctx.arena,
+                "{s}{x:0>12}",
+                .{ prefix, ctx.eval.next_id },
+            );
             return Value{ .string = id_str };
         }
     }

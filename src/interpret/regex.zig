@@ -114,7 +114,12 @@ pub fn matches(arena: std.mem.Allocator, pattern: []const u8, input: []const u8)
 
 /// パターンにマッチする全ての部分文字列を replacement で置換。
 /// replacement 内の `$1`..`$9` はキャプチャグループに展開される。
-pub fn replace_all(arena: std.mem.Allocator, pattern: []const u8, input: []const u8, replacement: []const u8) ![]const u8 {
+pub fn replace_all(
+    arena: std.mem.Allocator,
+    pattern: []const u8,
+    input: []const u8,
+    replacement: []const u8,
+) ![]const u8 {
     const all_matches = try find_all(arena, pattern, input);
     if (all_matches.len == 0) return input;
 
@@ -128,7 +133,11 @@ pub fn replace_all(arena: std.mem.Allocator, pattern: []const u8, input: []const
         // Expand replacement (handle $1..$9 backreferences)
         var ri: usize = 0;
         while (ri < replacement.len) : (ri += 1) {
-            if (replacement[ri] == '$' and ri + 1 < replacement.len and replacement[ri + 1] >= '0' and replacement[ri + 1] <= '9') {
+            if (replacement[ri] == '$' and
+                ri + 1 < replacement.len and
+                replacement[ri + 1] >= '0' and
+                replacement[ri + 1] <= '9')
+            {
                 const gidx: usize = replacement[ri + 1] - '0';
                 ri += 1;
                 if (m.group_slice(gidx, input)) |gs| {
@@ -184,7 +193,26 @@ fn preprocess_pattern(arena: std.mem.Allocator, pattern: []const u8) ![]const u8
 
 fn is_regex_escape_char(c: u8) bool {
     return switch (c) {
-        's', 'd', 'w', 'S', 'D', 'W', '*', '.', '+', '?', '(', ')', '[', ']', '{', '}', '|', '^', '$' => true,
+        's',
+        'd',
+        'w',
+        'S',
+        'D',
+        'W',
+        '*',
+        '.',
+        '+',
+        '?',
+        '(',
+        ')',
+        '[',
+        ']',
+        '{',
+        '}',
+        '|',
+        '^',
+        '$',
+        => true,
         else => false,
     };
 }
@@ -264,7 +292,11 @@ fn match_group_at(
             inner[1] == '=',
         );
     }
-    if (inner.len >= 3 and inner[0] == '?' and inner[1] == '<' and (inner[2] == '=' or inner[2] == '!')) {
+    if (inner.len >= 3 and
+        inner[0] == '?' and
+        inner[1] == '<' and
+        (inner[2] == '=' or inner[2] == '!'))
+    {
         return match_lookbehind_group(
             pat,
             group_end,
@@ -904,14 +936,18 @@ fn match_quantified_group(
         while (true) {
             if (try_reps >= quant.min) {
                 const try_ip = reps[@min(try_reps, reps.len - 1)];
-                if (grp_idx > 0) {
-                    groups.*[grp_idx] = if (try_reps > 0)
-                        .{ .start = reps[try_reps - 1], .end = try_ip }
-                    else
-                        null;
-                }
-                if (rest_start >= pat.len) return try_ip;
-                if (match_at(pat, rest_start, input, try_ip, groups, depth + 1, group_base)) |end| return end;
+                if (continue_quantified_group_match(
+                    pat,
+                    rest_start,
+                    input,
+                    try_ip,
+                    reps[0..],
+                    try_reps,
+                    groups,
+                    grp_idx,
+                    depth + 1,
+                    group_base,
+                )) |end| return end;
             }
             if (try_reps == 0) break;
             try_reps -= 1;
@@ -920,17 +956,43 @@ fn match_quantified_group(
         var try_reps = quant.min;
         while (try_reps <= rep_count) : (try_reps += 1) {
             const try_ip = reps[@min(try_reps, reps.len - 1)];
-            if (grp_idx > 0) {
-                groups.*[grp_idx] = if (try_reps > 0)
-                    .{ .start = reps[try_reps - 1], .end = try_ip }
-                else
-                    null;
-            }
-            if (rest_start >= pat.len) return try_ip;
-            if (match_at(pat, rest_start, input, try_ip, groups, depth + 1, group_base)) |end| return end;
+            if (continue_quantified_group_match(
+                pat,
+                rest_start,
+                input,
+                try_ip,
+                reps[0..],
+                try_reps,
+                groups,
+                grp_idx,
+                depth + 1,
+                group_base,
+            )) |end| return end;
         }
     }
     return null;
+}
+
+fn continue_quantified_group_match(
+    pat: []const u8,
+    rest_start: usize,
+    input: []const u8,
+    try_ip: usize,
+    reps: []const usize,
+    try_reps: usize,
+    groups: *[max_groups]?Span,
+    grp_idx: u8,
+    depth: u32,
+    group_base: u8,
+) ?usize {
+    if (grp_idx > 0) {
+        groups.*[grp_idx] = if (try_reps > 0)
+            .{ .start = reps[try_reps - 1], .end = try_ip }
+        else
+            null;
+    }
+    if (rest_start >= pat.len) return try_ip;
+    return match_at(pat, rest_start, input, try_ip, groups, depth, group_base);
 }
 
 // ---------------------------------------------------------------------------
@@ -1073,11 +1135,20 @@ test "replaceAll with backreferences" {
 
     const a = arena.allocator();
     // Simple replacement without backreferences
-    try std.testing.expectEqualStrings("hello planet", try replace_all(a, "world", "hello world", "planet"));
+    try std.testing.expectEqualStrings(
+        "hello planet",
+        try replace_all(a, "world", "hello world", "planet"),
+    );
     // Backreference $1
-    try std.testing.expectEqualStrings("(abc) (def)", try replace_all(a, "(\\w+)", "abc def", "($1)"));
+    try std.testing.expectEqualStrings(
+        "(abc) (def)",
+        try replace_all(a, "(\\w+)", "abc def", "($1)"),
+    );
     // SSN-like pattern: mask first two groups
-    try std.testing.expectEqualStrings("XXX-XX-1234", try replace_all(a, "(\\d{3})-(\\d{2})-(\\d{4})", "123-45-1234", "XXX-XX-$3"));
+    try std.testing.expectEqualStrings(
+        "XXX-XX-1234",
+        try replace_all(a, "(\\d{3})-(\\d{2})-(\\d{4})", "123-45-1234", "XXX-XX-$3"),
+    );
     // No match → return original
     try std.testing.expectEqualStrings("hello", try replace_all(a, "\\d+", "hello", "NUM"));
 }
@@ -1087,7 +1158,10 @@ test "replaceAll supports non-greedy quantifiers" {
     defer arena.deinit();
 
     const a = arena.allocator();
-    try std.testing.expectEqualStrings("x<>b<>c", try replace_all(a, "a.+?z", "xa123zba456zc", "<>"));
+    try std.testing.expectEqualStrings(
+        "x<>b<>c",
+        try replace_all(a, "a.+?z", "xa123zba456zc", "<>"),
+    );
     try std.testing.expectEqualStrings(
         "\nClass.CallableLogger_Tests.test: line 10, column 1",
         try replace_all(
@@ -1154,13 +1228,25 @@ test "SSN regex replaceAll" {
     const a = arena.allocator();
     const ssn_pat = "(^|[^0-9A-Za-z])(\\d{3})[- ]?(\\d{2})[- ]?(\\d{4})(?=[^0-9A-Za-z]|$)";
     // Basic SSN: 123-45-6789 → XXX-XX-6789
-    try std.testing.expectEqualStrings("XXX-XX-6789", try replace_all(a, ssn_pat, "123-45-6789", "$1XXX-XX-$4"));
+    try std.testing.expectEqualStrings(
+        "XXX-XX-6789",
+        try replace_all(a, ssn_pat, "123-45-6789", "$1XXX-XX-$4"),
+    );
     // SSN in context
-    try std.testing.expectEqualStrings("xyz XXX-XX-6789.", try replace_all(a, ssn_pat, "xyz 123-45-6789.", "$1XXX-XX-$4"));
+    try std.testing.expectEqualStrings(
+        "xyz XXX-XX-6789.",
+        try replace_all(a, ssn_pat, "xyz 123-45-6789.", "$1XXX-XX-$4"),
+    );
     // No dashes: 123456789 → XXX-XX-6789
-    try std.testing.expectEqualStrings("XXX-XX-6789", try replace_all(a, ssn_pat, "123456789", "$1XXX-XX-$4"));
+    try std.testing.expectEqualStrings(
+        "XXX-XX-6789",
+        try replace_all(a, ssn_pat, "123456789", "$1XXX-XX-$4"),
+    );
     // False positive: alphanumeric before → should NOT match
-    try std.testing.expectEqualStrings("abc123456789", try replace_all(a, ssn_pat, "abc123456789", "$1XXX-XX-$4"));
+    try std.testing.expectEqualStrings(
+        "abc123456789",
+        try replace_all(a, ssn_pat, "abc123456789", "$1XXX-XX-$4"),
+    );
 }
 
 test "negative lookbehind (?<!...)" {
