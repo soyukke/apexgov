@@ -8738,7 +8738,11 @@ pub const Evaluator = struct {
             const fk_val = utils.sobject_get(&current.fields, fk_field) orelse return null;
             if (fk_val != .string) return null;
 
-            const parent_type = self.parent_ref_to_type_for_s_object(current.type_name, segment) orelse
+            const parent_type =
+                self.parent_ref_to_type_for_s_object(
+                    current.type_name,
+                    segment,
+                ) orelse
                 self.find_record_type_by_id(fk_val.string) orelse
                 blk: {
                     if (fk_val.string.len < 3) break :blk null;
@@ -8747,13 +8751,18 @@ pub const Evaluator = struct {
                     break :blk inferred;
                 } orelse return null;
 
-            const parent_record = self.find_record_by_id(parent_type, fk_val.string) orelse return null;
+            const parent_record =
+                self.find_record_by_id(parent_type, fk_val.string) orelse return null;
             if (parent_record != .sobject) return null;
             current = parent_record.sobject;
         }
     }
 
-    fn resolve_derived_field_value(self: *Evaluator, sob: *types.SObject, field_name: []const u8) ?Value {
+    fn resolve_derived_field_value(
+        self: *Evaluator,
+        sob: *types.SObject,
+        field_name: []const u8,
+    ) ?Value {
         const metadata = self.get_field_metadata(sob.type_name, field_name) orelse return null;
         if (metadata.summary_operation != null) {
             if (self.compute_summary_field_value(sob, metadata)) |value| return value;
@@ -8772,7 +8781,11 @@ pub const Evaluator = struct {
     ) !void {
         for (records) |record| {
             if (record != .sobject) continue;
-            const fk_val = self.get_s_object_field_value_case_insensitive(record.sobject, fk_field) orelse continue;
+            const fk_val =
+                self.get_s_object_field_value_case_insensitive(
+                    record.sobject,
+                    fk_field,
+                ) orelse continue;
             if (fk_val != .string or fk_val.string.len == 0) continue;
             try impacted_ids.put(self.arena, fk_val.string, {});
         }
@@ -8853,8 +8866,16 @@ pub const Evaluator = struct {
                 const dot_idx = std.mem.indexOfScalar(u8, summary_fk, '.') orelse continue;
                 if (!std.ascii.eqlIgnoreCase(summary_fk[0..dot_idx], child_type)) continue;
 
-                const new_value = self.compute_summary_field_value(updated_parent, metadata) orelse Value.null_val;
-                const old_value = self.compute_summary_field_value_before_delta(parent_record.sobject, metadata, new_records, old_records) orelse Value.null_val;
+                const new_value =
+                    self.compute_summary_field_value(updated_parent, metadata) orelse
+                    Value.null_val;
+                const old_value =
+                    self.compute_summary_field_value_before_delta(
+                        parent_record.sobject,
+                        metadata,
+                        new_records,
+                        old_records,
+                    ) orelse Value.null_val;
                 try old_parent.fields.put(self.arena, field_name, old_value);
                 try updated_parent.fields.put(self.arena, field_name, new_value);
                 if (utils.value_eql(old_value, new_value)) continue;
@@ -8868,18 +8889,36 @@ pub const Evaluator = struct {
         }
 
         if (parent_updates.items.items.len > 0) {
-            try self.execute_dml_with_external_id_internal(.update, Value{ .list = parent_updates }, null, false, parent_old_records);
+            try self.execute_dml_with_external_id_internal(
+                .update,
+                Value{ .list = parent_updates },
+                null,
+                false,
+                parent_old_records,
+            );
         }
     }
 
-    fn normalize_summary_field_path(_: *Evaluator, child_type: []const u8, field_path: []const u8) []const u8 {
-        if (std.mem.startsWith(u8, field_path, child_type) and field_path.len > child_type.len and field_path[child_type.len] == '.') {
+    fn normalize_summary_field_path(
+        _: *Evaluator,
+        child_type: []const u8,
+        field_path: []const u8,
+    ) []const u8 {
+        if (std.mem.startsWith(u8, field_path, child_type) and
+            field_path.len > child_type.len and
+            field_path[child_type.len] == '.')
+        {
             return field_path[child_type.len + 1 ..];
         }
         return field_path;
     }
 
-    fn summary_filter_matches(self: *Evaluator, child: *types.SObject, child_type: []const u8, filter: SummaryFilter) bool {
+    fn summary_filter_matches(
+        self: *Evaluator,
+        child: *types.SObject,
+        child_type: []const u8,
+        filter: SummaryFilter,
+    ) bool {
         const field_path = self.normalize_summary_field_path(child_type, filter.field_path);
         const field_val = if (std.mem.indexOfScalar(u8, field_path, '.')) |_|
             self.resolve_field_path_value(child, field_path)
@@ -8898,7 +8937,12 @@ pub const Evaluator = struct {
                     const expected = std.fmt.parseFloat(f64, filter.value) catch break :blk false;
                     break :blk field_val.?.double == expected;
                 },
-                .boolean => if (std.ascii.eqlIgnoreCase(filter.value, "true")) field_val.?.boolean else if (std.ascii.eqlIgnoreCase(filter.value, "false")) !field_val.?.boolean else false,
+                .boolean => if (std.ascii.eqlIgnoreCase(filter.value, "true"))
+                    field_val.?.boolean
+                else if (std.ascii.eqlIgnoreCase(filter.value, "false"))
+                    !field_val.?.boolean
+                else
+                    false,
                 .null_val => std.ascii.eqlIgnoreCase(filter.value, "null"),
                 else => {
                     const actual = utils.coerce_to_string(field_val.?, self.arena) catch return false;
@@ -8918,7 +8962,11 @@ pub const Evaluator = struct {
         return false;
     }
 
-    fn find_s_object_by_id_in_values(_: *Evaluator, records: []const Value, id: []const u8) ?*types.SObject {
+    fn find_s_object_by_id_in_values(
+        _: *Evaluator,
+        records: []const Value,
+        id: []const u8,
+    ) ?*types.SObject {
         for (records) |record| {
             if (record != .sobject or record.sobject.id == null) continue;
             if (std.mem.eql(u8, record.sobject.id.?, id)) return record.sobject;
@@ -8934,7 +8982,9 @@ pub const Evaluator = struct {
         parent_id: []const u8,
         metadata: FieldMetadata,
     ) bool {
-        const fk_val = self.get_s_object_field_value_case_insensitive(child, fk_field) orelse return false;
+        const fk_val =
+            self.get_s_object_field_value_case_insensitive(child, fk_field) orelse
+            return false;
         if (fk_val != .string or !std.ascii.eqlIgnoreCase(fk_val.string, parent_id)) return false;
 
         for (metadata.summary_filters) |filter| {
@@ -8965,9 +9015,15 @@ pub const Evaluator = struct {
 
         const child_value = blk: {
             if (std.mem.indexOfScalar(u8, summarized_field, '.')) |_| {
-                break :blk self.resolve_field_path_value(child, summarized_field) orelse Value.null_val;
+                break :blk self.resolve_field_path_value(
+                    child,
+                    summarized_field,
+                ) orelse Value.null_val;
             }
-            break :blk self.get_s_object_field_value_case_insensitive(child, summarized_field) orelse Value.null_val;
+            break :blk self.get_s_object_field_value_case_insensitive(
+                child,
+                summarized_field,
+            ) orelse Value.null_val;
         };
         if (child_value == .null_val) return;
 
@@ -8997,20 +9053,11 @@ pub const Evaluator = struct {
         const child_type = summary_fk[0..dot_idx];
         const fk_field = summary_fk[dot_idx + 1 ..];
 
-        const parent_id = sob.id orelse blk: {
-            if (utils.sobject_get(&sob.fields, "Id")) |id_val| {
-                if (id_val == .string) break :blk id_val.string;
-            }
-            break :blk null;
-        };
-        if (parent_id == null) {
-            if (std.ascii.eqlIgnoreCase(summary_operation, "count")) return Value{ .integer = 0 };
-            return Value.null_val;
-        }
+        const parent_id = self.summary_parent_id(sob);
+        if (parent_id == null) return self.empty_summary_value(summary_operation);
 
         const child_records = self.store.get(child_type) orelse {
-            if (std.ascii.eqlIgnoreCase(summary_operation, "count")) return Value{ .integer = 0 };
-            return Value.null_val;
+            return self.empty_summary_value(summary_operation);
         };
 
         var count: i64 = 0;
@@ -9021,58 +9068,179 @@ pub const Evaluator = struct {
             const record_id = record.sobject.id.?;
 
             if (old_records) |previous_records| {
-                if (self.find_s_object_by_id_in_values(previous_records.items, record_id)) |old_child| {
-                    if (self.summary_record_matches(old_child, child_type, fk_field, parent_id.?, metadata)) {
-                        self.accumulate_summary_value(old_child, child_type, metadata, &count, &aggregate);
-                    }
+                if (self.accumulate_previous_summary_record(
+                    previous_records.items,
+                    record_id,
+                    child_type,
+                    fk_field,
+                    parent_id.?,
+                    metadata,
+                    &count,
+                    &aggregate,
+                )) {
                     continue;
                 }
             }
 
-            const inserted_now = self.find_s_object_by_id_in_values(new_records, record_id) != null;
-            if (inserted_now) continue;
-
-            if (self.summary_record_matches(record.sobject, child_type, fk_field, parent_id.?, metadata)) {
-                self.accumulate_summary_value(record.sobject, child_type, metadata, &count, &aggregate);
-            }
+            self.accumulate_current_summary_record_before_delta(
+                record.sobject,
+                new_records,
+                record_id,
+                child_type,
+                fk_field,
+                parent_id.?,
+                metadata,
+                &count,
+                &aggregate,
+            );
         }
 
         if (old_records) |previous_records| {
-            for (previous_records.items) |record| {
-                if (record != .sobject or record.sobject.id == null) continue;
-                if (self.find_record_in_store(child_type, record.sobject.id.?)) |_| continue;
-                if (self.summary_record_matches(record.sobject, child_type, fk_field, parent_id.?, metadata)) {
-                    self.accumulate_summary_value(record.sobject, child_type, metadata, &count, &aggregate);
-                }
-            }
+            self.accumulate_deleted_summary_records(
+                previous_records.items,
+                child_type,
+                fk_field,
+                parent_id.?,
+                metadata,
+                &count,
+                &aggregate,
+            );
         }
 
         if (std.ascii.eqlIgnoreCase(summary_operation, "count")) return Value{ .integer = count };
         return aggregate orelse Value.null_val;
     }
 
-    fn compute_summary_field_value(self: *Evaluator, sob: *types.SObject, metadata: FieldMetadata) ?Value {
+    fn summary_parent_id(_: *Evaluator, sob: *types.SObject) ?[]const u8 {
+        return sob.id orelse blk: {
+            if (utils.sobject_get(&sob.fields, "Id")) |id_val| {
+                if (id_val == .string) break :blk id_val.string;
+            }
+            break :blk null;
+        };
+    }
+
+    fn empty_summary_value(_: *Evaluator, summary_operation: []const u8) Value {
+        if (std.ascii.eqlIgnoreCase(summary_operation, "count")) {
+            return Value{ .integer = 0 };
+        }
+        return Value.null_val;
+    }
+
+    fn accumulate_previous_summary_record(
+        self: *Evaluator,
+        previous_records: []const Value,
+        record_id: []const u8,
+        child_type: []const u8,
+        fk_field: []const u8,
+        parent_id: []const u8,
+        metadata: FieldMetadata,
+        count: *i64,
+        aggregate: *?Value,
+    ) bool {
+        const old_child =
+            self.find_s_object_by_id_in_values(previous_records, record_id) orelse
+            return false;
+        if (self.summary_record_matches(
+            old_child,
+            child_type,
+            fk_field,
+            parent_id,
+            metadata,
+        )) {
+            self.accumulate_summary_value(
+                old_child,
+                child_type,
+                metadata,
+                count,
+                aggregate,
+            );
+        }
+        return true;
+    }
+
+    fn accumulate_current_summary_record_before_delta(
+        self: *Evaluator,
+        record: *types.SObject,
+        new_records: []const Value,
+        record_id: []const u8,
+        child_type: []const u8,
+        fk_field: []const u8,
+        parent_id: []const u8,
+        metadata: FieldMetadata,
+        count: *i64,
+        aggregate: *?Value,
+    ) void {
+        const inserted_now =
+            self.find_s_object_by_id_in_values(new_records, record_id) != null;
+        if (inserted_now) return;
+        if (self.summary_record_matches(
+            record,
+            child_type,
+            fk_field,
+            parent_id,
+            metadata,
+        )) {
+            self.accumulate_summary_value(
+                record,
+                child_type,
+                metadata,
+                count,
+                aggregate,
+            );
+        }
+    }
+
+    fn accumulate_deleted_summary_records(
+        self: *Evaluator,
+        previous_records: []const Value,
+        child_type: []const u8,
+        fk_field: []const u8,
+        parent_id: []const u8,
+        metadata: FieldMetadata,
+        count: *i64,
+        aggregate: *?Value,
+    ) void {
+        for (previous_records) |record| {
+            if (record != .sobject or record.sobject.id == null) continue;
+            if (self.find_record_in_store(child_type, record.sobject.id.?)) |_| continue;
+            if (self.summary_record_matches(
+                record.sobject,
+                child_type,
+                fk_field,
+                parent_id,
+                metadata,
+            )) {
+                self.accumulate_summary_value(
+                    record.sobject,
+                    child_type,
+                    metadata,
+                    count,
+                    aggregate,
+                );
+            }
+        }
+    }
+
+    fn compute_summary_field_value(
+        self: *Evaluator,
+        sob: *types.SObject,
+        metadata: FieldMetadata,
+    ) ?Value {
         const summary_operation = metadata.summary_operation orelse return null;
         const summary_fk = metadata.summary_foreign_key orelse return null;
         const dot_idx = std.mem.indexOfScalar(u8, summary_fk, '.') orelse return null;
         const child_type = summary_fk[0..dot_idx];
         const fk_field = summary_fk[dot_idx + 1 ..];
 
-        const parent_id = sob.id orelse blk: {
-            if (utils.sobject_get(&sob.fields, "Id")) |id_val| {
-                if (id_val == .string) break :blk id_val.string;
-            }
-            break :blk null;
-        };
+        const parent_id = self.summary_parent_id(sob);
 
         if (parent_id == null) {
-            if (std.ascii.eqlIgnoreCase(summary_operation, "count")) return Value{ .integer = 0 };
-            return Value.null_val;
+            return self.empty_summary_value(summary_operation);
         }
 
         const child_records = self.store.get(child_type) orelse {
-            if (std.ascii.eqlIgnoreCase(summary_operation, "count")) return Value{ .integer = 0 };
-            return Value.null_val;
+            return self.empty_summary_value(summary_operation);
         };
 
         var count: i64 = 0;
@@ -9080,7 +9248,13 @@ pub const Evaluator = struct {
 
         for (child_records.items) |record| {
             if (record != .sobject) continue;
-            if (!self.summary_record_matches(record.sobject, child_type, fk_field, parent_id.?, metadata)) continue;
+            if (!self.summary_record_matches(
+                record.sobject,
+                child_type,
+                fk_field,
+                parent_id.?,
+                metadata,
+            )) continue;
             self.accumulate_summary_value(record.sobject, child_type, metadata, &count, &aggregate);
         }
 
@@ -9099,7 +9273,11 @@ pub const Evaluator = struct {
             while (term_iter.next()) |raw_term| {
                 const term = std.mem.trim(u8, raw_term, " \t\n\r()");
                 if (term.len == 0) continue;
-                const term_value = self.get_s_object_field_value_case_insensitive(sob, term) orelse Value.null_val;
+                const term_value =
+                    self.get_s_object_field_value_case_insensitive(
+                        sob,
+                        term,
+                    ) orelse Value.null_val;
                 switch (term_value) {
                     .integer => |i| total += i,
                     .double => |d| total += @intFromFloat(d),
@@ -9118,13 +9296,21 @@ pub const Evaluator = struct {
 
         if (std.ascii.indexOfIgnoreCase(trimmed, "!= null")) |idx| {
             const lhs = std.mem.trim(u8, trimmed[0..idx], " \t\n\r");
-            const lhs_value = self.get_s_object_field_value_case_insensitive(sob, lhs) orelse Value.null_val;
+            const lhs_value =
+                self.get_s_object_field_value_case_insensitive(
+                    sob,
+                    lhs,
+                ) orelse Value.null_val;
             return Value{ .boolean = lhs_value != .null_val };
         }
 
         if (std.ascii.indexOfIgnoreCase(trimmed, "== null")) |idx| {
             const lhs = std.mem.trim(u8, trimmed[0..idx], " \t\n\r");
-            const lhs_value = self.get_s_object_field_value_case_insensitive(sob, lhs) orelse Value.null_val;
+            const lhs_value =
+                self.get_s_object_field_value_case_insensitive(
+                    sob,
+                    lhs,
+                ) orelse Value.null_val;
             return Value{ .boolean = lhs_value == .null_val };
         }
 
@@ -9141,7 +9327,11 @@ pub const Evaluator = struct {
         return copy;
     }
 
-    fn default_custom_setting_record(self: *Evaluator, class_name: []const u8, setup_owner_id: ?[]const u8) !Value {
+    fn default_custom_setting_record(
+        self: *Evaluator,
+        class_name: []const u8,
+        setup_owner_id: ?[]const u8,
+    ) !Value {
         const sob = try self.arena.create(types.SObject);
         sob.* = .{ .type_name = class_name };
         if (self.field_defaults.get(class_name)) |defaults| {
@@ -9155,7 +9345,12 @@ pub const Evaluator = struct {
         return Value{ .sobject = sob };
     }
 
-    fn clone_custom_setting_record(self: *Evaluator, record: *types.SObject, setup_owner_id: ?[]const u8, clear_id: bool) !Value {
+    fn clone_custom_setting_record(
+        self: *Evaluator,
+        record: *types.SObject,
+        setup_owner_id: ?[]const u8,
+        clear_id: bool,
+    ) !Value {
         const copy = try self.clone_s_object(record);
         if (clear_id) {
             copy.id = null;
@@ -9167,14 +9362,20 @@ pub const Evaluator = struct {
         return Value{ .sobject = copy };
     }
 
-    fn find_custom_setting_record(self: *Evaluator, class_name: []const u8, owner_id: []const u8) ?*types.SObject {
+    fn find_custom_setting_record(
+        self: *Evaluator,
+        class_name: []const u8,
+        owner_id: []const u8,
+    ) ?*types.SObject {
         var cs_iter = self.store.iterator();
         while (cs_iter.next()) |entry| {
             if (!std.ascii.eqlIgnoreCase(entry.key_ptr.*, class_name)) continue;
             for (entry.value_ptr.items) |item| {
                 if (item != .sobject) continue;
                 if (utils.sobject_get(&item.sobject.fields, "SetupOwnerId")) |stored_owner| {
-                    if (stored_owner == .string and std.ascii.eqlIgnoreCase(stored_owner.string, owner_id)) {
+                    if (stored_owner == .string and
+                        std.ascii.eqlIgnoreCase(stored_owner.string, owner_id))
+                    {
                         return item.sobject;
                     }
                 }
@@ -9227,7 +9428,12 @@ pub const Evaluator = struct {
         return null;
     }
 
-    fn handle_custom_setting_static_method(self: *Evaluator, class_name: []const u8, method_name: []const u8, args: []const Value) !?Value {
+    fn handle_custom_setting_static_method(
+        self: *Evaluator,
+        class_name: []const u8,
+        method_name: []const u8,
+        args: []const Value,
+    ) !?Value {
         if (!std.mem.endsWith(u8, class_name, "__c")) return null;
 
         const kind = self.custom_setting_kind(class_name);
@@ -9273,7 +9479,10 @@ pub const Evaluator = struct {
             return try self.default_custom_setting_record(class_name, null);
         }
 
-        if (std.ascii.eqlIgnoreCase(method_name, "getValues") and args.len > 0 and args[0] == .string) {
+        if (std.ascii.eqlIgnoreCase(method_name, "getValues") and
+            args.len > 0 and
+            args[0] == .string)
+        {
             if (self.find_custom_setting_record(class_name, args[0].string)) |record| {
                 return try self.clone_custom_setting_record(record, null, false);
             }
@@ -9345,7 +9554,11 @@ pub const Evaluator = struct {
         return .null_val;
     }
 
-    fn eval_identifier_env_or_instance_value(self: *Evaluator, id_name: []const u8, current_env: *Env) ?Value {
+    fn eval_identifier_env_or_instance_value(
+        self: *Evaluator,
+        id_name: []const u8,
+        current_env: *Env,
+    ) ?Value {
         if (current_env.get(id_name)) |val| {
             if (val != .null_val) return val;
         }
@@ -9442,16 +9655,30 @@ pub const Evaluator = struct {
         return .null_val;
     }
 
-    fn eval_identifier_static_value(self: *Evaluator, id_name: []const u8, current_env: *Env) ?Value {
+    fn eval_identifier_static_value(
+        self: *Evaluator,
+        id_name: []const u8,
+        current_env: *Env,
+    ) ?Value {
         if (current_env.get("this")) |this_val| {
             if (this_val == .object) {
                 const this_cn = this_val.object.class_name;
-                const key = std.fmt.allocPrint(self.arena, "{s}.{s}", .{ this_cn, id_name }) catch return .null_val;
+                const key =
+                    std.fmt.allocPrint(
+                        self.arena,
+                        "{s}.{s}",
+                        .{ this_cn, id_name },
+                    ) catch return .null_val;
                 if (self.global_env.get(key)) |val| return val;
                 if (self.find_class(this_cn)) |cd| {
                     if (cd.super_class) |sc| {
                         self.ensure_static_init(sc.name);
-                        const pkey = std.fmt.allocPrint(self.arena, "{s}.{s}", .{ sc.name, id_name }) catch return .null_val;
+                        const pkey =
+                            std.fmt.allocPrint(
+                                self.arena,
+                                "{s}.{s}",
+                                .{ sc.name, id_name },
+                            ) catch return .null_val;
                         if (self.global_env.get(pkey)) |val| return val;
                     }
                 }
@@ -9470,9 +9697,16 @@ pub const Evaluator = struct {
         return null;
     }
 
-    fn eval_identifier_inner_type_value(self: *Evaluator, id_name: []const u8, current_env: *Env) ?Value {
+    fn eval_identifier_inner_type_value(
+        self: *Evaluator,
+        id_name: []const u8,
+        current_env: *Env,
+    ) ?Value {
         const check_classes = [_]?[]const u8{
-            if (current_env.get("this")) |tv| (if (tv == .object) tv.object.class_name else null) else null,
+            if (current_env.get("this")) |tv|
+                (if (tv == .object) tv.object.class_name else null)
+            else
+                null,
             self.current_class,
         };
         for (check_classes) |cc_opt| {
