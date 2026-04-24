@@ -5322,13 +5322,16 @@ fn dispatch_obj_iterator(
     method_name: []const u8,
 ) !?Value {
     const cn = obj.class_name;
-    if (!std.ascii.eqlIgnoreCase(cn, "System.Iterator") and !std.ascii.eqlIgnoreCase(cn, "Iterator")) {
+    if (!type_matches_any(cn, &.{ "System.Iterator", "Iterator" })) {
         return null;
     }
     const items_val = obj.fields.get("__items__") orelse return Value.null_val;
     if (items_val != .list) return Value.null_val;
     const pos_val = obj.fields.get("__pos__") orelse Value{ .integer = 0 };
-    const pos: usize = if (pos_val == .integer and pos_val.integer >= 0) @intCast(pos_val.integer) else 0;
+    const pos: usize = if (pos_val == .integer and pos_val.integer >= 0)
+        @intCast(pos_val.integer)
+    else
+        0;
     if (std.ascii.eqlIgnoreCase(method_name, "hasNext")) {
         return Value{ .boolean = pos < items_val.list.items.items.len };
     }
@@ -5336,12 +5339,20 @@ fn dispatch_obj_iterator(
         if (pos >= items_val.list.items.items.len) {
             const exc = try ctx.arena.create(types.ObjectInstance);
             exc.* = .{ .class_name = "System.NoSuchElementException" };
-            try exc.fields.put(ctx.arena, "message", Value{ .string = "Iterator has no more elements" });
+            try exc.fields.put(
+                ctx.arena,
+                "message",
+                Value{ .string = "Iterator has no more elements" },
+            );
             ctx.eval.pending_exception = Value{ .object = exc };
             return error.ApexException;
         }
         const value = items_val.list.items.items[pos];
-        try obj.fields.put(ctx.arena, "__pos__", Value{ .integer = @intCast(pos + 1) });
+        try obj.fields.put(
+            ctx.arena,
+            "__pos__",
+            Value{ .integer = @intCast(pos + 1) },
+        );
         return value;
     }
     return null;
@@ -5353,7 +5364,9 @@ fn dispatch_obj_data_weave_result(
     method_name: []const u8,
 ) !?Value {
     if (!std.ascii.eqlIgnoreCase(obj.class_name, "DataWeave.Result")) return null;
-    if (std.ascii.eqlIgnoreCase(method_name, "getValue")) return obj.fields.get("value") orelse Value.null_val;
+    if (std.ascii.eqlIgnoreCase(method_name, "getValue")) {
+        return obj.fields.get("value") orelse Value.null_val;
+    }
     if (std.ascii.eqlIgnoreCase(method_name, "getValueAsString")) {
         if (obj.fields.get("value")) |value| {
             if (value == .string) return value;
@@ -5425,7 +5438,7 @@ fn dispatch_obj_query_locator(
     method_name: []const u8,
 ) !?Value {
     const cn = obj.class_name;
-    if (!std.ascii.eqlIgnoreCase(cn, "Database.QueryLocator") and !std.ascii.eqlIgnoreCase(cn, "QueryLocator")) {
+    if (!type_matches_any(cn, &.{ "Database.QueryLocator", "QueryLocator" })) {
         return null;
     }
     if (std.ascii.eqlIgnoreCase(method_name, "getQuery")) {
@@ -5448,7 +5461,10 @@ fn query_locator_records(ctx: *BuiltinContext, obj: *types.ObjectInstance) !*typ
     }
     if (obj.fields.get("query")) |query| {
         if (query == .string) {
-            const result = ctx.eval.execute_soql(query.string, ctx.eval.global_env) catch return empty_list(ctx);
+            const result = ctx.eval.execute_soql(
+                query.string,
+                ctx.eval.global_env,
+            ) catch return empty_list(ctx);
             if (result == .list) {
                 try obj.fields.put(ctx.arena, "records", result);
                 return result.list;
@@ -5486,9 +5502,10 @@ fn dispatch_obj_dynamic_pick_list_rows(
     args: []const Value,
 ) !?Value {
     const cn = obj.class_name;
-    if (!std.ascii.eqlIgnoreCase(cn, "VisualEditor.DynamicPickListRows") and
-        !std.ascii.eqlIgnoreCase(cn, "DynamicPickListRows"))
-    {
+    if (!type_matches_any(cn, &.{
+        "VisualEditor.DynamicPickListRows",
+        "DynamicPickListRows",
+    })) {
         return null;
     }
     if (std.ascii.eqlIgnoreCase(method_name, "addRow") and args.len > 0) {
@@ -5582,7 +5599,10 @@ fn invoke_invocable_action(ctx: *BuiltinContext, obj: *types.ObjectInstance) !Va
     const list = try ctx.arena.create(types.ListValue);
     list.* = .{};
     const invocations_val = obj.fields.get("invocations") orelse Value.null_val;
-    const count: usize = if (invocations_val == .list) invocations_val.list.items.items.len else 0;
+    const count: usize = if (invocations_val == .list)
+        invocations_val.list.items.items.len
+    else
+        0;
     const exists = invocable_action_exists(obj);
     var i: usize = 0;
     while (i < count) : (i += 1) {
@@ -5598,7 +5618,11 @@ fn invocable_action_exists(obj: *types.ObjectInstance) bool {
     return true;
 }
 
-fn make_invocable_action_result(ctx: *BuiltinContext, obj: *types.ObjectInstance, exists: bool) !Value {
+fn make_invocable_action_result(
+    ctx: *BuiltinContext,
+    obj: *types.ObjectInstance,
+    exists: bool,
+) !Value {
     const result = try ctx.arena.create(types.ObjectInstance);
     result.* = .{ .class_name = "Invocable.Action.Result" };
     try result.fields.put(ctx.arena, "success", Value{ .boolean = exists });
@@ -5864,60 +5888,109 @@ fn dispatch_obj_generic_accessors(
 // Object instance class-specific handlers
 // ---------------------------------------------------------------------------
 
-fn dispatch_obj_pattern(ctx: *BuiltinContext, obj: *types.ObjectInstance, method_name: []const u8, args: []const Value) !?Value {
-    if (std.ascii.eqlIgnoreCase(method_name, "matcher") and args.len > 0 and args[0] == .string) {
+fn dispatch_obj_pattern(
+    ctx: *BuiltinContext,
+    obj: *types.ObjectInstance,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
+    if (std.ascii.eqlIgnoreCase(method_name, "matcher") and
+        args.len > 0 and
+        args[0] == .string)
+    {
         const matcher = try ctx.arena.create(types.ObjectInstance);
         matcher.* = .{ .class_name = "Matcher" };
         try matcher.fields.put(ctx.arena, "input", args[0]);
-        try matcher.fields.put(ctx.arena, "pattern", obj.fields.get("pattern") orelse Value{ .string = "" });
+        try matcher.fields.put(
+            ctx.arena,
+            "pattern",
+            obj.fields.get("pattern") orelse Value{ .string = "" },
+        );
         try matcher.fields.put(ctx.arena, "pos", Value{ .integer = 0 });
         const matches = try ctx.arena.create(types.ListValue);
         matches.* = .{};
         try matcher.fields.put(ctx.arena, "matches", Value{ .list = matches });
         if (obj.fields.get("pattern")) |pat_val| {
             if (pat_val == .string) {
-                const regex_matches = try regex.find_all(ctx.arena, pat_val.string, args[0].string);
+                const regex_matches = try regex.find_all(
+                    ctx.arena,
+                    pat_val.string,
+                    args[0].string,
+                );
                 for (regex_matches) |m| {
-                    const match_obj = try ctx.arena.create(types.ObjectInstance);
-                    match_obj.* = .{ .class_name = "Matcher.Match" };
-                    const match_groups = try ctx.arena.create(types.ListValue);
-                    match_groups.* = .{};
-                    const group_starts = try ctx.arena.create(types.ListValue);
-                    group_starts.* = .{};
-                    const group_ends = try ctx.arena.create(types.ListValue);
-                    group_ends.* = .{};
-                    for (0..regex.max_groups) |gi| {
-                        if (m.group(gi)) |span| {
-                            if (m.group_slice(gi, args[0].string)) |s| {
-                                try match_groups.items.append(ctx.arena, Value{ .string = s });
-                            } else {
-                                try match_groups.items.append(ctx.arena, Value.null_val);
-                            }
-                            try group_starts.items.append(ctx.arena, Value{ .integer = @intCast(span.start) });
-                            try group_ends.items.append(ctx.arena, Value{ .integer = @intCast(span.end) });
-                        } else if (gi > 0) break;
-                    }
-                    try match_obj.fields.put(ctx.arena, "groups", Value{ .list = match_groups });
-                    try match_obj.fields.put(ctx.arena, "groupStarts", Value{ .list = group_starts });
-                    try match_obj.fields.put(ctx.arena, "groupEnds", Value{ .list = group_ends });
+                    const match_obj = try create_matcher_match_object(
+                        ctx,
+                        m,
+                        args[0].string,
+                    );
                     try matches.items.append(ctx.arena, Value{ .object = match_obj });
                 }
             }
         }
-        // `groupCount` reflects the capture groups in the *pattern*, not the number of
-        // matches actually captured — Apex/Java semantics. Counting from the pattern keeps
-        // it available even before `find()` is called and regardless of match success.
+        // `groupCount` reflects capture groups in the pattern, not matches.
         const pattern_value = obj.fields.get("pattern") orelse Value{ .string = "" };
-        const group_count: i64 = if (pattern_value == .string) count_capturing_groups(pattern_value.string) else 0;
+        const group_count: i64 = if (pattern_value == .string)
+            count_capturing_groups(pattern_value.string)
+        else
+            0;
         try matcher.fields.put(ctx.arena, "groupCount", Value{ .integer = group_count });
         return Value{ .object = matcher };
     }
     return Value.null_val;
 }
 
-/// Count unescaped capture groups in a regex pattern string (excludes `(?:`, `(?=`, `(?!`,
-/// `(?<=`, `(?<!`). Accepts both raw and Apex double-escaped patterns — a `\\(`
-/// still doesn't open a group.
+fn create_matcher_match_object(
+    ctx: *BuiltinContext,
+    match: regex.Match,
+    input: []const u8,
+) !*types.ObjectInstance {
+    const match_obj = try ctx.arena.create(types.ObjectInstance);
+    match_obj.* = .{ .class_name = "Matcher.Match" };
+    const match_groups = try ctx.arena.create(types.ListValue);
+    match_groups.* = .{};
+    const group_starts = try ctx.arena.create(types.ListValue);
+    group_starts.* = .{};
+    const group_ends = try ctx.arena.create(types.ListValue);
+    group_ends.* = .{};
+    for (0..regex.max_groups) |gi| {
+        const found = try append_matcher_group(
+            ctx,
+            match,
+            input,
+            gi,
+            match_groups,
+            group_starts,
+            group_ends,
+        );
+        if (!found and gi > 0) break;
+    }
+    try match_obj.fields.put(ctx.arena, "groups", Value{ .list = match_groups });
+    try match_obj.fields.put(ctx.arena, "groupStarts", Value{ .list = group_starts });
+    try match_obj.fields.put(ctx.arena, "groupEnds", Value{ .list = group_ends });
+    return match_obj;
+}
+
+fn append_matcher_group(
+    ctx: *BuiltinContext,
+    match: regex.Match,
+    input: []const u8,
+    group_index: usize,
+    match_groups: *types.ListValue,
+    group_starts: *types.ListValue,
+    group_ends: *types.ListValue,
+) !bool {
+    const span = match.group(group_index) orelse return false;
+    if (match.group_slice(group_index, input)) |s| {
+        try match_groups.items.append(ctx.arena, Value{ .string = s });
+    } else {
+        try match_groups.items.append(ctx.arena, Value.null_val);
+    }
+    try group_starts.items.append(ctx.arena, Value{ .integer = @intCast(span.start) });
+    try group_ends.items.append(ctx.arena, Value{ .integer = @intCast(span.end) });
+    return true;
+}
+
+/// Count unescaped capture groups in a regex pattern string.
 fn count_capturing_groups(pattern: []const u8) i64 {
     var count: i64 = 0;
     var i: usize = 0;
@@ -5938,12 +6011,17 @@ fn count_capturing_groups(pattern: []const u8) i64 {
     return count;
 }
 
-fn dispatch_obj_matcher(ctx: *BuiltinContext, obj: *types.ObjectInstance, method_name: []const u8, args: []const Value) !?Value {
+fn dispatch_obj_matcher(
+    ctx: *BuiltinContext,
+    obj: *types.ObjectInstance,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
     if (std.ascii.eqlIgnoreCase(method_name, "find")) {
         const matches = obj.fields.get("matches") orelse return Value{ .boolean = false };
         if (matches != .list) return Value{ .boolean = false };
         const pos_val = obj.fields.get("pos") orelse Value{ .integer = 0 };
-        const pos: usize = if (pos_val == .integer and pos_val.integer >= 0) @intCast(pos_val.integer) else 0;
+        const pos = non_negative_index_value(pos_val);
         if (pos < matches.list.items.items.len) {
             try obj.fields.put(ctx.arena, "pos", Value{ .integer = @intCast(pos + 1) });
             try obj.fields.put(ctx.arena, "currentMatch", matches.list.items.items[pos]);
@@ -5953,10 +6031,12 @@ fn dispatch_obj_matcher(ctx: *BuiltinContext, obj: *types.ObjectInstance, method
     }
     if (std.ascii.eqlIgnoreCase(method_name, "group")) {
         const current = obj.fields.get("currentMatch") orelse return Value.null_val;
-        const idx: usize = if (args.len > 0 and args[0] == .integer and args[0].integer >= 0) @intCast(args[0].integer) else 0;
+        const idx = first_non_negative_integer_arg(args);
         if (current == .object) {
             if (current.object.fields.get("groups")) |groups| {
-                if (groups == .list and idx < groups.list.items.items.len) return groups.list.items.items[idx];
+                if (groups == .list and idx < groups.list.items.items.len) {
+                    return groups.list.items.items[idx];
+                }
             }
         }
         if (current == .list) {
@@ -5968,13 +6048,18 @@ fn dispatch_obj_matcher(ctx: *BuiltinContext, obj: *types.ObjectInstance, method
     if (std.ascii.eqlIgnoreCase(method_name, "groupCount")) {
         return obj.fields.get("groupCount") orelse Value{ .integer = 0 };
     }
-    if (std.ascii.eqlIgnoreCase(method_name, "start") or std.ascii.eqlIgnoreCase(method_name, "end")) {
+    if (type_matches_any(method_name, &.{ "start", "end" })) {
         const current = obj.fields.get("currentMatch") orelse return Value.null_val;
-        const idx: usize = if (args.len > 0 and args[0] == .integer and args[0].integer >= 0) @intCast(args[0].integer) else 0;
+        const idx = first_non_negative_integer_arg(args);
         if (current == .object) {
-            const key = if (std.ascii.eqlIgnoreCase(method_name, "start")) "groupStarts" else "groupEnds";
+            const key = if (std.ascii.eqlIgnoreCase(method_name, "start"))
+                "groupStarts"
+            else
+                "groupEnds";
             if (current.object.fields.get(key)) |values| {
-                if (values == .list and idx < values.list.items.items.len) return values.list.items.items[idx];
+                if (values == .list and idx < values.list.items.items.len) {
+                    return values.list.items.items[idx];
+                }
             }
         }
         return Value.null_val;
@@ -5983,6 +6068,18 @@ fn dispatch_obj_matcher(ctx: *BuiltinContext, obj: *types.ObjectInstance, method
         return matcher_matches(ctx, obj);
     }
     return null;
+}
+
+fn non_negative_index_value(value: Value) usize {
+    return if (value == .integer and value.integer >= 0)
+        @intCast(value.integer)
+    else
+        0;
+}
+
+fn first_non_negative_integer_arg(args: []const Value) usize {
+    if (args.len == 0) return 0;
+    return non_negative_index_value(args[0]);
 }
 
 /// `Matcher.matches()` 本体。Apex 仕様に従い、pattern 全体が input に
@@ -6015,7 +6112,12 @@ fn matcher_matches(ctx: *BuiltinContext, obj: *types.ObjectInstance) !?Value {
     return Value{ .boolean = true };
 }
 
-fn dispatch_obj_event_bus(ctx: *BuiltinContext, obj: *types.ObjectInstance, method_name: []const u8, args: []const Value) !?Value {
+fn dispatch_obj_event_bus(
+    ctx: *BuiltinContext,
+    obj: *types.ObjectInstance,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
     _ = args;
     if (std.ascii.eqlIgnoreCase(method_name, "deliver")) return .void_val;
     if (std.ascii.eqlIgnoreCase(method_name, "fail")) {
@@ -6032,7 +6134,12 @@ fn dispatch_obj_event_bus(ctx: *BuiltinContext, obj: *types.ObjectInstance, meth
             }
             try fail_result.fields.put(ctx.arena, "eventUuids", Value{ .list = uuid_list });
             if (ctx.eval.find_class_public(callback.class_name)) |cb_class| {
-                _ = ctx.eval.call_instance_method_public(cb_class, callback, "onFailure", &.{Value{ .object = fail_result }}) catch {};
+                _ = ctx.eval.call_instance_method_public(
+                    cb_class,
+                    callback,
+                    "onFailure",
+                    &.{Value{ .object = fail_result }},
+                ) catch {};
             }
             ctx.eval.pending_event_callback = null;
         }
@@ -6042,11 +6149,19 @@ fn dispatch_obj_event_bus(ctx: *BuiltinContext, obj: *types.ObjectInstance, meth
     return null;
 }
 
-fn dispatch_obj_data_weave_script(ctx: *BuiltinContext, obj: *types.ObjectInstance, method_name: []const u8, args: []const Value) !?Value {
+fn dispatch_obj_data_weave_script(
+    ctx: *BuiltinContext,
+    obj: *types.ObjectInstance,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
     if (!std.ascii.eqlIgnoreCase(method_name, "execute")) return null;
-    const script_name = if (obj.fields.get("scriptName")) |sn| (if (sn == .string) sn.string else "") else "";
+    const script_name = object_string_field(obj, "scriptName") orelse "";
     if (std.ascii.indexOfIgnoreCase(script_name, "excelOutput") != null) {
-        return ctx.throw_exception("DataWeaveScriptException", "Unknown content type `application/xlsx`");
+        return ctx.throw_exception(
+            "DataWeaveScriptException",
+            "Unknown content type `application/xlsx`",
+        );
     }
     if (std.ascii.indexOfIgnoreCase(script_name, "error") != null) {
         return ctx.throw_exception("DataWeaveScriptException", "Division by zero");
@@ -6054,7 +6169,11 @@ fn dispatch_obj_data_weave_script(ctx: *BuiltinContext, obj: *types.ObjectInstan
     const result_obj = try ctx.arena.create(types.ObjectInstance);
     result_obj.* = .{ .class_name = "DataWeave.Result" };
     if (std.ascii.indexOfIgnoreCase(script_name, "helloWorld") != null) {
-        try result_obj.fields.put(ctx.arena, "value", Value{ .string = "\"Hello World\"" });
+        try result_obj.fields.put(
+            ctx.arena,
+            "value",
+            Value{ .string = "\"Hello World\"" },
+        );
     } else if (std.ascii.indexOfIgnoreCase(script_name, "csvToJson") != null or
         std.ascii.indexOfIgnoreCase(script_name, "CsvToJson") != null or
         std.ascii.indexOfIgnoreCase(script_name, "csvSeparator") != null)
@@ -6062,11 +6181,15 @@ fn dispatch_obj_data_weave_script(ctx: *BuiltinContext, obj: *types.ObjectInstan
         const csv_json = try handle_csv_to_json(ctx, args, script_name);
         try result_obj.fields.put(ctx.arena, "value", Value{ .string = csv_json });
     } else if (std.ascii.indexOfIgnoreCase(script_name, "csvToContacts") != null) {
-        try result_obj.fields.put(ctx.arena, "value", try handle_csv_to_typed_records(ctx, args, script_name, "Contact"));
+        try put_data_weave_typed_records(ctx, result_obj, args, script_name, "Contact");
     } else if (std.ascii.indexOfIgnoreCase(script_name, "jsonToContacts") != null) {
-        try result_obj.fields.put(ctx.arena, "value", try handle_json_to_typed_records(ctx, args, "Contact"));
+        try result_obj.fields.put(
+            ctx.arena,
+            "value",
+            try handle_json_to_typed_records(ctx, args, "Contact"),
+        );
     } else if (std.ascii.indexOfIgnoreCase(script_name, "csvToApexObject") != null) {
-        try result_obj.fields.put(ctx.arena, "value", try handle_csv_to_typed_records(ctx, args, script_name, "CsvData"));
+        try put_data_weave_typed_records(ctx, result_obj, args, script_name, "CsvData");
     } else if (std.ascii.indexOfIgnoreCase(script_name, "pluralize") != null) {
         const pluralized = try handle_pluralize(ctx, args);
         try result_obj.fields.put(ctx.arena, "value", Value{ .string = pluralized });
@@ -6088,6 +6211,25 @@ fn dispatch_obj_data_weave_script(ctx: *BuiltinContext, obj: *types.ObjectInstan
         try result_obj.fields.put(ctx.arena, "value", Value{ .string = "" });
     }
     return Value{ .object = result_obj };
+}
+
+fn object_string_field(obj: *types.ObjectInstance, field_name: []const u8) ?[]const u8 {
+    const value = obj.fields.get(field_name) orelse return null;
+    return if (value == .string) value.string else null;
+}
+
+fn put_data_weave_typed_records(
+    ctx: *BuiltinContext,
+    result_obj: *types.ObjectInstance,
+    args: []const Value,
+    script_name: []const u8,
+    object_type: []const u8,
+) !void {
+    try result_obj.fields.put(
+        ctx.arena,
+        "value",
+        try handle_csv_to_typed_records(ctx, args, script_name, object_type),
+    );
 }
 
 fn dispatch_obj_schema_describe_field(ctx: *BuiltinContext, obj: *types.ObjectInstance, method_name: []const u8) !?Value {
