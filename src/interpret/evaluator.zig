@@ -18233,7 +18233,10 @@ pub const Evaluator = struct {
         target: Value,
         is_upsert: bool,
     ) !Value {
-        const result_id = if (target == .sobject) self.sobject_id_for_result(target.sobject) else null;
+        const result_id = if (target == .sobject)
+            self.sobject_id_for_result(target.sobject)
+        else
+            null;
         const result = try self.create_dml_result_value(
             result_class,
             false,
@@ -18575,7 +18578,11 @@ pub const Evaluator = struct {
         if (!is_database_user_mode_arg(args[1])) return;
 
         const from_type = database_dml_first_type(args);
-        const msg = try std.fmt.allocPrint(self.arena, "Access to entity '{s}' denied", .{from_type});
+        const msg = try std.fmt.allocPrint(
+            self.arena,
+            "Access to entity '{s}' denied",
+            .{from_type},
+        );
         const exc = try self.arena.create(types.ObjectInstance);
         exc.* = .{ .class_name = "System.SecurityException" };
         try exc.fields.put(self.arena, "message", Value{ .string = msg });
@@ -18613,7 +18620,9 @@ pub const Evaluator = struct {
         var creates: std.ArrayListUnmanaged(bool) = .empty;
         if (!is_upsert or args.len == 0) return creates;
         if (args[0] == .sobject) {
-            try creates.append(self.arena, self.will_upsert_create_record(args[0].sobject, external_id_field));
+            const will_create =
+                self.will_upsert_create_record(args[0].sobject, external_id_field);
+            try creates.append(self.arena, will_create);
         } else if (args[0] == .list) {
             for (args[0].list.items.items) |item| {
                 const will_create = item != .sobject or
@@ -19055,7 +19064,9 @@ pub const Evaluator = struct {
         // System.Limits → all methods return 0
         if (std.ascii.eqlIgnoreCase(inner, "Limits")) {
             var bctx = self.make_builtin_context();
-            if (try builtins.dispatch_static(&bctx, "Limits", method, args)) |result| return result;
+            if (try builtins.dispatch_static(&bctx, "Limits", method, args)) |result| {
+                return result;
+            }
             return Value{ .integer = 0 };
         }
         // System.JSON.serialize / System.JSON.deserialize / System.JSON.deserializeUntyped
@@ -19961,11 +19972,26 @@ pub const Evaluator = struct {
         // For virtual dispatch: find method in instance's actual class first (child override),
         // then in the provided class_decl, then in parent classes.
         // `actual_class = null` is used for super.method() dispatch.
-        const resolved = self.find_resolved_method_in_hierarchy_typed(actual_class, class_decl, method_name, args) orelse
-            self.find_resolved_method_in_hierarchy(actual_class, class_decl, method_name, args.len);
+        const resolved = self.find_resolved_method_in_hierarchy_typed(
+            actual_class,
+            class_decl,
+            method_name,
+            args,
+        ) orelse self.find_resolved_method_in_hierarchy(
+            actual_class,
+            class_decl,
+            method_name,
+            args.len,
+        );
 
         if (resolved) |rm| {
-            return self.call_resolved_instance_method(rm, instance, method_name, args, frame_line);
+            return self.call_resolved_instance_method(
+                rm,
+                instance,
+                method_name,
+                args,
+                frame_line,
+            );
         }
         // Try static method as fallback
         return self.call_method(class_decl.name, method_name, args);
@@ -19981,7 +20007,10 @@ pub const Evaluator = struct {
     ) anyerror!Value {
         const owner_decl = resolved.owner;
         const method = resolved.method;
-        const frame_class_name = instance_method_frame_class_name(instance.class_name, owner_decl.name);
+        const frame_class_name = instance_method_frame_class_name(
+            instance.class_name,
+            owner_decl.name,
+        );
         try self.call_stack.append(self.arena, .{
             .class_name = frame_class_name,
             .method_name = method_name,
@@ -20033,7 +20062,10 @@ pub const Evaluator = struct {
             };
         }
         for (method.params, 0..) |param, i| {
-            const val = if (i < args.len) try self.prepare_method_arg_value(args[i]) else Value.null_val;
+            const val = if (i < args.len)
+                try self.prepare_method_arg_value(args[i])
+            else
+                Value.null_val;
             const declared_type = self.render_type_ref(param.type_ref);
             try method_env.define_typed(
                 param.name,
@@ -22245,7 +22277,11 @@ pub const Evaluator = struct {
         };
     }
 
-    fn parse_json_object_value(self: *Evaluator, trimmed: []const u8, type_hint: []const u8) ?Value {
+    fn parse_json_object_value(
+        self: *Evaluator,
+        trimmed: []const u8,
+        type_hint: []const u8,
+    ) ?Value {
         if (is_framework_json_object_type(type_hint)) {
             return self.parse_json_framework_object_value(trimmed, type_hint);
         }
@@ -22263,7 +22299,11 @@ pub const Evaluator = struct {
             std.mem.startsWith(u8, type_hint, "Reports.");
     }
 
-    fn parse_json_framework_object_value(self: *Evaluator, trimmed: []const u8, type_hint: []const u8) ?Value {
+    fn parse_json_framework_object_value(
+        self: *Evaluator,
+        trimmed: []const u8,
+        type_hint: []const u8,
+    ) ?Value {
         const obj = self.arena.create(types.ObjectInstance) catch return null;
         obj.* = .{ .class_name = type_hint };
         var cursor: usize = 1;
@@ -22335,7 +22375,10 @@ pub const Evaluator = struct {
                     .field_decl => |fd| {
                         if (!std.ascii.eqlIgnoreCase(fd.name, key_name)) continue;
                         if (std.ascii.eqlIgnoreCase(fd.type_ref.name, "List")) {
-                            if (self.find_user_class_list_field_type(type_hint, key_name)) |elem_type| {
+                            if (self.find_user_class_list_field_type(
+                                type_hint,
+                                key_name,
+                            )) |elem_type| {
                                 return elem_type;
                             }
                         }
@@ -23466,11 +23509,17 @@ fn extract_from_type(soql: []const u8) ?[]const u8 {
             continue;
         }
         if (depth > 0) continue; // Skip content inside parentheses
-        if (std.ascii.eqlIgnoreCase(lower[i .. i + 4], "from") and is_soql_whitespace(lower[i + 4])) {
+        if (std.ascii.eqlIgnoreCase(lower[i .. i + 4], "from") and
+            is_soql_whitespace(lower[i + 4]))
+        {
             var start = i + 5;
             while (start < lower.len and is_soql_whitespace(lower[start])) start += 1;
             var end = start;
-            while (end < lower.len and !is_soql_whitespace(lower[end]) and lower[end] != ']' and lower[end] != ')') end += 1;
+            while (end < lower.len and
+                !is_soql_whitespace(lower[end]) and
+                lower[end] != ']' and
+                lower[end] != ')')
+                end += 1;
             if (end > start) return lower[start..end];
         }
     }
@@ -23508,39 +23557,27 @@ fn extract_where_clause(soql: []const u8) ?[]const u8 {
             while (j + 3 < soql.len) : (j += 1) {
                 // Check for terminating keywords
                 const remaining = soql[j..];
-                if (remaining.len >= 5 and std.ascii.eqlIgnoreCase(remaining[0..5], "ORDER") and
-                    (j == 0 or is_soql_whitespace(soql[j - 1])))
-                {
+                if (soql_clause_starts_at(soql, j, remaining, "ORDER")) {
                     end = j;
                     break;
                 }
-                if (remaining.len >= 5 and std.ascii.eqlIgnoreCase(remaining[0..5], "GROUP") and
-                    (j == 0 or is_soql_whitespace(soql[j - 1])))
-                {
+                if (soql_clause_starts_at(soql, j, remaining, "GROUP")) {
                     end = j;
                     break;
                 }
-                if (remaining.len >= 5 and std.ascii.eqlIgnoreCase(remaining[0..5], "LIMIT") and
-                    (j == 0 or is_soql_whitespace(soql[j - 1])))
-                {
+                if (soql_clause_starts_at(soql, j, remaining, "LIMIT")) {
                     end = j;
                     break;
                 }
-                if (remaining.len >= 6 and std.ascii.eqlIgnoreCase(remaining[0..6], "OFFSET") and
-                    (j == 0 or is_soql_whitespace(soql[j - 1])))
-                {
+                if (soql_clause_starts_at(soql, j, remaining, "OFFSET")) {
                     end = j;
                     break;
                 }
-                if (remaining.len >= 4 and std.ascii.eqlIgnoreCase(remaining[0..4], "WITH") and
-                    (j == 0 or is_soql_whitespace(soql[j - 1])))
-                {
+                if (soql_clause_starts_at(soql, j, remaining, "WITH")) {
                     end = j;
                     break;
                 }
-                if (remaining.len >= 3 and std.ascii.eqlIgnoreCase(remaining[0..3], "FOR") and
-                    (j == 0 or is_soql_whitespace(soql[j - 1])))
-                {
+                if (soql_clause_starts_at(soql, j, remaining, "FOR")) {
                     end = j;
                     break;
                 }
@@ -23549,6 +23586,17 @@ fn extract_where_clause(soql: []const u8) ?[]const u8 {
         }
     }
     return null;
+}
+
+fn soql_clause_starts_at(
+    soql: []const u8,
+    index: usize,
+    remaining: []const u8,
+    keyword: []const u8,
+) bool {
+    return remaining.len >= keyword.len and
+        std.ascii.eqlIgnoreCase(remaining[0..keyword.len], keyword) and
+        (index == 0 or is_soql_whitespace(soql[index - 1]));
 }
 
 fn find_logical_op(clause: []const u8, keyword: []const u8) ?usize {
@@ -23573,8 +23621,9 @@ fn find_logical_op(clause: []const u8, keyword: []const u8) ?usize {
         if (depth == 0 and i + keyword.len <= clause.len) {
             if (std.ascii.eqlIgnoreCase(clause[i .. i + keyword.len], keyword)) {
                 // Check word boundaries
-                const before_ok = (i == 0 or clause[i - 1] == ' ' or clause[i - 1] == '\n' or clause[i - 1] == ')');
-                const after_ok = (i + keyword.len >= clause.len or clause[i + keyword.len] == ' ' or clause[i + keyword.len] == '\n' or clause[i + keyword.len] == '(');
+                const before_ok = i == 0 or logical_op_boundary_before(clause[i - 1]);
+                const after_ok = i + keyword.len >= clause.len or
+                    logical_op_boundary_after(clause[i + keyword.len]);
                 if (before_ok and after_ok) return i;
             }
         }
@@ -23582,15 +23631,25 @@ fn find_logical_op(clause: []const u8, keyword: []const u8) ?usize {
     return null;
 }
 
+fn logical_op_boundary_before(ch: u8) bool {
+    return ch == ' ' or ch == '\n' or ch == ')';
+}
+
+fn logical_op_boundary_after(ch: u8) bool {
+    return ch == ' ' or ch == '\n' or ch == '(';
+}
+
 fn extract_offset(soql: []const u8) ?usize {
     var i: usize = 0;
     while (i + 7 < soql.len) : (i += 1) {
-        if (std.ascii.eqlIgnoreCase(soql[i .. i + 6], "offset") and (soql[i + 6] == ' ' or soql[i + 6] == '\n')) {
+        if (soql_keyword_at(soql, i, "offset")) {
             var start = i + 7;
             while (start < soql.len and soql[start] == ' ') start += 1;
             var end = start;
             while (end < soql.len and std.ascii.isDigit(soql[end])) end += 1;
-            if (end > start) return std.fmt.parseUnsigned(usize, soql[start..end], 10) catch null;
+            if (end > start) {
+                return std.fmt.parseUnsigned(usize, soql[start..end], 10) catch null;
+            }
         }
     }
     return null;
@@ -23599,17 +23658,28 @@ fn extract_offset(soql: []const u8) ?usize {
 fn extract_offset_bind_var(soql: []const u8) ?[]const u8 {
     var i: usize = 0;
     while (i + 7 < soql.len) : (i += 1) {
-        if (std.ascii.eqlIgnoreCase(soql[i .. i + 6], "offset") and (soql[i + 6] == ' ' or soql[i + 6] == '\n')) {
+        if (soql_keyword_at(soql, i, "offset")) {
             var start = i + 7;
             while (start < soql.len and soql[start] == ' ') start += 1;
             if (start < soql.len and soql[start] == ':') {
                 var end = start + 1;
-                while (end < soql.len and (std.ascii.isAlphanumeric(soql[end]) or soql[end] == '_')) end += 1;
+                while (end < soql.len and is_soql_identifier_char(soql[end])) end += 1;
                 if (end > start + 1) return soql[start + 1 .. end];
             }
         }
     }
     return null;
+}
+
+fn soql_keyword_at(soql: []const u8, index: usize, keyword: []const u8) bool {
+    const after = index + keyword.len;
+    return after < soql.len and
+        std.ascii.eqlIgnoreCase(soql[index..after], keyword) and
+        is_soql_whitespace(soql[after]);
+}
+
+fn is_soql_identifier_char(ch: u8) bool {
+    return std.ascii.isAlphanumeric(ch) or ch == '_';
 }
 
 const OrderByInfo = struct {
@@ -23624,16 +23694,18 @@ fn extract_order_by_field(soql: []const u8) ?OrderByInfo {
             (soql[i + 8] == ' ' or soql[i + 8] == '\n' or soql[i + 8] == '\t'))
         {
             var start = i + 9;
-            while (start < soql.len and (soql[start] == ' ' or soql[start] == '\t' or soql[start] == '\n' or soql[start] == '\r')) start += 1;
+            while (start < soql.len and is_soql_whitespace(soql[start])) start += 1;
             var end = start;
-            while (end < soql.len and soql[end] != ' ' and soql[end] != '\n' and soql[end] != '\t' and soql[end] != ',' and soql[end] != ')') end += 1;
+            while (end < soql.len and is_order_by_field_char(soql[end])) end += 1;
             if (end > start) {
                 const field = soql[start..end];
                 // Check for DESC/ASC after the field
                 var pos = end;
-                while (pos < soql.len and (soql[pos] == ' ' or soql[pos] == '\t' or soql[pos] == '\n' or soql[pos] == '\r')) pos += 1;
+                while (pos < soql.len and is_soql_whitespace(soql[pos])) pos += 1;
                 var descending = false;
-                if (pos + 4 <= soql.len and std.ascii.eqlIgnoreCase(soql[pos .. pos + 4], "DESC")) {
+                if (pos + 4 <= soql.len and
+                    std.ascii.eqlIgnoreCase(soql[pos .. pos + 4], "DESC"))
+                {
                     descending = true;
                 }
                 return OrderByInfo{ .field = field, .desc = descending };
@@ -23643,15 +23715,19 @@ fn extract_order_by_field(soql: []const u8) ?OrderByInfo {
     return null;
 }
 
+fn is_order_by_field_char(ch: u8) bool {
+    return ch != ' ' and ch != '\n' and ch != '\t' and ch != ',' and ch != ')';
+}
+
 fn extract_limit_bind_var(soql: []const u8) ?[]const u8 {
     var i: usize = 0;
     while (i + 6 < soql.len) : (i += 1) {
-        if (std.ascii.eqlIgnoreCase(soql[i .. i + 5], "limit") and (soql[i + 5] == ' ' or soql[i + 5] == '\n')) {
+        if (soql_keyword_at(soql, i, "limit")) {
             var start = i + 6;
             while (start < soql.len and soql[start] == ' ') start += 1;
             if (start < soql.len and soql[start] == ':') {
                 var end = start + 1;
-                while (end < soql.len and (std.ascii.isAlphanumeric(soql[end]) or soql[end] == '_')) end += 1;
+                while (end < soql.len and is_soql_identifier_char(soql[end])) end += 1;
                 return soql[start + 1 .. end];
             }
         }
@@ -23662,12 +23738,14 @@ fn extract_limit_bind_var(soql: []const u8) ?[]const u8 {
 fn extract_limit(soql: []const u8) ?usize {
     var i: usize = 0;
     while (i + 6 < soql.len) : (i += 1) {
-        if (std.ascii.eqlIgnoreCase(soql[i .. i + 5], "limit") and (soql[i + 5] == ' ' or soql[i + 5] == '\n')) {
+        if (soql_keyword_at(soql, i, "limit")) {
             var start = i + 6;
             while (start < soql.len and soql[start] == ' ') start += 1;
             var end = start;
             while (end < soql.len and std.ascii.isDigit(soql[end])) end += 1;
-            if (end > start) return std.fmt.parseUnsigned(usize, soql[start..end], 10) catch null;
+            if (end > start) {
+                return std.fmt.parseUnsigned(usize, soql[start..end], 10) catch null;
+            }
         }
     }
     return null;
