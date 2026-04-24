@@ -10432,26 +10432,56 @@ pub const Evaluator = struct {
         return Value.null_val;
     }
 
-    fn eval_instance_method(self: *Evaluator, obj: Value, method: []const u8, args: []const Value, current_env: *Env) anyerror!Value {
+    fn eval_instance_method(
+        self: *Evaluator,
+        obj: Value,
+        method: []const u8,
+        args: []const Value,
+        current_env: *Env,
+    ) anyerror!Value {
         if (obj == .null_val) {
-            const exc = try self.arena.create(types.ObjectInstance);
-            exc.* = .{ .class_name = "System.NullPointerException" };
-            try exc.fields.put(self.arena, "message", Value{ .string = "Attempt to de-reference a null object" });
-            self.pending_exception = Value{ .object = exc };
+            try self.throw_null_pointer_exception();
             return error.ApexException;
         }
-        if (obj == .object and
-            (std.ascii.eqlIgnoreCase(obj.object.class_name, "Search") or std.ascii.eqlIgnoreCase(obj.object.class_name, "System.Search")) and
-            std.ascii.eqlIgnoreCase(method, "query"))
-        {
-            if (args.len > 0 and args[0] == .string) {
-                return self.execute_sosl(args[0].string);
-            }
-            const outer = try self.arena.create(types.ListValue);
-            outer.* = .{};
-            return Value{ .list = outer };
-        }
+        if (try self.eval_search_object_instance_method(obj, method, args)) |result| return result;
+        if (try self.eval_primitive_scalar_instance_method(obj, method)) |result| return result;
+        if (try self.eval_http_send_instance_method(obj, method, args)) |result| return result;
+        if (try self.eval_type_instance_method(obj, method)) |result| return result;
+        if (try self.eval_stub_provider_instance_method(obj, method, args)) |result| return result;
+        if (try self.eval_json_parser_instance_method(obj, method, args)) |result| return result;
+        if (try self.eval_time_instance_method(obj, method)) |result| return result;
+        if (try self.eval_date_like_instance_method(obj, method, args)) |result| return result;
+        if (try self.eval_user_defined_object_instance_method(obj, method, args, current_env)) |result| return result;
+        if (try self.eval_builtin_instance_dispatch(obj, method, args)) |result| return result;
+        if (try self.eval_s_object_instance_method(obj, method, args)) |result| return result;
+        if (try self.eval_collection_or_string_instance_method(obj, method, args)) |result| return result;
+        return try self.eval_object_class_instance_method(obj, method, args);
+    }
 
+    fn eval_search_object_instance_method(
+        self: *Evaluator,
+        obj: Value,
+        method: []const u8,
+        args: []const Value,
+    ) anyerror!?Value {
+        if (!(obj == .object and
+            (std.ascii.eqlIgnoreCase(obj.object.class_name, "Search") or
+                std.ascii.eqlIgnoreCase(obj.object.class_name, "System.Search")) and
+            std.ascii.eqlIgnoreCase(method, "query")))
+        {
+            return null;
+        }
+        if (args.len > 0 and args[0] == .string) return try self.execute_sosl(args[0].string);
+        const outer = try self.arena.create(types.ListValue);
+        outer.* = .{};
+        return Value{ .list = outer };
+    }
+
+    fn eval_primitive_scalar_instance_method(
+        self: *Evaluator,
+        obj: Value,
+        method: []const u8,
+    ) anyerror!?Value {
         if (obj == .boolean and std.ascii.eqlIgnoreCase(method, "toString")) {
             return Value{ .string = if (obj.boolean) "true" else "false" };
         }
@@ -10461,9 +10491,7 @@ pub const Evaluator = struct {
         if (obj == .integer and std.ascii.eqlIgnoreCase(method, "toString")) {
             return Value{ .string = try utils.coerce_to_string(obj, self.arena) };
         }
-        if (obj == .integer and std.ascii.eqlIgnoreCase(method, "hashCode")) {
-            return obj;
-        }
+        if (obj == .integer and std.ascii.eqlIgnoreCase(method, "hashCode")) return obj;
         if (obj == .long and std.ascii.eqlIgnoreCase(method, "toString")) {
             return Value{ .string = try utils.coerce_to_string(obj, self.arena) };
         }
@@ -10476,681 +10504,820 @@ pub const Evaluator = struct {
         if (obj == .double and std.ascii.eqlIgnoreCase(method, "hashCode")) {
             return Value{ .integer = @intFromFloat(obj.double) };
         }
+        return null;
+    }
 
-        // Http.send() mock interception
-        if (obj == .object and std.ascii.eqlIgnoreCase(method, "send") and
+    fn eval_http_send_instance_method(
+        self: *Evaluator,
+        obj: Value,
+        method: []const u8,
+        args: []const Value,
+    ) anyerror!?Value {
+        if (!(obj == .object and
+            std.ascii.eqlIgnoreCase(method, "send") and
             (std.ascii.eqlIgnoreCase(obj.object.class_name, "Http") or
-                std.ascii.eqlIgnoreCase(obj.object.class_name, "HttpRequest")))
+                std.ascii.eqlIgnoreCase(obj.object.class_name, "HttpRequest"))))
         {
-            self.limits_callouts += 1;
-            if (self.callout_mock) |mock| {
-                // Call mock.respond(request) method
-                if (mock == .object) {
-                    if (self.find_class(mock.object.class_name)) |mock_class| {
-                        const req_arg = if (args.len > 0) args[0] else Value.null_val;
-                        return self.call_instance_method(mock_class, mock.object, "respond", &.{req_arg});
-                    }
+            return null;
+        }
+        self.limits_callouts += 1;
+        const mock = self.callout_mock orelse return null;
+        if (mock != .object) return null;
+        const mock_class = self.find_class(mock.object.class_name) orelse return null;
+        const req_arg = if (args.len > 0) args[0] else Value.null_val;
+        return try self.call_instance_method(mock_class, mock.object, "respond", &.{req_arg});
+    }
+
+    fn eval_type_instance_method(
+        self: *Evaluator,
+        obj: Value,
+        method: []const u8,
+    ) anyerror!?Value {
+        if (try self.eval_type_name_instance_method(obj, method)) |result| return result;
+        return try self.eval_type_new_instance_method(obj, method);
+    }
+
+    fn eval_type_name_instance_method(
+        self: *Evaluator,
+        obj: Value,
+        method: []const u8,
+    ) anyerror!?Value {
+        _ = self;
+        if (!(obj == .object and
+            std.ascii.eqlIgnoreCase(obj.object.class_name, "Type") and
+            (std.ascii.eqlIgnoreCase(method, "getName") or
+                std.ascii.eqlIgnoreCase(method, "toString") or
+                std.ascii.eqlIgnoreCase(method, "getSimpleName"))))
+        {
+            return null;
+        }
+        if (obj.object.fields.get("name")) |name| {
+            if (name == .string) return name;
+        }
+        return Value.null_val;
+    }
+
+    fn eval_type_new_instance_method(
+        self: *Evaluator,
+        obj: Value,
+        method: []const u8,
+    ) anyerror!?Value {
+        if (!(obj == .object and
+            std.ascii.eqlIgnoreCase(obj.object.class_name, "Type") and
+            std.ascii.eqlIgnoreCase(method, "newInstance")))
+        {
+            return null;
+        }
+        const type_name = type_name_from_value(obj);
+        if (std.ascii.startsWithIgnoreCase(type_name, "Map")) return try self.alloc_empty_map_value();
+        if (std.ascii.startsWithIgnoreCase(type_name, "List")) return try self.alloc_empty_list_value();
+        if (std.ascii.startsWithIgnoreCase(type_name, "Set")) return try self.alloc_empty_set_value();
+        if (self.is_s_object_type_name(type_name)) {
+            const sob = try self.arena.create(types.SObject);
+            sob.* = .{ .type_name = type_name };
+            return Value{ .sobject = sob };
+        }
+        return try self.instantiate_class(type_name);
+    }
+
+    fn type_name_from_value(value: Value) []const u8 {
+        if (value == .object) {
+            if (std.ascii.eqlIgnoreCase(value.object.class_name, "Type")) {
+                if (value.object.fields.get("name")) |name| {
+                    if (name == .string) return name.string;
                 }
+            }
+            return value.object.class_name;
+        }
+        return "Object";
+    }
+
+    fn alloc_empty_map_value(self: *Evaluator) anyerror!Value {
+        const map = try self.arena.create(types.MapValue);
+        map.* = .{};
+        return Value{ .map = map };
+    }
+
+    fn alloc_empty_list_value(self: *Evaluator) anyerror!Value {
+        const list = try self.arena.create(types.ListValue);
+        list.* = .{};
+        return Value{ .list = list };
+    }
+
+    fn alloc_empty_set_value(self: *Evaluator) anyerror!Value {
+        const set = try self.arena.create(types.SetValue);
+        set.* = .{};
+        return Value{ .set = set };
+    }
+
+    fn eval_stub_provider_instance_method(
+        self: *Evaluator,
+        obj: Value,
+        method: []const u8,
+        args: []const Value,
+    ) anyerror!?Value {
+        if (obj != .object) return null;
+        const provider = obj.object.fields.get("__stubProvider__") orelse return null;
+        if (provider != .object) return null;
+        const provider_class = self.find_class(provider.object.class_name) orelse return null;
+        const stub_method = self.resolve_stub_provider_method_decl(obj.object.class_name, method, args);
+        if (stub_uses_default_object_method(method, args.len) and stub_method == null) return null;
+        const handle_args = try self.build_stub_provider_handle_method_args(obj, method, args, stub_method);
+        return try self.call_instance_method(
+            provider_class,
+            provider.object,
+            "handleMethodCall",
+            &handle_args,
+        );
+    }
+
+    fn resolve_stub_provider_method_decl(
+        self: *Evaluator,
+        class_name: []const u8,
+        method: []const u8,
+        args: []const Value,
+    ) ?*ast.MethodDecl {
+        const stub_class = self.find_class(class_name) orelse return null;
+        return self.find_method_in_hierarchy_typed(null, stub_class, method, args) orelse
+            self.find_method_in_hierarchy(null, stub_class, method, args.len);
+    }
+
+    fn stub_uses_default_object_method(method: []const u8, arg_len: usize) bool {
+        if (arg_len == 0) {
+            return std.ascii.eqlIgnoreCase(method, "toString") or
+                std.ascii.eqlIgnoreCase(method, "hashCode");
+        }
+        return arg_len == 1 and std.ascii.eqlIgnoreCase(method, "equals");
+    }
+
+    fn build_stub_provider_handle_method_args(
+        self: *Evaluator,
+        obj: Value,
+        method: []const u8,
+        args: []const Value,
+        stub_method: ?*ast.MethodDecl,
+    ) anyerror![6]Value {
+        const args_list = try self.arena.create(types.ListValue);
+        args_list.* = .{};
+        for (args) |arg| try args_list.items.append(self.arena, arg);
+
+        const type_list = try self.arena.create(types.ListValue);
+        type_list.* = .{};
+        for (args, 0..) |arg, index| {
+            const type_obj = try self.arena.create(types.ObjectInstance);
+            type_obj.* = .{ .class_name = "Type" };
+            try type_obj.fields.put(
+                self.arena,
+                "name",
+                Value{ .string = self.stub_provider_arg_type_name(arg, index, stub_method) },
+            );
+            try type_list.items.append(self.arena, Value{ .object = type_obj });
+        }
+
+        const name_list = try self.arena.create(types.ListValue);
+        name_list.* = .{};
+        if (stub_method) |method_decl| {
+            for (method_decl.params) |param| {
+                try name_list.items.append(self.arena, Value{ .string = param.name });
             }
         }
 
-        // Type.getName() / Type.toString() → return the type name
-        if (obj == .object and std.ascii.eqlIgnoreCase(obj.object.class_name, "Type") and
-            (std.ascii.eqlIgnoreCase(method, "getName") or std.ascii.eqlIgnoreCase(method, "toString") or std.ascii.eqlIgnoreCase(method, "getSimpleName")))
-        {
-            if (obj.object.fields.get("name")) |n| {
-                if (n == .string) return n;
+        return .{
+            obj,
+            Value{ .string = method },
+            Value.null_val,
+            Value{ .list = type_list },
+            Value{ .list = name_list },
+            Value{ .list = args_list },
+        };
+    }
+
+    fn stub_provider_arg_type_name(
+        self: *Evaluator,
+        arg: Value,
+        index: usize,
+        stub_method: ?*ast.MethodDecl,
+    ) []const u8 {
+        if (stub_method) |method_decl| {
+            if (index < method_decl.params.len) return self.render_type_ref(method_decl.params[index].type_ref);
+        }
+        return switch (arg) {
+            .string => "String",
+            .integer => "Integer",
+            .double => "Double",
+            .boolean => "Boolean",
+            .list => "List",
+            .map => "Map",
+            .set => "Set",
+            .sobject => "SObject",
+            .object => |object| object.class_name,
+            .null_val => "Object",
+            else => "Object",
+        };
+    }
+
+    fn eval_json_parser_instance_method(
+        self: *Evaluator,
+        obj: Value,
+        method: []const u8,
+        args: []const Value,
+    ) anyerror!?Value {
+        if (!(obj == .object and std.ascii.eqlIgnoreCase(obj.object.class_name, "JSONParser"))) return null;
+        const body = json_parser_body(obj.object);
+        if (std.ascii.eqlIgnoreCase(method, "nextToken")) return try self.eval_json_parser_next_token(obj.object, body);
+        if (std.ascii.eqlIgnoreCase(method, "getCurrentToken")) {
+            return obj.object.fields.get("__token__") orelse Value.null_val;
+        }
+        if (std.ascii.eqlIgnoreCase(method, "getCurrentName")) {
+            const token_value = obj.object.fields.get("__token__") orelse Value.null_val;
+            if (token_value == .string and std.ascii.eqlIgnoreCase(token_value.string, "FIELD_NAME")) {
+                return obj.object.fields.get("__text__") orelse Value.null_val;
             }
             return Value.null_val;
         }
+        if (std.ascii.eqlIgnoreCase(method, "getText")) {
+            return obj.object.fields.get("__text__") orelse Value{ .string = "" };
+        }
+        if (std.ascii.eqlIgnoreCase(method, "readValueAs")) {
+            return try self.eval_json_parser_read_value_as(obj.object, body, args);
+        }
+        return null;
+    }
 
-        // Type.newInstance() → use evaluator to properly instantiate classes
-        if (obj == .object and std.ascii.eqlIgnoreCase(obj.object.class_name, "Type") and
-            std.ascii.eqlIgnoreCase(method, "newInstance"))
+    fn json_parser_body(parser: *types.ObjectInstance) ?[]const u8 {
+        const body_value = parser.fields.get("__json_body__") orelse return null;
+        return if (body_value == .string) body_value.string else null;
+    }
+
+    fn stored_json_parser_position(parser: *types.ObjectInstance, require_positive: bool) usize {
+        const pos_value = parser.fields.get("__pos__") orelse return 0;
+        if (pos_value != .integer) return 0;
+        if (require_positive and pos_value.integer <= 0) return 0;
+        return @intCast(@as(u64, @bitCast(pos_value.integer)));
+    }
+
+    fn skip_json_parser_trivia(body: []const u8, start: usize) usize {
+        var pos = start;
+        while (pos < body.len and
+            (body[pos] == ' ' or body[pos] == '\t' or body[pos] == '\n' or body[pos] == '\r' or body[pos] == ','))
         {
-            const type_name = if (obj.object.fields.get("name")) |n|
-                (if (n == .string) n.string else "Object")
-            else
-                "Object";
-            // If the type name starts with Map/List/Set, return collection
-            if (std.ascii.startsWithIgnoreCase(type_name, "Map")) {
-                const map = try self.arena.create(types.MapValue);
-                map.* = .{};
-                return Value{ .map = map };
-            }
-            if (std.ascii.startsWithIgnoreCase(type_name, "List")) {
-                const list = try self.arena.create(types.ListValue);
-                list.* = .{};
-                return Value{ .list = list };
-            }
-            if (std.ascii.startsWithIgnoreCase(type_name, "Set")) {
-                const set = try self.arena.create(types.SetValue);
-                set.* = .{};
-                return Value{ .set = set };
-            }
-            // SObject type name → return .sobject directly
-            if (self.is_s_object_type_name(type_name)) {
-                const sob = try self.arena.create(types.SObject);
-                sob.* = .{ .type_name = type_name };
-                return Value{ .sobject = sob };
-            }
-            return self.instantiate_class(type_name);
+            pos += 1;
         }
+        return pos;
+    }
 
-        // Stub provider delegation: if the object has __stubProvider__, delegate method calls
-        if (obj == .object) {
-            if (obj.object.fields.get("__stubProvider__")) |provider| {
-                if (provider == .object) {
-                    if (self.find_class(provider.object.class_name)) |prov_class| {
-                        const stub_md = if (self.find_class(obj.object.class_name)) |stub_class|
-                            self.find_method_in_hierarchy_typed(null, stub_class, method, args) orelse
-                                self.find_method_in_hierarchy(null, stub_class, method, args.len)
-                        else
-                            null;
-                        const is_default_object_method =
-                            (args.len == 0 and
-                                (std.ascii.eqlIgnoreCase(method, "toString") or
-                                    std.ascii.eqlIgnoreCase(method, "hashCode"))) or
-                            (args.len == 1 and std.ascii.eqlIgnoreCase(method, "equals"));
+    fn set_json_parser_token(
+        self: *Evaluator,
+        parser: *types.ObjectInstance,
+        token_name: []const u8,
+        text: []const u8,
+    ) anyerror!void {
+        try parser.fields.put(self.arena, "__token__", Value{ .string = token_name });
+        try parser.fields.put(self.arena, "__text__", Value{ .string = text });
+    }
 
-                        if (is_default_object_method and stub_md == null) {
-                            // Test.createStub proxies should not treat inherited Object methods
-                            // as stubbed invocations unless the mocked type explicitly overrides them.
-                        } else {
-
-                            // Build args for handleMethodCall(stubbedObject, stubbedMethodName, returnType, listOfParamTypes, listOfParamNames, listOfArgs)
-                            const args_list = try self.arena.create(types.ListValue);
-                            args_list.* = .{};
-                            for (args) |a| try args_list.items.append(self.arena, a);
-                            // Build param types from the resolved method declaration when available.
-                            const type_list = try self.arena.create(types.ListValue);
-                            type_list.* = .{};
-                            for (args, 0..) |a, i| {
-                                const type_name: []const u8 = if (stub_md) |md|
-                                    if (i < md.params.len)
-                                        self.render_type_ref(md.params[i].type_ref)
-                                    else switch (a) {
-                                        .string => "String",
-                                        .integer => "Integer",
-                                        .double => "Double",
-                                        .boolean => "Boolean",
-                                        .list => "List",
-                                        .map => "Map",
-                                        .set => "Set",
-                                        .sobject => "SObject",
-                                        .object => |o| o.class_name,
-                                        .null_val => "Object",
-                                        else => "Object",
-                                    }
-                                else switch (a) {
-                                    .string => "String",
-                                    .integer => "Integer",
-                                    .double => "Double",
-                                    .boolean => "Boolean",
-                                    .list => "List",
-                                    .map => "Map",
-                                    .set => "Set",
-                                    .sobject => "SObject",
-                                    .object => |o| o.class_name,
-                                    .null_val => "Object",
-                                    else => "Object",
-                                };
-                                const type_obj = try self.arena.create(types.ObjectInstance);
-                                type_obj.* = .{ .class_name = "Type" };
-                                try type_obj.fields.put(self.arena, "name", Value{ .string = type_name });
-                                try type_list.items.append(self.arena, Value{ .object = type_obj });
-                            }
-                            // Build param names from method declaration if available
-                            const name_list = try self.arena.create(types.ListValue);
-                            name_list.* = .{};
-                            if (stub_md) |md| {
-                                for (md.params) |p| {
-                                    try name_list.items.append(self.arena, Value{ .string = p.name });
-                                }
-                            }
-                            const hmc_args = [_]Value{
-                                obj,
-                                Value{ .string = method },
-                                Value.null_val,
-                                Value{ .list = type_list },
-                                Value{ .list = name_list },
-                                Value{ .list = args_list },
-                            };
-                            return self.call_instance_method(prov_class, provider.object, "handleMethodCall", &hmc_args);
-                        }
-                    }
-                }
-            }
+    fn advance_json_parser_string_token(
+        self: *Evaluator,
+        parser: *types.ObjectInstance,
+        body: []const u8,
+        start: usize,
+    ) anyerror!usize {
+        var pos = start + 1;
+        while (pos < body.len and body[pos] != '"') : (pos += 1) {
+            if (body[pos] == '\\') pos += 1;
         }
+        const text = body[start + 1 .. pos];
+        if (pos < body.len) pos += 1;
+        var peek = pos;
+        while (peek < body.len and (body[peek] == ' ' or body[peek] == '\t')) : (peek += 1) {}
+        if (peek < body.len and body[peek] == ':') {
+            try self.set_json_parser_token(parser, "FIELD_NAME", text);
+            return peek + 1;
+        }
+        try self.set_json_parser_token(parser, "VALUE_STRING", text);
+        return pos;
+    }
 
-        // Type.newInstance() → instantiate actual user-defined class if known
-        if (obj == .object and std.ascii.eqlIgnoreCase(obj.object.class_name, "Type") and
-            std.ascii.eqlIgnoreCase(method, "newInstance"))
+    fn advance_json_parser_boolean_token(
+        self: *Evaluator,
+        parser: *types.ObjectInstance,
+        body: []const u8,
+        start: usize,
+    ) anyerror!usize {
+        if (std.mem.startsWith(u8, body[start..], "true")) {
+            try self.set_json_parser_token(parser, "VALUE_TRUE", "true");
+            return start + 4;
+        }
+        try self.set_json_parser_token(parser, "VALUE_FALSE", "false");
+        return start + 5;
+    }
+
+    fn advance_json_parser_number_token(
+        self: *Evaluator,
+        parser: *types.ObjectInstance,
+        body: []const u8,
+        start: usize,
+    ) anyerror!usize {
+        var pos = start;
+        while (pos < body.len and
+            (std.ascii.isDigit(body[pos]) or
+                body[pos] == '.' or
+                body[pos] == '-' or
+                body[pos] == 'e' or
+                body[pos] == 'E' or
+                body[pos] == '+'))
         {
-            const type_name = if (obj.object.fields.get("name")) |n| (if (n == .string) n.string else "Object") else "Object";
-            if (self.find_class(type_name)) |cd| {
-                const inst = try self.arena.create(types.ObjectInstance);
-                // Preserve the requested type name so qualified inner classes
-                // continue to dispatch against the intended outer class.
-                inst.* = .{ .class_name = type_name };
-                self.init_instance_fields(cd, inst) catch {};
-                if (cd.super_class) |sc| {
-                    if (self.find_class(sc.name)) |parent| {
-                        self.init_instance_fields(parent, inst) catch {};
-                    }
+            pos += 1;
+        }
+        const number_text = body[start..pos];
+        const token_name = if (std.mem.indexOfAny(u8, number_text, ".eE") != null)
+            "VALUE_NUMBER_FLOAT"
+        else
+            "VALUE_NUMBER_INT";
+        try self.set_json_parser_token(parser, token_name, number_text);
+        return pos;
+    }
+
+    fn eval_json_parser_next_token(
+        self: *Evaluator,
+        parser: *types.ObjectInstance,
+        body: ?[]const u8,
+    ) anyerror!Value {
+        const json_body = body orelse return Value.null_val;
+        var pos = skip_json_parser_trivia(json_body, stored_json_parser_position(parser, false));
+        if (pos >= json_body.len) {
+            try parser.fields.put(self.arena, "__token__", Value.null_val);
+            return Value.null_val;
+        }
+        switch (json_body[pos]) {
+            '{' => {
+                try self.set_json_parser_token(parser, "START_OBJECT", "{");
+                pos += 1;
+            },
+            '}' => {
+                try self.set_json_parser_token(parser, "END_OBJECT", "}");
+                pos += 1;
+            },
+            '[' => {
+                try self.set_json_parser_token(parser, "START_ARRAY", "[");
+                pos += 1;
+            },
+            ']' => {
+                try self.set_json_parser_token(parser, "END_ARRAY", "]");
+                pos += 1;
+            },
+            '"' => pos = try self.advance_json_parser_string_token(parser, json_body, pos),
+            't', 'f' => pos = try self.advance_json_parser_boolean_token(parser, json_body, pos),
+            'n' => {
+                try self.set_json_parser_token(parser, "VALUE_NULL", "null");
+                pos += 4;
+            },
+            else => {
+                if (std.ascii.isDigit(json_body[pos]) or json_body[pos] == '-') {
+                    pos = try self.advance_json_parser_number_token(parser, json_body, pos);
+                } else {
+                    pos += 1;
                 }
-                // Run constructor with no args if exists
-                if (self.find_method_in_hierarchy(null, cd, type_name, 0)) |ctor| {
-                    const ctor_env = try self.global_env.child();
-                    try ctor_env.define("this", Value{ .object = inst });
-                    for (inst.fields.keys(), inst.fields.values()) |k, v| {
-                        ctor_env.set(k, v) catch {
-                            try ctor_env.define(k, v);
-                        };
-                    }
-                    _ = self.exec_block(ctor.body, ctor_env) catch {};
-                    // Sync back fields
-                    if (ctor_env.get("this")) |tv| {
-                        if (tv == .object and tv.object == inst) {} else if (tv == .object) {
-                            for (tv.object.fields.keys(), tv.object.fields.values()) |k, v| {
-                                inst.fields.put(self.arena, k, v) catch {};
-                            }
-                        }
-                    }
+            },
+        }
+        try parser.fields.put(self.arena, "__pos__", Value{ .integer = @intCast(pos) });
+        return parser.fields.get("__token__") orelse Value.null_val;
+    }
+
+    fn eval_json_parser_read_value_as(
+        self: *Evaluator,
+        parser: *types.ObjectInstance,
+        body: ?[]const u8,
+        args: []const Value,
+    ) anyerror!Value {
+        const json_body = body orelse return Value.null_val;
+        const pos = stored_json_parser_position(parser, true);
+        const start = if (pos > 0) pos - 1 else 0;
+        const type_name = if (args.len >= 1) type_name_from_value(args[0]) else "Object";
+        if (self.parse_json_value(json_body[start..], type_name)) |value| return value;
+        return Value.null_val;
+    }
+
+    fn eval_time_instance_method(
+        self: *Evaluator,
+        obj: Value,
+        method: []const u8,
+    ) anyerror!?Value {
+        _ = self;
+        if (!(obj == .object and std.ascii.eqlIgnoreCase(obj.object.class_name, "Time"))) return null;
+        if (std.ascii.eqlIgnoreCase(method, "hour")) return obj.object.fields.get("hour") orelse Value{ .integer = 0 };
+        if (std.ascii.eqlIgnoreCase(method, "minute")) return obj.object.fields.get("minute") orelse Value{ .integer = 0 };
+        if (std.ascii.eqlIgnoreCase(method, "second")) return obj.object.fields.get("second") orelse Value{ .integer = 0 };
+        if (std.ascii.eqlIgnoreCase(method, "millisecond")) {
+            return obj.object.fields.get("millisecond") orelse Value{ .integer = 0 };
+        }
+        return null;
+    }
+
+    fn eval_date_like_instance_method(
+        self: *Evaluator,
+        obj: Value,
+        method: []const u8,
+        args: []const Value,
+    ) anyerror!?Value {
+        if (!(obj == .object and
+            (std.ascii.eqlIgnoreCase(obj.object.class_name, "Date") or
+                std.ascii.eqlIgnoreCase(obj.object.class_name, "Datetime"))))
+        {
+            return null;
+        }
+        const date_str = builtins.extract_date_string(obj) orelse return null;
+        if (args.len == 0 and std.ascii.eqlIgnoreCase(method, "format")) {
+            if (parse_iso_date(date_str)) |dt| return try self.format_date_like_instance(obj.object.class_name, dt);
+        }
+        const result = try self.eval_string_method(date_str, method, args);
+        if (result != .string) return result;
+        if (std.ascii.eqlIgnoreCase(method, "date") or std.ascii.eqlIgnoreCase(method, "dateGmt")) {
+            return try builtins.make_date_value(self.arena, result.string);
+        }
+        if (std.ascii.eqlIgnoreCase(method, "addDays") or
+            std.ascii.eqlIgnoreCase(method, "addMonths") or
+            std.ascii.eqlIgnoreCase(method, "addYears") or
+            std.ascii.eqlIgnoreCase(method, "addHours") or
+            std.ascii.eqlIgnoreCase(method, "addMinutes") or
+            std.ascii.eqlIgnoreCase(method, "addSeconds"))
+        {
+            if (std.ascii.eqlIgnoreCase(obj.object.class_name, "Date")) {
+                return try builtins.make_date_value(self.arena, result.string);
+            }
+            return try builtins.make_datetime_value(self.arena, result.string);
+        }
+        return result;
+    }
+
+    fn format_date_like_instance(
+        self: *Evaluator,
+        class_name: []const u8,
+        dt: anytype,
+    ) anyerror!Value {
+        if (std.ascii.eqlIgnoreCase(class_name, "Date")) {
+            return Value{ .string = try std.fmt.allocPrint(self.arena, "{d}/{d}/{d:0>4}", .{
+                dt.m,
+                dt.d,
+                @as(u32, @intCast(dt.y)),
+            }) };
+        }
+        const hour12: u8 = blk: {
+            const h_mod = dt.h % 12;
+            break :blk if (h_mod == 0) 12 else h_mod;
+        };
+        const am_pm: []const u8 = if (dt.h < 12) "AM" else "PM";
+        return Value{ .string = try std.fmt.allocPrint(self.arena, "{d}/{d}/{d:0>4}, {d}:{d:0>2} {s}", .{
+            dt.m,
+            dt.d,
+            @as(u32, @intCast(dt.y)),
+            hour12,
+            dt.mi,
+            am_pm,
+        }) };
+    }
+
+    fn eval_user_defined_object_instance_method(
+        self: *Evaluator,
+        obj: Value,
+        method: []const u8,
+        args: []const Value,
+        current_env: *Env,
+    ) anyerror!?Value {
+        if (obj != .object) return null;
+        const class_decl = self.resolve_instance_dispatch_class(obj.object, current_env) orelse return null;
+        const method_decl = self.find_method_in_hierarchy_typed(null, class_decl, method, args) orelse
+            self.find_method_in_hierarchy(null, class_decl, method, args.len);
+        if (method_decl != null) return try self.call_instance_method(class_decl, obj.object, method, args);
+        const shadow_decl = self.find_shadowed_inner_dispatch_class(class_decl, obj.object.class_name, method, args) orelse {
+            return null;
+        };
+        return try self.call_instance_method(shadow_decl, obj.object, method, args);
+    }
+
+    fn resolve_instance_dispatch_class(
+        self: *Evaluator,
+        obj: *types.ObjectInstance,
+        current_env: *Env,
+    ) ?*ast.ClassDecl {
+        if (current_env.get("this")) |this_val| {
+            if (this_val == .object and this_val.object == obj) {
+                if (self.current_class) |current_class_name| {
+                    if (self.find_class(current_class_name)) |owner_decl| return owner_decl;
                 }
-                return Value{ .object = inst };
             }
         }
+        return self.find_class(obj.class_name);
+    }
 
-        // JSONParser methods: nextToken, getCurrentToken, getCurrentName, getText, readValueAs
-        if (obj == .object and std.ascii.eqlIgnoreCase(obj.object.class_name, "JSONParser")) {
-            const json_body = if (obj.object.fields.get("__json_body__")) |jb| (if (jb == .string) jb.string else null) else null;
-            if (std.ascii.eqlIgnoreCase(method, "nextToken")) {
-                if (json_body) |body| {
-                    var pos: usize = if (obj.object.fields.get("__pos__")) |p| (if (p == .integer) @intCast(@as(u64, @bitCast(p.integer))) else 0) else 0;
-                    // Skip whitespace
-                    while (pos < body.len and (body[pos] == ' ' or body[pos] == '\t' or body[pos] == '\n' or body[pos] == '\r' or body[pos] == ',')) pos += 1;
-                    if (pos >= body.len) {
-                        try obj.object.fields.put(self.arena, "__token__", Value.null_val);
-                        return Value.null_val;
-                    }
-                    const ch = body[pos];
-                    if (ch == '{') {
-                        try obj.object.fields.put(self.arena, "__token__", Value{ .string = "START_OBJECT" });
-                        try obj.object.fields.put(self.arena, "__text__", Value{ .string = "{" });
-                        pos += 1;
-                    } else if (ch == '}') {
-                        try obj.object.fields.put(self.arena, "__token__", Value{ .string = "END_OBJECT" });
-                        try obj.object.fields.put(self.arena, "__text__", Value{ .string = "}" });
-                        pos += 1;
-                    } else if (ch == '[') {
-                        try obj.object.fields.put(self.arena, "__token__", Value{ .string = "START_ARRAY" });
-                        try obj.object.fields.put(self.arena, "__text__", Value{ .string = "[" });
-                        pos += 1;
-                    } else if (ch == ']') {
-                        try obj.object.fields.put(self.arena, "__token__", Value{ .string = "END_ARRAY" });
-                        try obj.object.fields.put(self.arena, "__text__", Value{ .string = "]" });
-                        pos += 1;
-                    } else if (ch == '"') {
-                        // String or field name
-                        const start = pos + 1;
-                        pos += 1;
-                        while (pos < body.len and body[pos] != '"') : (pos += 1) {
-                            if (body[pos] == '\\') pos += 1;
-                        }
-                        const text = body[start..pos];
-                        if (pos < body.len) pos += 1; // skip closing quote
-                        // Check if followed by ':' → FIELD_NAME
-                        var peek = pos;
-                        while (peek < body.len and (body[peek] == ' ' or body[peek] == '\t')) peek += 1;
-                        if (peek < body.len and body[peek] == ':') {
-                            try obj.object.fields.put(self.arena, "__token__", Value{ .string = "FIELD_NAME" });
-                            pos = peek + 1;
-                        } else {
-                            try obj.object.fields.put(self.arena, "__token__", Value{ .string = "VALUE_STRING" });
-                        }
-                        try obj.object.fields.put(self.arena, "__text__", Value{ .string = text });
-                    } else if (ch == 't' or ch == 'f') {
-                        if (std.mem.startsWith(u8, body[pos..], "true")) {
-                            try obj.object.fields.put(self.arena, "__token__", Value{ .string = "VALUE_TRUE" });
-                            try obj.object.fields.put(self.arena, "__text__", Value{ .string = "true" });
-                            pos += 4;
-                        } else {
-                            try obj.object.fields.put(self.arena, "__token__", Value{ .string = "VALUE_FALSE" });
-                            try obj.object.fields.put(self.arena, "__text__", Value{ .string = "false" });
-                            pos += 5;
-                        }
-                    } else if (ch == 'n') {
-                        try obj.object.fields.put(self.arena, "__token__", Value{ .string = "VALUE_NULL" });
-                        try obj.object.fields.put(self.arena, "__text__", Value{ .string = "null" });
-                        pos += 4;
-                    } else if (std.ascii.isDigit(ch) or ch == '-') {
-                        const start = pos;
-                        while (pos < body.len and (std.ascii.isDigit(body[pos]) or body[pos] == '.' or body[pos] == '-' or body[pos] == 'e' or body[pos] == 'E' or body[pos] == '+')) pos += 1;
-                        const number_text = body[start..pos];
-                        const token_name = if (std.mem.indexOfAny(u8, number_text, ".eE") != null) "VALUE_NUMBER_FLOAT" else "VALUE_NUMBER_INT";
-                        try obj.object.fields.put(self.arena, "__token__", Value{ .string = token_name });
-                        try obj.object.fields.put(self.arena, "__text__", Value{ .string = number_text });
-                    } else {
-                        pos += 1;
-                    }
-                    try obj.object.fields.put(self.arena, "__pos__", Value{ .integer = @intCast(pos) });
-                    return obj.object.fields.get("__token__") orelse Value.null_val;
+    fn find_shadowed_inner_dispatch_class(
+        self: *Evaluator,
+        current_decl: *ast.ClassDecl,
+        class_name: []const u8,
+        method: []const u8,
+        args: []const Value,
+    ) ?*ast.ClassDecl {
+        var class_iter = self.classes.iterator();
+        while (class_iter.next()) |entry| {
+            const class_decl = entry.value_ptr.*;
+            for (class_decl.members) |member| {
+                switch (member) {
+                    .class_decl => |inner_decl| {
+                        if (!std.ascii.eqlIgnoreCase(inner_decl.name, class_name) or inner_decl == current_decl) continue;
+                        const inner_method = self.find_method_in_hierarchy_typed(null, inner_decl, method, args) orelse
+                            self.find_method_in_hierarchy(null, inner_decl, method, args.len);
+                        if (inner_method != null) return inner_decl;
+                    },
+                    else => {},
                 }
-                return Value.null_val;
-            }
-            if (std.ascii.eqlIgnoreCase(method, "getCurrentToken")) {
-                return obj.object.fields.get("__token__") orelse Value.null_val;
-            }
-            if (std.ascii.eqlIgnoreCase(method, "getCurrentName")) {
-                const token_value = obj.object.fields.get("__token__") orelse Value.null_val;
-                if (token_value == .string and std.ascii.eqlIgnoreCase(token_value.string, "FIELD_NAME")) {
-                    return obj.object.fields.get("__text__") orelse Value.null_val;
-                }
-                return Value.null_val;
-            }
-            if (std.ascii.eqlIgnoreCase(method, "getText")) {
-                return obj.object.fields.get("__text__") orelse Value{ .string = "" };
-            }
-            if (std.ascii.eqlIgnoreCase(method, "readValueAs")) {
-                // Use current position (after nextToken navigation) or full body
-                const pos: usize = if (obj.object.fields.get("__pos__")) |p| (if (p == .integer and p.integer > 0) @intCast(@as(u64, @bitCast(p.integer))) else 0) else 0;
-                if (json_body) |body| {
-                    // Back up one position to include the current token ([ or {)
-                    const start = if (pos > 0) pos - 1 else 0;
-                    const remaining = body[start..];
-                    // Extract the actual type name from Type object (e.g., Type { name: "MyData" })
-                    const type_name: []const u8 = if (args.len >= 1 and args[0] == .object) blk: {
-                        if (std.ascii.eqlIgnoreCase(args[0].object.class_name, "Type")) {
-                            if (args[0].object.fields.get("name")) |n| {
-                                if (n == .string) break :blk n.string;
-                            }
-                        }
-                        break :blk args[0].object.class_name;
-                    } else "Object";
-                    if (self.parse_json_value(remaining, type_name)) |pv| return pv;
-                }
-                return Value.null_val;
             }
         }
+        return null;
+    }
 
-        // Time objects: expose h/m/s/ms components directly from stored fields.
-        if (obj == .object and std.ascii.eqlIgnoreCase(obj.object.class_name, "Time")) {
-            if (std.ascii.eqlIgnoreCase(method, "hour")) {
-                return obj.object.fields.get("hour") orelse Value{ .integer = 0 };
+    fn eval_builtin_instance_dispatch(
+        self: *Evaluator,
+        obj: Value,
+        method: []const u8,
+        args: []const Value,
+    ) anyerror!?Value {
+        var builtin_ctx = self.make_builtin_context();
+        return try builtins.dispatch_instance(&builtin_ctx, obj, method, args);
+    }
+
+    fn eval_s_object_instance_method(
+        self: *Evaluator,
+        obj: Value,
+        method: []const u8,
+        args: []const Value,
+    ) anyerror!?Value {
+        if (obj != .sobject) return null;
+        if (try self.eval_s_object_get_s_objects_method(obj.sobject, method, args)) |result| return result;
+        if (try self.eval_s_object_get_method(obj.sobject, method, args)) |result| return result;
+        if (try self.eval_s_object_get_s_object_method(obj.sobject, method, args)) |result| return result;
+        if (try self.eval_s_object_put_method(obj.sobject, method, args)) |result| return result;
+        if (try self.eval_s_object_clone_method(obj.sobject, method, args)) |result| return result;
+        if (try self.eval_s_object_metadata_result_method(obj.sobject, method)) |result| return result;
+        if (try self.eval_s_object_populated_fields_method(obj.sobject, method)) |result| return result;
+        if (try self.eval_s_object_add_error_method(obj.sobject, method, args)) |result| return result;
+        return null;
+    }
+
+    fn s_object_field_name_from_arg(self: *Evaluator, arg: Value) anyerror![]const u8 {
+        return if (arg == .string)
+            arg.string
+        else if (arg == .object) blk: {
+            if (arg.object.fields.get("fieldName")) |name| {
+                if (name == .string) break :blk name.string;
             }
-            if (std.ascii.eqlIgnoreCase(method, "minute")) {
-                return obj.object.fields.get("minute") orelse Value{ .integer = 0 };
+            if (arg.object.fields.get("name")) |name| {
+                if (name == .string) break :blk name.string;
             }
-            if (std.ascii.eqlIgnoreCase(method, "second")) {
-                return obj.object.fields.get("second") orelse Value{ .integer = 0 };
-            }
-            if (std.ascii.eqlIgnoreCase(method, "millisecond")) {
-                return obj.object.fields.get("millisecond") orelse Value{ .integer = 0 };
+            break :blk try utils.coerce_to_string(arg, self.arena);
+        } else try utils.coerce_to_string(arg, self.arena);
+    }
+
+    fn eval_s_object_get_s_objects_method(
+        self: *Evaluator,
+        sob: *types.SObject,
+        method: []const u8,
+        args: []const Value,
+    ) anyerror!?Value {
+        if (!(std.ascii.eqlIgnoreCase(method, "getSObjects") and args.len > 0 and args[0] == .string)) return null;
+        if (utils.sobject_get(&sob.fields, args[0].string)) |raw| {
+            if (self.relationship_records_value(raw)) |records| return records;
+            return raw;
+        }
+        return try self.make_empty_list();
+    }
+
+    fn eval_s_object_get_method(
+        self: *Evaluator,
+        sob: *types.SObject,
+        method: []const u8,
+        args: []const Value,
+    ) anyerror!?Value {
+        if (!(std.ascii.eqlIgnoreCase(method, "get") and args.len > 0)) return null;
+        const field_name = try self.s_object_field_name_from_arg(args[0]);
+        if (self.get_s_object_field_value_case_insensitive(sob, field_name)) |value| return value;
+        var builtin_ctx = self.make_builtin_context();
+        if (builtins.sobject_field_exists(&builtin_ctx, sob, field_name)) return Value.null_val;
+        return try self.throw_invalid_s_object_field(sob.type_name, field_name);
+    }
+
+    fn throw_invalid_s_object_field(
+        self: *Evaluator,
+        type_name: []const u8,
+        field_name: []const u8,
+    ) anyerror!Value {
+        const message = try std.fmt.allocPrint(self.arena, "Invalid field {s} for {s}", .{ field_name, type_name });
+        return try self.throw_named_exception("System.SObjectException", message);
+    }
+
+    fn eval_s_object_get_s_object_method(
+        self: *Evaluator,
+        sob: *types.SObject,
+        method: []const u8,
+        args: []const Value,
+    ) anyerror!?Value {
+        if (!(std.ascii.eqlIgnoreCase(method, "getSObject") and args.len > 0)) return null;
+        const raw_name = try self.s_object_field_name_from_arg(args[0]);
+        if (self.get_s_object_field_value_case_insensitive(sob, raw_name)) |loaded| {
+            if (loaded == .sobject) return loaded;
+        }
+        const relationship_name = if (std.mem.endsWith(u8, raw_name, "__c") or std.mem.endsWith(u8, raw_name, "Id"))
+            self.fk_to_parent_ref(raw_name)
+        else
+            raw_name;
+        if (!std.ascii.eqlIgnoreCase(relationship_name, raw_name)) {
+            if (self.get_s_object_field_value_case_insensitive(sob, relationship_name)) |loaded| {
+                if (loaded == .sobject) return loaded;
             }
         }
+        const fk_field = if (std.mem.endsWith(u8, raw_name, "__c") or std.mem.endsWith(u8, raw_name, "Id"))
+            raw_name
+        else
+            self.parent_ref_to_fk(raw_name);
+        const fk_value = self.get_s_object_field_value_case_insensitive(sob, fk_field) orelse return Value.null_val;
+        if (fk_value != .string) return Value.null_val;
+        const target_type = self.resolve_s_object_target_type(sob, fk_field, fk_value.string) orelse return Value.null_val;
+        if (self.find_record_by_id(target_type, fk_value.string)) |record| {
+            if (record == .sobject) return record;
+        }
+        const related = try self.arena.create(types.SObject);
+        related.* = .{ .type_name = target_type };
+        related.id = fk_value.string;
+        try related.fields.put(self.arena, "Id", fk_value);
+        return Value{ .sobject = related };
+    }
 
-        // Date/DateTime objects: extract the inner date string and dispatch as string methods
+    fn resolve_s_object_target_type(
+        self: *Evaluator,
+        sob: *types.SObject,
+        fk_field: []const u8,
+        record_id: []const u8,
+    ) ?[]const u8 {
+        if (self.get_field_metadata(sob.type_name, fk_field)) |meta| {
+            if (meta.reference_to) |reference_to| return reference_to;
+        }
+        if (self.find_record_type_by_id(record_id)) |record_type| return record_type;
+        if (record_id.len >= 3) {
+            const inferred = sobject_type_from_prefix(record_id[0..3]);
+            if (!std.ascii.eqlIgnoreCase(inferred, "SObject")) return inferred;
+        }
+        return null;
+    }
+
+    fn eval_s_object_put_method(
+        self: *Evaluator,
+        sob: *types.SObject,
+        method: []const u8,
+        args: []const Value,
+    ) anyerror!?Value {
+        if (!(std.ascii.eqlIgnoreCase(method, "put") and args.len >= 2)) return null;
+        const field_name = try self.s_object_field_name_from_arg(args[0]);
+        var builtin_ctx = self.make_builtin_context();
+        const normalized = try builtins.normalize_s_object_field_assignment(&builtin_ctx, sob, field_name, args[1]);
+        try utils.sobject_put(&sob.fields, self.arena, field_name, normalized);
+        if (std.ascii.eqlIgnoreCase(field_name, "Id") and normalized == .string) sob.id = normalized.string;
+        return normalized;
+    }
+
+    fn eval_s_object_clone_method(
+        self: *Evaluator,
+        sob: *types.SObject,
+        method: []const u8,
+        args: []const Value,
+    ) anyerror!?Value {
+        if (!(std.ascii.eqlIgnoreCase(method, "clone") or std.ascii.eqlIgnoreCase(method, "deepClone"))) return null;
+        const clone = try self.arena.create(types.SObject);
+        clone.* = .{ .type_name = sob.type_name, .is_clone = true };
+        const preserve_id = if (args.len >= 1 and args[0] == .boolean) args[0].boolean else true;
+        if (preserve_id and sob.id != null) clone.id = sob.id;
+        for (sob.fields.keys(), sob.fields.values()) |key, value| {
+            if (!preserve_id and std.ascii.eqlIgnoreCase(key, "Id")) continue;
+            try clone.fields.put(self.arena, key, value);
+        }
+        return Value{ .sobject = clone };
+    }
+
+    fn eval_s_object_metadata_result_method(
+        self: *Evaluator,
+        sob: *types.SObject,
+        method: []const u8,
+    ) anyerror!?Value {
+        if (std.ascii.eqlIgnoreCase(method, "isClone")) return Value{ .boolean = sob.is_clone };
+        if (std.ascii.eqlIgnoreCase(method, "getSObjectType")) return try self.schema_s_object_type_value(sob.type_name);
+        if (std.ascii.eqlIgnoreCase(method, "isSuccess")) {
+            return utils.sobject_get(&sob.fields, "success") orelse
+                utils.sobject_get(&sob.fields, "isSuccess") orelse Value{ .boolean = true };
+        }
+        if (std.ascii.eqlIgnoreCase(method, "isCreated")) {
+            return utils.sobject_get(&sob.fields, "created") orelse
+                utils.sobject_get(&sob.fields, "isCreated") orelse Value{ .boolean = false };
+        }
+        if (std.ascii.eqlIgnoreCase(method, "getErrors")) {
+            return utils.sobject_get(&sob.fields, "errors") orelse try self.make_empty_list();
+        }
+        if (std.ascii.eqlIgnoreCase(method, "hasErrors")) {
+            if (utils.sobject_get(&sob.fields, "errors")) |errs_val| {
+                if (errs_val == .list) return Value{ .boolean = errs_val.list.items.items.len > 0 };
+            }
+            return Value{ .boolean = false };
+        }
+        if (std.ascii.eqlIgnoreCase(method, "getId")) {
+            return utils.sobject_get(&sob.fields, "Id") orelse
+                utils.sobject_get(&sob.fields, "id") orelse Value.null_val;
+        }
+        if (std.ascii.eqlIgnoreCase(method, "getMessage")) {
+            return self.get_s_object_field_value_case_insensitive(sob, "message") orelse Value{ .string = "" };
+        }
+        if (std.ascii.eqlIgnoreCase(method, "getStatusCode")) {
+            return self.get_s_object_field_value_case_insensitive(sob, "statusCode") orelse Value.null_val;
+        }
+        if (std.ascii.eqlIgnoreCase(method, "getFields")) {
+            return self.get_s_object_field_value_case_insensitive(sob, "fields") orelse try self.make_empty_list();
+        }
+        return null;
+    }
+
+    fn eval_s_object_populated_fields_method(
+        self: *Evaluator,
+        sob: *types.SObject,
+        method: []const u8,
+    ) anyerror!?Value {
+        if (!(std.ascii.eqlIgnoreCase(method, "getPopulatedFieldsAsMap"))) return null;
+        const map = try self.arena.create(types.MapValue);
+        map.* = .{};
+        for (sob.fields.keys(), sob.fields.values()) |key, value| {
+            if (value == .null_val) continue;
+            if (std.ascii.eqlIgnoreCase(key, "errors")) continue;
+            try map.entries.put(self.arena, key, value);
+        }
+        return Value{ .map = map };
+    }
+
+    fn eval_s_object_add_error_method(
+        self: *Evaluator,
+        sob: *types.SObject,
+        method: []const u8,
+        args: []const Value,
+    ) anyerror!?Value {
+        if (!(std.ascii.eqlIgnoreCase(method, "addError") and args.len > 0)) return null;
+        const msg_val = if (args.len >= 2) args[1] else args[0];
+        const err_obj = try self.arena.create(types.ObjectInstance);
+        err_obj.* = .{ .class_name = "Database.Error" };
+        try err_obj.fields.put(self.arena, "message", msg_val);
+        try err_obj.fields.put(self.arena, "statusCode", Value{ .string = "FIELD_CUSTOM_VALIDATION_EXCEPTION" });
+
+        const fields_list = try self.arena.create(types.ListValue);
+        fields_list.* = .{};
+        if (args.len >= 2) {
+            const field_name = try self.s_object_field_name_from_arg(args[0]);
+            try fields_list.items.append(self.arena, Value{ .string = field_name });
+            try err_obj.fields.put(self.arena, "field", Value{ .string = field_name });
+        }
+        try err_obj.fields.put(self.arena, "fields", Value{ .list = fields_list });
+
+        var errors_list = try self.get_or_create_s_object_errors_list(sob);
+        try errors_list.items.append(self.arena, Value{ .object = err_obj });
+        try utils.sobject_put(&sob.fields, self.arena, "errors", Value{ .list = errors_list });
+        return Value.void_val;
+    }
+
+    fn get_or_create_s_object_errors_list(self: *Evaluator, sob: *types.SObject) anyerror!*types.ListValue {
+        if (utils.sobject_get(&sob.fields, "errors")) |existing| {
+            if (existing == .list) return existing.list;
+        }
+        const list = try self.arena.create(types.ListValue);
+        list.* = .{};
+        return list;
+    }
+
+    fn eval_collection_or_string_instance_method(
+        self: *Evaluator,
+        obj: Value,
+        method: []const u8,
+        args: []const Value,
+    ) anyerror!?Value {
+        if (obj == .list) return try self.eval_list_method(obj.list, method, args);
+        if (obj == .map) return try self.eval_map_method(obj.map, method, args);
+        if (obj == .set) return try self.eval_set_method(obj.set, method, args);
+        if (obj == .string) return try self.eval_string_method(obj.string, method, args);
+        return null;
+    }
+
+    fn eval_object_class_instance_method(
+        self: *Evaluator,
+        obj: Value,
+        method: []const u8,
+        args: []const Value,
+    ) anyerror!Value {
         if (obj == .object) {
-            if (std.ascii.eqlIgnoreCase(obj.object.class_name, "Date") or
-                std.ascii.eqlIgnoreCase(obj.object.class_name, "Datetime"))
-            {
-                if (builtins.extract_date_string(obj)) |date_str| {
-                    // No-arg format(): Salesforce default is M/d/yyyy for Date, M/d/yyyy, h:mm a for Datetime.
-                    if (args.len == 0 and std.ascii.eqlIgnoreCase(method, "format")) {
-                        if (parse_iso_date(date_str)) |dt| {
-                            if (std.ascii.eqlIgnoreCase(obj.object.class_name, "Date")) {
-                                return Value{ .string = try std.fmt.allocPrint(self.arena, "{d}/{d}/{d:0>4}", .{
-                                    dt.m, dt.d, @as(u32, @intCast(dt.y)),
-                                }) };
-                            }
-                            const hour12: u8 = blk: {
-                                const h_mod = dt.h % 12;
-                                break :blk if (h_mod == 0) 12 else h_mod;
-                            };
-                            const am_pm: []const u8 = if (dt.h < 12) "AM" else "PM";
-                            return Value{ .string = try std.fmt.allocPrint(self.arena, "{d}/{d}/{d:0>4}, {d}:{d:0>2} {s}", .{
-                                dt.m, dt.d, @as(u32, @intCast(dt.y)), hour12, dt.mi, am_pm,
-                            }) };
-                        }
-                    }
-                    const result = try self.eval_string_method(date_str, method, args);
-                    // Wrap date() result back into a Date object, and addDays etc. keep their type
-                    if (result == .string) {
-                        if (std.ascii.eqlIgnoreCase(method, "date") or std.ascii.eqlIgnoreCase(method, "dateGmt")) {
-                            return try builtins.make_date_value(self.arena, result.string);
-                        }
-                        if (std.ascii.eqlIgnoreCase(method, "addDays") or
-                            std.ascii.eqlIgnoreCase(method, "addMonths") or
-                            std.ascii.eqlIgnoreCase(method, "addYears") or
-                            std.ascii.eqlIgnoreCase(method, "addHours") or
-                            std.ascii.eqlIgnoreCase(method, "addMinutes") or
-                            std.ascii.eqlIgnoreCase(method, "addSeconds"))
-                        {
-                            if (std.ascii.eqlIgnoreCase(obj.object.class_name, "Date")) {
-                                return try builtins.make_date_value(self.arena, result.string);
-                            }
-                            return try builtins.make_datetime_value(self.arena, result.string);
-                        }
-                    }
-                    return result;
-                }
-            }
-        }
-
-        // For ObjectInstance with a user-defined class, try class methods first
-        if (obj == .object) {
-            const dispatch_decl = blk: {
-                if (current_env.get("this")) |this_val| {
-                    if (this_val == .object and this_val.object == obj.object) {
-                        if (self.current_class) |current_class_name| {
-                            if (self.find_class(current_class_name)) |owner_decl| break :blk owner_decl;
-                        }
-                    }
-                }
-                break :blk self.find_class(obj.object.class_name) orelse null;
-            };
-            if (dispatch_decl) |class_decl| {
-                const md = self.find_method_in_hierarchy_typed(null, class_decl, method, args) orelse
-                    self.find_method_in_hierarchy(null, class_decl, method, args.len);
-                if (md != null) {
-                    return self.call_instance_method(class_decl, obj.object, method, args);
-                }
-                // Method not found in this class — it may be shadowed by a same-named
-                // top-level class. Search for an outer class whose inner class matches
-                // and has the method (e.g., LoggerDataStore.Database vs top-level Database).
-                var cls_iter = self.classes.iterator();
-                while (cls_iter.next()) |entry| {
-                    const cd = entry.value_ptr.*;
-                    for (cd.members) |member| {
-                        switch (member) {
-                            .class_decl => |inner_cd| {
-                                if (std.ascii.eqlIgnoreCase(inner_cd.name, obj.object.class_name) and inner_cd != class_decl) {
-                                    const inner_md = self.find_method_in_hierarchy_typed(null, inner_cd, method, args) orelse
-                                        self.find_method_in_hierarchy(null, inner_cd, method, args.len);
-                                    if (inner_md != null) {
-                                        return self.call_instance_method(inner_cd, obj.object, method, args);
-                                    }
-                                }
-                            },
-                            else => {},
-                        }
-                    }
-                }
-            }
-        }
-
-        var bctx = builtins.BuiltinContext{ .arena = self.arena, .stdout = &self.stdout, .pending_exception = &self.pending_exception, .see_all_data = self.see_all_data, .eval = self };
-        if (try builtins.dispatch_instance(&bctx, obj, method, args)) |result| {
-            return result;
-        }
-
-        // SObject field access methods
-        if (obj == .sobject) {
-            // getSObjects(relationship)
-            if (std.ascii.eqlIgnoreCase(method, "getSObjects") and args.len > 0 and args[0] == .string) {
-                if (utils.sobject_get(&obj.sobject.fields, args[0].string)) |raw| {
-                    if (self.relationship_records_value(raw)) |records| return records;
-                    return raw;
-                }
-                return try self.make_empty_list();
-            }
-            // get(fieldName) - case-insensitive
-            if (std.ascii.eqlIgnoreCase(method, "get") and args.len > 0) {
-                const field_name: []const u8 = if (args[0] == .string)
-                    args[0].string
-                else if (args[0] == .object) blk: {
-                    if (args[0].object.fields.get("fieldName")) |n| {
-                        if (n == .string) break :blk n.string;
-                    }
-                    if (args[0].object.fields.get("name")) |n| {
-                        if (n == .string) break :blk n.string;
-                    }
-                    break :blk try utils.coerce_to_string(args[0], self.arena);
-                } else try utils.coerce_to_string(args[0], self.arena);
-                if (self.get_s_object_field_value_case_insensitive(obj.sobject, field_name)) |value| return value;
-
-                var get_bctx = builtins.BuiltinContext{
-                    .arena = self.arena,
-                    .stdout = &self.stdout,
-                    .pending_exception = &self.pending_exception,
-                    .see_all_data = self.see_all_data,
-                    .eval = self,
-                };
-                if (builtins.sobject_field_exists(&get_bctx, obj.sobject, field_name)) return Value.null_val;
-
-                const exc = try self.arena.create(types.ObjectInstance);
-                exc.* = .{ .class_name = "System.SObjectException" };
-                try exc.fields.put(self.arena, "message", Value{ .string = try std.fmt.allocPrint(self.arena, "Invalid field {s} for {s}", .{ field_name, obj.sobject.type_name }) });
-                self.pending_exception = Value{ .object = exc };
-                return error.ApexException;
-            }
-            // getSObject(fieldName) - resolve loaded parent records or follow FK to the store
-            if (std.ascii.eqlIgnoreCase(method, "getSObject") and args.len > 0) {
-                const raw_name: []const u8 = if (args[0] == .string)
-                    args[0].string
-                else if (args[0] == .object) blk: {
-                    if (args[0].object.fields.get("fieldName")) |n| {
-                        if (n == .string) break :blk n.string;
-                    }
-                    if (args[0].object.fields.get("name")) |n| {
-                        if (n == .string) break :blk n.string;
-                    }
-                    break :blk try utils.coerce_to_string(args[0], self.arena);
-                } else try utils.coerce_to_string(args[0], self.arena);
-
-                if (self.get_s_object_field_value_case_insensitive(obj.sobject, raw_name)) |loaded| {
-                    if (loaded == .sobject) return loaded;
-                }
-
-                const relationship_name = if (std.mem.endsWith(u8, raw_name, "__c") or std.mem.endsWith(u8, raw_name, "Id"))
-                    self.fk_to_parent_ref(raw_name)
-                else
-                    raw_name;
-                if (!std.ascii.eqlIgnoreCase(relationship_name, raw_name)) {
-                    if (self.get_s_object_field_value_case_insensitive(obj.sobject, relationship_name)) |loaded| {
-                        if (loaded == .sobject) return loaded;
-                    }
-                }
-
-                const fk_field = if (std.mem.endsWith(u8, raw_name, "__c") or std.mem.endsWith(u8, raw_name, "Id"))
-                    raw_name
-                else
-                    self.parent_ref_to_fk(raw_name);
-                const fk_value = self.get_s_object_field_value_case_insensitive(obj.sobject, fk_field) orelse return Value.null_val;
-                if (fk_value != .string) return Value.null_val;
-
-                const target_type = blk: {
-                    if (self.get_field_metadata(obj.sobject.type_name, fk_field)) |meta| {
-                        if (meta.reference_to) |reference_to| break :blk reference_to;
-                    }
-                    if (self.find_record_type_by_id(fk_value.string)) |record_type| break :blk record_type;
-                    if (fk_value.string.len >= 3) {
-                        const inferred = sobject_type_from_prefix(fk_value.string[0..3]);
-                        if (!std.ascii.eqlIgnoreCase(inferred, "SObject")) break :blk inferred;
-                    }
-                    break :blk null;
-                } orelse return Value.null_val;
-
-                if (self.find_record_by_id(target_type, fk_value.string)) |record| {
-                    if (record == .sobject) return record;
-                }
-
-                const related = try self.arena.create(types.SObject);
-                related.* = .{ .type_name = target_type };
-                related.id = fk_value.string;
-                try related.fields.put(self.arena, "Id", fk_value);
-                return Value{ .sobject = related };
-            }
-            // put(fieldName, value)
-            if (std.ascii.eqlIgnoreCase(method, "put") and args.len >= 2) {
-                // put(String fieldName, value) or put(SObjectField, value)
-                const field_name: []const u8 = if (args[0] == .string)
-                    args[0].string
-                else if (args[0] == .object) blk: {
-                    // SObjectField token — extract field name from "name" or "fieldName" field
-                    if (args[0].object.fields.get("name")) |n| {
-                        if (n == .string) break :blk n.string;
-                    }
-                    if (args[0].object.fields.get("fieldName")) |n| {
-                        if (n == .string) break :blk n.string;
-                    }
-                    break :blk try utils.coerce_to_string(args[0], self.arena);
-                } else try utils.coerce_to_string(args[0], self.arena);
-                var put_bctx = builtins.BuiltinContext{ .arena = self.arena, .stdout = &self.stdout, .pending_exception = &self.pending_exception, .see_all_data = self.see_all_data, .eval = self };
-                const normalized = try builtins.normalize_s_object_field_assignment(&put_bctx, obj.sobject, field_name, args[1]);
-                try utils.sobject_put(&obj.sobject.fields, self.arena, field_name, normalized);
-                // Sync Id field
-                if (std.ascii.eqlIgnoreCase(field_name, "Id") and normalized == .string) {
-                    obj.sobject.id = normalized.string;
-                }
-                return normalized;
-            }
-            // clone()
-            if (std.ascii.eqlIgnoreCase(method, "clone") or std.ascii.eqlIgnoreCase(method, "deepClone")) {
-                const clone = try self.arena.create(types.SObject);
-                clone.* = .{ .type_name = obj.sobject.type_name, .is_clone = true };
-                // Clone preserves Id unless first arg is false
-                const preserve_id = if (args.len >= 1 and args[0] == .boolean) args[0].boolean else true;
-                if (preserve_id and obj.sobject.id != null) {
-                    clone.id = obj.sobject.id;
-                }
-                for (obj.sobject.fields.keys(), obj.sobject.fields.values()) |k, v| {
-                    if (!preserve_id and std.ascii.eqlIgnoreCase(k, "Id")) continue;
-                    try clone.fields.put(self.arena, k, v);
-                }
-                return Value{ .sobject = clone };
-            }
-            // isClone()
-            if (std.ascii.eqlIgnoreCase(method, "isClone")) {
-                return Value{ .boolean = obj.sobject.is_clone };
-            }
-            // getSObjectType()
-            if (std.ascii.eqlIgnoreCase(method, "getSObjectType")) {
-                const sot = try self.arena.create(types.ObjectInstance);
-                sot.* = .{ .class_name = "Schema.SObjectType" };
-                try sot.fields.put(self.arena, "name", Value{ .string = obj.sobject.type_name });
-                return Value{ .object = sot };
-            }
-            // Database result methods on SObject (SaveResult, UpsertResult, etc.)
-            if (std.ascii.eqlIgnoreCase(method, "isSuccess")) {
-                return utils.sobject_get(&obj.sobject.fields, "success") orelse
-                    utils.sobject_get(&obj.sobject.fields, "isSuccess") orelse Value{ .boolean = true };
-            }
-            if (std.ascii.eqlIgnoreCase(method, "isCreated")) {
-                return utils.sobject_get(&obj.sobject.fields, "created") orelse
-                    utils.sobject_get(&obj.sobject.fields, "isCreated") orelse Value{ .boolean = false };
-            }
-            if (std.ascii.eqlIgnoreCase(method, "getErrors")) {
-                return utils.sobject_get(&obj.sobject.fields, "errors") orelse try self.make_empty_list();
-            }
-            if (std.ascii.eqlIgnoreCase(method, "hasErrors")) {
-                if (utils.sobject_get(&obj.sobject.fields, "errors")) |errs_val| {
-                    if (errs_val == .list) return Value{ .boolean = errs_val.list.items.items.len > 0 };
-                }
-                return Value{ .boolean = false };
-            }
-            if (std.ascii.eqlIgnoreCase(method, "getId")) {
-                return utils.sobject_get(&obj.sobject.fields, "Id") orelse
-                    utils.sobject_get(&obj.sobject.fields, "id") orelse Value.null_val;
-            }
-            if (std.ascii.eqlIgnoreCase(method, "getMessage")) {
-                return self.get_s_object_field_value_case_insensitive(obj.sobject, "message") orelse Value{ .string = "" };
-            }
-            if (std.ascii.eqlIgnoreCase(method, "getStatusCode")) {
-                return self.get_s_object_field_value_case_insensitive(obj.sobject, "statusCode") orelse Value.null_val;
-            }
-            if (std.ascii.eqlIgnoreCase(method, "getFields")) {
-                return self.get_s_object_field_value_case_insensitive(obj.sobject, "fields") orelse try self.make_empty_list();
-            }
-            // getPopulatedFieldsAsMap()
-            if (std.ascii.eqlIgnoreCase(method, "getPopulatedFieldsAsMap")) {
-                const map = try self.arena.create(types.MapValue);
-                map.* = .{};
-                for (obj.sobject.fields.keys(), obj.sobject.fields.values()) |k, v| {
-                    if (v == .null_val) continue;
-                    // Synthetic bookkeeping keys stored by addError/attachments/etc. are
-                    // not real fields and should not appear in getPopulatedFieldsAsMap.
-                    if (std.ascii.eqlIgnoreCase(k, "errors")) continue;
-                    try map.entries.put(self.arena, k, v);
-                }
-                return Value{ .map = map };
-            }
-            // sobject.addError(msg) or addError(field, msg) — per Apex semantics this
-            // attaches an Error to the record's getErrors() list rather than throwing;
-            // only the enclosing DML (insert/update) converts the attached errors into
-            // a DmlException at commit time.
-            if (std.ascii.eqlIgnoreCase(method, "addError") and args.len > 0) {
-                const msg_val = if (args.len >= 2) args[1] else args[0];
-                const field_val: ?Value = if (args.len >= 2) args[0] else null;
-                const err_obj = try self.arena.create(types.ObjectInstance);
-                err_obj.* = .{ .class_name = "Database.Error" };
-                try err_obj.fields.put(self.arena, "message", msg_val);
-                try err_obj.fields.put(self.arena, "statusCode", Value{ .string = "FIELD_CUSTOM_VALIDATION_EXCEPTION" });
-                const fields_list = try self.arena.create(types.ListValue);
-                fields_list.* = .{};
-                if (field_val) |fv| {
-                    const field_name: []const u8 = switch (fv) {
-                        .string => |s| s,
-                        .object => |ob| blk: {
-                            if (ob.fields.get("fieldName")) |fn_val| if (fn_val == .string) break :blk fn_val.string;
-                            if (ob.fields.get("name")) |n_val| if (n_val == .string) break :blk n_val.string;
-                            break :blk "";
-                        },
-                        else => "",
-                    };
-                    try fields_list.items.append(self.arena, Value{ .string = field_name });
-                    try err_obj.fields.put(self.arena, "field", Value{ .string = field_name });
-                }
-                try err_obj.fields.put(self.arena, "fields", Value{ .list = fields_list });
-
-                var errors_list = if (utils.sobject_get(&obj.sobject.fields, "errors")) |existing|
-                    if (existing == .list) existing.list else blk: {
-                        const lst = try self.arena.create(types.ListValue);
-                        lst.* = .{};
-                        break :blk lst;
-                    }
-                else blk: {
-                    const lst = try self.arena.create(types.ListValue);
-                    lst.* = .{};
-                    break :blk lst;
-                };
-                try errors_list.items.append(self.arena, Value{ .object = err_obj });
-                try utils.sobject_put(&obj.sobject.fields, self.arena, "errors", Value{ .list = errors_list });
-                return Value.void_val;
-            }
-        }
-
-        // List methods
-        if (obj == .list) {
-            return self.eval_list_method(obj.list, method, args);
-        }
-
-        // Map methods
-        if (obj == .map) {
-            return self.eval_map_method(obj.map, method, args);
-        }
-
-        // Set methods
-        if (obj == .set) {
-            return self.eval_set_method(obj.set, method, args);
-        }
-
-        // String methods
-        if (obj == .string) {
-            return self.eval_string_method(obj.string, method, args);
-        }
-
-        // ObjectInstance methods (user-defined class)
-        if (obj == .object) {
-            // Try to call method on the class with `this` bound
             if (self.find_class(obj.object.class_name)) |class_decl| {
-                return self.call_instance_method(class_decl, obj.object, method, args);
+                return try self.call_instance_method(class_decl, obj.object, method, args);
             }
-            // If class not found by instance class_name, check if there's a parent class
-            // (inner class pattern: "OuterClass.InnerClass")
         }
-
         return Value.null_val;
     }
 
