@@ -13,6 +13,9 @@ const regex = @import("regex.zig");
 const Value = types.Value;
 const Env = env_mod.Env;
 
+const soql_missing_field_message =
+    "SObject row was retrieved via SOQL without querying the requested field: ";
+
 pub const StmtResult = union(enum) {
     normal,
     return_val: Value,
@@ -16446,9 +16449,7 @@ pub const Evaluator = struct {
             try exc.fields.put(
                 self.arena,
                 "message",
-                Value{
-                    .string = "SObject row was retrieved via SOQL without querying the requested field: ",
-                },
+                Value{ .string = soql_missing_field_message },
             );
             self.pending_exception = Value{ .object = exc };
             return error.ApexException;
@@ -17748,7 +17749,8 @@ pub const Evaluator = struct {
             const ws = try std.fmt.allocPrint(self.arena, "{d}", .{iso.week});
             try result.appendSlice(self.arena, ws);
         } else {
-            const ys = try std.fmt.allocPrint(self.arena, "{d:0>4}", .{@as(u32, @intCast(iso.year))});
+            const iso_year: u32 = @intCast(iso.year);
+            const ys = try std.fmt.allocPrint(self.arena, "{d:0>4}", .{iso_year});
             try result.appendSlice(self.arena, ys);
         }
     }
@@ -17768,7 +17770,8 @@ pub const Evaluator = struct {
         result: *std.ArrayListUnmanaged(u8),
         dt: anytype,
     ) !void {
-        const is_leap = (@mod(dt.y, 4) == 0 and (@mod(dt.y, 100) != 0 or @mod(dt.y, 400) == 0));
+        const is_leap = @mod(dt.y, 4) == 0 and
+            (@mod(dt.y, 100) != 0 or @mod(dt.y, 400) == 0);
         var doy: u16 = day_of_year(dt.m, dt.d);
         if (is_leap and dt.m > 2) doy += 1;
         const ds = try std.fmt.allocPrint(self.arena, "{d}", .{doy});
@@ -17790,7 +17793,12 @@ pub const Evaluator = struct {
     }
 
     /// addYears / addMonths / addDays — ISO 日付文字列に対する日付演算
-    fn date_time_add(self: *Evaluator, s: []const u8, method: []const u8, args: []const Value) !Value {
+    fn date_time_add(
+        self: *Evaluator,
+        s: []const u8,
+        method: []const u8,
+        args: []const Value,
+    ) !Value {
         const dt = parse_iso_date(s) orelse return Value{ .string = s };
         const delta: i32 = if (args.len > 0) switch (args[0]) {
             .integer => |i| @intCast(i),
@@ -17919,7 +17927,10 @@ pub const Evaluator = struct {
         } else if (std.ascii.eqlIgnoreCase(method, "isInstanceOfType")) {
             // simplified: always pass
         } else if (std.ascii.eqlIgnoreCase(method, "fail")) {
-            self.assertion_failure = if (args.len >= 1 and args[0] == .string) args[0].string else "Assert.fail called";
+            self.assertion_failure = if (args.len >= 1 and args[0] == .string)
+                args[0].string
+            else
+                "Assert.fail called";
         }
         return .void_val;
     }
@@ -21535,8 +21546,11 @@ pub const Evaluator = struct {
         phase: []const u8,
         exception_value: Value,
     ) !void {
-        const raises_events =
-            self.class_implements_interface(batch_obj.class_name, "Database.RaisesPlatformEvents") or
+        const raises_platform_events = self.class_implements_interface(
+            batch_obj.class_name,
+            "Database.RaisesPlatformEvents",
+        );
+        const raises_events = raises_platform_events or
             self.class_implements_interface(batch_obj.class_name, "RaisesPlatformEvents");
         if (!raises_events) {
             return;
@@ -22781,7 +22795,12 @@ pub const Evaluator = struct {
 /// segments are produced (the final one absorbs any unsplit tail); limit == 1 is a no-op.
 /// Callers remain responsible for the "empty regex splits every character" case — this helper
 /// only handles non-empty patterns.
-fn split_by_regex(arena: std.mem.Allocator, pattern: []const u8, s: []const u8, split_limit: ?usize) ![][]const u8 {
+fn split_by_regex(
+    arena: std.mem.Allocator,
+    pattern: []const u8,
+    s: []const u8,
+    split_limit: ?usize,
+) ![][]const u8 {
     var parts = std.ArrayListUnmanaged([]const u8).empty;
     const matches = try regex.find_all(arena, pattern, s);
     if (split_limit) |lim| {
@@ -22809,36 +22828,83 @@ fn split_by_regex(arena: std.mem.Allocator, pattern: []const u8, s: []const u8, 
 
 /// True when (enum_simple_name, value) matches a well-known built-in System enum.
 /// Used for overload resolution since enum values are represented as plain strings.
+const trigger_operation_values = [_][]const u8{
+    "BEFORE_INSERT",
+    "BEFORE_UPDATE",
+    "BEFORE_DELETE",
+    "AFTER_INSERT",
+    "AFTER_UPDATE",
+    "AFTER_DELETE",
+    "AFTER_UNDELETE",
+};
+
+const logging_level_values = [_][]const u8{
+    "INTERNAL",
+    "FINEST",
+    "FINER",
+    "FINE",
+    "DEBUG",
+    "INFO",
+    "WARN",
+    "ERROR",
+    "NONE",
+};
+
+const access_type_values = [_][]const u8{ "CREATABLE", "READABLE", "UPDATABLE", "UPSERTABLE" };
+const access_level_values = [_][]const u8{ "USER_MODE", "SYSTEM_MODE" };
+const system_mode_values = [_][]const u8{ "SANDBOX", "PROD", "DEVELOPER", "TRIAL", "SCRATCH_ORG" };
+
+const quiddity_values = [_][]const u8{
+    "ANONYMOUS",
+    "AURA",
+    "BATCH_APEX",
+    "BATCH_CHUNK_PARALLEL",
+    "BATCH_CHUNK_SERIAL",
+    "BULK_API",
+    "FUTURE",
+    "INVOCABLE_ACTION",
+    "IOT",
+    "LIGHTNING_OUT",
+    "QUEUEABLE",
+    "QUICK_ACTION",
+    "REMOTE_ACTION",
+    "REST",
+    "RUNTEST_ASYNC",
+    "RUNTEST_DEPLOY",
+    "RUNTEST_SYNC",
+    "SCHEDULED",
+    "SOAP",
+    "SYNCHRONOUS",
+    "VF",
+    "WAVE",
+};
+
 fn is_system_enum_value(enum_simple: []const u8, value: []const u8) bool {
     if (enum_simple.len == 0 or value.len == 0) return false;
-    const trigger_ops = [_][]const u8{ "BEFORE_INSERT", "BEFORE_UPDATE", "BEFORE_DELETE", "AFTER_INSERT", "AFTER_UPDATE", "AFTER_DELETE", "AFTER_UNDELETE" };
-    const logging_levels = [_][]const u8{ "INTERNAL", "FINEST", "FINER", "FINE", "DEBUG", "INFO", "WARN", "ERROR", "NONE" };
-    const access_types = [_][]const u8{ "CREATABLE", "READABLE", "UPDATABLE", "UPSERTABLE" };
-    const access_levels = [_][]const u8{ "USER_MODE", "SYSTEM_MODE" };
-    const quiddity_vals = [_][]const u8{ "ANONYMOUS", "AURA", "BATCH_APEX", "BATCH_CHUNK_PARALLEL", "BATCH_CHUNK_SERIAL", "BULK_API", "FUTURE", "INVOCABLE_ACTION", "IOT", "LIGHTNING_OUT", "QUEUEABLE", "QUICK_ACTION", "REMOTE_ACTION", "REST", "RUNTEST_ASYNC", "RUNTEST_DEPLOY", "RUNTEST_SYNC", "SCHEDULED", "SOAP", "SYNCHRONOUS", "VF", "WAVE" };
-    const system_mode = [_][]const u8{ "SANDBOX", "PROD", "DEVELOPER", "TRIAL", "SCRATCH_ORG" };
     if (std.ascii.eqlIgnoreCase(enum_simple, "TriggerOperation")) {
-        for (trigger_ops) |n| if (std.ascii.eqlIgnoreCase(n, value)) return true;
+        for (trigger_operation_values) |n| if (std.ascii.eqlIgnoreCase(n, value)) return true;
         return false;
     }
     if (std.ascii.eqlIgnoreCase(enum_simple, "LoggingLevel")) {
-        for (logging_levels) |n| if (std.ascii.eqlIgnoreCase(n, value)) return true;
+        for (logging_level_values) |n| if (std.ascii.eqlIgnoreCase(n, value)) return true;
         return false;
     }
     if (std.ascii.eqlIgnoreCase(enum_simple, "AccessType")) {
-        for (access_types) |n| if (std.ascii.eqlIgnoreCase(n, value)) return true;
+        for (access_type_values) |n| if (std.ascii.eqlIgnoreCase(n, value)) return true;
         return false;
     }
     if (std.ascii.eqlIgnoreCase(enum_simple, "AccessLevel")) {
-        for (access_levels) |n| if (std.ascii.eqlIgnoreCase(n, value)) return true;
+        for (access_level_values) |n| if (std.ascii.eqlIgnoreCase(n, value)) return true;
         return false;
     }
     if (std.ascii.eqlIgnoreCase(enum_simple, "Quiddity")) {
-        for (quiddity_vals) |n| if (std.ascii.eqlIgnoreCase(n, value)) return true;
+        for (quiddity_values) |n| if (std.ascii.eqlIgnoreCase(n, value)) return true;
         return false;
     }
-    if (std.ascii.eqlIgnoreCase(enum_simple, "OrganizationType") or std.ascii.eqlIgnoreCase(enum_simple, "InstanceType")) {
-        for (system_mode) |n| if (std.ascii.eqlIgnoreCase(n, value)) return true;
+    if (std.ascii.eqlIgnoreCase(enum_simple, "OrganizationType") or
+        std.ascii.eqlIgnoreCase(enum_simple, "InstanceType"))
+    {
+        for (system_mode_values) |n| if (std.ascii.eqlIgnoreCase(n, value)) return true;
         return false;
     }
     return false;
@@ -22846,9 +22912,20 @@ fn is_system_enum_value(enum_simple: []const u8, value: []const u8) bool {
 
 /// True if `pt` looks like a known built-in System enum type name (simple or qualified).
 fn is_system_enum_type_name(pt: []const u8) bool {
-    const simple = if (std.mem.lastIndexOfScalar(u8, pt, '.')) |di| pt[di + 1 ..] else pt;
+    const simple = if (std.mem.lastIndexOfScalar(u8, pt, '.')) |di|
+        pt[di + 1 ..]
+    else
+        pt;
     if (simple.len == 0) return false;
-    const names = [_][]const u8{ "TriggerOperation", "LoggingLevel", "AccessType", "AccessLevel", "Quiddity", "DisplayType", "SoapType" };
+    const names = [_][]const u8{
+        "TriggerOperation",
+        "LoggingLevel",
+        "AccessType",
+        "AccessLevel",
+        "Quiddity",
+        "DisplayType",
+        "SoapType",
+    };
     for (names) |n| {
         if (std.ascii.eqlIgnoreCase(n, simple)) return true;
     }
@@ -22858,31 +22935,16 @@ fn is_system_enum_type_name(pt: []const u8) bool {
 /// メソッドオーバーロード解決用: 引数の Value とパラメータ型名のスコア計算。
 fn overload_score_for_arg(arg: Value, pt: []const u8) i32 {
     if (arg == .string) {
-        if (std.ascii.eqlIgnoreCase(pt, "String")) return 2;
-        if (std.ascii.eqlIgnoreCase(pt, "Id")) return if (Evaluator.is_salesforce_id_string(arg.string)) 3 else 2;
-        if (std.ascii.eqlIgnoreCase(pt, "Object")) return 1;
-        // Date/DateTime-like strings should match Date/DateTime params
-        if (std.ascii.eqlIgnoreCase(pt, "Date") and Evaluator.is_date_only_format_string(arg.string)) return 2;
-        if ((std.ascii.eqlIgnoreCase(pt, "DateTime") or std.ascii.eqlIgnoreCase(pt, "Datetime")) and Evaluator.is_date_time_format_string(arg.string)) return 2;
-        return 0;
+        return overload_score_for_string_arg(arg.string, pt);
     }
     if (arg == .integer) {
-        if (std.ascii.eqlIgnoreCase(pt, "Integer") or std.ascii.eqlIgnoreCase(pt, "int")) return 2;
-        if (std.ascii.eqlIgnoreCase(pt, "Long") or std.ascii.eqlIgnoreCase(pt, "Decimal") or std.ascii.eqlIgnoreCase(pt, "Double")) return 1;
-        if (std.ascii.eqlIgnoreCase(pt, "Object")) return 1;
-        return 0;
+        return overload_score_for_integer_arg(pt);
     }
     if (arg == .long) {
-        if (std.ascii.eqlIgnoreCase(pt, "Long")) return 2;
-        if (std.ascii.eqlIgnoreCase(pt, "Decimal") or std.ascii.eqlIgnoreCase(pt, "Double")) return 1;
-        if (std.ascii.eqlIgnoreCase(pt, "Object")) return 1;
-        return 0;
+        return overload_score_for_long_arg(pt);
     }
     if (arg == .double) {
-        if (std.ascii.eqlIgnoreCase(pt, "Decimal") or std.ascii.eqlIgnoreCase(pt, "Double")) return 2;
-        if (std.ascii.eqlIgnoreCase(pt, "Integer") or std.ascii.eqlIgnoreCase(pt, "int") or std.ascii.eqlIgnoreCase(pt, "Long")) return 1;
-        if (std.ascii.eqlIgnoreCase(pt, "Object")) return 1;
-        return 0;
+        return overload_score_for_double_arg(pt);
     }
     if (arg == .boolean) {
         if (std.ascii.eqlIgnoreCase(pt, "Boolean")) return 2;
@@ -22902,7 +22964,9 @@ fn overload_score_for_arg(arg: Value, pt: []const u8) i32 {
         if (std.ascii.eqlIgnoreCase(pt, "Set")) return 2;
         if (std.ascii.startsWithIgnoreCase(pt, "Set<")) return 2;
         if (std.ascii.eqlIgnoreCase(pt, "Object")) return 1;
-        if (std.ascii.startsWithIgnoreCase(pt, "Iterable") or std.mem.endsWith(u8, pt, "Iterable")) return 1;
+        if (std.ascii.startsWithIgnoreCase(pt, "Iterable") or
+            std.mem.endsWith(u8, pt, "Iterable"))
+            return 1;
         return 0;
     }
     if (arg == .sobject) {
@@ -22914,9 +22978,58 @@ fn overload_score_for_arg(arg: Value, pt: []const u8) i32 {
     return 0;
 }
 
+fn overload_score_for_string_arg(value: []const u8, pt: []const u8) i32 {
+    if (std.ascii.eqlIgnoreCase(pt, "String")) return 2;
+    if (std.ascii.eqlIgnoreCase(pt, "Id")) {
+        return if (Evaluator.is_salesforce_id_string(value)) 3 else 2;
+    }
+    if (std.ascii.eqlIgnoreCase(pt, "Object")) return 1;
+    if (std.ascii.eqlIgnoreCase(pt, "Date") and
+        Evaluator.is_date_only_format_string(value))
+        return 2;
+    if ((std.ascii.eqlIgnoreCase(pt, "DateTime") or
+        std.ascii.eqlIgnoreCase(pt, "Datetime")) and
+        Evaluator.is_date_time_format_string(value))
+        return 2;
+    return 0;
+}
+
+fn overload_score_for_integer_arg(pt: []const u8) i32 {
+    if (std.ascii.eqlIgnoreCase(pt, "Integer") or std.ascii.eqlIgnoreCase(pt, "int")) return 2;
+    if (std.ascii.eqlIgnoreCase(pt, "Long") or
+        std.ascii.eqlIgnoreCase(pt, "Decimal") or
+        std.ascii.eqlIgnoreCase(pt, "Double"))
+        return 1;
+    if (std.ascii.eqlIgnoreCase(pt, "Object")) return 1;
+    return 0;
+}
+
+fn overload_score_for_long_arg(pt: []const u8) i32 {
+    if (std.ascii.eqlIgnoreCase(pt, "Long")) return 2;
+    if (std.ascii.eqlIgnoreCase(pt, "Decimal") or
+        std.ascii.eqlIgnoreCase(pt, "Double"))
+        return 1;
+    if (std.ascii.eqlIgnoreCase(pt, "Object")) return 1;
+    return 0;
+}
+
+fn overload_score_for_double_arg(pt: []const u8) i32 {
+    if (std.ascii.eqlIgnoreCase(pt, "Decimal") or
+        std.ascii.eqlIgnoreCase(pt, "Double"))
+        return 2;
+    if (std.ascii.eqlIgnoreCase(pt, "Integer") or
+        std.ascii.eqlIgnoreCase(pt, "int") or
+        std.ascii.eqlIgnoreCase(pt, "Long"))
+        return 1;
+    if (std.ascii.eqlIgnoreCase(pt, "Object")) return 1;
+    return 0;
+}
+
 fn overload_score_for_list_arg(list: *types.ListValue, pt: []const u8) i32 {
     if (std.ascii.eqlIgnoreCase(pt, "List")) return 2;
-    if (!std.mem.startsWith(u8, pt, "List<") and !std.mem.startsWith(u8, pt, "list<")) return 0;
+    if (!std.mem.startsWith(u8, pt, "List<") and
+        !std.mem.startsWith(u8, pt, "list<"))
+        return 0;
     const lt = std.mem.indexOf(u8, pt, "<") orelse return 0;
     const gt = std.mem.lastIndexOf(u8, pt, ">") orelse return 0;
     const elem_type = pt[lt + 1 .. gt];
@@ -22934,7 +23047,9 @@ fn overload_score_for_list_arg(list: *types.ListValue, pt: []const u8) i32 {
     if (first == .sobject) {
         if (std.ascii.eqlIgnoreCase(first.sobject.type_name, elem_type)) return 3;
         if (std.mem.lastIndexOfScalar(u8, elem_type, '.')) |di| {
-            if (std.ascii.eqlIgnoreCase(first.sobject.type_name, elem_type[di + 1 ..])) return 3;
+            if (std.ascii.eqlIgnoreCase(first.sobject.type_name, elem_type[di + 1 ..])) {
+                return 3;
+            }
         }
     }
     if (first == .object) {
@@ -22974,7 +23089,9 @@ fn overload_score_for_object_arg(obj: *types.ObjectInstance, pt: []const u8) i32
         return 0;
     }
     if (std.ascii.eqlIgnoreCase(cn, "Datetime")) {
-        if (std.ascii.eqlIgnoreCase(pt, "DateTime") or std.ascii.eqlIgnoreCase(pt, "Datetime")) return 2;
+        if (std.ascii.eqlIgnoreCase(pt, "DateTime") or
+            std.ascii.eqlIgnoreCase(pt, "Datetime"))
+            return 2;
         if (std.ascii.eqlIgnoreCase(pt, "Object")) return 1;
         return 0;
     }
