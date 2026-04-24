@@ -237,7 +237,9 @@ pub fn dispatch_static(
     if (ci.eqlIgnoreCase(class_name, "BusinessHours"))
         return dispatch_static_business_hours(ctx, method_name, args);
     if (ci.eqlIgnoreCase(class_name, "JSON")) return dispatch_static_json(ctx, method_name, args);
-    if (ci.eqlIgnoreCase(class_name, "UserInfo")) return dispatch_static_user_info(ctx, method_name);
+    if (ci.eqlIgnoreCase(class_name, "UserInfo")) {
+        return dispatch_static_user_info(ctx, method_name);
+    }
     if (ci.eqlIgnoreCase(class_name, "LoggingLevel"))
         return dispatch_static_logging_level(ctx, method_name, args);
     if (ci.eqlIgnoreCase(class_name, "Quiddity")) return Value{ .string = method_name };
@@ -320,8 +322,11 @@ pub fn dispatch_static(
         return dispatch_static_feature_management(ctx, method_name, args);
     if (ci.eqlIgnoreCase(class_name, "Limits")) return dispatch_static_limits(ctx, method_name);
     if (ci.eqlIgnoreCase(class_name, "Script") or
-        (std.mem.startsWith(u8, class_name, "DataWeave") and ci.eqlIgnoreCase(method_name, "createScript")))
+        (std.mem.startsWith(u8, class_name, "DataWeave") and
+            ci.eqlIgnoreCase(method_name, "createScript")))
+    {
         return dispatch_static_data_weave(ctx, args);
+    }
     if (ci.eqlIgnoreCase(class_name, "Pattern"))
         return dispatch_static_pattern(ctx, method_name, args);
     if (ci.eqlIgnoreCase(class_name, "Type")) return dispatch_static_type(ctx, method_name, args);
@@ -497,9 +502,18 @@ fn builtins_key_prefix_for_name(name: []const u8) []const u8 {
 // Static dispatch handlers — one per Apex class
 // ---------------------------------------------------------------------------
 
-fn dispatch_static_system(ctx: *BuiltinContext, method_name: []const u8, args: []const Value) !?Value {
+fn dispatch_static_system(
+    ctx: *BuiltinContext,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
     if (std.ascii.eqlIgnoreCase(method_name, "debug")) {
-        const msg = if (args.len >= 2) try utils.coerce_to_string(args[1], ctx.arena) else if (args.len > 0) try utils.coerce_to_string(args[0], ctx.arena) else "";
+        const msg = if (args.len >= 2)
+            try utils.coerce_to_string(args[1], ctx.arena)
+        else if (args.len > 0)
+            try utils.coerce_to_string(args[0], ctx.arena)
+        else
+            "";
         try ctx.stdout.appendSlice(ctx.arena, msg);
         try ctx.stdout.append(ctx.arena, '\n');
         // APEXGOV_DEBUG による stderr echo は 0.16 の Environ 移行に合わせて
@@ -507,14 +521,28 @@ fn dispatch_static_system(ctx: *BuiltinContext, method_name: []const u8, args: [
         return .void_val;
     }
     if (std.ascii.eqlIgnoreCase(method_name, "currentTimeMillis")) return Value{ .integer = 1000 };
-    if (std.ascii.eqlIgnoreCase(method_name, "now")) return try make_datetime_value(ctx.arena, try current_date_time_string(ctx.arena));
-    if (std.ascii.eqlIgnoreCase(method_name, "today")) return try make_date_value(ctx.arena, try current_date_string(ctx.arena));
+    if (std.ascii.eqlIgnoreCase(method_name, "now")) {
+        return try make_datetime_value(
+            ctx.arena,
+            try current_date_time_string(ctx.arena),
+        );
+    }
+    if (std.ascii.eqlIgnoreCase(method_name, "today")) {
+        return try make_date_value(ctx.arena, try current_date_string(ctx.arena));
+    }
     if (std.ascii.eqlIgnoreCase(method_name, "isFuture")) return Value{ .boolean = false };
-    if (std.ascii.eqlIgnoreCase(method_name, "isBatch")) return Value{ .boolean = ctx.eval.active_batch_job_id != null };
-    if (std.ascii.eqlIgnoreCase(method_name, "isQueueable")) return Value{ .boolean = ctx.eval.active_queueable_job_id != null };
+    if (std.ascii.eqlIgnoreCase(method_name, "isBatch")) {
+        return Value{ .boolean = ctx.eval.active_batch_job_id != null };
+    }
+    if (std.ascii.eqlIgnoreCase(method_name, "isQueueable")) {
+        return Value{ .boolean = ctx.eval.active_queueable_job_id != null };
+    }
     if (std.ascii.eqlIgnoreCase(method_name, "isScheduled")) return Value{ .boolean = false };
     if (std.ascii.eqlIgnoreCase(method_name, "attachFinalizer")) {
-        if (ctx.eval.active_queueable_job_id != null and args.len > 0 and args[0] == .object) {
+        if (ctx.eval.active_queueable_job_id != null and
+            args.len > 0 and
+            args[0] == .object)
+        {
             ctx.eval.attached_finalizer = args[0].object;
         }
         return .void_val;
@@ -541,7 +569,11 @@ fn dispatch_static_system(ctx: *BuiltinContext, method_name: []const u8, args: [
     return null;
 }
 
-fn dispatch_static_string(ctx: *BuiltinContext, method_name: []const u8, args: []const Value) !?Value {
+fn dispatch_static_string(
+    ctx: *BuiltinContext,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
     if (std.ascii.eqlIgnoreCase(method_name, "escapeSingleQuotes")) {
         if (args.len > 0 and args[0] == .string) return args[0];
         return Value{ .string = "" };
@@ -556,7 +588,9 @@ fn dispatch_static_string(ctx: *BuiltinContext, method_name: []const u8, args: [
         if (args.len > 0) {
             if (args[0] == .null_val) return Value.null_val;
             return switch (args[0]) {
-                .object, .list, .map, .set, .sobject => Value{ .string = try ctx.eval.value_to_string_public(args[0]) },
+                .object, .list, .map, .set, .sobject => Value{
+                    .string = try ctx.eval.value_to_string_public(args[0]),
+                },
                 else => Value{ .string = try utils.coerce_to_string(args[0], ctx.arena) },
             };
         }
@@ -565,14 +599,22 @@ fn dispatch_static_string(ctx: *BuiltinContext, method_name: []const u8, args: [
     if (std.ascii.eqlIgnoreCase(method_name, "isBlank")) {
         if (args.len > 0) {
             if (args[0] == .null_val) return Value{ .boolean = true };
-            if (args[0] == .string) return Value{ .boolean = std.mem.trim(u8, args[0].string, " \t\r\n").len == 0 };
+            if (args[0] == .string) {
+                return Value{
+                    .boolean = std.mem.trim(u8, args[0].string, " \t\r\n").len == 0,
+                };
+            }
         }
         return Value{ .boolean = true };
     }
     if (std.ascii.eqlIgnoreCase(method_name, "isNotBlank")) {
         if (args.len > 0) {
             if (args[0] == .null_val) return Value{ .boolean = false };
-            if (args[0] == .string) return Value{ .boolean = std.mem.trim(u8, args[0].string, " \t\r\n").len > 0 };
+            if (args[0] == .string) {
+                return Value{
+                    .boolean = std.mem.trim(u8, args[0].string, " \t\r\n").len > 0,
+                };
+            }
         }
         return Value{ .boolean = false };
     }
@@ -598,7 +640,9 @@ fn dispatch_static_string_join(ctx: *BuiltinContext, args: []const Value) !Value
     if (args.len >= 1 and args[0] == .list) {
         if (std.mem.eql(u8, sep, "\n") and args[0].list.items.items.len == 1) {
             const only = args[0].list.items.items[0];
-            if (only == .string and std.mem.eql(u8, only.string, "AnonymousBlock: line 1, column 1")) {
+            if (only == .string and
+                std.mem.eql(u8, only.string, "AnonymousBlock: line 1, column 1"))
+            {
                 // When ignored stack-trace frames collapse down to only the
                 // synthetic anonymous entry point, Salesforce behaves as if
                 // no useful trace remains.
@@ -639,7 +683,8 @@ fn dispatch_static_string_format(ctx: *BuiltinContext, args: []const Value) !Val
                     const idx_str = fmt_str[i + 1 .. close];
                     if (std.fmt.parseInt(usize, idx_str, 10)) |idx| {
                         if (idx < items.len) {
-                            const val_str: []const u8 = utils.coerce_to_string(items[idx], ctx.arena) catch "null";
+                            const val_str: []const u8 =
+                                utils.coerce_to_string(items[idx], ctx.arena) catch "null";
                             result.appendSlice(ctx.arena, val_str) catch {};
                             i = close + 1;
                             continue;
@@ -688,7 +733,13 @@ fn dispatch_static_id(ctx: *BuiltinContext, method_name: []const u8, args: []con
                     suffix[chunk_idx] = checksum_chars[mask];
                 }
 
-                break :blk Value{ .string = try std.fmt.allocPrint(ctx.arena, "{s}{s}", .{ s, suffix[0..] }) };
+                break :blk Value{
+                    .string = try std.fmt.allocPrint(
+                        ctx.arena,
+                        "{s}{s}",
+                        .{ s, suffix[0..] },
+                    ),
+                };
             },
             else => Value.null_val,
         };
@@ -696,11 +747,18 @@ fn dispatch_static_id(ctx: *BuiltinContext, method_name: []const u8, args: []con
     return null;
 }
 
-fn dispatch_static_integer(ctx: *BuiltinContext, method_name: []const u8, args: []const Value) !?Value {
+fn dispatch_static_integer(
+    ctx: *BuiltinContext,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
     if (std.ascii.eqlIgnoreCase(method_name, "valueOf") and args.len > 0) {
         return switch (args[0]) {
             .string => |s| Value{ .integer = std.fmt.parseInt(i64, s, 10) catch {
-                return ctx.throw_exception("System.TypeException", try std.fmt.allocPrint(ctx.arena, "Invalid integer: {s}", .{s}));
+                return ctx.throw_exception(
+                    "System.TypeException",
+                    try std.fmt.allocPrint(ctx.arena, "Invalid integer: {s}", .{s}),
+                );
             } },
             .integer => args[0],
             .long => |l| Value{ .integer = l },
@@ -712,11 +770,18 @@ fn dispatch_static_integer(ctx: *BuiltinContext, method_name: []const u8, args: 
     return Value.null_val;
 }
 
-fn dispatch_static_long(ctx: *BuiltinContext, method_name: []const u8, args: []const Value) !?Value {
+fn dispatch_static_long(
+    ctx: *BuiltinContext,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
     if (std.ascii.eqlIgnoreCase(method_name, "valueOf") and args.len > 0) {
         return switch (args[0]) {
             .string => |s| Value{ .long = std.fmt.parseInt(i64, s, 10) catch {
-                return ctx.throw_exception("System.TypeException", try std.fmt.allocPrint(ctx.arena, "Invalid long: {s}", .{s}));
+                return ctx.throw_exception(
+                    "System.TypeException",
+                    try std.fmt.allocPrint(ctx.arena, "Invalid long: {s}", .{s}),
+                );
             } },
             .integer => |i| Value{ .long = i },
             .long => args[0],
@@ -740,7 +805,11 @@ fn dispatch_static_boolean(method_name: []const u8, args: []const Value) !?Value
     return Value{ .boolean = false };
 }
 
-fn dispatch_static_decimal(ctx: *BuiltinContext, method_name: []const u8, args: []const Value) !?Value {
+fn dispatch_static_decimal(
+    ctx: *BuiltinContext,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
     if (std.ascii.eqlIgnoreCase(method_name, "valueOf") and args.len > 0) {
         return switch (args[0]) {
             .null_val => Value.null_val,
@@ -755,7 +824,10 @@ fn dispatch_static_decimal(ctx: *BuiltinContext, method_name: []const u8, args: 
                     } else |_| {}
                 }
                 const parsed = std.fmt.parseFloat(f64, s) catch {
-                    return ctx.throw_exception("System.TypeException", try std.fmt.allocPrint(ctx.arena, "Invalid decimal: {s}", .{s}));
+                    return ctx.throw_exception(
+                        "System.TypeException",
+                        try std.fmt.allocPrint(ctx.arena, "Invalid decimal: {s}", .{s}),
+                    );
                 };
                 break :blk Value{ .double = parsed };
             },
@@ -768,13 +840,20 @@ fn dispatch_static_decimal(ctx: *BuiltinContext, method_name: []const u8, args: 
     return Value{ .double = 0.0 };
 }
 
-fn dispatch_static_double_class(ctx: *BuiltinContext, method_name: []const u8, args: []const Value) !?Value {
+fn dispatch_static_double_class(
+    ctx: *BuiltinContext,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
     if (std.ascii.eqlIgnoreCase(method_name, "valueOf") and args.len > 0) {
         return switch (args[0]) {
             .null_val => Value.null_val,
             .string => |s| blk: {
                 const parsed = std.fmt.parseFloat(f64, s) catch {
-                    return ctx.throw_exception("System.TypeException", try std.fmt.allocPrint(ctx.arena, "Invalid double: {s}", .{s}));
+                    return ctx.throw_exception(
+                        "System.TypeException",
+                        try std.fmt.allocPrint(ctx.arena, "Invalid double: {s}", .{s}),
+                    );
                 };
                 break :blk Value{ .double = parsed };
             },
@@ -787,8 +866,14 @@ fn dispatch_static_double_class(ctx: *BuiltinContext, method_name: []const u8, a
     return Value{ .double = 0.0 };
 }
 
-fn dispatch_static_date(ctx: *BuiltinContext, method_name: []const u8, args: []const Value) !?Value {
-    if (std.ascii.eqlIgnoreCase(method_name, "today")) return try make_date_value(ctx.arena, try current_date_string(ctx.arena));
+fn dispatch_static_date(
+    ctx: *BuiltinContext,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
+    if (std.ascii.eqlIgnoreCase(method_name, "today")) {
+        return try make_date_value(ctx.arena, try current_date_string(ctx.arena));
+    }
     if (std.ascii.eqlIgnoreCase(method_name, "newInstance")) {
         if (args.len >= 3) {
             const y = switch (args[0]) {
@@ -839,42 +924,82 @@ fn dispatch_static_math(method_name: []const u8, args: []const Value) !?Value {
     }
     if (std.ascii.eqlIgnoreCase(method_name, "abs")) {
         if (args.len > 0) {
-            if (args[0] == .integer) return Value{ .integer = if (args[0].integer < 0) -args[0].integer else args[0].integer };
+            if (args[0] == .integer) {
+                return Value{
+                    .integer = if (args[0].integer < 0)
+                        -args[0].integer
+                    else
+                        args[0].integer,
+                };
+            }
             if (args[0] == .double) return Value{ .double = @abs(args[0].double) };
         }
         return Value{ .integer = 0 };
     }
-    if (std.ascii.eqlIgnoreCase(method_name, "floor") or std.ascii.eqlIgnoreCase(method_name, "ceil") or std.ascii.eqlIgnoreCase(method_name, "round")) {
+    if (std.ascii.eqlIgnoreCase(method_name, "floor") or
+        std.ascii.eqlIgnoreCase(method_name, "ceil") or
+        std.ascii.eqlIgnoreCase(method_name, "round"))
+    {
         if (args.len > 0) {
             if (args[0] == .double) {
-                if (std.ascii.eqlIgnoreCase(method_name, "floor")) return Value{ .double = @floor(args[0].double) };
-                if (std.ascii.eqlIgnoreCase(method_name, "ceil")) return Value{ .double = @ceil(args[0].double) };
+                if (std.ascii.eqlIgnoreCase(method_name, "floor")) {
+                    return Value{ .double = @floor(args[0].double) };
+                }
+                if (std.ascii.eqlIgnoreCase(method_name, "ceil")) {
+                    return Value{ .double = @ceil(args[0].double) };
+                }
                 return Value{ .integer = @intFromFloat(@round(args[0].double)) };
             }
             if (args[0] == .integer) return args[0];
         }
         return Value{ .integer = 0 };
     }
-    if (std.ascii.eqlIgnoreCase(method_name, "max") or std.ascii.eqlIgnoreCase(method_name, "min")) {
-        if (args.len >= 2) {
-            const a = if (args[0] == .double) args[0].double else if (args[0] == .integer) @as(f64, @floatFromInt(args[0].integer)) else 0.0;
-            const b = if (args[1] == .double) args[1].double else if (args[1] == .integer) @as(f64, @floatFromInt(args[1].integer)) else 0.0;
-            const result = if (std.ascii.eqlIgnoreCase(method_name, "max")) @max(a, b) else @min(a, b);
-            if (args[0] == .integer and args[1] == .integer) return Value{ .integer = @intFromFloat(result) };
-            return Value{ .double = result };
-        }
-        return Value{ .integer = 0 };
+    if (std.ascii.eqlIgnoreCase(method_name, "max") or
+        std.ascii.eqlIgnoreCase(method_name, "min"))
+    {
+        return dispatch_static_math_extrema(method_name, args);
     }
     if (std.ascii.eqlIgnoreCase(method_name, "mod")) {
         if (args.len >= 2 and args[0] == .integer and args[1] == .integer) {
-            if (args[1].integer != 0) return Value{ .integer = @mod(args[0].integer, args[1].integer) };
+            if (args[1].integer != 0) {
+                return Value{ .integer = @mod(args[0].integer, args[1].integer) };
+            }
         }
         return Value{ .integer = 0 };
     }
     return Value{ .double = 0 };
 }
 
-fn dispatch_static_time(ctx: *BuiltinContext, method_name: []const u8, args: []const Value) !?Value {
+fn dispatch_static_math_extrema(method_name: []const u8, args: []const Value) Value {
+    if (args.len < 2) return Value{ .integer = 0 };
+
+    const a = if (args[0] == .double)
+        args[0].double
+    else if (args[0] == .integer)
+        @as(f64, @floatFromInt(args[0].integer))
+    else
+        0.0;
+    const b = if (args[1] == .double)
+        args[1].double
+    else if (args[1] == .integer)
+        @as(f64, @floatFromInt(args[1].integer))
+    else
+        0.0;
+    const result = if (std.ascii.eqlIgnoreCase(method_name, "max"))
+        @max(a, b)
+    else
+        @min(a, b);
+    if (args[0] == .integer and args[1] == .integer) {
+        return Value{ .integer = @intFromFloat(result) };
+    }
+    return Value{ .double = result };
+}
+
+fn dispatch_static_time(
+    ctx: *BuiltinContext,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
     if (std.ascii.eqlIgnoreCase(method_name, "newInstance")) {
         const clamp = struct {
             fn run(v: i64, max: i64) u32 {
@@ -887,7 +1012,11 @@ fn dispatch_static_time(ctx: *BuiltinContext, method_name: []const u8, args: []c
         const m = clamp(if (args.len > 1 and args[1] == .integer) args[1].integer else 0, 59);
         const s = clamp(if (args.len > 2 and args[2] == .integer) args[2].integer else 0, 59);
         const ms = clamp(if (args.len > 3 and args[3] == .integer) args[3].integer else 0, 999);
-        const time_str = try std.fmt.allocPrint(ctx.arena, "{d:0>2}:{d:0>2}:{d:0>2}.{d:0>3}", .{ h, m, s, ms });
+        const time_str = try std.fmt.allocPrint(
+            ctx.arena,
+            "{d:0>2}:{d:0>2}:{d:0>2}.{d:0>3}",
+            .{ h, m, s, ms },
+        );
         const obj = try ctx.arena.create(types.ObjectInstance);
         obj.* = .{ .class_name = "Time" };
         try obj.fields.put(ctx.arena, "value", Value{ .string = time_str });
@@ -900,7 +1029,11 @@ fn dispatch_static_time(ctx: *BuiltinContext, method_name: []const u8, args: []c
     return Value.null_val;
 }
 
-fn dispatch_static_time_zone(ctx: *BuiltinContext, method_name: []const u8, args: []const Value) !?Value {
+fn dispatch_static_time_zone(
+    ctx: *BuiltinContext,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
     _ = ctx;
     if (std.ascii.eqlIgnoreCase(method_name, "getTimeZone")) {
         if (args.len > 0 and args[0] == .string) return Value{ .string = args[0].string };
@@ -909,7 +1042,11 @@ fn dispatch_static_time_zone(ctx: *BuiltinContext, method_name: []const u8, args
     return Value.null_val;
 }
 
-fn dispatch_static_date_time(ctx: *BuiltinContext, method_name: []const u8, args: []const Value) !?Value {
+fn dispatch_static_date_time(
+    ctx: *BuiltinContext,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
     const fromEpochMillis = struct {
         fn convert(ctx2: *BuiltinContext, ms: i64) !Value {
             const total_secs = @divTrunc(ms, 1000);
@@ -919,10 +1056,21 @@ fn dispatch_static_date_time(ctx: *BuiltinContext, method_name: []const u8, args
             const yd = epoch_day.calculateYearDay();
             const md = yd.calculateMonthDay();
             const ds = es.getDaySeconds();
-            return make_datetime_value(ctx2.arena, try std.fmt.allocPrint(ctx2.arena, "{d:0>4}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}Z", .{
-                yd.year,              md.month.numeric(),      md.day_index + 1,
-                ds.getHoursIntoDay(), ds.getMinutesIntoHour(), ds.getSecondsIntoMinute(),
-            }));
+            return make_datetime_value(
+                ctx2.arena,
+                try std.fmt.allocPrint(
+                    ctx2.arena,
+                    "{d:0>4}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}Z",
+                    .{
+                        yd.year,
+                        md.month.numeric(),
+                        md.day_index + 1,
+                        ds.getHoursIntoDay(),
+                        ds.getMinutesIntoHour(),
+                        ds.getSecondsIntoMinute(),
+                    },
+                ),
+            );
         }
     };
     const numericAsI64 = struct {

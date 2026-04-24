@@ -339,7 +339,8 @@ pub const Evaluator = struct {
         );
     }
 
-    /// Create a synthetic User record for UserInfo.getUserId() — used by SOQL when no User records exist in store
+    /// Create a synthetic User record for UserInfo.getUserId()
+    /// — used by SOQL when no User records exist in store
     pub fn create_current_user_record(self: *Evaluator) !Value {
         if (self.store.get("User")) |users| {
             for (users.items) |existing| {
@@ -527,7 +528,12 @@ pub const Evaluator = struct {
         const fn_end_tag = "</fullName>";
         const fn_start = std.mem.indexOf(u8, block, fn_tag) orelse return null;
         const fn_content_start = fn_start + fn_tag.len;
-        const fn_end = std.mem.indexOfPos(u8, block, fn_content_start, fn_end_tag) orelse return null;
+        const fn_end = std.mem.indexOfPos(
+            u8,
+            block,
+            fn_content_start,
+            fn_end_tag,
+        ) orelse return null;
         const full_name = block[fn_content_start..fn_end];
         if (!std.mem.eql(u8, full_name, api_name)) return null;
 
@@ -535,7 +541,12 @@ pub const Evaluator = struct {
         const lbl_end_tag = "</label>";
         const lbl_start = std.mem.indexOf(u8, block, lbl_tag) orelse return null;
         const lbl_content_start = lbl_start + lbl_tag.len;
-        const lbl_end = std.mem.indexOfPos(u8, block, lbl_content_start, lbl_end_tag) orelse return null;
+        const lbl_end = std.mem.indexOfPos(
+            u8,
+            block,
+            lbl_content_start,
+            lbl_end_tag,
+        ) orelse return null;
         return block[lbl_content_start..lbl_end];
     }
 
@@ -564,7 +575,9 @@ pub const Evaluator = struct {
         const profile = try self.arena.create(types.SObject);
         profile.* = .{ .type_name = "Profile" };
         // Extract Name value from WHERE clause: WHERE Name = 'Xyz' or WHERE Name = :var
-        const profile_name = self.extract_where_field_value(soql, "Name", current_env) orelse "System Administrator";
+        const profile_name =
+            self.extract_where_field_value(soql, "Name", current_env) orelse
+            "System Administrator";
         const profile_id = try self.alloc_id();
         profile.id = profile_id;
         try profile.fields.put(self.arena, "Id", Value{ .string = profile_id });
@@ -573,15 +586,35 @@ pub const Evaluator = struct {
         return Value{ .sobject = profile };
     }
 
-    fn populate_synthetic_profile(self: *Evaluator, profile: *types.SObject, profile_name: []const u8) !void {
+    fn populate_synthetic_profile(
+        self: *Evaluator,
+        profile: *types.SObject,
+        profile_name: []const u8,
+    ) !void {
         try profile.fields.put(self.arena, "Name", Value{ .string = profile_name });
 
         const is_guest_profile = std.ascii.indexOfIgnoreCase(profile_name, "Guest") != null;
-        try profile.fields.put(self.arena, "UserType", Value{ .string = if (is_guest_profile) "Guest" else "Standard" });
+        try profile.fields.put(
+            self.arena,
+            "UserType",
+            Value{ .string = if (is_guest_profile) "Guest" else "Standard" },
+        );
         if (!is_guest_profile) {
-            try profile.fields.put(self.arena, "PermissionsPrivacyDataAccess", Value{ .boolean = false });
-            try profile.fields.put(self.arena, "PermissionsSubmitMacrosAllowed", Value{ .boolean = true });
-            try profile.fields.put(self.arena, "PermissionsMassInlineEdit", Value{ .boolean = true });
+            try profile.fields.put(
+                self.arena,
+                "PermissionsPrivacyDataAccess",
+                Value{ .boolean = false },
+            );
+            try profile.fields.put(
+                self.arena,
+                "PermissionsSubmitMacrosAllowed",
+                Value{ .boolean = true },
+            );
+            try profile.fields.put(
+                self.arena,
+                "PermissionsMassInlineEdit",
+                Value{ .boolean = true },
+            );
         }
 
         const license = try self.arena.create(types.SObject);
@@ -591,7 +624,11 @@ pub const Evaluator = struct {
         try license.fields.put(self.arena, "Id", Value{ .string = license_id });
         if (is_guest_profile) {
             try license.fields.put(self.arena, "Name", Value{ .string = "Guest User License" });
-            try license.fields.put(self.arena, "LicenseDefinitionKey", Value{ .string = "PID_Guest_User" });
+            try license.fields.put(
+                self.arena,
+                "LicenseDefinitionKey",
+                Value{ .string = "PID_Guest_User" },
+            );
         } else {
             try license.fields.put(self.arena, "Name", Value{ .string = "Salesforce" });
             try license.fields.put(self.arena, "LicenseDefinitionKey", Value{ .string = "SFDC" });
@@ -600,7 +637,12 @@ pub const Evaluator = struct {
         try profile.fields.put(self.arena, "UserLicense", Value{ .sobject = license });
     }
 
-    fn apply_queried_synthetic_profile_flags(self: *Evaluator, profile: *types.SObject, soql: []const u8, current_env: *Env) !void {
+    fn apply_queried_synthetic_profile_flags(
+        self: *Evaluator,
+        profile: *types.SObject,
+        soql: []const u8,
+        current_env: *Env,
+    ) !void {
         const where_clause = extract_where_clause(soql) orelse return;
         var seen: std.StringArrayHashMapUnmanaged(void) = .empty;
         var pos: usize = 0;
@@ -651,12 +693,23 @@ pub const Evaluator = struct {
                 if (record != .sobject or record.sobject.id == null) continue;
                 if (!std.ascii.eqlIgnoreCase(record.sobject.id.?, user_id)) continue;
                 if (utils.sobject_get(&record.sobject.fields, "UserType")) |user_type| {
-                    if (user_type == .string and std.ascii.eqlIgnoreCase(user_type.string, "Guest")) return true;
+                    if (user_type == .string and
+                        std.ascii.eqlIgnoreCase(user_type.string, "Guest"))
+                    {
+                        return true;
+                    }
                 }
                 if (utils.sobject_get(&record.sobject.fields, "Profile")) |profile_val| {
                     if (profile_val == .sobject) {
-                        if (utils.sobject_get(&profile_val.sobject.fields, "UserType")) |profile_user_type| {
-                            if (profile_user_type == .string and std.ascii.eqlIgnoreCase(profile_user_type.string, "Guest")) return true;
+                        if (utils.sobject_get(
+                            &profile_val.sobject.fields,
+                            "UserType",
+                        )) |profile_user_type| {
+                            if (profile_user_type == .string and
+                                std.ascii.eqlIgnoreCase(profile_user_type.string, "Guest"))
+                            {
+                                return true;
+                            }
                         }
                     }
                 }
@@ -666,13 +719,22 @@ pub const Evaluator = struct {
         return false;
     }
 
-    fn has_exact_where_field_comparison(self: *Evaluator, soql: []const u8, field_name: []const u8) bool {
+    fn has_exact_where_field_comparison(
+        self: *Evaluator,
+        soql: []const u8,
+        field_name: []const u8,
+    ) bool {
         _ = self;
         const where_clause = extract_where_clause(soql) orelse return false;
         var pos: usize = 0;
         while (pos + field_name.len <= where_clause.len) : (pos += 1) {
-            if (!std.ascii.eqlIgnoreCase(where_clause[pos .. pos + field_name.len], field_name)) continue;
-            if (!(pos == 0 or is_soql_whitespace(where_clause[pos - 1]) or where_clause[pos - 1] == '(')) continue;
+            if (!std.ascii.eqlIgnoreCase(
+                where_clause[pos .. pos + field_name.len],
+                field_name,
+            )) continue;
+            if (!(pos == 0 or
+                is_soql_whitespace(where_clause[pos - 1]) or
+                where_clause[pos - 1] == '(')) continue;
             var j = pos + field_name.len;
             while (j < where_clause.len and is_soql_whitespace(where_clause[j])) j += 1;
             if (j < where_clause.len and where_clause[j] == '=') return true;
@@ -680,16 +742,29 @@ pub const Evaluator = struct {
         return false;
     }
 
-    fn has_where_field_like_comparison(self: *Evaluator, soql: []const u8, field_name: []const u8) bool {
+    fn has_where_field_like_comparison(
+        self: *Evaluator,
+        soql: []const u8,
+        field_name: []const u8,
+    ) bool {
         _ = self;
         const where_clause = extract_where_clause(soql) orelse return false;
         var pos: usize = 0;
         while (pos + field_name.len <= where_clause.len) : (pos += 1) {
-            if (!std.ascii.eqlIgnoreCase(where_clause[pos .. pos + field_name.len], field_name)) continue;
-            if (!(pos == 0 or is_soql_whitespace(where_clause[pos - 1]) or where_clause[pos - 1] == '(')) continue;
+            if (!std.ascii.eqlIgnoreCase(
+                where_clause[pos .. pos + field_name.len],
+                field_name,
+            )) continue;
+            if (!(pos == 0 or
+                is_soql_whitespace(where_clause[pos - 1]) or
+                where_clause[pos - 1] == '(')) continue;
             var j = pos + field_name.len;
             while (j < where_clause.len and is_soql_whitespace(where_clause[j])) j += 1;
-            if (j + 4 <= where_clause.len and std.ascii.eqlIgnoreCase(where_clause[j .. j + 4], "LIKE")) return true;
+            if (j + 4 <= where_clause.len and
+                std.ascii.eqlIgnoreCase(where_clause[j .. j + 4], "LIKE"))
+            {
+                return true;
+            }
         }
         return false;
     }
@@ -735,10 +810,12 @@ pub const Evaluator = struct {
         }
         const user = try self.arena.create(types.SObject);
         const alias = self.extract_where_field_value(soql, "Alias", current_env) orelse "tuser";
-        const username = self.extract_where_field_value(soql, "Username", current_env) orelse if (std.ascii.startsWithIgnoreCase(alias, "autoproc"))
-            "autoproc@example.com"
-        else
-            "testuser@example.com";
+        const username =
+            self.extract_where_field_value(soql, "Username", current_env) orelse
+            if (std.ascii.startsWithIgnoreCase(alias, "autoproc"))
+                "autoproc@example.com"
+            else
+                "testuser@example.com";
         const user_id = try std.fmt.allocPrint(self.arena, "005{d:0>15}", .{self.next_id});
         self.next_id += 1;
         user.* = .{ .type_name = "User", .id = user_id };
@@ -748,29 +825,50 @@ pub const Evaluator = struct {
         try user.fields.put(self.arena, "Alias", Value{ .string = alias });
         try user.fields.put(self.arena, "TimeZoneSidKey", Value{ .string = "America/Los_Angeles" });
 
-        const is_automated_process = std.ascii.startsWithIgnoreCase(username, "autoproc@") or std.ascii.startsWithIgnoreCase(alias, "autoproc");
-        const has_null_profile = self.has_where_field_null_literal(soql, "Profile.Name");
-        const profile_name_opt = if (self.has_exact_where_field_comparison(soql, "Profile.Name") and !has_null_profile)
-            self.extract_where_field_value(soql, "Profile.Name", current_env)
-        else
-            null;
-        const explicit_user_type = if (self.has_exact_where_field_comparison(soql, "Profile.UserType"))
-            self.extract_where_field_value(soql, "Profile.UserType", current_env)
-        else if (self.has_exact_where_field_comparison(soql, "UserType"))
-            self.extract_where_field_value(soql, "UserType", current_env)
-        else
-            null;
+        const is_automated_process =
+            std.ascii.startsWithIgnoreCase(username, "autoproc@") or
+            std.ascii.startsWithIgnoreCase(alias, "autoproc");
+        const has_null_profile =
+            self.has_where_field_null_literal(soql, "Profile.Name");
+        const profile_name_opt =
+            if (self.has_exact_where_field_comparison(soql, "Profile.Name") and
+            !has_null_profile)
+                self.extract_where_field_value(soql, "Profile.Name", current_env)
+            else
+                null;
+        const explicit_user_type =
+            if (self.has_exact_where_field_comparison(soql, "Profile.UserType"))
+                self.extract_where_field_value(soql, "Profile.UserType", current_env)
+            else if (self.has_exact_where_field_comparison(soql, "UserType"))
+                self.extract_where_field_value(soql, "UserType", current_env)
+            else
+                null;
 
-        const should_materialize_profile = (!is_automated_process and !has_null_profile) or profile_name_opt != null or explicit_user_type != null;
+        const should_materialize_profile =
+            (!is_automated_process and !has_null_profile) or
+            profile_name_opt != null or
+            explicit_user_type != null;
         if (should_materialize_profile) {
             try self.attach_synthetic_profile_to_user(user, profile_name_opt, explicit_user_type);
         } else {
-            try user.fields.put(self.arena, "UserType", Value{ .string = "AutomatedProcess" });
+            try user.fields.put(
+                self.arena,
+                "UserType",
+                Value{ .string = "AutomatedProcess" },
+            );
         }
 
         try user.fields.put(self.arena, "FirstName", Value{ .string = "Test" });
-        try user.fields.put(self.arena, "LastName", Value{ .string = if (is_automated_process) "Process" else "User" });
-        try user.fields.put(self.arena, "Name", Value{ .string = if (is_automated_process) "Automated Process" else "Test User" });
+        try user.fields.put(
+            self.arena,
+            "LastName",
+            Value{ .string = if (is_automated_process) "Process" else "User" },
+        );
+        try user.fields.put(
+            self.arena,
+            "Name",
+            Value{ .string = if (is_automated_process) "Automated Process" else "Test User" },
+        );
         return Value{ .sobject = user };
     }
 
@@ -783,10 +881,14 @@ pub const Evaluator = struct {
         profile_name_opt: ?[]const u8,
         explicit_user_type: ?[]const u8,
     ) !void {
-        const profile_name = profile_name_opt orelse if (explicit_user_type) |user_type|
-            (if (std.ascii.eqlIgnoreCase(user_type, "Guest")) "Logger Test LWR Site Guest Profile" else "Standard User")
-        else
-            "Standard User";
+        const profile_name =
+            profile_name_opt orelse if (explicit_user_type) |user_type|
+                (if (std.ascii.eqlIgnoreCase(user_type, "Guest"))
+                    "Logger Test LWR Site Guest Profile"
+                else
+                    "Standard User")
+            else
+                "Standard User";
         const profile = if (self.find_profile_by_name(profile_name)) |existing|
             existing
         else blk: {
@@ -811,7 +913,11 @@ pub const Evaluator = struct {
         }
     }
 
-    fn append_record_ids_from_value(self: *Evaluator, value: Value, record_ids: *std.ArrayListUnmanaged([]const u8)) !void {
+    fn append_record_ids_from_value(
+        self: *Evaluator,
+        value: Value,
+        record_ids: *std.ArrayListUnmanaged([]const u8),
+    ) !void {
         switch (value) {
             .string => |s| if (s.len > 0) try record_ids.append(self.arena, s),
             .sobject => |sob| if (sob.id) |id| try record_ids.append(self.arena, id),
@@ -848,14 +954,23 @@ pub const Evaluator = struct {
         return true;
     }
 
-    fn seed_user_record_access_records(self: *Evaluator, soql: []const u8, current_env: *Env, records: *std.ArrayListUnmanaged(Value)) !void {
+    fn seed_user_record_access_records(
+        self: *Evaluator,
+        soql: []const u8,
+        current_env: *Env,
+        records: *std.ArrayListUnmanaged(Value),
+    ) !void {
         const where_clause = extract_where_clause(soql) orelse return;
-        const requested_user_id = self.extract_where_field_value(soql, "UserId", current_env) orelse blk: {
-            if (std.ascii.indexOfIgnoreCase(where_clause, "UserId = :System.UserInfo.getUserId()") != null) {
-                break :blk self.current_user_id;
-            }
-            break :blk null;
-        };
+        const requested_user_id =
+            self.extract_where_field_value(soql, "UserId", current_env) orelse blk: {
+                if (std.ascii.indexOfIgnoreCase(
+                    where_clause,
+                    "UserId = :System.UserInfo.getUserId()",
+                ) != null) {
+                    break :blk self.current_user_id;
+                }
+                break :blk null;
+            };
         if (requested_user_id) |user_id| {
             if (!std.ascii.eqlIgnoreCase(user_id, self.current_user_id)) return;
         }
@@ -885,9 +1000,21 @@ pub const Evaluator = struct {
             try access.fields.put(self.arena, "Id", Value{ .string = access_id });
             try access.fields.put(self.arena, "UserId", Value{ .string = self.current_user_id });
             try access.fields.put(self.arena, "RecordId", Value{ .string = record_id });
-            try access.fields.put(self.arena, "HasReadAccess", Value{ .boolean = has_delete_access });
-            try access.fields.put(self.arena, "HasEditAccess", Value{ .boolean = has_delete_access });
-            try access.fields.put(self.arena, "HasDeleteAccess", Value{ .boolean = has_delete_access });
+            try access.fields.put(
+                self.arena,
+                "HasReadAccess",
+                Value{ .boolean = has_delete_access },
+            );
+            try access.fields.put(
+                self.arena,
+                "HasEditAccess",
+                Value{ .boolean = has_delete_access },
+            );
+            try access.fields.put(
+                self.arena,
+                "HasDeleteAccess",
+                Value{ .boolean = has_delete_access },
+            );
 
             const access_value = Value{ .sobject = access };
             if (self.matches_where(access_value, soql, current_env)) {
@@ -896,11 +1023,20 @@ pub const Evaluator = struct {
         }
     }
 
-    /// Seed stub records for setup objects queried with IN clause (PermissionSet, PermissionSetLicense, etc.).
-    /// Extracts names from WHERE Name/DeveloperName IN (:var) or IN ('a','b') and creates a stub for each.
-    fn seed_named_records(self: *Evaluator, obj_type: []const u8, soql: []const u8, current_env: *Env, records: *std.ArrayListUnmanaged(Value)) !void {
+    /// Seed stub records for setup objects queried with IN clause
+    /// (PermissionSet, PermissionSetLicense, etc.).
+    /// Extracts names from WHERE Name/DeveloperName IN (:var)
+    /// or IN ('a','b') and creates a stub for each.
+    fn seed_named_records(
+        self: *Evaluator,
+        obj_type: []const u8,
+        soql: []const u8,
+        current_env: *Env,
+        records: *std.ArrayListUnmanaged(Value),
+    ) !void {
         const where_clause = extract_where_clause(soql) orelse return;
-        // Collect names from the IN clause — supports both bind variables (Set/List) and literal lists
+        // Collect names from the IN clause
+        // — supports both bind variables (Set/List) and literal lists
         var names: std.ArrayListUnmanaged([]const u8) = .empty;
         // Check for IN :var pattern
         if (std.ascii.indexOfIgnoreCase(where_clause, " IN :")) |in_pos| {
