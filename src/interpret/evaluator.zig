@@ -23099,7 +23099,13 @@ fn overload_score_for_object_arg(obj: *types.ObjectInstance, pt: []const u8) i32
     return 0;
 }
 
-fn eval_binary(eval: *Evaluator, left: Value, op: ast.BinaryOp, right: Value, arena: std.mem.Allocator) !Value {
+fn eval_binary(
+    eval: *Evaluator,
+    left: Value,
+    op: ast.BinaryOp,
+    right: Value,
+    arena: std.mem.Allocator,
+) !Value {
     const TemporalComparable = struct {
         fn normalize(raw: []const u8) []const u8 {
             if (raw.len > 10 and std.mem.indexOf(u8, raw, "T") != null) {
@@ -23113,16 +23119,17 @@ fn eval_binary(eval: *Evaluator, left: Value, op: ast.BinaryOp, right: Value, ar
         fn from_value(value: Value) ?[]const u8 {
             return switch (value) {
                 .object => |obj| blk: {
-                    if (!std.ascii.eqlIgnoreCase(obj.class_name, "Date") and !std.ascii.eqlIgnoreCase(obj.class_name, "Datetime")) {
-                        break :blk null;
-                    }
+                    const date_object = std.ascii.eqlIgnoreCase(obj.class_name, "Date") or
+                        std.ascii.eqlIgnoreCase(obj.class_name, "Datetime");
+                    if (!date_object) break :blk null;
                     const raw = obj.fields.get("value") orelse break :blk null;
                     if (raw != .string) break :blk null;
                     break :blk normalize(raw.string);
                 },
                 .string => |raw| blk: {
                     const normalized = normalize(raw);
-                    const is_date_like = normalized.len >= 10 and normalized[4] == '-' and normalized[7] == '-';
+                    const is_date_like =
+                        normalized.len >= 10 and normalized[4] == '-' and normalized[7] == '-';
                     if (!is_date_like) break :blk null;
                     break :blk normalized;
                 },
@@ -23136,8 +23143,8 @@ fn eval_binary(eval: *Evaluator, left: Value, op: ast.BinaryOp, right: Value, ar
         .neq => return .{ .boolean = !eval.values_equal(left, right) },
         .strict_eq => return .{ .boolean = eval.strict_values_equal(left, right) },
         .strict_neq => return .{ .boolean = !eval.strict_values_equal(left, right) },
-        .and_op => return .{ .boolean = (utils.coerce_to_bool(left) catch false) and (utils.coerce_to_bool(right) catch false) },
-        .or_op => return .{ .boolean = (utils.coerce_to_bool(left) catch false) or (utils.coerce_to_bool(right) catch false) },
+        .and_op => return .{ .boolean = coerced_bool(left) and coerced_bool(right) },
+        .or_op => return .{ .boolean = coerced_bool(left) or coerced_bool(right) },
         .bit_and, .bit_or, .bit_xor => {
             // Apex accepts `&`/`|`/`^` on both Boolean and integer operands. Preserve
             // the operand type: two Booleans produce a Boolean, mixed integer/long
@@ -23179,7 +23186,7 @@ fn eval_binary(eval: *Evaluator, left: Value, op: ast.BinaryOp, right: Value, ar
         else => {},
     }
 
-    if ((left == .integer or left == .long) and (right == .integer or right == .long)) {
+    if (integer_like_values(left, right)) {
         const li = if (left == .integer) left.integer else left.long;
         const ri = if (right == .integer) right.integer else right.long;
         const use_long = left == .long or right == .long;
@@ -23208,20 +23215,20 @@ fn eval_binary(eval: *Evaluator, left: Value, op: ast.BinaryOp, right: Value, ar
         } };
     }
 
-    if ((left == .double or left == .integer or left == .long) and (right == .double or right == .integer or right == .long)) {
-        const l = if (left == .double) left.double else if (left == .integer) @as(f64, @floatFromInt(left.integer)) else @as(f64, @floatFromInt(left.long));
-        const r = if (right == .double) right.double else if (right == .integer) @as(f64, @floatFromInt(right.integer)) else @as(f64, @floatFromInt(right.long));
-        return switch (op) {
-            .add => .{ .double = l + r },
-            .sub => .{ .double = l - r },
-            .mul => .{ .double = l * r },
-            .div => .{ .double = if (r != 0) l / r else 0 },
-            .lt => .{ .boolean = l < r },
-            .gt => .{ .boolean = l > r },
-            .lte => .{ .boolean = l <= r },
-            .gte => .{ .boolean = l >= r },
-            else => .null_val,
-        };
+    if (numeric_value_as_f64(left)) |l| {
+        if (numeric_value_as_f64(right)) |r| {
+            return switch (op) {
+                .add => .{ .double = l + r },
+                .sub => .{ .double = l - r },
+                .mul => .{ .double = l * r },
+                .div => .{ .double = if (r != 0) l / r else 0 },
+                .lt => .{ .boolean = l < r },
+                .gt => .{ .boolean = l > r },
+                .lte => .{ .boolean = l <= r },
+                .gte => .{ .boolean = l >= r },
+                else => .null_val,
+            };
+        }
     }
 
     // String concatenation
@@ -23249,11 +23256,9 @@ fn eval_binary(eval: *Evaluator, left: Value, op: ast.BinaryOp, right: Value, ar
     if (left == .object and right == .object) {
         const left_cn = left.object.class_name;
         const right_cn = right.object.class_name;
-        if ((std.ascii.eqlIgnoreCase(left_cn, "Date") or std.ascii.eqlIgnoreCase(left_cn, "Datetime")) and
-            (std.ascii.eqlIgnoreCase(right_cn, "Date") or std.ascii.eqlIgnoreCase(right_cn, "Datetime")))
-        {
-            const lv = if (left.object.fields.get("value")) |v| (if (v == .string) v.string else "") else "";
-            const rv = if (right.object.fields.get("value")) |v| (if (v == .string) v.string else "") else "";
+        if (date_or_datetime_class(left_cn) and date_or_datetime_class(right_cn)) {
+            const lv = object_string_field_or_empty(left.object, "value");
+            const rv = object_string_field_or_empty(right.object, "value");
             const cmp = std.mem.order(u8, lv, rv);
             return switch (op) {
                 .lt => .{ .boolean = cmp == .lt },
@@ -23279,6 +23284,34 @@ fn eval_binary(eval: *Evaluator, left: Value, op: ast.BinaryOp, right: Value, ar
     return .null_val;
 }
 
+fn coerced_bool(value: Value) bool {
+    return utils.coerce_to_bool(value) catch false;
+}
+
+fn integer_like_values(left: Value, right: Value) bool {
+    return (left == .integer or left == .long) and
+        (right == .integer or right == .long);
+}
+
+fn numeric_value_as_f64(value: Value) ?f64 {
+    return switch (value) {
+        .double => |v| v,
+        .integer => |v| @floatFromInt(v),
+        .long => |v| @floatFromInt(v),
+        else => null,
+    };
+}
+
+fn date_or_datetime_class(class_name: []const u8) bool {
+    return std.ascii.eqlIgnoreCase(class_name, "Date") or
+        std.ascii.eqlIgnoreCase(class_name, "Datetime");
+}
+
+fn object_string_field_or_empty(obj: *types.ObjectInstance, field_name: []const u8) []const u8 {
+    const value = obj.fields.get(field_name) orelse return "";
+    return if (value == .string) value.string else "";
+}
+
 fn eval_unary(op: ast.UnaryOp, operand: Value) !Value {
     switch (op) {
         .negate => {
@@ -23287,11 +23320,16 @@ fn eval_unary(op: ast.UnaryOp, operand: Value) !Value {
             if (operand == .double) return .{ .double = -operand.double };
             return .null_val;
         },
-        .not => return .{ .boolean = !(utils.coerce_to_bool(operand) catch false) },
+        .not => return .{ .boolean = !coerced_bool(operand) },
     }
 }
 
-fn eval_compound_assign(current: Value, op: ast.AssignOp, value: Value, arena: std.mem.Allocator) Value {
+fn eval_compound_assign(
+    current: Value,
+    op: ast.AssignOp,
+    value: Value,
+    arena: std.mem.Allocator,
+) Value {
     const Numeric = struct {
         fn as_f64(v: Value) ?f64 {
             return switch (v) {
@@ -23309,12 +23347,18 @@ fn eval_compound_assign(current: Value, op: ast.AssignOp, value: Value, arena: s
         fn from_arithmetic(current_value: Value, incoming_value: Value, result: f64) Value {
             if (current_value == .double or incoming_value == .double) {
                 if (is_integral(result)) {
-                    if (current_value == .integer or incoming_value == .integer) return .{ .integer = @intFromFloat(result) };
-                    if (current_value == .long or incoming_value == .long) return .{ .long = @intFromFloat(result) };
+                    if (current_value == .integer or incoming_value == .integer) {
+                        return .{ .integer = @intFromFloat(result) };
+                    }
+                    if (current_value == .long or incoming_value == .long) {
+                        return .{ .long = @intFromFloat(result) };
+                    }
                 }
                 return .{ .double = result };
             }
-            if (current_value == .long or incoming_value == .long) return .{ .long = @intFromFloat(result) };
+            if (current_value == .long or incoming_value == .long) {
+                return .{ .long = @intFromFloat(result) };
+            }
             return .{ .integer = @intFromFloat(result) };
         }
 
@@ -23334,9 +23378,15 @@ fn eval_compound_assign(current: Value, op: ast.AssignOp, value: Value, arena: s
 
     switch (op) {
         .plus_assign => {
-            if (current == .integer and value == .integer) return .{ .integer = current.integer + value.integer };
-            if (current == .long and value == .long) return .{ .long = current.long + value.long };
-            if (current == .double and value == .double) return .{ .double = current.double + value.double };
+            if (current == .integer and value == .integer) {
+                return .{ .integer = current.integer + value.integer };
+            }
+            if (current == .long and value == .long) {
+                return .{ .long = current.long + value.long };
+            }
+            if (current == .double and value == .double) {
+                return .{ .double = current.double + value.double };
+            }
             if (Numeric.as_f64(current)) |lhs| {
                 if (Numeric.as_f64(value)) |rhs| {
                     return Numeric.from_arithmetic(current, value, lhs + rhs);
@@ -23346,13 +23396,18 @@ fn eval_compound_assign(current: Value, op: ast.AssignOp, value: Value, arena: s
             if (current == .string or value == .string) {
                 const ls = utils.coerce_to_string(current, arena) catch return current;
                 const rs = utils.coerce_to_string(value, arena) catch return current;
-                const result = std.fmt.allocPrint(arena, "{s}{s}", .{ ls, rs }) catch return current;
+                const result =
+                    std.fmt.allocPrint(arena, "{s}{s}", .{ ls, rs }) catch return current;
                 return .{ .string = result };
             }
         },
         .minus_assign => {
-            if (current == .integer and value == .integer) return .{ .integer = current.integer - value.integer };
-            if (current == .long and value == .long) return .{ .long = current.long - value.long };
+            if (current == .integer and value == .integer) {
+                return .{ .integer = current.integer - value.integer };
+            }
+            if (current == .long and value == .long) {
+                return .{ .long = current.long - value.long };
+            }
             if (Numeric.as_f64(current)) |lhs| {
                 if (Numeric.as_f64(value)) |rhs| {
                     return Numeric.from_arithmetic(current, value, lhs - rhs);
@@ -23360,8 +23415,12 @@ fn eval_compound_assign(current: Value, op: ast.AssignOp, value: Value, arena: s
             }
         },
         .star_assign => {
-            if (current == .integer and value == .integer) return .{ .integer = current.integer * value.integer };
-            if (current == .long and value == .long) return .{ .long = current.long * value.long };
+            if (current == .integer and value == .integer) {
+                return .{ .integer = current.integer * value.integer };
+            }
+            if (current == .long and value == .long) {
+                return .{ .long = current.long * value.long };
+            }
             if (Numeric.as_f64(current)) |lhs| {
                 if (Numeric.as_f64(value)) |rhs| {
                     return Numeric.from_arithmetic(current, value, lhs * rhs);
