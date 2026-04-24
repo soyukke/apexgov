@@ -17225,8 +17225,15 @@ pub const Evaluator = struct {
     ) anyerror!?Value {
         if (obj != .string or !std.ascii.eqlIgnoreCase(field_name, "class")) return null;
         const type_name: []const u8 = if (self.current_class) |cc| blk: {
-            const fq = std.fmt.allocPrint(self.arena, "{s}.{s}", .{ cc, obj.string }) catch obj.string;
-            break :blk if (self.find_class(fq) != null) fq else self.resolve_full_class_name(obj.string);
+            const fq = std.fmt.allocPrint(
+                self.arena,
+                "{s}.{s}",
+                .{ cc, obj.string },
+            ) catch obj.string;
+            break :blk if (self.find_class(fq) != null)
+                fq
+            else
+                self.resolve_full_class_name(obj.string);
         } else self.resolve_full_class_name(obj.string);
         return try self.make_type_value(type_name);
     }
@@ -17238,11 +17245,20 @@ pub const Evaluator = struct {
         return Value{ .object = type_obj };
     }
 
-    fn eval_field_access_on_resolved_value(self: *Evaluator, obj: Value, field_name: []const u8, current_env: *Env) !Value {
+    fn eval_field_access_on_resolved_value(
+        self: *Evaluator,
+        obj: Value,
+        field_name: []const u8,
+        current_env: *Env,
+    ) !Value {
         const placeholder_expr = try self.arena.create(ast.Expr);
         placeholder_expr.* = .null_literal;
         const synthetic_fa = try self.arena.create(ast.FieldAccess);
-        synthetic_fa.* = .{ .object = placeholder_expr, .field = field_name, .null_safe = false };
+        synthetic_fa.* = .{
+            .object = placeholder_expr,
+            .field = field_name,
+            .null_safe = false,
+        };
         return self.eval_field_access(synthetic_fa, obj, current_env);
     }
 
@@ -17346,7 +17362,8 @@ pub const Evaluator = struct {
         if (val == .boolean) return std.ascii.eqlIgnoreCase(tn, "Boolean");
         if (val == .string) {
             return std.ascii.eqlIgnoreCase(tn, "String") or
-                (std.ascii.eqlIgnoreCase(tn, "Id") and Evaluator.is_salesforce_id_string(val.string));
+                (std.ascii.eqlIgnoreCase(tn, "Id") and
+                    Evaluator.is_salesforce_id_string(val.string));
         }
         if (val == .sobject) {
             return std.ascii.eqlIgnoreCase(tn, "SObject") or
@@ -17357,17 +17374,29 @@ pub const Evaluator = struct {
         if (val == .object) {
             const cn = val.object.class_name;
             if (cn.len > 0 and cn.len < 256) {
-                if (std.ascii.eqlIgnoreCase(cn, "Date")) return std.ascii.eqlIgnoreCase(tn, "Date") or std.ascii.eqlIgnoreCase(tn, "DateTime") or std.ascii.eqlIgnoreCase(tn, "Datetime");
-                if (std.ascii.eqlIgnoreCase(cn, "Datetime")) return std.ascii.eqlIgnoreCase(tn, "DateTime") or std.ascii.eqlIgnoreCase(tn, "Datetime");
+                if (std.ascii.eqlIgnoreCase(cn, "Date")) {
+                    return std.ascii.eqlIgnoreCase(tn, "Date") or
+                        std.ascii.eqlIgnoreCase(tn, "DateTime") or
+                        std.ascii.eqlIgnoreCase(tn, "Datetime");
+                }
+                if (std.ascii.eqlIgnoreCase(cn, "Datetime")) {
+                    return std.ascii.eqlIgnoreCase(tn, "DateTime") or
+                        std.ascii.eqlIgnoreCase(tn, "Datetime");
+                }
                 if (std.ascii.eqlIgnoreCase(cn, "Time")) return std.ascii.eqlIgnoreCase(tn, "Time");
-                if (std.ascii.eqlIgnoreCase(cn, "Schema.SObjectField") or std.ascii.eqlIgnoreCase(cn, "SObjectField")) {
-                    return std.ascii.eqlIgnoreCase(tn, "Schema.SObjectField") or std.ascii.eqlIgnoreCase(tn, "SObjectField");
+                if (std.ascii.eqlIgnoreCase(cn, "Schema.SObjectField") or
+                    std.ascii.eqlIgnoreCase(cn, "SObjectField"))
+                {
+                    return std.ascii.eqlIgnoreCase(tn, "Schema.SObjectField") or
+                        std.ascii.eqlIgnoreCase(tn, "SObjectField");
                 }
                 if (std.ascii.eqlIgnoreCase(cn, "Schema.SObjectType")) {
-                    return std.ascii.eqlIgnoreCase(tn, "Schema.SObjectType") or std.ascii.eqlIgnoreCase(tn, "SObjectType");
+                    return std.ascii.eqlIgnoreCase(tn, "Schema.SObjectType") or
+                        std.ascii.eqlIgnoreCase(tn, "SObjectType");
                 }
                 if (std.ascii.eqlIgnoreCase(cn, "Schema.FieldSet")) {
-                    return std.ascii.eqlIgnoreCase(tn, "Schema.FieldSet") or std.ascii.eqlIgnoreCase(tn, "FieldSet");
+                    return std.ascii.eqlIgnoreCase(tn, "Schema.FieldSet") or
+                        std.ascii.eqlIgnoreCase(tn, "FieldSet");
                 }
             }
         }
@@ -17406,7 +17435,8 @@ pub const Evaluator = struct {
             }
         }
         // All *Exception classes are subclasses of Exception / System.Exception
-        if ((std.ascii.eqlIgnoreCase(parent_type, "Exception") or std.ascii.eqlIgnoreCase(parent_type, "System.Exception")) and
+        if ((std.ascii.eqlIgnoreCase(parent_type, "Exception") or
+            std.ascii.eqlIgnoreCase(parent_type, "System.Exception")) and
             std.mem.endsWith(u8, child_class, "Exception"))
         {
             return true;
@@ -17419,13 +17449,31 @@ pub const Evaluator = struct {
     fn lookup_enum_ordinal(s: []const u8) i64 {
         // System.LoggingLevel: Salesforce declaration order (most verbose first)
         // INTERNAL=0, FINEST=1, FINER=2, FINE=3, DEBUG=4, INFO=5, WARN=6, ERROR=7, NONE=8
-        const logging_levels = [_][]const u8{ "INTERNAL", "FINEST", "FINER", "FINE", "DEBUG", "INFO", "WARN", "ERROR", "NONE" };
+        const logging_levels = [_][]const u8{
+            "INTERNAL",
+            "FINEST",
+            "FINER",
+            "FINE",
+            "DEBUG",
+            "INFO",
+            "WARN",
+            "ERROR",
+            "NONE",
+        };
         for (logging_levels, 0..) |name, i| {
             if (std.ascii.eqlIgnoreCase(s, name)) return @intCast(i);
         }
         // System.TriggerOperation: BEFORE_INSERT=0, BEFORE_UPDATE=1, BEFORE_DELETE=2,
         // AFTER_INSERT=3, AFTER_UPDATE=4, AFTER_DELETE=5, AFTER_UNDELETE=6
-        const trigger_ops = [_][]const u8{ "BEFORE_INSERT", "BEFORE_UPDATE", "BEFORE_DELETE", "AFTER_INSERT", "AFTER_UPDATE", "AFTER_DELETE", "AFTER_UNDELETE" };
+        const trigger_ops = [_][]const u8{
+            "BEFORE_INSERT",
+            "BEFORE_UPDATE",
+            "BEFORE_DELETE",
+            "AFTER_INSERT",
+            "AFTER_UPDATE",
+            "AFTER_DELETE",
+            "AFTER_UNDELETE",
+        };
         for (trigger_ops, 0..) |name, i| {
             if (std.ascii.eqlIgnoreCase(s, name)) return @intCast(i);
         }
@@ -17433,7 +17481,17 @@ pub const Evaluator = struct {
     }
 
     /// ISO 日付文字列 (YYYY-MM-DD or YYYY-MM-DDTHH:MM:SSZ) をパースする。
-    fn parse_iso_date(s: []const u8) ?struct { y: i32, m: u8, d: u8, h: u8, mi: u8, sec: u8, has_time: bool } {
+    const ParsedIsoDate = struct {
+        y: i32,
+        m: u8,
+        d: u8,
+        h: u8,
+        mi: u8,
+        sec: u8,
+        has_time: bool,
+    };
+
+    fn parse_iso_date(s: []const u8) ?ParsedIsoDate {
         if (s.len < 10 or s[4] != '-' or s[7] != '-') return null;
         const y = std.fmt.parseInt(i32, s[0..4], 10) catch return null;
         const m = std.fmt.parseInt(u8, s[5..7], 10) catch return null;
@@ -17442,14 +17500,43 @@ pub const Evaluator = struct {
             const h = std.fmt.parseInt(u8, s[11..13], 10) catch 0;
             const mi = std.fmt.parseInt(u8, s[14..16], 10) catch 0;
             const sec = std.fmt.parseInt(u8, s[17..19], 10) catch 0;
-            return .{ .y = y, .m = m, .d = day, .h = h, .mi = mi, .sec = sec, .has_time = true };
+            return .{
+                .y = y,
+                .m = m,
+                .d = day,
+                .h = h,
+                .mi = mi,
+                .sec = sec,
+                .has_time = true,
+            };
         }
-        return .{ .y = y, .m = m, .d = day, .h = 0, .mi = 0, .sec = 0, .has_time = false };
+        return .{
+            .y = y,
+            .m = m,
+            .d = day,
+            .h = 0,
+            .mi = 0,
+            .sec = 0,
+            .has_time = false,
+        };
     }
 
     /// 月と日から年内通算日を返す (1-indexed)
     fn day_of_year(m: u8, d: u8) u16 {
-        const cumulative = [_]u16{ 0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334 };
+        const cumulative = [_]u16{
+            0,
+            31,
+            59,
+            90,
+            120,
+            151,
+            181,
+            212,
+            243,
+            273,
+            304,
+            334,
+        };
         return cumulative[m - 1] + d;
     }
 
@@ -17457,9 +17544,18 @@ pub const Evaluator = struct {
     fn iso_date_to_epoch_days(year: i32, month: u8, day: u8) i64 {
         const y = @as(i64, year);
         const doy = @as(i64, day_of_year(month, day));
-        const is_leap: i64 = if (@mod(y, 4) == 0 and (@mod(y, 100) != 0 or @mod(y, 400) == 0)) @as(i64, 1) else 0;
+        const is_leap: i64 = if (@mod(y, 4) == 0 and
+            (@mod(y, 100) != 0 or @mod(y, 400) == 0))
+            @as(i64, 1)
+        else
+            0;
         const leap_adj: i64 = if (month > 2) is_leap else 0;
-        return (y - 1970) * 365 + @divFloor(y - 1969, 4) - @divFloor(y - 1901, 100) + @divFloor(y - 1601, 400) + doy - 1 + leap_adj;
+        return (y - 1970) * 365 +
+            @divFloor(y - 1969, 4) -
+            @divFloor(y - 1901, 100) +
+            @divFloor(y - 1601, 400) +
+            doy - 1 +
+            leap_adj;
     }
 
     /// ISO 8601 day-of-week: Monday=1 ... Sunday=7.
@@ -17475,7 +17571,8 @@ pub const Evaluator = struct {
     /// ISO 8601 week-of-year / week-year. Week 1 contains the first Thursday.
     fn iso_week_of_year(year: i32, month: u8, day: u8) IsoWeek {
         // Day-of-year (1-based).
-        const is_leap = (@mod(year, 4) == 0 and (@mod(year, 100) != 0 or @mod(year, 400) == 0));
+        const is_leap = (@mod(year, 4) == 0 and
+            (@mod(year, 100) != 0 or @mod(year, 400) == 0));
         var doy: i32 = @as(i32, day_of_year(month, day));
         if (is_leap and month > 2) doy += 1;
         const dow: i32 = @as(i32, iso_day_of_week(year, month, day));
@@ -17484,7 +17581,11 @@ pub const Evaluator = struct {
             // Week belongs to the previous year's last ISO week (52 or 53).
             return iso_week_of_year(year - 1, 12, 31);
         }
-        const is_leap_this = if ((@mod(year, 4) == 0 and (@mod(year, 100) != 0 or @mod(year, 400) == 0))) true else false;
+        const is_leap_this = if (@mod(year, 4) == 0 and
+            (@mod(year, 100) != 0 or @mod(year, 400) == 0))
+            true
+        else
+            false;
         _ = is_leap_this;
         // How many ISO weeks does this year have? Either 52 or 53.
         const jan1_dow: i32 = @as(i32, iso_day_of_week(year, 1, 1));
@@ -17499,8 +17600,34 @@ pub const Evaluator = struct {
     /// Datetime パターンフォーマット (Java SimpleDateFormat 互換サブセット)
     fn format_date_time_pattern(self: *Evaluator, s: []const u8, pattern: []const u8) !Value {
         const dt = parse_iso_date(s) orelse return Value{ .string = s };
-        const month_names = [_][]const u8{ "January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December" };
-        const month_abbr = [_][]const u8{ "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec" };
+        const month_names = [_][]const u8{
+            "January",
+            "February",
+            "March",
+            "April",
+            "May",
+            "June",
+            "July",
+            "August",
+            "September",
+            "October",
+            "November",
+            "December",
+        };
+        const month_abbr = [_][]const u8{
+            "Jan",
+            "Feb",
+            "Mar",
+            "Apr",
+            "May",
+            "Jun",
+            "Jul",
+            "Aug",
+            "Sep",
+            "Oct",
+            "Nov",
+            "Dec",
+        };
         const month_name = if (dt.m >= 1 and dt.m <= 12) month_names[dt.m - 1] else "January";
         const month_short = if (dt.m >= 1 and dt.m <= 12) month_abbr[dt.m - 1] else "Jan";
 
@@ -17516,7 +17643,14 @@ pub const Evaluator = struct {
                 i = try self.append_quoted_date_time_pattern_literal(&result, pattern, i + 1);
                 continue;
             }
-            try self.append_date_time_pattern_token(&result, dt, month_name, month_short, c, count);
+            try self.append_date_time_pattern_token(
+                &result,
+                dt,
+                month_name,
+                month_short,
+                c,
+                count,
+            );
             i += count;
         }
         return Value{ .string = result.items };
@@ -17533,7 +17667,13 @@ pub const Evaluator = struct {
     ) !void {
         switch (c) {
             'y' => try self.append_date_time_year_token(result, dt.y, count),
-            'M' => try self.append_date_time_month_token(result, dt.m, month_name, month_short, count),
+            'M' => try self.append_date_time_month_token(
+                result,
+                dt.m,
+                month_name,
+                month_short,
+                count,
+            ),
             'd' => try self.append_padded_date_time_number(result, dt.d, count),
             'H' => try self.append_padded_date_time_number(result, dt.h, count),
             'h' => try self.append_padded_date_time_number(result, date_time_hour_12(dt.h), count),
@@ -17665,52 +17805,66 @@ pub const Evaluator = struct {
         if (std.ascii.eqlIgnoreCase(method, "addYears")) {
             y += delta;
         } else if (std.ascii.eqlIgnoreCase(method, "addMonths")) {
-            m += delta;
-            while (m < 1) {
-                m += 12;
-                y -= 1;
-            }
-            while (m > 12) {
-                m -= 12;
-                y += 1;
-            }
+            normalize_date_time_add_months(&y, &m, delta);
         } else if (std.ascii.eqlIgnoreCase(method, "addDays")) {
-            d += delta;
-            // 簡易実装: 各月の日数でオーバーフロー/アンダーフローを処理
-            const days_in_month = [_]u8{ 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 };
-            while (d > days_in_month[@intCast(m - 1)]) {
-                d -= days_in_month[@intCast(m - 1)];
-                m += 1;
-                if (m > 12) {
-                    m = 1;
-                    y += 1;
-                }
-            }
-            while (d < 1) {
-                m -= 1;
-                if (m < 1) {
-                    m = 12;
-                    y -= 1;
-                }
-                d += days_in_month[@intCast(m - 1)];
-            }
+            normalize_date_time_add_days(&y, &m, &d, delta);
         }
 
         if (dt.has_time) {
-            return Value{ .string = try std.fmt.allocPrint(self.arena, "{d:0>4}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}Z", .{
-                @as(u32, @intCast(y)),
-                @as(u32, @intCast(m)),
-                @as(u32, @intCast(d)),
-                dt.h,
-                dt.mi,
-                dt.sec,
-            }) };
+            const timestamp = try std.fmt.allocPrint(
+                self.arena,
+                "{d:0>4}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}Z",
+                .{
+                    @as(u32, @intCast(y)),
+                    @as(u32, @intCast(m)),
+                    @as(u32, @intCast(d)),
+                    dt.h,
+                    dt.mi,
+                    dt.sec,
+                },
+            );
+            return Value{ .string = timestamp };
         }
-        return Value{ .string = try std.fmt.allocPrint(self.arena, "{d:0>4}-{d:0>2}-{d:0>2}", .{
+        const date = try std.fmt.allocPrint(self.arena, "{d:0>4}-{d:0>2}-{d:0>2}", .{
             @as(u32, @intCast(y)),
             @as(u32, @intCast(m)),
             @as(u32, @intCast(d)),
-        }) };
+        });
+        return Value{ .string = date };
+    }
+
+    fn normalize_date_time_add_months(year: *i32, month: *i32, delta: i32) void {
+        month.* += delta;
+        while (month.* < 1) {
+            month.* += 12;
+            year.* -= 1;
+        }
+        while (month.* > 12) {
+            month.* -= 12;
+            year.* += 1;
+        }
+    }
+
+    fn normalize_date_time_add_days(year: *i32, month: *i32, day: *i32, delta: i32) void {
+        day.* += delta;
+        // 簡易実装: 各月の日数でオーバーフロー/アンダーフローを処理
+        const days_in_month = [_]u8{ 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 };
+        while (day.* > days_in_month[@intCast(month.* - 1)]) {
+            day.* -= days_in_month[@intCast(month.* - 1)];
+            month.* += 1;
+            if (month.* > 12) {
+                month.* = 1;
+                year.* += 1;
+            }
+        }
+        while (day.* < 1) {
+            month.* -= 1;
+            if (month.* < 1) {
+                month.* = 12;
+                year.* -= 1;
+            }
+            day.* += days_in_month[@intCast(month.* - 1)];
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -17718,67 +17872,49 @@ pub const Evaluator = struct {
     // -----------------------------------------------------------------------
 
     fn handle_assert(self: *Evaluator, method: []const u8, args: []const Value) !Value {
-        if (std.ascii.eqlIgnoreCase(method, "areEqual") or std.ascii.eqlIgnoreCase(method, "assertEquals")) {
+        if (std.ascii.eqlIgnoreCase(method, "areEqual") or
+            std.ascii.eqlIgnoreCase(method, "assertEquals"))
+        {
             if (args.len >= 2) {
                 if (!self.values_equal(args[0], args[1])) {
-                    const expected_str = try utils.coerce_to_string(args[0], self.arena);
-                    const actual_str = try utils.coerce_to_string(args[1], self.arena);
-                    self.assertion_failure = if (args.len >= 3 and args[2] == .string)
-                        try std.fmt.allocPrint(self.arena, "{s} | Expected: {s}, Actual: {s}", .{ args[2].string, expected_str, actual_str })
-                    else
-                        try std.fmt.allocPrint(self.arena, "Expected: {s}, Actual: {s}", .{ expected_str, actual_str });
+                    try self.set_assert_equal_failure(args);
                 }
             }
-        } else if (std.ascii.eqlIgnoreCase(method, "areNotEqual") or std.ascii.eqlIgnoreCase(method, "assertNotEquals")) {
+        } else if (std.ascii.eqlIgnoreCase(method, "areNotEqual") or
+            std.ascii.eqlIgnoreCase(method, "assertNotEquals"))
+        {
             if (args.len >= 2) {
                 if (self.values_equal(args[0], args[1])) {
-                    const val_str = try utils.coerce_to_string(args[0], self.arena);
-                    self.assertion_failure = if (args.len >= 3 and args[2] == .string)
-                        try std.fmt.allocPrint(self.arena, "{s} | Both values: {s}", .{ args[2].string, val_str })
-                    else
-                        try std.fmt.allocPrint(self.arena, "Values should not be equal: {s}", .{val_str});
+                    try self.set_assert_not_equal_failure(args);
                 }
             }
-        } else if (std.ascii.eqlIgnoreCase(method, "isTrue") or std.ascii.eqlIgnoreCase(method, "assertTrue")) {
+        } else if (std.ascii.eqlIgnoreCase(method, "isTrue") or
+            std.ascii.eqlIgnoreCase(method, "assertTrue"))
+        {
             if (args.len >= 1) {
                 const val = utils.coerce_to_bool(args[0]) catch false;
                 if (!val) {
-                    const actual_str = try utils.coerce_to_string(args[0], self.arena);
-                    self.assertion_failure = if (args.len >= 2 and args[1] == .string)
-                        try std.fmt.allocPrint(self.arena, "{s} | Expected: true, Actual: {s}", .{ args[1].string, actual_str })
-                    else
-                        try std.fmt.allocPrint(self.arena, "Expected: true, Actual: {s}", .{actual_str});
+                    try self.set_assert_boolean_failure(args, true);
                 }
             }
-        } else if (std.ascii.eqlIgnoreCase(method, "isFalse") or std.ascii.eqlIgnoreCase(method, "assertFalse")) {
+        } else if (std.ascii.eqlIgnoreCase(method, "isFalse") or
+            std.ascii.eqlIgnoreCase(method, "assertFalse"))
+        {
             if (args.len >= 1) {
                 const val = utils.coerce_to_bool(args[0]) catch false;
                 if (val) {
-                    const actual_str = try utils.coerce_to_string(args[0], self.arena);
-                    self.assertion_failure = if (args.len >= 2 and args[1] == .string)
-                        try std.fmt.allocPrint(self.arena, "{s} | Expected: false, Actual: {s}", .{ args[1].string, actual_str })
-                    else
-                        try std.fmt.allocPrint(self.arena, "Expected: false, Actual: {s}", .{actual_str});
+                    try self.set_assert_boolean_failure(args, false);
                 }
             }
-        } else if (std.ascii.eqlIgnoreCase(method, "isNotNull") or std.ascii.eqlIgnoreCase(method, "assertNotNull")) {
-            if (args.len >= 1) {
-                if (args[0] == .null_val) {
-                    self.assertion_failure = if (args.len >= 2 and args[1] == .string)
-                        try std.fmt.allocPrint(self.arena, "{s} | Expected: non-null, Actual: null", .{args[1].string})
-                    else
-                        "Expected: non-null, Actual: null";
-                }
+        } else if (std.ascii.eqlIgnoreCase(method, "isNotNull") or
+            std.ascii.eqlIgnoreCase(method, "assertNotNull"))
+        {
+            if (args.len >= 1 and args[0] == .null_val) {
+                try self.set_assert_not_null_failure(args);
             }
         } else if (std.ascii.eqlIgnoreCase(method, "isNull")) {
-            if (args.len >= 1) {
-                if (args[0] != .null_val) {
-                    const actual_str = try utils.coerce_to_string(args[0], self.arena);
-                    self.assertion_failure = if (args.len >= 2 and args[1] == .string)
-                        try std.fmt.allocPrint(self.arena, "{s} | Expected: null, Actual: {s}", .{ args[1].string, actual_str })
-                    else
-                        try std.fmt.allocPrint(self.arena, "Expected: null, Actual: {s}", .{actual_str});
-                }
+            if (args.len >= 1 and args[0] != .null_val) {
+                try self.set_assert_null_failure(args);
             }
         } else if (std.ascii.eqlIgnoreCase(method, "isInstanceOfType")) {
             // simplified: always pass
@@ -17786,6 +17922,87 @@ pub const Evaluator = struct {
             self.assertion_failure = if (args.len >= 1 and args[0] == .string) args[0].string else "Assert.fail called";
         }
         return .void_val;
+    }
+
+    fn set_assert_not_null_failure(self: *Evaluator, args: []const Value) !void {
+        self.assertion_failure = if (args.len >= 2 and args[1] == .string)
+            try std.fmt.allocPrint(
+                self.arena,
+                "{s} | Expected: non-null, Actual: null",
+                .{args[1].string},
+            )
+        else
+            "Expected: non-null, Actual: null";
+    }
+
+    fn set_assert_null_failure(self: *Evaluator, args: []const Value) !void {
+        const actual_str = try utils.coerce_to_string(args[0], self.arena);
+        self.assertion_failure = if (args.len >= 2 and args[1] == .string)
+            try std.fmt.allocPrint(
+                self.arena,
+                "{s} | Expected: null, Actual: {s}",
+                .{ args[1].string, actual_str },
+            )
+        else
+            try std.fmt.allocPrint(
+                self.arena,
+                "Expected: null, Actual: {s}",
+                .{actual_str},
+            );
+    }
+
+    fn set_assert_equal_failure(self: *Evaluator, args: []const Value) !void {
+        const expected_str = try utils.coerce_to_string(args[0], self.arena);
+        const actual_str = try utils.coerce_to_string(args[1], self.arena);
+        self.assertion_failure = if (args.len >= 3 and args[2] == .string)
+            try std.fmt.allocPrint(
+                self.arena,
+                "{s} | Expected: {s}, Actual: {s}",
+                .{ args[2].string, expected_str, actual_str },
+            )
+        else
+            try std.fmt.allocPrint(
+                self.arena,
+                "Expected: {s}, Actual: {s}",
+                .{ expected_str, actual_str },
+            );
+    }
+
+    fn set_assert_not_equal_failure(self: *Evaluator, args: []const Value) !void {
+        const val_str = try utils.coerce_to_string(args[0], self.arena);
+        self.assertion_failure = if (args.len >= 3 and args[2] == .string)
+            try std.fmt.allocPrint(
+                self.arena,
+                "{s} | Both values: {s}",
+                .{ args[2].string, val_str },
+            )
+        else
+            try std.fmt.allocPrint(
+                self.arena,
+                "Values should not be equal: {s}",
+                .{val_str},
+            );
+    }
+
+    fn set_assert_boolean_failure(
+        self: *Evaluator,
+        args: []const Value,
+        expected: bool,
+    ) !void {
+        const actual_str = try utils.coerce_to_string(args[0], self.arena);
+        const expected_str = if (expected) "true" else "false";
+        self.assertion_failure = if (args.len >= 2 and args[1] == .string)
+            try std.fmt.allocPrint(
+                self.arena,
+                "{s} | Expected: {s}, Actual: {s}",
+                .{ args[1].string, expected_str, actual_str },
+            )
+        else
+            try std.fmt.allocPrint(
+                self.arena,
+                "Expected: {s}, Actual: {s}",
+                .{ expected_str, actual_str },
+            );
     }
 
     fn handle_test(self: *Evaluator, method: []const u8, args: []const Value) !Value {
