@@ -6,7 +6,7 @@
 # running: just lint-update-baseline
 #
 # Format: <path>\t<rule>\t<count>
-src/interpret/builtins.zig	line_too_long	500
-src/interpret/evaluator.zig	line_too_long	1009
+src/interpret/builtins.zig	line_too_long	418
+src/interpret/evaluator.zig	line_too_long	956
 src/interpret/regex.zig	line_too_long	1
 src/interpret/root.zig	line_too_long	285

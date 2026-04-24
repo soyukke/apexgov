@@ -1087,12 +1087,17 @@ fn dispatch_static_date_time(
     if (std.ascii.eqlIgnoreCase(method_name, "now")) {
         return try make_datetime_value(ctx.arena, try current_date_time_string(ctx.arena));
     }
-    if (std.ascii.eqlIgnoreCase(method_name, "newInstance") or std.ascii.eqlIgnoreCase(method_name, "newInstanceGmt")) {
+    if (std.ascii.eqlIgnoreCase(method_name, "newInstance") or
+        std.ascii.eqlIgnoreCase(method_name, "newInstanceGmt"))
+    {
         // Datetime.newInstance(Date, Time) — combine a date and a time-of-day.
         // Date is stored as an ObjectInstance with a "value" field. Time is
         // currently represented as a plain "HH:MM:SS.fff" string.
         if (args.len == 2 and args[0] == .object) {
-            const date_val = if (args[0].object.fields.get("value")) |v| (if (v == .string) v.string else "1970-01-01") else "1970-01-01";
+            const date_val = if (args[0].object.fields.get("value")) |v|
+                (if (v == .string) v.string else "1970-01-01")
+            else
+                "1970-01-01";
             const time_val: []const u8 = switch (args[1]) {
                 .string => |s| s,
                 .object => |obj| blk: {
@@ -1102,7 +1107,10 @@ fn dispatch_static_date_time(
                 else => "00:00:00",
             };
             const hhmmss = if (time_val.len >= 8) time_val[0..8] else "00:00:00";
-            return try make_datetime_value(ctx.arena, try std.fmt.allocPrint(ctx.arena, "{s}T{s}Z", .{ date_val, hhmmss }));
+            return try make_datetime_value(
+                ctx.arena,
+                try std.fmt.allocPrint(ctx.arena, "{s}T{s}Z", .{ date_val, hhmmss }),
+            );
         }
         if (args.len >= 6) {
             const y = numericAsI64.from(args[0], 2026);
@@ -1111,24 +1119,38 @@ fn dispatch_static_date_time(
             const h = numericAsI64.from(args[3], 0);
             const mi = numericAsI64.from(args[4], 0);
             const s = numericAsI64.from(args[5], 0);
-            return try make_datetime_value(ctx.arena, try std.fmt.allocPrint(ctx.arena, "{d:0>4}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}Z", .{
-                @as(u32, @intCast(if (y < 0) 1 else y)),
-                @as(u32, @intCast(if (mo < 1) 1 else if (mo > 12) 12 else mo)),
-                @as(u32, @intCast(if (d < 1) 1 else if (d > 31) 31 else d)),
-                @as(u32, @intCast(if (h < 0) 0 else if (h > 23) 23 else h)),
-                @as(u32, @intCast(if (mi < 0) 0 else if (mi > 59) 59 else mi)),
-                @as(u32, @intCast(if (s < 0) 0 else if (s > 59) 59 else s)),
-            }));
+            return try make_datetime_value(
+                ctx.arena,
+                try std.fmt.allocPrint(
+                    ctx.arena,
+                    "{d:0>4}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}Z",
+                    .{
+                        @as(u32, @intCast(if (y < 0) 1 else y)),
+                        @as(u32, @intCast(if (mo < 1) 1 else if (mo > 12) 12 else mo)),
+                        @as(u32, @intCast(if (d < 1) 1 else if (d > 31) 31 else d)),
+                        @as(u32, @intCast(if (h < 0) 0 else if (h > 23) 23 else h)),
+                        @as(u32, @intCast(if (mi < 0) 0 else if (mi > 59) 59 else mi)),
+                        @as(u32, @intCast(if (s < 0) 0 else if (s > 59) 59 else s)),
+                    },
+                ),
+            );
         }
         if (args.len >= 3) {
             const y = numericAsI64.from(args[0], 2026);
             const mo = numericAsI64.from(args[1], 1);
             const d8 = numericAsI64.from(args[2], 1);
-            return try make_datetime_value(ctx.arena, try std.fmt.allocPrint(ctx.arena, "{d:0>4}-{d:0>2}-{d:0>2}T00:00:00Z", .{
-                @as(u32, @intCast(if (y < 0) 1 else y)),
-                @as(u32, @intCast(if (mo < 1) 1 else if (mo > 12) 12 else mo)),
-                @as(u32, @intCast(if (d8 < 1) 1 else if (d8 > 31) 31 else d8)),
-            }));
+            return try make_datetime_value(
+                ctx.arena,
+                try std.fmt.allocPrint(
+                    ctx.arena,
+                    "{d:0>4}-{d:0>2}-{d:0>2}T00:00:00Z",
+                    .{
+                        @as(u32, @intCast(if (y < 0) 1 else y)),
+                        @as(u32, @intCast(if (mo < 1) 1 else if (mo > 12) 12 else mo)),
+                        @as(u32, @intCast(if (d8 < 1) 1 else if (d8 > 31) 31 else d8)),
+                    },
+                ),
+            );
         }
         if (args.len >= 1) {
             const ms: i64 = numericAsI64.from(args[0], 0);
@@ -1146,7 +1168,10 @@ fn dispatch_static_date_time(
                 else => {},
             }
             if (extract_date_string(args[0])) |s| {
-                const normalized = try normalize_date_time_value_of_input(ctx.arena, s) orelse return error.ApexException;
+                const normalized = try normalize_date_time_value_of_input(
+                    ctx.arena,
+                    s,
+                ) orelse return error.ApexException;
                 return try make_datetime_value(ctx.arena, normalized);
             }
         }
@@ -1155,8 +1180,14 @@ fn dispatch_static_date_time(
     return Value.null_val;
 }
 
-fn dispatch_static_json(ctx: *BuiltinContext, method_name: []const u8, args: []const Value) anyerror!?Value {
-    if (std.ascii.eqlIgnoreCase(method_name, "serialize") or std.ascii.eqlIgnoreCase(method_name, "serializePretty")) {
+fn dispatch_static_json(
+    ctx: *BuiltinContext,
+    method_name: []const u8,
+    args: []const Value,
+) anyerror!?Value {
+    if (std.ascii.eqlIgnoreCase(method_name, "serialize") or
+        std.ascii.eqlIgnoreCase(method_name, "serializePretty"))
+    {
         return json_serialize(ctx, args);
     }
     if (std.ascii.eqlIgnoreCase(method_name, "createGenerator")) {
@@ -1195,7 +1226,10 @@ fn json_deserialize_untyped(ctx: *BuiltinContext, args: []const Value) anyerror!
     const trimmed = std.mem.trim(u8, json_str, " \t\r\n");
     if (trimmed.len > 0 and trimmed[0] == '[') {
         if (trimmed[trimmed.len - 1] != ']') {
-            return ctx.throw_exception("System.JSONException", "Unexpected end-of-input while parsing JSON");
+            return ctx.throw_exception(
+                "System.JSONException",
+                "Unexpected end-of-input while parsing JSON",
+            );
         }
         return try parse_json_untyped_array(ctx, trimmed);
     }
@@ -1287,7 +1321,11 @@ fn find_json_object_entry(json_str: []const u8, pos: usize) ?JsonObjectEntry {
     const key_end = std.mem.indexOfPos(u8, json_str, key_start + 1, "\"") orelse return null;
     const colon_pos = std.mem.indexOfPos(u8, json_str, key_end + 1, ":") orelse return null;
     var value_start = colon_pos + 1;
-    while (value_start < json_str.len and is_json_whitespace(json_str[value_start])) value_start += 1;
+    while (value_start < json_str.len and
+        is_json_whitespace(json_str[value_start]))
+    {
+        value_start += 1;
+    }
     return .{ .key = json_str[key_start + 1 .. key_end], .value_start = value_start };
 }
 
@@ -1304,26 +1342,42 @@ fn parse_json_object_value(
     };
 }
 
-fn parse_json_string_value(ctx: *BuiltinContext, json_str: []const u8, value_start: usize) ?JsonParsedValue {
+fn parse_json_string_value(
+    ctx: *BuiltinContext,
+    json_str: []const u8,
+    value_start: usize,
+) ?JsonParsedValue {
     if (find_json_string_end_alloc(json_str, value_start + 1, ctx.arena)) |res| {
         return .{ .value = Value{ .string = res.value }, .end = res.end + 1 };
     }
     if (std.mem.indexOfPos(u8, json_str, value_start + 1, "\"")) |value_end| {
-        return .{ .value = Value{ .string = json_str[value_start + 1 .. value_end] }, .end = value_end + 1 };
+        return .{
+            .value = Value{ .string = json_str[value_start + 1 .. value_end] },
+            .end = value_end + 1,
+        };
     }
     return null;
 }
 
-fn parse_json_array_value(ctx: *BuiltinContext, json_str: []const u8, value_start: usize) anyerror!JsonParsedValue {
+fn parse_json_array_value(
+    ctx: *BuiltinContext,
+    json_str: []const u8,
+    value_start: usize,
+) anyerror!JsonParsedValue {
     const arr_pos = find_json_balanced_end(json_str, value_start, '[', ']');
     const list = try ctx.arena.create(types.ListValue);
     list.* = .{};
-    const arr_content = json_str[value_start + 1 .. if (arr_pos > 0) arr_pos - 1 else value_start + 1];
+    const arr_content =
+        json_str[value_start + 1 .. if (arr_pos > 0) arr_pos - 1 else value_start + 1];
     try append_json_array_segments(ctx, list, arr_content);
     return .{ .value = Value{ .list = list }, .end = arr_pos };
 }
 
-fn append_json_array_segments(ctx: *BuiltinContext, list: *types.ListValue, arr_content: []const u8) anyerror!void {
+fn append_json_array_segments(
+    ctx: *BuiltinContext,
+    list: *types.ListValue,
+    arr_content: []const u8,
+) anyerror!void {
     var seg_start: usize = 0;
     var seg_depth: i32 = 0;
     var ei: usize = 0;
@@ -1419,7 +1473,11 @@ fn is_json_whitespace(ch: u8) bool {
     return ch == ' ' or ch == '\t' or ch == '\n' or ch == '\r';
 }
 
-fn ensure_object_list_field(ctx: *BuiltinContext, obj: *types.ObjectInstance, field_name: []const u8) !*types.ListValue {
+fn ensure_object_list_field(
+    ctx: *BuiltinContext,
+    obj: *types.ObjectInstance,
+    field_name: []const u8,
+) !*types.ListValue {
     if (obj.fields.get(field_name)) |existing| {
         if (existing == .list) return existing.list;
     }
@@ -1473,7 +1531,11 @@ fn json_generator_current_count(obj: *types.ObjectInstance) i64 {
     return 0;
 }
 
-fn json_generator_set_current_count(ctx: *BuiltinContext, obj: *types.ObjectInstance, count: i64) !void {
+fn json_generator_set_current_count(
+    ctx: *BuiltinContext,
+    obj: *types.ObjectInstance,
+    count: i64,
+) !void {
     const counts = try ensure_object_list_field(ctx, obj, "__ctx_counts__");
     if (counts.items.items.len == 0) return;
     counts.items.items[counts.items.items.len - 1] = Value{ .integer = count };
@@ -1486,11 +1548,19 @@ fn json_generator_is_expecting_value(obj: *types.ObjectInstance) bool {
     return false;
 }
 
-fn json_generator_set_expecting_value(ctx: *BuiltinContext, obj: *types.ObjectInstance, expecting: bool) !void {
+fn json_generator_set_expecting_value(
+    ctx: *BuiltinContext,
+    obj: *types.ObjectInstance,
+    expecting: bool,
+) !void {
     try obj.fields.put(ctx.arena, "__expecting_value__", Value{ .boolean = expecting });
 }
 
-fn json_generator_push_context(ctx: *BuiltinContext, obj: *types.ObjectInstance, context_type: []const u8) !void {
+fn json_generator_push_context(
+    ctx: *BuiltinContext,
+    obj: *types.ObjectInstance,
+    context_type: []const u8,
+) !void {
     const context_types = try ensure_object_list_field(ctx, obj, "__ctx_types__");
     const context_counts = try ensure_object_list_field(ctx, obj, "__ctx_counts__");
     try context_types.items.append(ctx.arena, Value{ .string = context_type });
@@ -1525,12 +1595,21 @@ fn json_generator_before_value(ctx: *BuiltinContext, obj: *types.ObjectInstance)
     }
 }
 
-fn json_generator_write_raw_value(ctx: *BuiltinContext, obj: *types.ObjectInstance, raw: []const u8) !void {
+fn json_generator_write_raw_value(
+    ctx: *BuiltinContext,
+    obj: *types.ObjectInstance,
+    raw: []const u8,
+) !void {
     try json_generator_before_value(ctx, obj);
     try json_generator_append(ctx, obj, raw);
 }
 
-fn dispatch_obj_json_generator(ctx: *BuiltinContext, obj: *types.ObjectInstance, method_name: []const u8, args: []const Value) !?Value {
+fn dispatch_obj_json_generator(
+    ctx: *BuiltinContext,
+    obj: *types.ObjectInstance,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
     if (std.ascii.eqlIgnoreCase(method_name, "getAsString")) {
         return Value{ .string = json_generator_output(obj) };
     }
@@ -1561,7 +1640,10 @@ fn dispatch_obj_json_generator(ctx: *BuiltinContext, obj: *types.ObjectInstance,
     }
     if (std.ascii.eqlIgnoreCase(method_name, "writeString")) {
         if (args.len == 0) return Value.void_val;
-        const string_value = if (args[0] == .string) args[0] else Value{ .string = try utils.coerce_to_string(args[0], ctx.arena) };
+        const string_value = if (args[0] == .string)
+            args[0]
+        else
+            Value{ .string = try utils.coerce_to_string(args[0], ctx.arena) };
         try json_generator_write_raw_value(ctx, obj, try utils.to_json(string_value, ctx.arena));
         return Value.void_val;
     }
@@ -1591,18 +1673,34 @@ fn dispatch_obj_json_generator(ctx: *BuiltinContext, obj: *types.ObjectInstance,
 /// `JSON.Generator.writeFieldName(name)` 本体。オブジェクトコンテキスト
 /// かつ直前が field:value 直後であることをチェックし、区切り `,` と
 /// 改行済み `"name":` を emit する。
-fn json_gen_write_field_name(ctx: *BuiltinContext, obj: *types.ObjectInstance, args: []const Value) !?Value {
+fn json_gen_write_field_name(
+    ctx: *BuiltinContext,
+    obj: *types.ObjectInstance,
+    args: []const Value,
+) !?Value {
     if (args.len == 0 or args[0] == .null_val) {
-        _ = try ctx.throw_exception("JSONException", "Can not write a field name, expecting a value");
+        _ = try ctx.throw_exception(
+            "JSONException",
+            "Can not write a field name, expecting a value",
+        );
         return error.ApexException;
     }
-    if (!std.ascii.eqlIgnoreCase(json_generator_current_context_type(obj) orelse "", "object") or json_generator_is_expecting_value(obj)) {
-        _ = try ctx.throw_exception("JSONException", "Can not write a field name, expecting a value");
+    if (!std.ascii.eqlIgnoreCase(
+        json_generator_current_context_type(obj) orelse "",
+        "object",
+    ) or json_generator_is_expecting_value(obj)) {
+        _ = try ctx.throw_exception(
+            "JSONException",
+            "Can not write a field name, expecting a value",
+        );
         return error.ApexException;
     }
     const count = json_generator_current_count(obj);
     if (count > 0) try json_generator_append(ctx, obj, ",");
-    const name_value = if (args[0] == .string) args[0] else Value{ .string = try utils.coerce_to_string(args[0], ctx.arena) };
+    const name_value = if (args[0] == .string)
+        args[0]
+    else
+        Value{ .string = try utils.coerce_to_string(args[0], ctx.arena) };
     try json_generator_append(ctx, obj, try utils.to_json(name_value, ctx.arena));
     try json_generator_append(ctx, obj, ":");
     try json_generator_set_current_count(ctx, obj, count + 1);
@@ -1620,7 +1718,10 @@ fn dispatch_static_user_info(ctx: *BuiltinContext, method_name: []const u8) !?Va
         if (ctx.eval.store.get("User")) |users| {
             for (users.items) |record| {
                 if (record != .sobject or record.sobject.id == null) continue;
-                if (std.ascii.eqlIgnoreCase(record.sobject.id.?, ctx.eval.current_user_id)) break :blk record.sobject;
+                if (std.ascii.eqlIgnoreCase(
+                    record.sobject.id.?,
+                    ctx.eval.current_user_id,
+                )) break :blk record.sobject;
             }
         }
         break :blk null;
@@ -1635,22 +1736,32 @@ fn dispatch_static_user_info(ctx: *BuiltinContext, method_name: []const u8) !?Va
             };
         }
     }.get;
-    if (std.ascii.eqlIgnoreCase(method_name, "getUserId")) return Value{ .string = ctx.eval.current_user_id };
-    if (std.ascii.eqlIgnoreCase(method_name, "getProfileId")) return Value{ .string = ctx.eval.current_profile_id };
+    if (std.ascii.eqlIgnoreCase(method_name, "getUserId")) {
+        return Value{ .string = ctx.eval.current_user_id };
+    }
+    if (std.ascii.eqlIgnoreCase(method_name, "getProfileId")) {
+        return Value{ .string = ctx.eval.current_profile_id };
+    }
     if (std.ascii.eqlIgnoreCase(method_name, "getName")) {
         if (current_user_string(current_user, "Name")) |name| return Value{ .string = name };
         return Value{ .string = "Test User" };
     }
     if (std.ascii.eqlIgnoreCase(method_name, "getUsername")) {
-        if (current_user_string(current_user, "Username")) |username| return Value{ .string = username };
+        if (current_user_string(current_user, "Username")) |username| {
+            return Value{ .string = username };
+        }
         return Value{ .string = "testuser@example.com" };
     }
     if (std.ascii.eqlIgnoreCase(method_name, "getFirstName")) {
-        if (current_user_string(current_user, "FirstName")) |first_name| return Value{ .string = first_name };
+        if (current_user_string(current_user, "FirstName")) |first_name| {
+            return Value{ .string = first_name };
+        }
         return Value{ .string = "Test" };
     }
     if (std.ascii.eqlIgnoreCase(method_name, "getLastName")) {
-        if (current_user_string(current_user, "LastName")) |last_name| return Value{ .string = last_name };
+        if (current_user_string(current_user, "LastName")) |last_name| {
+            return Value{ .string = last_name };
+        }
         return Value{ .string = "User" };
     }
     if (std.ascii.eqlIgnoreCase(method_name, "getUserType")) {
@@ -1662,11 +1773,15 @@ fn dispatch_static_user_info(ctx: *BuiltinContext, method_name: []const u8) !?Va
         return Value{ .string = "Standard" };
     }
     if (std.ascii.eqlIgnoreCase(method_name, "getLanguage")) {
-        if (current_user_string(current_user, "LanguageLocaleKey")) |lang| return Value{ .string = lang };
+        if (current_user_string(current_user, "LanguageLocaleKey")) |lang| {
+            return Value{ .string = lang };
+        }
         return Value{ .string = "en_US" };
     }
     if (std.ascii.eqlIgnoreCase(method_name, "getLocale")) {
-        if (current_user_string(current_user, "LocaleSidKey")) |locale| return Value{ .string = locale };
+        if (current_user_string(current_user, "LocaleSidKey")) |locale| {
+            return Value{ .string = locale };
+        }
         return Value{ .string = "en_US" };
     }
     if (std.ascii.eqlIgnoreCase(method_name, "getUserEmail")) {
@@ -1674,39 +1789,44 @@ fn dispatch_static_user_info(ctx: *BuiltinContext, method_name: []const u8) !?Va
         return Value{ .string = "" };
     }
     if (std.ascii.eqlIgnoreCase(method_name, "getTimeZone")) {
-        if (current_user_string(current_user, "TimeZoneSidKey")) |time_zone| return Value{ .string = time_zone };
+        if (current_user_string(current_user, "TimeZoneSidKey")) |time_zone| {
+            return Value{ .string = time_zone };
+        }
         return Value{ .string = "America/Los_Angeles" };
     }
-    if (std.ascii.eqlIgnoreCase(method_name, "getOrganizationId")) return Value{ .string = "00D000000000001" };
-    if (std.ascii.eqlIgnoreCase(method_name, "getOrganizationName")) return Value{ .string = "Mock Org" };
-    if (std.ascii.eqlIgnoreCase(method_name, "isMultiCurrencyOrganization")) return Value{ .boolean = false };
-    if (std.ascii.eqlIgnoreCase(method_name, "getUiThemeDisplayed")) return Value{ .string = "Theme4d" };
-    if (std.ascii.eqlIgnoreCase(method_name, "getSessionId")) return Value{ .string = "mock-session-id" };
+    if (std.ascii.eqlIgnoreCase(method_name, "getOrganizationId")) {
+        return Value{ .string = "00D000000000001" };
+    }
+    if (std.ascii.eqlIgnoreCase(method_name, "getOrganizationName")) {
+        return Value{ .string = "Mock Org" };
+    }
+    if (std.ascii.eqlIgnoreCase(method_name, "isMultiCurrencyOrganization")) {
+        return Value{ .boolean = false };
+    }
+    if (std.ascii.eqlIgnoreCase(method_name, "getUiThemeDisplayed")) {
+        return Value{ .string = "Theme4d" };
+    }
+    if (std.ascii.eqlIgnoreCase(method_name, "getSessionId")) {
+        return Value{ .string = "mock-session-id" };
+    }
     return Value{ .string = "" };
 }
 
-fn dispatch_static_feature_management(ctx: *BuiltinContext, method_name: []const u8, args: []const Value) !?Value {
+fn dispatch_static_feature_management(
+    ctx: *BuiltinContext,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
     if (!std.ascii.eqlIgnoreCase(method_name, "checkPermission")) return Value{ .boolean = false };
     if (args.len == 0 or args[0] != .string) return Value{ .boolean = false };
 
     const permission_name = args[0].string;
     var assigned_permission_set_ids: [32][]const u8 = undefined;
-    var assigned_permission_set_count: usize = 0;
+    const assigned_permission_set_count = collect_feature_management_permission_set_ids(
+        ctx,
+        &assigned_permission_set_ids,
+    );
     var has_admin_permission_set = false;
-
-    if (ctx.eval.store.get("PermissionSetAssignment")) |psa_records| {
-        for (psa_records.items) |psa| {
-            if (psa != .sobject) continue;
-            const assignee_id = utils.sobject_get(&psa.sobject.fields, "AssigneeId") orelse continue;
-            if (assignee_id != .string or !std.ascii.eqlIgnoreCase(assignee_id.string, ctx.eval.current_user_id)) continue;
-            const permission_set_id = utils.sobject_get(&psa.sobject.fields, "PermissionSetId") orelse continue;
-            if (permission_set_id != .string) continue;
-            if (assigned_permission_set_count < assigned_permission_set_ids.len) {
-                assigned_permission_set_ids[assigned_permission_set_count] = permission_set_id.string;
-                assigned_permission_set_count += 1;
-            }
-        }
-    }
 
     if (assigned_permission_set_count == 0) return Value{ .boolean = false };
 
@@ -1749,6 +1869,34 @@ fn dispatch_static_feature_management(ctx: *BuiltinContext, method_name: []const
     return Value{ .boolean = false };
 }
 
+fn collect_feature_management_permission_set_ids(
+    ctx: *BuiltinContext,
+    assigned_permission_set_ids: *[32][]const u8,
+) usize {
+    var assigned_permission_set_count: usize = 0;
+    if (ctx.eval.store.get("PermissionSetAssignment")) |psa_records| {
+        for (psa_records.items) |psa| {
+            if (psa != .sobject) continue;
+            const assignee_id =
+                utils.sobject_get(&psa.sobject.fields, "AssigneeId") orelse continue;
+            if (assignee_id != .string or
+                !std.ascii.eqlIgnoreCase(assignee_id.string, ctx.eval.current_user_id))
+            {
+                continue;
+            }
+            const permission_set_id =
+                utils.sobject_get(&psa.sobject.fields, "PermissionSetId") orelse continue;
+            if (permission_set_id != .string) continue;
+            if (assigned_permission_set_count < assigned_permission_set_ids.len) {
+                assigned_permission_set_ids[assigned_permission_set_count] =
+                    permission_set_id.string;
+                assigned_permission_set_count += 1;
+            }
+        }
+    }
+    return assigned_permission_set_count;
+}
+
 fn has_setup_entity_custom_permission(
     ctx: *BuiltinContext,
     assigned_permission_set_ids: []const []const u8,
@@ -1774,8 +1922,11 @@ fn has_setup_entity_custom_permission(
         for (cp_records.items) |cp| {
             if (cp != .sobject or cp.sobject.id == null) continue;
             if (!std.ascii.eqlIgnoreCase(cp.sobject.id.?, setup_entity_id.string)) continue;
-            const developer_name = utils.sobject_get(&cp.sobject.fields, "DeveloperName") orelse continue;
-            if (developer_name == .string and std.ascii.eqlIgnoreCase(developer_name.string, permission_name)) {
+            const developer_name =
+                utils.sobject_get(&cp.sobject.fields, "DeveloperName") orelse continue;
+            if (developer_name == .string and
+                std.ascii.eqlIgnoreCase(developer_name.string, permission_name))
+            {
                 return true;
             }
         }
@@ -1783,23 +1934,53 @@ fn has_setup_entity_custom_permission(
     return false;
 }
 
-fn dispatch_static_logging_level(ctx: *BuiltinContext, method_name: []const u8, args: []const Value) !?Value {
+fn dispatch_static_logging_level(
+    ctx: *BuiltinContext,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
     if (std.ascii.eqlIgnoreCase(method_name, "valueOf") and args.len > 0 and args[0] == .string) {
-        const valid_levels = [_][]const u8{ "INTERNAL", "FINEST", "FINER", "FINE", "DEBUG", "INFO", "WARN", "ERROR", "NONE" };
+        const valid_levels = [_][]const u8{
+            "INTERNAL",
+            "FINEST",
+            "FINER",
+            "FINE",
+            "DEBUG",
+            "INFO",
+            "WARN",
+            "ERROR",
+            "NONE",
+        };
         for (valid_levels) |level| {
             if (std.ascii.eqlIgnoreCase(args[0].string, level)) return Value{ .string = level };
         }
         // Invalid enum value → throw NoSuchElementException
         const exc = try ctx.arena.create(types.ObjectInstance);
         exc.* = .{ .class_name = "NoSuchElementException" };
-        try exc.fields.put(ctx.arena, "message", Value{ .string = try std.fmt.allocPrint(ctx.arena, "No enum constant System.LoggingLevel.{s}", .{args[0].string}) });
+        try exc.fields.put(ctx.arena, "message", Value{
+            .string = try std.fmt.allocPrint(
+                ctx.arena,
+                "No enum constant System.LoggingLevel.{s}",
+                .{args[0].string},
+            ),
+        });
         ctx.pending_exception.?.* = Value{ .object = exc };
         return error.ApexException;
     }
     if (std.ascii.eqlIgnoreCase(method_name, "values")) {
         const list = try ctx.arena.create(types.ListValue);
         list.* = .{};
-        const names = [_][]const u8{ "INTERNAL", "FINEST", "FINER", "FINE", "DEBUG", "INFO", "WARN", "ERROR", "NONE" };
+        const names = [_][]const u8{
+            "INTERNAL",
+            "FINEST",
+            "FINER",
+            "FINE",
+            "DEBUG",
+            "INFO",
+            "WARN",
+            "ERROR",
+            "NONE",
+        };
         for (names) |name| try list.items.append(ctx.arena, Value{ .string = name });
         return Value{ .list = list };
     }
@@ -1807,16 +1988,24 @@ fn dispatch_static_logging_level(ctx: *BuiltinContext, method_name: []const u8, 
 }
 
 fn dispatch_static_rest_context(ctx: *BuiltinContext, method_name: []const u8) !?Value {
-    if (std.ascii.eqlIgnoreCase(method_name, "request") or std.ascii.eqlIgnoreCase(method_name, "getRequest")) {
+    if (std.ascii.eqlIgnoreCase(method_name, "request") or
+        std.ascii.eqlIgnoreCase(method_name, "getRequest"))
+    {
         return try ensure_rest_context_member(ctx, "request");
     }
-    if (std.ascii.eqlIgnoreCase(method_name, "response") or std.ascii.eqlIgnoreCase(method_name, "getResponse")) {
+    if (std.ascii.eqlIgnoreCase(method_name, "response") or
+        std.ascii.eqlIgnoreCase(method_name, "getResponse"))
+    {
         return try ensure_rest_context_member(ctx, "response");
     }
     return Value.null_val;
 }
 
-fn dispatch_static_schema(ctx: *BuiltinContext, method_name: []const u8, args: []const Value) !?Value {
+fn dispatch_static_schema(
+    ctx: *BuiltinContext,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
     if (std.ascii.eqlIgnoreCase(method_name, "getGlobalDescribe")) {
         return try dispatch_schema_global_describe(ctx);
     }
@@ -1875,7 +2064,11 @@ fn dispatch_schema_global_describe(ctx: *BuiltinContext) !Value {
     return Value{ .map = map };
 }
 
-fn put_schema_s_object_type(ctx: *BuiltinContext, map: *types.MapValue, obj_name: []const u8) !void {
+fn put_schema_s_object_type(
+    ctx: *BuiltinContext,
+    map: *types.MapValue,
+    obj_name: []const u8,
+) !void {
     const sot = try ctx.arena.create(types.ObjectInstance);
     sot.* = .{ .class_name = "Schema.SObjectType" };
     try sot.fields.put(ctx.arena, "name", Value{ .string = obj_name });
@@ -1934,7 +2127,11 @@ fn is_schema_describe_object_known(
     return false;
 }
 
-fn dispatch_static_security(ctx: *BuiltinContext, method_name: []const u8, args: []const Value) !?Value {
+fn dispatch_static_security(
+    ctx: *BuiltinContext,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
     if (std.ascii.eqlIgnoreCase(method_name, "stripInaccessible")) {
         return try dispatch_static_security_strip_inaccessible(ctx, args);
     }
@@ -1949,9 +2146,20 @@ fn dispatch_static_security_strip_inaccessible(ctx: *BuiltinContext, args: []con
     const access_type = if (args.len >= 1 and args[0] == .string) args[0].string else "";
     const has_permset = has_assigned_permission_set(ctx.eval);
     const enforce_crud = if (args.len >= 3 and args[2] == .boolean) args[2].boolean else true;
-    const input_records = if (args.len >= 2) args[1] else if (args.len >= 1 and args[0] == .list) args[0] else Value.null_val;
+    const input_records = if (args.len >= 2)
+        args[1]
+    else if (args.len >= 1 and args[0] == .list)
+        args[0]
+    else
+        Value.null_val;
 
-    try validate_strip_inaccessible_crud(ctx, input_records, access_type, enforce_crud, has_permset);
+    try validate_strip_inaccessible_crud(
+        ctx,
+        input_records,
+        access_type,
+        enforce_crud,
+        has_permset,
+    );
     try collect_removed_inaccessible_fields(ctx, input_records, access_type, rm_map);
     try put_strip_inaccessible_records(ctx, args, input_records, access_type, rm_map, obj);
     try obj.fields.put(ctx.arena, "removedFields", Value{ .map = rm_map });
@@ -1980,7 +2188,11 @@ fn validate_strip_inaccessible_crud(
             else
                 "create";
             if (object_access_operation.len > 0 and
-                !resolve_object_crud_permission(ctx.eval, item.sobject.type_name, object_access_operation))
+                !resolve_object_crud_permission(
+                    ctx.eval,
+                    item.sobject.type_name,
+                    object_access_operation,
+                ))
             {
                 _ = try ctx.throw_exception("System.NoAccessException", "No access to entity");
             }
@@ -2000,21 +2212,30 @@ fn collect_removed_inaccessible_fields(
 
     for (input_records.list.items.items) |item| {
         if (item != .sobject) continue;
-        for (item.sobject.fields.keys(), item.sobject.fields.values()) |field_name, field_value| {
+        for (
+            item.sobject.fields.keys(),
+            item.sobject.fields.values(),
+        ) |field_name, field_value| {
             if (std.ascii.eqlIgnoreCase(field_name, "Id")) continue;
             const should_keep = if (std.ascii.eqlIgnoreCase(access_type, "READABLE"))
                 resolve_field_read_permission(ctx.eval, item.sobject.type_name, field_name)
             else if (std.ascii.eqlIgnoreCase(access_type, "CREATABLE"))
-                resolve_field_write_permission(ctx.eval, item.sobject.type_name, field_name, "create")
+                resolve_field_write_permission(
+                    ctx.eval,
+                    item.sobject.type_name,
+                    field_name,
+                    "create",
+                )
             else if (std.ascii.eqlIgnoreCase(access_type, "UPDATABLE") or
                 std.ascii.eqlIgnoreCase(access_type, "UPSERTABLE"))
                 resolve_field_write_permission(ctx.eval, item.sobject.type_name, field_name, "edit")
             else
                 true;
-            const should_record_removed_field = if (std.ascii.eqlIgnoreCase(access_type, "READABLE"))
-                !should_keep
-            else
-                !should_keep and field_value != .null_val;
+            const should_record_removed_field =
+                if (std.ascii.eqlIgnoreCase(access_type, "READABLE"))
+                    !should_keep
+                else
+                    !should_keep and field_value != .null_val;
             if (should_record_removed_field) {
                 try rm_map.entries.put(ctx.arena, field_name, Value{ .boolean = true });
             }
@@ -2039,7 +2260,10 @@ fn put_strip_inaccessible_records(
                 clone.* = .{ .type_name = item.sobject.type_name };
                 clone.id = item.sobject.id;
                 clone.is_stripped = std.ascii.eqlIgnoreCase(access_type, "READABLE");
-                for (item.sobject.fields.keys(), item.sobject.fields.values()) |field_name, field_value| {
+                for (
+                    item.sobject.fields.keys(),
+                    item.sobject.fields.values(),
+                ) |field_name, field_value| {
                     if (rm_map.entries.get(field_name) == null) {
                         try clone.fields.put(ctx.arena, field_name, field_value);
                     }
@@ -2060,15 +2284,29 @@ fn put_strip_inaccessible_records(
 fn dispatch_static_limits(ctx: *BuiltinContext, method_name: []const u8) !?Value {
     const ci = std.ascii;
     // Usage counters
-    if (ci.eqlIgnoreCase(method_name, "getDmlStatements")) return Value{ .integer = @intCast(ctx.eval.limits_dml) };
-    if (ci.eqlIgnoreCase(method_name, "getDmlRows")) return Value{ .integer = @intCast(ctx.eval.limits_dml_rows) };
-    if (ci.eqlIgnoreCase(method_name, "getQueries")) return Value{ .integer = @intCast(ctx.eval.limits_soql) };
-    if (ci.eqlIgnoreCase(method_name, "getAsyncCalls")) return Value{ .integer = @intCast(ctx.eval.limits_queueable) };
+    if (ci.eqlIgnoreCase(method_name, "getDmlStatements")) {
+        return Value{ .integer = @intCast(ctx.eval.limits_dml) };
+    }
+    if (ci.eqlIgnoreCase(method_name, "getDmlRows")) {
+        return Value{ .integer = @intCast(ctx.eval.limits_dml_rows) };
+    }
+    if (ci.eqlIgnoreCase(method_name, "getQueries")) {
+        return Value{ .integer = @intCast(ctx.eval.limits_soql) };
+    }
+    if (ci.eqlIgnoreCase(method_name, "getAsyncCalls")) {
+        return Value{ .integer = @intCast(ctx.eval.limits_queueable) };
+    }
     if (ci.eqlIgnoreCase(method_name, "getPublishImmediateDml") or ci.eqlIgnoreCase(method_name, "getPublishImmediateDML"))
         return Value{ .integer = @intCast(ctx.eval.limits_publish_immediate) };
-    if (ci.eqlIgnoreCase(method_name, "getQueueableJobs")) return Value{ .integer = @intCast(ctx.eval.limits_queueable) };
-    if (ci.eqlIgnoreCase(method_name, "getCallouts")) return Value{ .integer = @intCast(ctx.eval.limits_callouts) };
-    if (ci.eqlIgnoreCase(method_name, "getEmailInvocations")) return Value{ .integer = @intCast(ctx.eval.limits_email_invocations) };
+    if (ci.eqlIgnoreCase(method_name, "getQueueableJobs")) {
+        return Value{ .integer = @intCast(ctx.eval.limits_queueable) };
+    }
+    if (ci.eqlIgnoreCase(method_name, "getCallouts")) {
+        return Value{ .integer = @intCast(ctx.eval.limits_callouts) };
+    }
+    if (ci.eqlIgnoreCase(method_name, "getEmailInvocations")) {
+        return Value{ .integer = @intCast(ctx.eval.limits_email_invocations) };
+    }
     // Governor limit maximums (Salesforce default synchronous limits)
     if (ci.eqlIgnoreCase(method_name, "getLimitDmlStatements")) return Value{ .integer = 150 };
     if (ci.eqlIgnoreCase(method_name, "getLimitDmlRows")) return Value{ .integer = 10000 };
@@ -2082,10 +2320,14 @@ fn dispatch_static_limits(ctx: *BuiltinContext, method_name: []const u8) !?Value
     if (ci.eqlIgnoreCase(method_name, "getLimitEmailInvocations")) return Value{ .integer = 10 };
     if (ci.eqlIgnoreCase(method_name, "getLimitFutureCalls")) return Value{ .integer = 50 };
     if (ci.eqlIgnoreCase(method_name, "getLimitMobilePushApexCalls")) return Value{ .integer = 10 };
-    if (ci.eqlIgnoreCase(method_name, "getLimitPublishImmediateDML")) return Value{ .integer = 150 };
+    if (ci.eqlIgnoreCase(method_name, "getLimitPublishImmediateDML")) {
+        return Value{ .integer = 150 };
+    }
     if (ci.eqlIgnoreCase(method_name, "getLimitQueueableJobs")) return Value{ .integer = 50 };
     if (ci.eqlIgnoreCase(method_name, "getLimitSoslQueries")) return Value{ .integer = 20 };
-    if (ci.eqlIgnoreCase(method_name, "getLimitFetchCallsOnApexCursor")) return Value{ .integer = 10 };
+    if (ci.eqlIgnoreCase(method_name, "getLimitFetchCallsOnApexCursor")) {
+        return Value{ .integer = 10 };
+    }
     if (ci.eqlIgnoreCase(method_name, "getLimitApexCursorRows")) return Value{ .integer = 50000 };
     if (ci.eqlIgnoreCase(method_name, "getLimitAsyncCalls")) return Value{ .integer = 50 };
     // All other Limits methods return 0
@@ -2098,13 +2340,21 @@ fn find_stored_record_by_id(eval: *evaluator_mod.Evaluator, record_id: []const u
         for (entry.value_ptr.items) |*item| {
             if (item.* != .sobject) continue;
             const id_value = utils.sobject_get(&item.sobject.fields, "Id") orelse continue;
-            if (id_value == .string and std.ascii.eqlIgnoreCase(id_value.string, record_id)) return item.sobject;
+            if (id_value == .string and
+                std.ascii.eqlIgnoreCase(id_value.string, record_id))
+            {
+                return item.sobject;
+            }
         }
     }
     return null;
 }
 
-fn build_database_error_value(ctx: *BuiltinContext, status_code: []const u8, message: []const u8) !Value {
+fn build_database_error_value(
+    ctx: *BuiltinContext,
+    status_code: []const u8,
+    message: []const u8,
+) !Value {
     const err = try ctx.arena.create(types.ObjectInstance);
     err.* = .{ .class_name = "Database.Error" };
     try err.fields.put(ctx.arena, "statusCode", Value{ .string = status_code });
@@ -2115,24 +2365,53 @@ fn build_database_error_value(ctx: *BuiltinContext, status_code: []const u8, mes
     return Value{ .object = err };
 }
 
-fn build_approval_result(ctx: *BuiltinContext, class_name: []const u8, is_success: bool, status_code: ?[]const u8, message: ?[]const u8) !Value {
+fn build_approval_result(
+    ctx: *BuiltinContext,
+    class_name: []const u8,
+    is_success: bool,
+    status_code: ?[]const u8,
+    message: ?[]const u8,
+) !Value {
     const result = try ctx.arena.create(types.ObjectInstance);
     result.* = .{ .class_name = class_name };
     try result.fields.put(ctx.arena, "success", Value{ .boolean = is_success });
     const errors = try ctx.arena.create(types.ListValue);
     errors.* = .{};
     if (!is_success and status_code != null and message != null) {
-        try errors.items.append(ctx.arena, try build_database_error_value(ctx, status_code.?, message.?));
+        try errors.items.append(
+            ctx.arena,
+            try build_database_error_value(ctx, status_code.?, message.?),
+        );
     }
     try result.fields.put(ctx.arena, "errors", Value{ .list = errors });
     return Value{ .object = result };
 }
 
-fn dispatch_static_approval(ctx: *BuiltinContext, method_name: []const u8, args: []const Value) !?Value {
+fn dispatch_static_approval(
+    ctx: *BuiltinContext,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
     if (args.len == 0 or args[0] != .string) {
         if (std.ascii.eqlIgnoreCase(method_name, "isLocked")) return Value{ .boolean = false };
-        if (std.ascii.eqlIgnoreCase(method_name, "lock")) return try build_approval_result(ctx, "Approval.LockResult", false, "INVALID_CROSS_REFERENCE_KEY", "Record not found");
-        if (std.ascii.eqlIgnoreCase(method_name, "unlock")) return try build_approval_result(ctx, "Approval.UnlockResult", false, "INVALID_CROSS_REFERENCE_KEY", "Record not found");
+        if (std.ascii.eqlIgnoreCase(method_name, "lock")) {
+            return try build_approval_result(
+                ctx,
+                "Approval.LockResult",
+                false,
+                "INVALID_CROSS_REFERENCE_KEY",
+                "Record not found",
+            );
+        }
+        if (std.ascii.eqlIgnoreCase(method_name, "unlock")) {
+            return try build_approval_result(
+                ctx,
+                "Approval.UnlockResult",
+                false,
+                "INVALID_CROSS_REFERENCE_KEY",
+                "Record not found",
+            );
+        }
         return null;
     }
 
@@ -2141,29 +2420,51 @@ fn dispatch_static_approval(ctx: *BuiltinContext, method_name: []const u8, args:
 
     if (std.ascii.eqlIgnoreCase(method_name, "isLocked")) {
         if (record) |matched| {
-            const is_locked = utils.sobject_get(&matched.fields, "__isLocked") orelse Value{ .boolean = false };
+            const is_locked =
+                utils.sobject_get(&matched.fields, "__isLocked") orelse Value{ .boolean = false };
             return if (is_locked == .boolean) is_locked else Value{ .boolean = false };
         }
         return Value{ .boolean = false };
     }
 
     if (std.ascii.eqlIgnoreCase(method_name, "lock")) {
-        if (record) |matched| {
-            try matched.fields.put(ctx.arena, "__isLocked", Value{ .boolean = true });
-            return try build_approval_result(ctx, "Approval.LockResult", true, null, null);
-        }
-        return try build_approval_result(ctx, "Approval.LockResult", false, "INVALID_CROSS_REFERENCE_KEY", "Record not found");
+        return try approval_set_locked_result(
+            ctx,
+            "Approval.LockResult",
+            record,
+            true,
+        );
     }
 
     if (std.ascii.eqlIgnoreCase(method_name, "unlock")) {
-        if (record) |matched| {
-            try matched.fields.put(ctx.arena, "__isLocked", Value{ .boolean = false });
-            return try build_approval_result(ctx, "Approval.UnlockResult", true, null, null);
-        }
-        return try build_approval_result(ctx, "Approval.UnlockResult", false, "INVALID_CROSS_REFERENCE_KEY", "Record not found");
+        return try approval_set_locked_result(
+            ctx,
+            "Approval.UnlockResult",
+            record,
+            false,
+        );
     }
 
     return null;
+}
+
+fn approval_set_locked_result(
+    ctx: *BuiltinContext,
+    class_name: []const u8,
+    record: ?*types.SObject,
+    is_locked: bool,
+) !Value {
+    if (record) |matched| {
+        try matched.fields.put(ctx.arena, "__isLocked", Value{ .boolean = is_locked });
+        return try build_approval_result(ctx, class_name, true, null, null);
+    }
+    return try build_approval_result(
+        ctx,
+        class_name,
+        false,
+        "INVALID_CROSS_REFERENCE_KEY",
+        "Record not found",
+    );
 }
 
 fn parse_date_time_to_epoch_millis(s: []const u8) ?i64 {

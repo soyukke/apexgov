@@ -1124,7 +1124,11 @@ pub const Evaluator = struct {
             {
                 const default_rt = try self.arena.create(types.SObject);
                 default_rt.* = .{ .type_name = "RecordType" };
-                const def_id = try std.fmt.allocPrint(self.arena, "0120000000001{d:0>2}AAA", .{idx});
+                const def_id = try std.fmt.allocPrint(
+                    self.arena,
+                    "0120000000001{d:0>2}AAA",
+                    .{idx},
+                );
                 default_rt.id = def_id;
                 try default_rt.fields.put(self.arena, "Id", Value{ .string = def_id });
                 try default_rt.fields.put(self.arena, "Name", Value{ .string = "Default" });
@@ -1178,7 +1182,11 @@ pub const Evaluator = struct {
                             self.eval_expr(init_expr, self.global_env) catch Value.null_val
                         else
                             default_value(fd.type_ref);
-                        const key = std.fmt.allocPrint(self.arena, "{s}.{s}", .{ cd.name, fd.name }) catch continue;
+                        const key = std.fmt.allocPrint(
+                            self.arena,
+                            "{s}.{s}",
+                            .{ cd.name, fd.name },
+                        ) catch continue;
                         self.global_env.set(key, val) catch {
                             self.global_env.define(key, val) catch {};
                         };
@@ -1187,6 +1195,13 @@ pub const Evaluator = struct {
                 else => {},
             }
         }
+        self.retry_class_static_field_initializers(cd);
+    }
+
+    fn retry_class_static_field_initializers(
+        self: *Evaluator,
+        cd: *ast.ClassDecl,
+    ) void {
         // Second pass: retry initializers that produced null but had a real expression.
         // Bounded retry guards against circular references.
         var retry_attempts: u8 = 0;
@@ -1197,10 +1212,15 @@ pub const Evaluator = struct {
                     .field_decl => |fd| {
                         if (!fd.modifiers.is_static) continue;
                         const init_expr = fd.initializer orelse continue;
-                        const key = std.fmt.allocPrint(self.arena, "{s}.{s}", .{ cd.name, fd.name }) catch continue;
+                        const key = std.fmt.allocPrint(
+                            self.arena,
+                            "{s}.{s}",
+                            .{ cd.name, fd.name },
+                        ) catch continue;
                         const current = self.global_env.get(key) orelse Value.null_val;
                         if (current != .null_val) continue;
-                        const val = self.eval_expr(init_expr, self.global_env) catch Value.null_val;
+                        const val =
+                            self.eval_expr(init_expr, self.global_env) catch Value.null_val;
                         if (val == .null_val) continue;
                         self.global_env.set(key, val) catch {
                             self.global_env.define(key, val) catch {};
@@ -1221,7 +1241,11 @@ pub const Evaluator = struct {
             switch (member) {
                 .field_decl => |fd| {
                     if (fd.modifiers.is_static) {
-                        const key = std.fmt.allocPrint(self.arena, "{s}.{s}", .{ cd.name, fd.name }) catch continue;
+                        const key = std.fmt.allocPrint(
+                            self.arena,
+                            "{s}.{s}",
+                            .{ cd.name, fd.name },
+                        ) catch continue;
                         self.global_env.define(key, default_value(fd.type_ref)) catch {};
                     }
                 },
@@ -1230,7 +1254,8 @@ pub const Evaluator = struct {
         }
     }
 
-    /// Resolve a class name to its fully-qualified form (e.g., "InnerClass" → "OuterClass.InnerClass").
+    /// Resolve a class name to its fully-qualified form
+    /// (e.g., "InnerClass" → "OuterClass.InnerClass").
     /// If the name already contains a dot or no FQ match is found, returns the original name.
     fn resolve_full_class_name(self: *Evaluator, name: []const u8) []const u8 {
         if (std.mem.indexOfScalar(u8, name, '.') != null) return name;
@@ -1257,13 +1282,21 @@ pub const Evaluator = struct {
         return false;
     }
 
-    fn find_inner_class_fq(self: *Evaluator, outer_name: []const u8, simple_name: []const u8) ?[]const u8 {
+    fn find_inner_class_fq(
+        self: *Evaluator,
+        outer_name: []const u8,
+        simple_name: []const u8,
+    ) ?[]const u8 {
         const outer_decl = self.find_class(outer_name) orelse return null;
         for (outer_decl.members) |member| {
             switch (member) {
                 .class_decl => |inner_cd| {
                     if (std.ascii.eqlIgnoreCase(inner_cd.name, simple_name)) {
-                        return std.fmt.allocPrint(self.arena, "{s}.{s}", .{ outer_name, inner_cd.name }) catch null;
+                        return std.fmt.allocPrint(
+                            self.arena,
+                            "{s}.{s}",
+                            .{ outer_name, inner_cd.name },
+                        ) catch null;
                     }
                 },
                 else => {},
@@ -1272,7 +1305,11 @@ pub const Evaluator = struct {
         return null;
     }
 
-    fn resolve_visible_user_class_in_scope(self: *Evaluator, current_env: ?*Env, simple_name: []const u8) ?[]const u8 {
+    fn resolve_visible_user_class_in_scope(
+        self: *Evaluator,
+        current_env: ?*Env,
+        simple_name: []const u8,
+    ) ?[]const u8 {
         if (std.mem.indexOfScalar(u8, simple_name, '.') != null) {
             if (self.find_class(simple_name) != null) return simple_name;
             return null;
@@ -1346,7 +1383,11 @@ pub const Evaluator = struct {
             if (buf.items.len > 0) try buf.append(self.arena, '\n');
             const fq = self.resolve_full_class_name(f.class_name);
             const line = if (f.line > 0) f.line else 1;
-            const entry = try std.fmt.allocPrint(self.arena, "Class.{s}.{s}: line {d}, column 1", .{ fq, f.method_name, line });
+            const entry = try std.fmt.allocPrint(
+                self.arena,
+                "Class.{s}.{s}: line {d}, column 1",
+                .{ fq, f.method_name, line },
+            );
             try buf.appendSlice(self.arena, entry);
             emitted_frames += 1;
         }
@@ -1393,7 +1434,11 @@ pub const Evaluator = struct {
                         switch (m2) {
                             .field_decl => |fd| {
                                 if (fd.modifiers.is_static) {
-                                    const key = std.fmt.allocPrint(self.arena, "{s}.{s}", .{ cd.name, fd.name }) catch continue;
+                                    const key = std.fmt.allocPrint(
+                                        self.arena,
+                                        "{s}.{s}",
+                                        .{ cd.name, fd.name },
+                                    ) catch continue;
                                     const cur = self.global_env.get(key) orelse Value.null_val;
                                     static_keys.append(self.arena, key) catch continue;
                                     original_values.append(self.arena, cur) catch continue;
@@ -1412,18 +1457,24 @@ pub const Evaluator = struct {
                                     const key = if (static_index < static_keys.items.len)
                                         static_keys.items[static_index]
                                     else
-                                        std.fmt.allocPrint(self.arena, "{s}.{s}", .{ cd.name, fd.name }) catch continue;
+                                        std.fmt.allocPrint(
+                                            self.arena,
+                                            "{s}.{s}",
+                                            .{ cd.name, fd.name },
+                                        ) catch continue;
                                     const original_value = if (static_index < original_values.items.len)
                                         original_values.items[static_index]
                                     else
                                         Value.null_val;
                                     static_index += 1;
                                     const local_value = init_env.get(fd.name) orelse Value.null_val;
-                                    const global_value = self.global_env.get(key) orelse Value.null_val;
-                                    const writeback_value = if (!utils.value_eql(local_value, original_value))
-                                        local_value
-                                    else
-                                        global_value;
+                                    const global_value =
+                                        self.global_env.get(key) orelse Value.null_val;
+                                    const writeback_value =
+                                        if (!utils.value_eql(local_value, original_value))
+                                            local_value
+                                        else
+                                            global_value;
                                     self.global_env.set(key, writeback_value) catch {
                                         self.global_env.define(key, writeback_value) catch {};
                                     };
@@ -1451,7 +1502,10 @@ pub const Evaluator = struct {
                     try self.register_class_recursive(ca, cd, null);
                 },
                 .trigger_decl => |td| {
-                    const obj_lower = std.ascii.lowerString(self.arena.alloc(u8, td.object_name.len) catch continue, td.object_name);
+                    const obj_lower = std.ascii.lowerString(
+                        self.arena.alloc(u8, td.object_name.len) catch continue,
+                        td.object_name,
+                    );
                     const gop = self.triggers.getOrPut(self.arena, obj_lower) catch continue;
                     if (!gop.found_existing) gop.value_ptr.* = .empty;
                     gop.value_ptr.append(self.arena, td) catch {};
@@ -1466,11 +1520,19 @@ pub const Evaluator = struct {
     }
 
     /// Register source code for a class (used for ApexClass.Body queries)
-    pub fn register_class_source(self: *Evaluator, class_name: []const u8, source: []const u8) !void {
+    pub fn register_class_source(
+        self: *Evaluator,
+        class_name: []const u8,
+        source: []const u8,
+    ) !void {
         try self.class_sources.put(self.arena, class_name, source);
     }
 
-    pub fn register_trigger_source(self: *Evaluator, trigger_name: []const u8, source: []const u8) !void {
+    pub fn register_trigger_source(
+        self: *Evaluator,
+        trigger_name: []const u8,
+        source: []const u8,
+    ) !void {
         try self.trigger_sources.put(self.arena, trigger_name, source);
     }
 
@@ -1482,54 +1544,7 @@ pub const Evaluator = struct {
             for (cd.members) |member| {
                 switch (member) {
                     .static_init => |body| {
-                        const init_env = self.global_env.child() catch continue;
-                        var static_keys: std.ArrayListUnmanaged([]const u8) = .empty;
-                        var original_values: std.ArrayListUnmanaged(Value) = .empty;
-                        // Define static fields as local variables
-                        for (cd.members) |m2| {
-                            switch (m2) {
-                                .field_decl => |fd| {
-                                    if (fd.modifiers.is_static) {
-                                        const key = std.fmt.allocPrint(self.arena, "{s}.{s}", .{ cd.name, fd.name }) catch continue;
-                                        const cur = self.global_env.get(key) orelse Value.null_val;
-                                        static_keys.append(self.arena, key) catch continue;
-                                        original_values.append(self.arena, cur) catch continue;
-                                        init_env.define(fd.name, cur) catch {};
-                                    }
-                                },
-                                else => {},
-                            }
-                        }
-                        _ = self.exec_block(body, init_env) catch {};
-                        // Write back static fields to global env
-                        var static_index: usize = 0;
-                        for (cd.members) |m2| {
-                            switch (m2) {
-                                .field_decl => |fd| {
-                                    if (fd.modifiers.is_static) {
-                                        const key = if (static_index < static_keys.items.len)
-                                            static_keys.items[static_index]
-                                        else
-                                            std.fmt.allocPrint(self.arena, "{s}.{s}", .{ cd.name, fd.name }) catch continue;
-                                        const original_value = if (static_index < original_values.items.len)
-                                            original_values.items[static_index]
-                                        else
-                                            Value.null_val;
-                                        static_index += 1;
-                                        const local_value = init_env.get(fd.name) orelse Value.null_val;
-                                        const global_value = self.global_env.get(key) orelse Value.null_val;
-                                        const writeback_value = if (!utils.value_eql(local_value, original_value))
-                                            local_value
-                                        else
-                                            global_value;
-                                        self.global_env.set(key, writeback_value) catch {
-                                            self.global_env.define(key, writeback_value) catch {};
-                                        };
-                                    }
-                                },
-                                else => {},
-                            }
-                        }
+                        self.run_static_init_body(cd, body);
                     },
                     else => {},
                 }
@@ -1537,7 +1552,73 @@ pub const Evaluator = struct {
         }
     }
 
-    pub fn call_method(self: *Evaluator, class_name: []const u8, method_name: []const u8, args: []const Value) anyerror!Value {
+    fn run_static_init_body(self: *Evaluator, cd: *ast.ClassDecl, body: []const ast.Stmt) void {
+        const init_env = self.global_env.child() catch return;
+        var static_keys: std.ArrayListUnmanaged([]const u8) = .empty;
+        var original_values: std.ArrayListUnmanaged(Value) = .empty;
+
+        for (cd.members) |member| {
+            switch (member) {
+                .field_decl => |fd| {
+                    if (fd.modifiers.is_static) {
+                        const key = std.fmt.allocPrint(
+                            self.arena,
+                            "{s}.{s}",
+                            .{ cd.name, fd.name },
+                        ) catch continue;
+                        const cur = self.global_env.get(key) orelse Value.null_val;
+                        static_keys.append(self.arena, key) catch continue;
+                        original_values.append(self.arena, cur) catch continue;
+                        init_env.define(fd.name, cur) catch {};
+                    }
+                },
+                else => {},
+            }
+        }
+
+        _ = self.exec_block(body, init_env) catch {};
+
+        var static_index: usize = 0;
+        for (cd.members) |member| {
+            switch (member) {
+                .field_decl => |fd| {
+                    if (fd.modifiers.is_static) {
+                        const key = if (static_index < static_keys.items.len)
+                            static_keys.items[static_index]
+                        else
+                            std.fmt.allocPrint(
+                                self.arena,
+                                "{s}.{s}",
+                                .{ cd.name, fd.name },
+                            ) catch continue;
+                        const original_value = if (static_index < original_values.items.len)
+                            original_values.items[static_index]
+                        else
+                            Value.null_val;
+                        static_index += 1;
+                        const local_value = init_env.get(fd.name) orelse Value.null_val;
+                        const global_value = self.global_env.get(key) orelse Value.null_val;
+                        const writeback_value =
+                            if (!utils.value_eql(local_value, original_value))
+                                local_value
+                            else
+                                global_value;
+                        self.global_env.set(key, writeback_value) catch {
+                            self.global_env.define(key, writeback_value) catch {};
+                        };
+                    }
+                },
+                else => {},
+            }
+        }
+    }
+
+    pub fn call_method(
+        self: *Evaluator,
+        class_name: []const u8,
+        method_name: []const u8,
+        args: []const Value,
+    ) anyerror!Value {
         self.call_depth +|= 1;
         defer self.call_depth -|= 1;
 
@@ -1547,7 +1628,11 @@ pub const Evaluator = struct {
         // Push call frame for stack trace generation (use current_call_line set by caller)
         const frame_line = self.current_call_line;
         self.current_call_line = 0;
-        try self.call_stack.append(self.arena, .{ .class_name = class_name, .method_name = method_name, .line = frame_line });
+        try self.call_stack.append(self.arena, .{
+            .class_name = class_name,
+            .method_name = method_name,
+            .line = frame_line,
+        });
         defer _ = self.call_stack.pop();
         // Lazy static init: ensure the class's static fields/blocks are initialized
         self.ensure_static_init(class_name);
@@ -1555,7 +1640,9 @@ pub const Evaluator = struct {
             if (cd.super_class) |sc| self.ensure_static_init(sc.name);
         }
         // EventBus.publish → store events in the store so they can be queried, and fire triggers
-        if (std.ascii.eqlIgnoreCase(class_name, "EventBus") and std.ascii.eqlIgnoreCase(method_name, "publish")) {
+        if (std.ascii.eqlIgnoreCase(class_name, "EventBus") and
+            std.ascii.eqlIgnoreCase(method_name, "publish"))
+        {
             self.limits_publish_immediate += 1;
             const PublishResult = struct {
                 success: bool,
@@ -1572,7 +1659,10 @@ pub const Evaluator = struct {
                         }
                         return err;
                     };
-                    return .{ .success = true, .id = self_eval.sobject_id_for_result(item.sobject) };
+                    return .{
+                        .success = true,
+                        .id = self_eval.sobject_id_for_result(item.sobject),
+                    };
                 }
             }.run;
 
@@ -1589,24 +1679,42 @@ pub const Evaluator = struct {
                         any_publish_success = true;
                         try successful_items.items.append(self.arena, item);
                     }
-                    try results.items.append(self.arena, try self.create_dml_result_value("Database.SaveResult", publish_result.success, publish_result.id, null));
+                    try results.items.append(
+                        self.arena,
+                        try self.create_dml_result_value(
+                            "Database.SaveResult",
+                            publish_result.success,
+                            publish_result.id,
+                            null,
+                        ),
+                    );
                 }
                 break :blk Value{ .list = results };
             } else blk: {
-                const publish_result: PublishResult = if (args.len > 0) try publish_one(self, args[0]) else .{ .success = false, .id = null };
+                const publish_result: PublishResult = if (args.len > 0)
+                    try publish_one(self, args[0])
+                else
+                    .{ .success = false, .id = null };
                 if (publish_result.success and args.len > 0) {
                     any_publish_success = true;
                     try successful_items.items.append(self.arena, args[0]);
                 }
-                break :blk try self.create_dml_result_value("Database.SaveResult", publish_result.success, publish_result.id, null);
+                break :blk try self.create_dml_result_value(
+                    "Database.SaveResult",
+                    publish_result.success,
+                    publish_result.id,
+                    null,
+                );
             };
             if (any_publish_success) {
                 // Platform event triggers run in a separate transaction in Salesforce,
                 // so save/restore DML/SOQL limits to avoid counting trigger DML in caller's limits.
-                const event_type = if (successful_items.items.items.len > 0 and successful_items.items.items[0] == .sobject)
-                    successful_items.items.items[0].sobject.type_name
-                else
-                    null;
+                const event_type =
+                    if (successful_items.items.items.len > 0 and
+                    successful_items.items.items[0] == .sobject)
+                        successful_items.items.items[0].sobject.type_name
+                    else
+                        null;
                 if (event_type) |et| {
                     const saved_dml = self.limits_dml;
                     const saved_dml_rows = self.limits_dml_rows;
@@ -1640,7 +1748,12 @@ pub const Evaluator = struct {
                     }
                     try pub_result.fields.put(self.arena, "eventUuids", Value{ .list = uuid_list });
                     // Call onSuccess(result) on the callback (will be overridden by fail() if called)
-                    _ = self.call_instance_method(cb_class, callback, "onSuccess", &.{Value{ .object = pub_result }}) catch {};
+                    _ = self.call_instance_method(
+                        cb_class,
+                        callback,
+                        "onSuccess",
+                        &.{Value{ .object = pub_result }},
+                    ) catch {};
                 }
             }
             if (args.len > 0) {
@@ -1659,7 +1772,8 @@ pub const Evaluator = struct {
             }
             return result;
         }
-        if ((std.ascii.eqlIgnoreCase(class_name, "Search") or std.ascii.eqlIgnoreCase(class_name, "System.Search")) and
+        if ((std.ascii.eqlIgnoreCase(class_name, "Search") or
+            std.ascii.eqlIgnoreCase(class_name, "System.Search")) and
             std.ascii.eqlIgnoreCase(method_name, "query"))
         {
             if (args.len > 0 and args[0] == .string) {
@@ -1684,7 +1798,9 @@ pub const Evaluator = struct {
                 }
                 if (!found_in_store) self.load_custom_metadata_from_files(class_name) catch {};
             }
-            if (std.ascii.eqlIgnoreCase(method_name, "getInstance") and args.len > 0 and args[0] == .string) {
+            if (std.ascii.eqlIgnoreCase(method_name, "getInstance") and
+                args.len > 0 and args[0] == .string)
+            {
                 const dev_name = args[0].string;
                 var mdt_iter = self.store.iterator();
                 while (mdt_iter.next()) |entry| {
@@ -1692,7 +1808,11 @@ pub const Evaluator = struct {
                         for (entry.value_ptr.items) |item| {
                             if (item == .sobject) {
                                 if (utils.sobject_get(&item.sobject.fields, "DeveloperName")) |dn| {
-                                    if (dn == .string and std.ascii.eqlIgnoreCase(dn.string, dev_name)) return item;
+                                    if (dn == .string and
+                                        std.ascii.eqlIgnoreCase(dn.string, dev_name))
+                                    {
+                                        return item;
+                                    }
                                 }
                             }
                         }
@@ -1709,7 +1829,9 @@ pub const Evaluator = struct {
                         for (entry.value_ptr.items) |item| {
                             if (item == .sobject) {
                                 if (utils.sobject_get(&item.sobject.fields, "DeveloperName")) |dn| {
-                                    if (dn == .string) try map.entries.put(self.arena, dn.string, item);
+                                    if (dn == .string) {
+                                        try map.entries.put(self.arena, dn.string, item);
+                                    }
                                 }
                             }
                         }
@@ -1726,7 +1848,9 @@ pub const Evaluator = struct {
         // Database methods that need store access. Preserve user-defined classes named
         // Database, which Apex can still reference unqualified while the platform
         // namespace remains reachable through System.Database.
-        if (std.ascii.eqlIgnoreCase(class_name, "Database") and self.find_class(class_name) == null) {
+        if (std.ascii.eqlIgnoreCase(class_name, "Database") and
+            self.find_class(class_name) == null)
+        {
             return self.handle_database_method(method_name, args, self.global_env);
         }
 
@@ -1734,7 +1858,13 @@ pub const Evaluator = struct {
         // class name itself is a user-defined class that intentionally shadows
         // a builtin static namespace like Security or CanTheUser.
         if (!(is_builtin_static_namespace(class_name) and self.find_class(class_name) != null)) {
-            var bctx = builtins.BuiltinContext{ .arena = self.arena, .stdout = &self.stdout, .pending_exception = &self.pending_exception, .see_all_data = self.see_all_data, .eval = self };
+            var bctx = builtins.BuiltinContext{
+                .arena = self.arena,
+                .stdout = &self.stdout,
+                .pending_exception = &self.pending_exception,
+                .see_all_data = self.see_all_data,
+                .eval = self,
+            };
             if (try builtins.dispatch_static(&bctx, class_name, method_name, args)) |result| {
                 return result;
             }
@@ -1748,7 +1878,12 @@ pub const Evaluator = struct {
                 self.current_class = entry.key_ptr.*;
                 defer self.current_class = prev_class;
                 // Try type-aware resolution first (prefer static methods for callMethod)
-                if (self.find_best_method_in_class_filtered(entry.value_ptr.*, method_name, args, true)) |md| {
+                if (self.find_best_method_in_class_filtered(
+                    entry.value_ptr.*,
+                    method_name,
+                    args,
+                    true,
+                )) |md| {
                     return self.execute_method(md, args);
                 }
                 // Fallback to any method (not just static)
@@ -1786,7 +1921,13 @@ pub const Evaluator = struct {
                                     }
                                     const exc = try self.arena.create(types.ObjectInstance);
                                     exc.* = .{ .class_name = "System.NoSuchElementException" };
-                                    try exc.fields.put(self.arena, "message", Value{ .string = try std.fmt.allocPrint(self.arena, "No enum constant {s}.{s}", .{ class_name, args[0].string }) });
+                                    try exc.fields.put(self.arena, "message", Value{
+                                        .string = try std.fmt.allocPrint(
+                                            self.arena,
+                                            "No enum constant {s}.{s}",
+                                            .{ class_name, args[0].string },
+                                        ),
+                                    });
                                     self.pending_exception = Value{ .object = exc };
                                     return error.ApexException;
                                 }
@@ -1815,13 +1956,24 @@ pub const Evaluator = struct {
         return Value.null_val; // class not found, return null instead of error
     }
 
-    fn execute_method(self: *Evaluator, method: *ast.MethodDecl, args: []const Value) anyerror!Value {
+    fn execute_method(
+        self: *Evaluator,
+        method: *ast.MethodDecl,
+        args: []const Value,
+    ) anyerror!Value {
         const method_env = try self.global_env.child();
 
         for (method.params, 0..) |param, i| {
-            const val = if (i < args.len) try self.prepare_method_arg_value(args[i]) else Value.null_val;
+            const val = if (i < args.len)
+                try self.prepare_method_arg_value(args[i])
+            else
+                Value.null_val;
             const declared_type = self.render_type_ref(param.type_ref);
-            try method_env.define_typed(param.name, self.annotate_declared_collection_type(val, declared_type), declared_type);
+            try method_env.define_typed(
+                param.name,
+                self.annotate_declared_collection_type(val, declared_type),
+                declared_type,
+            );
         }
 
         const saved_rv = self.return_value;
@@ -1839,7 +1991,11 @@ pub const Evaluator = struct {
     // 文の実行
     // -----------------------------------------------------------------------
 
-    pub fn exec_block(self: *Evaluator, stmts: []const ast.Stmt, current_env: *Env) anyerror!StmtResult {
+    pub fn exec_block(
+        self: *Evaluator,
+        stmts: []const ast.Stmt,
+        current_env: *Env,
+    ) anyerror!StmtResult {
         for (stmts) |stmt| {
             if (self.assertion_failure != null) return .normal;
             const result = try self.exec_stmt(stmt, current_env);
@@ -2883,7 +3039,11 @@ pub const Evaluator = struct {
         return null;
     }
 
-    fn make_s_object_field_token(self: *Evaluator, object_type: []const u8, field_name: []const u8) !Value {
+    fn make_s_object_field_token(
+        self: *Evaluator,
+        object_type: []const u8,
+        field_name: []const u8,
+    ) !Value {
         const field = try self.arena.create(types.ObjectInstance);
         field.* = .{ .class_name = "Schema.SObjectField" };
         try field.fields.put(self.arena, "objectType", Value{ .string = object_type });
@@ -2915,7 +3075,11 @@ pub const Evaluator = struct {
         return utils.sobject_get(&obj.fields, field_name) orelse Value.null_val;
     }
 
-    fn get_field_metadata(self: *Evaluator, type_name: []const u8, field_name: []const u8) ?FieldMetadata {
+    fn get_field_metadata(
+        self: *Evaluator,
+        type_name: []const u8,
+        field_name: []const u8,
+    ) ?FieldMetadata {
         const type_meta = self.field_metadata.get(type_name) orelse return null;
         if (type_meta.get(field_name)) |meta| return meta;
         var iter = type_meta.iterator();
@@ -2925,7 +3089,12 @@ pub const Evaluator = struct {
         return null;
     }
 
-    fn field_values_equal_with_metadata(_: *Evaluator, metadata: ?FieldMetadata, lhs: Value, rhs: Value) bool {
+    fn field_values_equal_with_metadata(
+        _: *Evaluator,
+        metadata: ?FieldMetadata,
+        lhs: Value,
+        rhs: Value,
+    ) bool {
         if (metadata) |meta| {
             if (!meta.case_sensitive and lhs == .string and rhs == .string) {
                 return std.ascii.eqlIgnoreCase(lhs.string, rhs.string);
@@ -2934,7 +3103,12 @@ pub const Evaluator = struct {
         return utils.value_eql(lhs, rhs);
     }
 
-    fn find_record_by_field_value(self: *Evaluator, type_name: []const u8, field_name: []const u8, field_value: Value) ?*types.SObject {
+    fn find_record_by_field_value(
+        self: *Evaluator,
+        type_name: []const u8,
+        field_name: []const u8,
+        field_value: Value,
+    ) ?*types.SObject {
         const metadata = self.get_field_metadata(type_name, field_name);
         var store_iter = self.store.iterator();
         while (store_iter.next()) |entry| {
@@ -2942,7 +3116,13 @@ pub const Evaluator = struct {
             for (entry.value_ptr.items) |record| {
                 if (record != .sobject) continue;
                 const existing_value = get_upsert_field_value(record.sobject, field_name);
-                if (existing_value != .null_val and self.field_values_equal_with_metadata(metadata, existing_value, field_value)) {
+                if (existing_value != .null_val and
+                    self.field_values_equal_with_metadata(
+                        metadata,
+                        existing_value,
+                        field_value,
+                    ))
+                {
                     return record.sobject;
                 }
             }
@@ -2950,7 +3130,11 @@ pub const Evaluator = struct {
         return null;
     }
 
-    fn find_unique_field_conflict(self: *Evaluator, obj: *types.SObject, only_present: bool) ?[]const u8 {
+    fn find_unique_field_conflict(
+        self: *Evaluator,
+        obj: *types.SObject,
+        only_present: bool,
+    ) ?[]const u8 {
         const type_meta = self.field_metadata.get(obj.type_name) orelse return null;
         var field_iter = type_meta.iterator();
         while (field_iter.next()) |entry| {
@@ -2965,7 +3149,9 @@ pub const Evaluator = struct {
             }
 
             if (self.find_record_by_field_value(obj.type_name, field_name, field_value)) |existing| {
-                if (obj.id != null and existing.id != null and std.ascii.eqlIgnoreCase(obj.id.?, existing.id.?)) {
+                if (obj.id != null and existing.id != null and
+                    std.ascii.eqlIgnoreCase(obj.id.?, existing.id.?))
+                {
                     continue;
                 }
                 return field_name;
@@ -2975,7 +3161,11 @@ pub const Evaluator = struct {
     }
 
     fn throw_duplicate_value(self: *Evaluator, field_name: []const u8) anyerror {
-        const msg = try std.fmt.allocPrint(self.arena, "DUPLICATE_VALUE: duplicate value found: {s}", .{field_name});
+        const msg = try std.fmt.allocPrint(
+            self.arena,
+            "DUPLICATE_VALUE: duplicate value found: {s}",
+            .{field_name},
+        );
         const exc = try self.arena.create(types.ObjectInstance);
         exc.* = .{ .class_name = "DmlException" };
         try exc.fields.put(self.arena, "message", Value{ .string = msg });
@@ -2983,14 +3173,24 @@ pub const Evaluator = struct {
         return error.ApexException;
     }
 
-    fn will_upsert_create_record(self: *Evaluator, obj: *types.SObject, external_id_field: ?[]const u8) bool {
+    fn will_upsert_create_record(
+        self: *Evaluator,
+        obj: *types.SObject,
+        external_id_field: ?[]const u8,
+    ) bool {
         if (obj.id != null) return false;
         if (utils.sobject_get(&obj.fields, "Id")) |id_val| {
             if (id_val != .null_val) return false;
         }
         if (external_id_field) |field_name| {
             const field_value = get_upsert_field_value(obj, field_name);
-            if (field_value != .null_val and self.find_record_by_field_value(obj.type_name, field_name, field_value) != null) {
+            if (field_value != .null_val and
+                self.find_record_by_field_value(
+                    obj.type_name,
+                    field_name,
+                    field_value,
+                ) != null)
+            {
                 return false;
             }
         }
