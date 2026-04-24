@@ -7053,8 +7053,12 @@ pub const Evaluator = struct {
             const block_start =
                 std.mem.indexOfPos(u8, xml, object_pos, "<objectPermissions>") orelse break;
             const block_content_start = block_start + "<objectPermissions>".len;
-            const block_end =
-                std.mem.indexOfPos(u8, xml, block_content_start, "</objectPermissions>") orelse break;
+            const block_end = std.mem.indexOfPos(
+                u8,
+                xml,
+                block_content_start,
+                "</objectPermissions>",
+            ) orelse break;
             const block = xml[block_content_start..block_end];
 
             const object_name = self.xml_tag_value(block, "object") orelse {
@@ -7062,55 +7066,60 @@ pub const Evaluator = struct {
                 continue;
             };
 
-            const object_permission = try self.arena.create(types.SObject);
-            object_permission.* = .{ .type_name = "ObjectPermissions", .id = try self.alloc_id() };
-            try object_permission.fields.put(
-                self.arena,
-                "Id",
-                Value{ .string = object_permission.id.? },
+            try self.append_object_permission_metadata(
+                permission_set_id,
+                block,
+                object_name,
             );
-            try object_permission.fields.put(
-                self.arena,
-                "ParentId",
-                Value{ .string = permission_set_id },
-            );
-            try object_permission.fields.put(
-                self.arena,
-                "SobjectType",
-                Value{ .string = try self.arena.dupe(u8, object_name) },
-            );
-            try object_permission.fields.put(
-                self.arena,
-                "PermissionsRead",
-                Value{
-                    .boolean = self.xml_tag_bool_value(block, "allowRead") orelse false,
-                },
-            );
-            try object_permission.fields.put(
-                self.arena,
-                "PermissionsCreate",
-                Value{
-                    .boolean = self.xml_tag_bool_value(block, "allowCreate") orelse false,
-                },
-            );
-            try object_permission.fields.put(
-                self.arena,
-                "PermissionsEdit",
-                Value{
-                    .boolean = self.xml_tag_bool_value(block, "allowEdit") orelse false,
-                },
-            );
-            try object_permission.fields.put(
-                self.arena,
-                "PermissionsDelete",
-                Value{
-                    .boolean = self.xml_tag_bool_value(block, "allowDelete") orelse false,
-                },
-            );
-            try self.append_store_record("ObjectPermissions", object_permission);
 
             object_pos = block_end + "</objectPermissions>".len;
         }
+    }
+
+    fn append_object_permission_metadata(
+        self: *Evaluator,
+        permission_set_id: []const u8,
+        block: []const u8,
+        object_name: []const u8,
+    ) !void {
+        const object_permission = try self.arena.create(types.SObject);
+        object_permission.* = .{ .type_name = "ObjectPermissions", .id = try self.alloc_id() };
+        try object_permission.fields.put(
+            self.arena,
+            "Id",
+            Value{ .string = object_permission.id.? },
+        );
+        try object_permission.fields.put(
+            self.arena,
+            "ParentId",
+            Value{ .string = permission_set_id },
+        );
+        try object_permission.fields.put(
+            self.arena,
+            "SobjectType",
+            Value{ .string = try self.arena.dupe(u8, object_name) },
+        );
+        try object_permission.fields.put(
+            self.arena,
+            "PermissionsRead",
+            Value{ .boolean = self.xml_tag_bool_value(block, "allowRead") orelse false },
+        );
+        try object_permission.fields.put(
+            self.arena,
+            "PermissionsCreate",
+            Value{ .boolean = self.xml_tag_bool_value(block, "allowCreate") orelse false },
+        );
+        try object_permission.fields.put(
+            self.arena,
+            "PermissionsEdit",
+            Value{ .boolean = self.xml_tag_bool_value(block, "allowEdit") orelse false },
+        );
+        try object_permission.fields.put(
+            self.arena,
+            "PermissionsDelete",
+            Value{ .boolean = self.xml_tag_bool_value(block, "allowDelete") orelse false },
+        );
+        try self.append_store_record("ObjectPermissions", object_permission);
     }
 
     fn load_field_permission_metadata(
@@ -7123,8 +7132,12 @@ pub const Evaluator = struct {
             const block_start =
                 std.mem.indexOfPos(u8, xml, field_pos, "<fieldPermissions>") orelse break;
             const block_content_start = block_start + "<fieldPermissions>".len;
-            const block_end =
-                std.mem.indexOfPos(u8, xml, block_content_start, "</fieldPermissions>") orelse break;
+            const block_end = std.mem.indexOfPos(
+                u8,
+                xml,
+                block_content_start,
+                "</fieldPermissions>",
+            ) orelse break;
             const block = xml[block_content_start..block_end];
 
             const full_field_name = self.xml_tag_value(block, "field") orelse {
@@ -7573,13 +7586,21 @@ pub const Evaluator = struct {
         return self.eval_where_condition(record.sobject, where_clause, current_env);
     }
 
-    fn extract_where_in_bind_info(self: *Evaluator, soql: []const u8) ?struct { field_name: []const u8, bind_name: []const u8 } {
+    fn extract_where_in_bind_info(
+        self: *Evaluator,
+        soql: []const u8,
+    ) ?struct {
+        field_name: []const u8,
+        bind_name: []const u8,
+    } {
         _ = self;
         const where_clause = extract_where_clause(soql) orelse return null;
         const in_pos = std.ascii.indexOfIgnoreCase(where_clause, " IN :") orelse return null;
 
         var field_end = in_pos;
-        while (field_end > 0 and is_soql_whitespace(where_clause[field_end - 1])) : (field_end -= 1) {}
+        while (field_end > 0 and
+            is_soql_whitespace(where_clause[field_end - 1])) : (field_end -= 1)
+        {}
         var field_start = field_end;
         while (field_start > 0) {
             const ch = where_clause[field_start - 1];
@@ -7590,9 +7611,14 @@ pub const Evaluator = struct {
         if (field_start == field_end) return null;
 
         var bind_start = in_pos + " IN :".len;
-        while (bind_start < where_clause.len and is_soql_whitespace(where_clause[bind_start])) : (bind_start += 1) {}
+        while (bind_start < where_clause.len and
+            is_soql_whitespace(where_clause[bind_start])) : (bind_start += 1)
+        {}
         var bind_end = bind_start;
-        while (bind_end < where_clause.len and (std.ascii.isAlphanumeric(where_clause[bind_end]) or where_clause[bind_end] == '_')) : (bind_end += 1) {}
+        while (bind_end < where_clause.len and
+            (std.ascii.isAlphanumeric(where_clause[bind_end]) or
+                where_clause[bind_end] == '_')) : (bind_end += 1)
+        {}
         if (bind_end == bind_start) return null;
 
         return .{
@@ -7601,7 +7627,12 @@ pub const Evaluator = struct {
         };
     }
 
-    fn reorder_records_by_in_bind(self: *Evaluator, records: *std.ArrayListUnmanaged(Value), field_name: []const u8, bind_val: Value) !void {
+    fn reorder_records_by_in_bind(
+        self: *Evaluator,
+        records: *std.ArrayListUnmanaged(Value),
+        field_name: []const u8,
+        bind_val: Value,
+    ) !void {
         if (records.items.len <= 1) return;
 
         const bind_items: []const Value = switch (bind_val) {
@@ -7617,7 +7648,9 @@ pub const Evaluator = struct {
         var reordered: std.ArrayListUnmanaged(Value) = .empty;
 
         for (bind_items) |bind_item| {
-            const expected = if (bind_item == .sobject and std.ascii.eqlIgnoreCase(field_name, "Id")) blk: {
+            const expected = if (bind_item == .sobject and
+                std.ascii.eqlIgnoreCase(field_name, "Id"))
+            blk: {
                 if (self.sobject_id_for_result(bind_item.sobject)) |record_id| {
                     break :blk Value{ .string = record_id };
                 }
@@ -7630,8 +7663,14 @@ pub const Evaluator = struct {
                     if (self.sobject_id_for_result(record.sobject)) |record_id| {
                         break :blk Value{ .string = record_id };
                     }
-                    break :blk self.get_s_object_field_value_case_insensitive(record.sobject, field_name) orelse Value.null_val;
-                } else self.get_s_object_field_value_case_insensitive(record.sobject, field_name) orelse Value.null_val;
+                    break :blk self.get_s_object_field_value_case_insensitive(
+                        record.sobject,
+                        field_name,
+                    ) orelse Value.null_val;
+                } else self.get_s_object_field_value_case_insensitive(
+                    record.sobject,
+                    field_name,
+                ) orelse Value.null_val;
                 if (utils.value_eql(actual, expected)) {
                     try reordered.append(self.arena, record);
                     consumed[idx] = true;
@@ -7676,7 +7715,12 @@ pub const Evaluator = struct {
         }
     }
 
-    fn eval_where_condition(self: *Evaluator, sob: *types.SObject, clause: []const u8, current_env: *Env) bool {
+    fn eval_where_condition(
+        self: *Evaluator,
+        sob: *types.SObject,
+        clause: []const u8,
+        current_env: *Env,
+    ) bool {
         const trimmed = std.mem.trim(u8, clause, " \t\n\r");
         if (trimmed.len == 0) return true;
 
@@ -8065,16 +8109,25 @@ pub const Evaluator = struct {
         return null;
     }
 
-    fn subquery_contains_value(self: *Evaluator, field_val: Value, subquery: []const u8, current_env: *Env) bool {
+    fn subquery_contains_value(
+        self: *Evaluator,
+        field_val: Value,
+        subquery: []const u8,
+        current_env: *Env,
+    ) bool {
         const select_start = std.ascii.indexOfIgnoreCase(subquery, "SELECT") orelse return false;
         const from_start = std.ascii.indexOfIgnoreCase(subquery, "FROM") orelse return false;
         if (from_start <= select_start + 6) return false;
         const select_clause = std.mem.trim(u8, subquery[select_start + 6 .. from_start], " \t\n\r");
         if (select_clause.len == 0) return false;
-        const selected_field = std.mem.trim(u8, if (std.mem.indexOfScalar(u8, select_clause, ',')) |comma_pos|
-            select_clause[0..comma_pos]
-        else
-            select_clause, " \t\n\r");
+        const selected_field = std.mem.trim(
+            u8,
+            if (std.mem.indexOfScalar(u8, select_clause, ',')) |comma_pos|
+                select_clause[0..comma_pos]
+            else
+                select_clause,
+            " \t\n\r",
+        );
 
         const subquery_result = self.execute_soql(subquery, current_env) catch return false;
         if (subquery_result != .list) return false;
@@ -8083,7 +8136,11 @@ pub const Evaluator = struct {
             const candidate = if (std.ascii.eqlIgnoreCase(selected_field, "Id"))
                 (if (item.sobject.id) |record_id| Value{ .string = record_id } else Value.null_val)
             else
-                self.resolve_field_path_value(item.sobject, selected_field) orelse self.get_s_object_field_value_case_insensitive(item.sobject, selected_field) orelse Value.null_val;
+                self.resolve_field_path_value(item.sobject, selected_field) orelse
+                    self.get_s_object_field_value_case_insensitive(
+                        item.sobject,
+                        selected_field,
+                    ) orelse Value.null_val;
             if (utils.value_eql(field_val, candidate)) return true;
         }
         return false;
@@ -8097,7 +8154,11 @@ pub const Evaluator = struct {
 
     /// Resolve the child SObject type from a relationship name.
     /// e.g., "Contacts" on Account → "Contact"
-    fn resolve_child_type(self: *Evaluator, parent_type: []const u8, relationship: []const u8) ?[]const u8 {
+    fn resolve_child_type(
+        self: *Evaluator,
+        parent_type: []const u8,
+        relationship: []const u8,
+    ) ?[]const u8 {
         if (self.resolve_custom_child_relationship(parent_type, relationship)) |custom| {
             return custom.child_type;
         }
@@ -8151,7 +8212,12 @@ pub const Evaluator = struct {
 
     /// Resolve the foreign key field name from child to parent.
     /// e.g., Contact to Account → "AccountId"
-    fn resolve_foreign_key(self: *Evaluator, child_type: []const u8, parent_type: []const u8, relationship: []const u8) []const u8 {
+    fn resolve_foreign_key(
+        self: *Evaluator,
+        child_type: []const u8,
+        parent_type: []const u8,
+        relationship: []const u8,
+    ) []const u8 {
         if (self.resolve_custom_child_relationship(parent_type, relationship)) |custom| {
             if (std.ascii.eqlIgnoreCase(custom.child_type, child_type)) return custom.fk_field;
         }
@@ -8183,12 +8249,20 @@ pub const Evaluator = struct {
         return std.fmt.allocPrint(self.arena, "{s}Id", .{parent_type}) catch "ParentId";
     }
 
-    fn resolve_custom_child_relationship(self: *Evaluator, parent_type: []const u8, relationship: []const u8) ?CustomChildRelationship {
+    fn resolve_custom_child_relationship(
+        self: *Evaluator,
+        parent_type: []const u8,
+        relationship: []const u8,
+    ) ?CustomChildRelationship {
         const key = self.make_child_relationship_key(parent_type, relationship) catch return null;
         return self.child_relationships.get(key);
     }
 
-    fn make_child_relationship_key(self: *Evaluator, parent_type: []const u8, relationship: []const u8) ![]const u8 {
+    fn make_child_relationship_key(
+        self: *Evaluator,
+        parent_type: []const u8,
+        relationship: []const u8,
+    ) ![]const u8 {
         const raw = try std.fmt.allocPrint(self.arena, "{s}|{s}", .{ parent_type, relationship });
         const lowered = try self.arena.alloc(u8, raw.len);
         _ = std.ascii.lowerString(lowered, raw);
@@ -8196,7 +8270,12 @@ pub const Evaluator = struct {
     }
 
     /// Apply parent field lookups like Account.Name, parent__r.Name to query results.
-    fn apply_parent_field_lookups(self: *Evaluator, soql: []const u8, from_type: []const u8, records: *std.ArrayListUnmanaged(Value)) !void {
+    fn apply_parent_field_lookups(
+        self: *Evaluator,
+        soql: []const u8,
+        from_type: []const u8,
+        records: *std.ArrayListUnmanaged(Value),
+    ) !void {
         const select_clause = extract_parent_fields(soql) orelse return;
 
         // Find fields like Account.Name, Account.ShippingState, parent__r.Name,
@@ -8238,24 +8317,15 @@ pub const Evaluator = struct {
             if (parent_type_opt == null or fk_val_opt == null) return;
             if (fk_val_opt.? != .string) return;
             const parent_type = parent_type_opt.?;
-            const parent_rec = self.find_record_by_id(parent_type, fk_val_opt.?.string) orelse return;
+            const parent_rec =
+                self.find_record_by_id(parent_type, fk_val_opt.?.string) orelse return;
             if (parent_rec != .sobject) return;
 
-            // Get or create the parent SObject slot on `current_sob`.
-            var parent_sob: *types.SObject = undefined;
-            if (utils.sobject_get(&current_sob.fields, parent_ref)) |existing| {
-                if (existing == .sobject) {
-                    parent_sob = existing.sobject;
-                } else {
-                    parent_sob = try self.arena.create(types.SObject);
-                    parent_sob.* = .{ .type_name = parent_type };
-                    try current_sob.fields.put(self.arena, parent_ref, Value{ .sobject = parent_sob });
-                }
-            } else {
-                parent_sob = try self.arena.create(types.SObject);
-                parent_sob.* = .{ .type_name = parent_type };
-                try current_sob.fields.put(self.arena, parent_ref, Value{ .sobject = parent_sob });
-            }
+            const parent_sob = try self.ensure_parent_relationship_sobject(
+                current_sob,
+                parent_ref,
+                parent_type,
+            );
 
             // Always copy the parent's Id so subsequent deep lookups can
             // consume it through the same fk_field convention.
@@ -8266,7 +8336,10 @@ pub const Evaluator = struct {
 
             // If this is the last segment's parent, copy the leaf field value.
             if (std.mem.indexOfScalar(u8, rest, '.') == null) {
-                if (self.get_s_object_field_value_case_insensitive(parent_rec.sobject, rest)) |field_val| {
+                if (self.get_s_object_field_value_case_insensitive(
+                    parent_rec.sobject,
+                    rest,
+                )) |field_val| {
                     try parent_sob.fields.put(self.arena, rest, field_val);
                 }
                 return;
@@ -8278,7 +8351,10 @@ pub const Evaluator = struct {
             const next_dot = std.mem.indexOfScalar(u8, rest, '.').?;
             const next_parent_ref = rest[0..next_dot];
             const next_fk = self.parent_ref_to_fk(next_parent_ref);
-            if (self.get_s_object_field_value_case_insensitive(parent_rec.sobject, next_fk)) |nfk_val| {
+            if (self.get_s_object_field_value_case_insensitive(
+                parent_rec.sobject,
+                next_fk,
+            )) |nfk_val| {
                 try parent_sob.fields.put(self.arena, next_fk, nfk_val);
             }
 
@@ -8288,9 +8364,32 @@ pub const Evaluator = struct {
         }
     }
 
+    fn ensure_parent_relationship_sobject(
+        self: *Evaluator,
+        current_sob: *types.SObject,
+        parent_ref: []const u8,
+        parent_type: []const u8,
+    ) !*types.SObject {
+        if (utils.sobject_get(&current_sob.fields, parent_ref)) |existing| {
+            if (existing == .sobject) return existing.sobject;
+        }
+        const parent_sob = try self.arena.create(types.SObject);
+        parent_sob.* = .{ .type_name = parent_type };
+        try current_sob.fields.put(
+            self.arena,
+            parent_ref,
+            Value{ .sobject = parent_sob },
+        );
+        return parent_sob;
+    }
+
     /// SOQL SELECT 内の数式フィールド（<Relationship>_<Field>__c）を FK 経由で親から解決する。
     /// 例: Experience_Name__c → Experience__c FK → 親の Name
-    fn resolve_formula_fields(self: *Evaluator, soql: []const u8, records: *std.ArrayListUnmanaged(Value)) !void {
+    fn resolve_formula_fields(
+        self: *Evaluator,
+        soql: []const u8,
+        records: *std.ArrayListUnmanaged(Value),
+    ) !void {
         const select_clause = extract_parent_fields(soql) orelse return;
         var iter = std.mem.splitScalar(u8, select_clause, ',');
         while (iter.next()) |field_part| {
@@ -8298,7 +8397,8 @@ pub const Evaluator = struct {
             // Skip dotted fields (already handled) and sub-queries
             if (std.mem.indexOf(u8, trimmed, ".") != null) continue;
             if (trimmed.len > 0 and trimmed[0] == '(') continue;
-            // Pattern: <Prefix>_<Suffix>__c where <Prefix>__c is a FK and <Suffix> is a parent field
+            // Pattern: <Prefix>_<Suffix>__c where <Prefix>__c is a FK and
+            // <Suffix> is a parent field.
             // e.g. Experience_Name__c → FK=Experience__c, parent field=Name
             if (!std.mem.endsWith(u8, trimmed, "__c")) continue;
             const base = trimmed[0 .. trimmed.len - 3]; // strip __c
@@ -8322,7 +8422,8 @@ pub const Evaluator = struct {
                 // Find parent type
                 const parent_type = self.find_record_type_by_id(fk_val.string) orelse continue;
                 // Find parent record
-                const parent_rec = self.find_record_by_id(parent_type, fk_val.string) orelse continue;
+                const parent_rec =
+                    self.find_record_by_id(parent_type, fk_val.string) orelse continue;
                 if (parent_rec != .sobject) continue;
                 // Copy the field from parent
                 if (utils.sobject_get(&parent_rec.sobject.fields, field_suffix)) |val| {
@@ -8338,7 +8439,8 @@ pub const Evaluator = struct {
         // Custom relationship: ends with __r → change to __c
         if (ref.len > 3 and std.ascii.eqlIgnoreCase(ref[ref.len - 3 ..], "__r")) {
             // Replace __r with __c
-            const fk = std.fmt.allocPrint(self.arena, "{s}__c", .{ref[0 .. ref.len - 3]}) catch return ref;
+            const fk =
+                std.fmt.allocPrint(self.arena, "{s}__c", .{ref[0 .. ref.len - 3]}) catch return ref;
             return fk;
         }
         // Standard: Account → AccountId
@@ -8366,7 +8468,11 @@ pub const Evaluator = struct {
     /// AccountId → Account, parent__c → parent__r
     fn fk_to_parent_ref(self: *Evaluator, fk_field: []const u8) []const u8 {
         if (fk_field.len > 3 and std.ascii.eqlIgnoreCase(fk_field[fk_field.len - 3 ..], "__c")) {
-            const rel = std.fmt.allocPrint(self.arena, "{s}__r", .{fk_field[0 .. fk_field.len - 3]}) catch return fk_field;
+            const rel = std.fmt.allocPrint(
+                self.arena,
+                "{s}__r",
+                .{fk_field[0 .. fk_field.len - 3]},
+            ) catch return fk_field;
             return rel;
         }
         const common = .{
@@ -8424,7 +8530,11 @@ pub const Evaluator = struct {
         return ref;
     }
 
-    fn parent_ref_to_type_for_s_object(self: *Evaluator, object_type: []const u8, ref: []const u8) ?[]const u8 {
+    fn parent_ref_to_type_for_s_object(
+        self: *Evaluator,
+        object_type: []const u8,
+        ref: []const u8,
+    ) ?[]const u8 {
         const fk_field = self.parent_ref_to_fk(ref);
         if (self.get_field_metadata(object_type, fk_field)) |meta| {
             if (meta.reference_to) |target_type| return target_type;
@@ -8460,7 +8570,9 @@ pub const Evaluator = struct {
             }
         }
         // Fallback: for User type, return synthetic user if id matches UserInfo.getUserId()
-        if (std.ascii.eqlIgnoreCase(type_name, "User") and std.ascii.eqlIgnoreCase(id, self.current_user_id)) {
+        if (std.ascii.eqlIgnoreCase(type_name, "User") and
+            std.ascii.eqlIgnoreCase(id, self.current_user_id))
+        {
             return self.create_current_user_record() catch null;
         }
         return null;
@@ -8482,7 +8594,9 @@ pub const Evaluator = struct {
             },
             .map => |map| blk: {
                 for (map.entries.keys(), map.entries.values()) |k, records| {
-                    if (std.ascii.eqlIgnoreCase(k, "records") and records == .list) break :blk records;
+                    if (std.ascii.eqlIgnoreCase(k, "records") and records == .list) {
+                        break :blk records;
+                    }
                 }
                 break :blk null;
             },
@@ -8490,7 +8604,12 @@ pub const Evaluator = struct {
         };
     }
 
-    fn normalize_parsed_json_s_object_field(self: *Evaluator, sob: *types.SObject, field_name: []const u8, value: Value) Value {
+    fn normalize_parsed_json_s_object_field(
+        self: *Evaluator,
+        sob: *types.SObject,
+        field_name: []const u8,
+        value: Value,
+    ) Value {
         var bctx = builtins.BuiltinContext{
             .arena = self.arena,
             .stdout = &self.stdout,
@@ -8498,7 +8617,12 @@ pub const Evaluator = struct {
             .see_all_data = self.see_all_data,
             .eval = self,
         };
-        return builtins.normalize_s_object_field_assignment(&bctx, sob, field_name, value) catch value;
+        return builtins.normalize_s_object_field_assignment(
+            &bctx,
+            sob,
+            field_name,
+            value,
+        ) catch value;
     }
 
     fn find_visible_enum_decl(self: *Evaluator, enum_name: []const u8) ?*ast.EnumDecl {
@@ -8535,7 +8659,11 @@ pub const Evaluator = struct {
         return null;
     }
 
-    pub fn get_s_object_field_value_case_insensitive(self: *Evaluator, sob: *types.SObject, field_name: []const u8) ?Value {
+    pub fn get_s_object_field_value_case_insensitive(
+        self: *Evaluator,
+        sob: *types.SObject,
+        field_name: []const u8,
+    ) ?Value {
         var matched_value: ?Value = null;
         for (sob.fields.keys(), sob.fields.values()) |k, v| {
             if (std.ascii.eqlIgnoreCase(k, field_name)) {
@@ -8546,13 +8674,23 @@ pub const Evaluator = struct {
         if (matched_value) |value| {
             if (value != .null_val) {
                 if (value == .string) {
-                    var bctx = builtins.BuiltinContext{ .arena = self.arena, .stdout = &self.stdout, .pending_exception = &self.pending_exception, .see_all_data = self.see_all_data, .eval = self };
-                    const display_type = builtins.get_s_object_field_display_type(&bctx, sob, field_name);
+                    var bctx = builtins.BuiltinContext{
+                        .arena = self.arena,
+                        .stdout = &self.stdout,
+                        .pending_exception = &self.pending_exception,
+                        .see_all_data = self.see_all_data,
+                        .eval = self,
+                    };
+                    const display_type =
+                        builtins.get_s_object_field_display_type(&bctx, sob, field_name);
                     if (std.ascii.eqlIgnoreCase(display_type, "DATETIME")) {
                         return builtins.make_datetime_value(self.arena, value.string) catch value;
                     }
                     if (std.ascii.eqlIgnoreCase(display_type, "DATE")) {
-                        const date_str = if (value.string.len >= 10) value.string[0..10] else value.string;
+                        const date_str = if (value.string.len >= 10)
+                            value.string[0..10]
+                        else
+                            value.string;
                         return builtins.make_date_value(self.arena, date_str) catch value;
                     }
                 }
@@ -8562,15 +8700,23 @@ pub const Evaluator = struct {
         }
         if (self.resolve_derived_field_value(sob, field_name)) |derived| return derived;
         if (self.resolve_custom_child_relationship(sob.type_name, field_name) != null or
-            (field_name.len > 3 and std.ascii.eqlIgnoreCase(field_name[field_name.len - 3 ..], "__r") and
-                self.resolve_custom_child_relationship(sob.type_name, field_name[0 .. field_name.len - 3]) != null))
+            (field_name.len > 3 and
+                std.ascii.eqlIgnoreCase(field_name[field_name.len - 3 ..], "__r") and
+                self.resolve_custom_child_relationship(
+                    sob.type_name,
+                    field_name[0 .. field_name.len - 3],
+                ) != null))
         {
             return self.make_empty_list() catch matched_value;
         }
         return matched_value;
     }
 
-    fn resolve_field_path_value(self: *Evaluator, sob: *types.SObject, field_path: []const u8) ?Value {
+    fn resolve_field_path_value(
+        self: *Evaluator,
+        sob: *types.SObject,
+        field_path: []const u8,
+    ) ?Value {
         var current = sob;
         var remaining = field_path;
         while (true) {
