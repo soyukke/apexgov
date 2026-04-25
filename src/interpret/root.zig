@@ -16287,3 +16287,135 @@ test "E2E: where-like build uses SOQL branch when groups are filterable" {
         result.value.string,
     );
 }
+
+test "E2E: where-like IN_SET operator renders through outer helper" {
+    const source =
+        \\public class WhereLikeInSetOperatorProbe {
+        \\    public Enum Operator {
+        \\        EQUALS,
+        \\        NOT_EQUALS,
+        \\        IN_SET
+        \\    }
+        \\    private static String operatorToString(Operator operant) {
+        \\        String result = null;
+        \\        if (operant == Operator.EQUALS) { result = '='; }
+        \\        else if (operant == Operator.NOT_EQUALS) { result = '!='; }
+        \\        else if (operant == Operator.IN_SET) { result = 'IN'; }
+        \\        return result;
+        \\    }
+        \\    public class FieldExpression {
+        \\        private Schema.SObjectField sObjField;
+        \\        private Operator operant;
+        \\        private Object value;
+        \\        private Set<Object> values;
+        \\        public FieldExpression(Schema.SObjectField sObjField) {
+        \\            this.sObjField = sObjField;
+        \\        }
+        \\        public FieldExpression inSet(Object value) {
+        \\            operant = Operator.IN_SET;
+        \\            this.value = value;
+        \\            this.values = getValues(value);
+        \\            return this;
+        \\        }
+        \\        private Set<Object> getValues(Object value) {
+        \\            Set<Object> values = new Set<Object>();
+        \\            if (value instanceof Set<String>) {
+        \\                for (String val : (Set<String>) value) {
+        \\                    values.add(val == null ? null : val.toLowerCase());
+        \\                }
+        \\            }
+        \\            return values;
+        \\        }
+        \\        public String getFieldPath() {
+        \\            return String.valueOf(sObjField);
+        \\        }
+        \\        public override String toString() {
+        \\            return getFieldPath() + ' ' + operatorToString(operant) + ' ' +
+        \\                toLiteral(value);
+        \\        }
+        \\        private String toLiteral(Object value) {
+        \\            if (operant == Operator.IN_SET) {
+        \\                List<String> result = new List<String>();
+        \\                for (Object val : values) {
+        \\                    result.add(toLiteral(String.valueOf(val)));
+        \\                }
+        \\                return '(' + String.join(result, ', ') + ')';
+        \\            }
+        \\            return toLiteral((String) value);
+        \\        }
+        \\        private String toLiteral(String value) {
+        \\            if (operant == Operator.IN_SET) {
+        \\                return value == null ? 'null' : '\'' + String.escapeSingleQuotes(value) + '\'';
+        \\            }
+        \\            return String.isBlank(value) ? 'null' : '\'' + String.escapeSingleQuotes(value) + '\'';
+        \\        }
+        \\    }
+        \\    public static String test() {
+        \\        return new FieldExpression(Account.Name)
+        \\            .inSet(new Set<String>{'foo', 'bar'})
+        \\            .toString();
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "WhereLikeInSetOperatorProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("Name IN ('foo', 'bar')", result.value.string);
+}
+
+test "E2E: static foreign inner object preserves enum field mutation" {
+    const source =
+        \\public class WhereLikeForeignFieldProbe {
+        \\    public Enum Operator {
+        \\        EQUALS,
+        \\        NOT_EQUALS,
+        \\        IN_SET
+        \\    }
+        \\    private static String operatorToString(Operator operant) {
+        \\        String result = null;
+        \\        if (operant == Operator.EQUALS) { result = '='; }
+        \\        else if (operant == Operator.NOT_EQUALS) { result = '!='; }
+        \\        else if (operant == Operator.IN_SET) { result = 'IN'; }
+        \\        return result;
+        \\    }
+        \\    public class FieldExpression {
+        \\        private Schema.SObjectField sObjField;
+        \\        private Operator operant;
+        \\        private Object value;
+        \\        private Set<Object> values;
+        \\        public FieldExpression(Schema.SObjectField sObjField) {
+        \\            this.sObjField = sObjField;
+        \\        }
+        \\        public FieldExpression inSet(Object value) {
+        \\            operant = Operator.IN_SET;
+        \\            this.value = value;
+        \\            this.values = new Set<Object>();
+        \\            values.add('foo');
+        \\            values.add('bar');
+        \\            return this;
+        \\        }
+        \\        public override String toString() {
+        \\            return String.valueOf(sObjField) + ' ' + operatorToString(operant) +
+        \\                ' ' + '(' + String.join(new List<String>{'foo'}, ', ') + ')';
+        \\        }
+        \\    }
+        \\}
+        \\public class ForeignFieldHolderProbe {
+        \\    private static WhereLikeForeignFieldProbe.FieldExpression fieldExp =
+        \\        new WhereLikeForeignFieldProbe.FieldExpression(Account.Name);
+        \\    public static String test() {
+        \\        return fieldExp.inSet(new Set<String>{'foo', 'bar'}).toString();
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "ForeignFieldHolderProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("Name IN (foo)", result.value.string);
+}

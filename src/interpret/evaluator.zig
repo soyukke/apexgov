@@ -1961,7 +1961,6 @@ pub const Evaluator = struct {
                 declared_type,
             );
         }
-
         const saved_rv = self.return_value;
         self.return_value = .void_val;
         const result = try self.exec_block(method.body, method_env);
@@ -10682,6 +10681,13 @@ pub const Evaluator = struct {
         callee: []const u8,
         args: []const Value,
     ) anyerror!?Value {
+        if (self.current_lexical_method_class()) |lexical_class| {
+            if (try self.eval_static_call_from_lexical_class(
+                lexical_class,
+                callee,
+                args,
+            )) |result| return result;
+        }
         if (self.current_class) |cc| {
             if (self.find_class(cc)) |cd| {
                 if (self.find_best_method_in_class_filtered(cd, callee, args, true) != null) {
@@ -10702,6 +10708,29 @@ pub const Evaluator = struct {
             ) != null) {
                 return try self.call_method(entry.key_ptr.*, callee, args);
             }
+        }
+        return null;
+    }
+
+    fn current_lexical_method_class(self: *Evaluator) ?[]const u8 {
+        if (self.call_stack.items.len == 0) return null;
+        const frame = self.call_stack.items[self.call_stack.items.len - 1];
+        return frame.class_name;
+    }
+
+    fn eval_static_call_from_lexical_class(
+        self: *Evaluator,
+        class_name: []const u8,
+        callee: []const u8,
+        args: []const Value,
+    ) anyerror!?Value {
+        if (self.find_class(class_name)) |cd| {
+            if (self.find_best_method_in_class_filtered(cd, callee, args, true) != null) {
+                return try self.call_method(class_name, callee, args);
+            }
+        }
+        if (self.resolve_outer_static_method_owner(class_name, callee, args)) |outer_owner| {
+            return try self.call_method(outer_owner, callee, args);
         }
         return null;
     }
