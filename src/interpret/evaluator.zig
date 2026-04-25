@@ -177,6 +177,7 @@ pub const Evaluator = struct {
     outer_class_by_inner_name: std.StringArrayHashMapUnmanaged([]const u8) = .empty,
     class_lookup_cache_built: bool = false,
     static_field_owner_cache: std.StringArrayHashMapUnmanaged(?FieldLookup) = .empty,
+    visible_enum_decl_cache: std.StringArrayHashMapUnmanaged(?*ast.EnumDecl) = .empty,
     /// Parsed Custom Metadata records loaded once from source paths.
     custom_metadata_records: std.StringArrayHashMapUnmanaged(
         std.ArrayListUnmanaged(Value),
@@ -260,6 +261,7 @@ pub const Evaluator = struct {
         self.store = .empty;
         self.static_inited = .empty;
         self.static_field_owner_cache = .empty;
+        self.visible_enum_decl_cache = .empty;
         self.custom_metadata_loaded_types = .empty;
         self.next_id = 1;
         self.bypasses = .empty;
@@ -9433,6 +9435,19 @@ pub const Evaluator = struct {
     }
 
     fn find_visible_enum_decl(self: *Evaluator, enum_name: []const u8) ?*ast.EnumDecl {
+        const scope = self.current_class orelse "";
+        var key_buf: [512]u8 = undefined;
+        if (std.fmt.bufPrint(&key_buf, "{s}|{s}", .{ scope, enum_name })) |key| {
+            if (self.visible_enum_decl_cache.get(key)) |cached| return cached;
+            const resolved = self.find_visible_enum_decl_uncached(enum_name);
+            const owned_key = self.arena.dupe(u8, key) catch return resolved;
+            self.visible_enum_decl_cache.put(self.arena, owned_key, resolved) catch {};
+            return resolved;
+        } else |_| {}
+        return self.find_visible_enum_decl_uncached(enum_name);
+    }
+
+    fn find_visible_enum_decl_uncached(self: *Evaluator, enum_name: []const u8) ?*ast.EnumDecl {
         const Search = struct {
             fn in_class(cd: *ast.ClassDecl, target: []const u8) ?*ast.EnumDecl {
                 for (cd.members) |member| {
