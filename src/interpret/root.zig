@@ -15756,6 +15756,27 @@ test "E2E: Report SOQL is a known standard object" {
     try std.testing.expectEqual(@as(i64, 0), result.value.integer);
 }
 
+test "E2E: FiscalYearSettings SOQL is a known standard object" {
+    const source =
+        \\public class FiscalYearSettingsQueryKnownTypeTest {
+        \\    public static Integer test() {
+        \\        return [
+        \\            SELECT Id
+        \\            FROM FiscalYearSettings
+        \\            WHERE IsStandardYear = false
+        \\        ].size();
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "FiscalYearSettingsQueryKnownTypeTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqual(@as(i64, 0), result.value.integer);
+}
+
 test "E2E: List.sort propagates Comparable exceptions" {
     const source =
         \\public class SortExceptionPropagationTest {
