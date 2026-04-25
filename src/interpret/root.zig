@@ -14148,6 +14148,32 @@ test "E2E: Database partial DML with null list returns empty results" {
     try std.testing.expectEqualStrings("0:0", result.value.string);
 }
 
+test "E2E: Database partial DML reports required and delete status codes" {
+    const source =
+        \\public class DatabaseDmlStatusCodeProbe {
+        \\    public static String test() {
+        \\        Database.SaveResult insertResult = Database.insert(new Account(), false);
+        \\        Account account = new Account(Name = 'Acme');
+        \\        insert account;
+        \\        Database.delete(account, false);
+        \\        Database.DeleteResult deleteResult = Database.delete(account, false);
+        \\        return String.valueOf(insertResult.getErrors().get(0).getStatusCode())
+        \\            + ':' + String.valueOf(deleteResult.getErrors().get(0).getStatusCode());
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "DatabaseDmlStatusCodeProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings(
+        "REQUIRED_FIELD_MISSING:UNKNOWN_EXCEPTION",
+        result.value.string,
+    );
+}
+
 test "E2E: JSON-deserialized DML errors expose message status and fields" {
     const source =
         \\public class JsonDmlErrorAccessTest {
@@ -15777,6 +15803,30 @@ test "E2E: FiscalYearSettings SOQL is a known standard object" {
     try std.testing.expectEqual(@as(i64, 0), result.value.integer);
 }
 
+test "E2E: Metadata CustomMetadata initializes values list" {
+    const source =
+        \\public class MetadataCustomMetadataProbe {
+        \\    public static String test() {
+        \\        Metadata.CustomMetadata record = new Metadata.CustomMetadata();
+        \\        Metadata.CustomMetadataValue value = new Metadata.CustomMetadataValue();
+        \\        value.field = 'Flag__c';
+        \\        value.value = true;
+        \\        record.values.add(value);
+        \\        Metadata.DeployResult result = new Metadata.DeployResult();
+        \\        result.status = Metadata.DeployStatus.Succeeded;
+        \\        return String.valueOf(record.values.size()) + ':' + result.status.name();
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "MetadataCustomMetadataProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("1:Succeeded", result.value.string);
+}
+
 test "E2E: List.sort propagates Comparable exceptions" {
     const source =
         \\public class SortExceptionPropagationTest {
@@ -16483,6 +16533,23 @@ test "E2E: String.replaceFirst replaces only the first regex match" {
     defer result.deinit();
 
     try std.testing.expectEqualStrings("Field__c:X123abc", result.value.string);
+}
+
+test "E2E: URL base URL supports toExternalForm" {
+    const source =
+        \\public class UrlExternalFormProbe {
+        \\    public static String test() {
+        \\        return URL.getSalesforceBaseUrl().toExternalForm().replaceFirst('http:', 'https:');
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "UrlExternalFormProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("https://test.salesforce.com", result.value.string);
 }
 
 test "E2E: Contact update refreshes compound Name" {

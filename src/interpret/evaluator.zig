@@ -11079,6 +11079,11 @@ pub const Evaluator = struct {
         {
             return Value{ .string = fa.field };
         }
+        if (std.ascii.eqlIgnoreCase(outer_name, "Metadata") and
+            is_known_metadata_enum_type(inner_name))
+        {
+            return Value{ .string = fa.field };
+        }
         if (std.ascii.eqlIgnoreCase(outer_name, "Schema") and
             is_known_schema_enum_type(inner_name))
         {
@@ -13838,6 +13843,9 @@ pub const Evaluator = struct {
         if (try self.eval_type_instance_method(obj, method)) |result| return result;
         if (try self.eval_stub_provider_instance_method(obj, method, args)) |result| return result;
         if (try self.eval_json_parser_instance_method(obj, method, args)) |result| return result;
+        if (try self.eval_metadata_framework_instance_method(obj, method, args)) |result| {
+            return result;
+        }
         if (try self.eval_time_instance_method(obj, method)) |result| return result;
         if (try self.eval_date_like_instance_method(obj, method, args)) |result| return result;
         if (try self.eval_field_expression_matching_method(obj, method, args)) |result| {
@@ -13920,6 +13928,39 @@ pub const Evaluator = struct {
             if (self.find_set_entry_key(values, Value{ .string = lowered }) != null) return true;
         }
         return false;
+    }
+
+    fn eval_metadata_framework_instance_method(
+        self: *Evaluator,
+        obj: Value,
+        method: []const u8,
+        args: []const Value,
+    ) !?Value {
+        if (!(obj == .object and
+            std.ascii.eqlIgnoreCase(obj.object.class_name, "Metadata.DeployContainer") and
+            std.ascii.eqlIgnoreCase(method, "addMetadata")))
+        {
+            return null;
+        }
+        if (args.len > 0) {
+            const items = try self.ensure_object_list_field(obj.object, "metadata");
+            try items.items.append(self.arena, args[0]);
+        }
+        return Value.null_val;
+    }
+
+    fn ensure_object_list_field(
+        self: *Evaluator,
+        instance: *types.ObjectInstance,
+        field_name: []const u8,
+    ) !*types.ListValue {
+        if (instance.fields.get(field_name)) |existing| {
+            if (existing == .list) return existing.list;
+        }
+        const list = try self.arena.create(types.ListValue);
+        list.* = .{};
+        try instance.fields.put(self.arena, field_name, Value{ .list = list });
+        return list;
     }
 
     fn eval_primitive_scalar_instance_method(
@@ -16812,6 +16853,7 @@ pub const Evaluator = struct {
         if (try self.new_type_literal_value(ne, type_name)) |result| return result;
         if (try self.new_collection_value(ne, type_name, current_env)) |result| return result;
         if (try self.new_builtin_object_value(ne, type_name, current_env)) |result| return result;
+        if (try self.instantiate_metadata_framework_class(type_name)) |result| return result;
 
         const obj = try self.new_sobject_from_assignments(ne, type_name, current_env);
         if (self.is_s_object_type_name(type_name)) return Value{ .sobject = obj };
@@ -18450,6 +18492,11 @@ pub const Evaluator = struct {
         {
             return Value{ .string = field_name };
         }
+        if (std.ascii.eqlIgnoreCase(outer_name, "Metadata") and
+            is_known_metadata_enum_type(inner_name))
+        {
+            return Value{ .string = field_name };
+        }
         if (std.ascii.eqlIgnoreCase(field_name, "class") and
             std.ascii.eqlIgnoreCase(outer_name, "System"))
         {
@@ -19583,7 +19630,7 @@ pub const Evaluator = struct {
             try err_obj.fields.put(
                 self.arena,
                 "statusCode",
-                Value{ .string = "FIELD_CUSTOM_VALIDATION_EXCEPTION" },
+                Value{ .string = dml_error_status_code(result_class, message_val) },
             );
             try err_obj.fields.put(self.arena, "fields", fields_val);
             try errors_list.items.append(self.arena, Value{ .object = err_obj });
@@ -19592,6 +19639,20 @@ pub const Evaluator = struct {
             }
         }
         return result;
+    }
+
+    fn dml_error_status_code(result_class: []const u8, message: Value) []const u8 {
+        if (message == .string and
+            std.mem.startsWith(u8, message.string, "REQUIRED_FIELD_MISSING:"))
+        {
+            return "REQUIRED_FIELD_MISSING";
+        }
+        if (std.ascii.eqlIgnoreCase(result_class, "Database.DeleteResult") or
+            std.ascii.eqlIgnoreCase(result_class, "Database.UndeleteResult"))
+        {
+            return "UNKNOWN_EXCEPTION";
+        }
+        return "FIELD_CUSTOM_VALIDATION_EXCEPTION";
     }
 
     fn execute_partial_database_method(
@@ -24285,10 +24346,17 @@ pub const Evaluator = struct {
             std.ascii.eqlIgnoreCase(name, "SoapType");
     }
 
+    fn is_known_metadata_enum_type(name: []const u8) bool {
+        return std.ascii.eqlIgnoreCase(name, "DeployStatus");
+    }
+
     /// Instantiate a class by name (for Type.forName().newInstance())
     fn instantiate_class(self: *Evaluator, class_name: []const u8) !Value {
         // Lazy static init: ensure the class's static fields/blocks are initialized
         self.ensure_static_init(class_name);
+        if (try self.instantiate_metadata_framework_class(class_name)) |value| {
+            return value;
+        }
         if (self.find_class(class_name)) |class_decl| {
             // Also ensure parent class hierarchy is initialized
             if (class_decl.super_class) |sc| self.ensure_static_init(sc.name);
@@ -24323,6 +24391,34 @@ pub const Evaluator = struct {
         // Fallback: create a bare ObjectInstance
         const instance = try self.arena.create(types.ObjectInstance);
         instance.* = .{ .class_name = class_name };
+        return Value{ .object = instance };
+    }
+
+    fn instantiate_metadata_framework_class(
+        self: *Evaluator,
+        class_name: []const u8,
+    ) !?Value {
+        if (!std.ascii.startsWithIgnoreCase(class_name, "Metadata.")) return null;
+        const instance = try self.arena.create(types.ObjectInstance);
+        instance.* = .{ .class_name = class_name };
+
+        if (std.ascii.eqlIgnoreCase(class_name, "Metadata.CustomMetadata")) {
+            const values = try self.arena.create(types.ListValue);
+            values.* = .{};
+            try instance.fields.put(self.arena, "values", Value{ .list = values });
+            try instance.fields.put(self.arena, "protected_x", Value{ .boolean = false });
+        } else if (std.ascii.eqlIgnoreCase(class_name, "Metadata.DeployResult")) {
+            try instance.fields.put(self.arena, "status", Value{ .string = "Succeeded" });
+            try instance.fields.put(
+                self.arena,
+                "details",
+                (try self.instantiate_metadata_framework_class("Metadata.DeployDetails")).?,
+            );
+        } else if (std.ascii.eqlIgnoreCase(class_name, "Metadata.DeployDetails")) {
+            const failures = try self.arena.create(types.ListValue);
+            failures.* = .{};
+            try instance.fields.put(self.arena, "componentFailures", Value{ .list = failures });
+        }
         return Value{ .object = instance };
     }
 };

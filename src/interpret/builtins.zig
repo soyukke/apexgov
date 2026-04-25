@@ -5274,6 +5274,8 @@ fn dispatch_obj_platform_classes(
     if (ci.eqlIgnoreCase(cn, "HttpResponse") or std.mem.startsWith(u8, cn, "Http")) {
         if (try dispatch_obj_http(ctx, obj, method_name, args)) |v| return v;
     }
+    if (type_matches_any(cn, &.{ "Url", "URL" }))
+        if (try dispatch_obj_url(ctx, obj, method_name)) |v| return v;
     if (ci.eqlIgnoreCase(cn, "PageReference")) {
         if (try dispatch_obj_page_reference(ctx, obj, method_name, args)) |v| return v;
     }
@@ -6720,6 +6722,22 @@ fn dispatch_obj_page_reference(
         map.* = .{};
         try obj.fields.put(ctx.arena, "parameters", Value{ .map = map });
         return Value{ .map = map };
+    }
+    return null;
+}
+
+fn dispatch_obj_url(
+    ctx: *BuiltinContext,
+    obj: *types.ObjectInstance,
+    method_name: []const u8,
+) !?Value {
+    if (std.ascii.eqlIgnoreCase(method_name, "toExternalForm")) {
+        const protocol = object_string_field(obj, "Protocol") orelse "https";
+        const host = object_string_field(obj, "Host") orelse "test.salesforce.com";
+        return Value{ .string = try std.fmt.allocPrint(ctx.arena, "{s}://{s}", .{
+            protocol,
+            host,
+        }) };
     }
     return null;
 }
