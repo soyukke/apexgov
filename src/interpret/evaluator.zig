@@ -360,6 +360,14 @@ pub const Evaluator = struct {
     /// Create a synthetic User record for UserInfo.getUserId()
     /// — used by SOQL when no User records exist in store
     pub fn create_current_user_record(self: *Evaluator) !Value {
+        if (self.current_user_override) |override| {
+            if (override.id) |override_id| {
+                if (std.ascii.eqlIgnoreCase(override_id, self.current_user_id)) {
+                    const clone = try self.clone_s_object(override);
+                    return Value{ .sobject = clone };
+                }
+            }
+        }
         if (self.store.get("User")) |users| {
             for (users.items) |existing| {
                 if (existing != .sobject or existing.sobject.id == null) continue;
@@ -2597,6 +2605,11 @@ pub const Evaluator = struct {
     }
 
     fn apply_run_as_s_object_flags(self: *Evaluator, user: *types.SObject) void {
+        if (user.id == null) {
+            const uid = self.alloc_id() catch return;
+            user.id = uid;
+            user.fields.put(self.arena, "Id", Value{ .string = uid }) catch return;
+        }
         if (user.id) |uid| self.current_user_id = uid;
         if (utils.sobject_get(&user.fields, "ProfileId") orelse
             utils.sobject_get(&user.fields, "profileId")) |pv|
@@ -3293,6 +3306,46 @@ pub const Evaluator = struct {
             std.ascii.eqlIgnoreCase(name, "Read Only") or
             std.ascii.eqlIgnoreCase(name, "Chatter Free User") or
             std.ascii.eqlIgnoreCase(name, "Chatter External User");
+    }
+
+    pub fn is_system_admin_profile_name(_: *Evaluator, name: []const u8) bool {
+        return std.ascii.eqlIgnoreCase(name, "System Administrator") or
+            std.ascii.eqlIgnoreCase(name, "システム管理者") or
+            std.ascii.eqlIgnoreCase(name, "Administrador del sistema") or
+            std.ascii.eqlIgnoreCase(name, "Systemadministrator") or
+            std.ascii.eqlIgnoreCase(name, "Administrateur système") or
+            std.ascii.eqlIgnoreCase(name, "Systeembeheerder") or
+            std.ascii.eqlIgnoreCase(name, "Administrador do sistema");
+    }
+
+    fn current_profile_name(self: *Evaluator) ?[]const u8 {
+        if (self.current_user_override) |user| {
+            if (self.get_user_profile_name(user)) |profile_name| return profile_name;
+        }
+        if (self.find_record_by_id("Profile", self.current_profile_id)) |profile_val| {
+            if (profile_val == .sobject) {
+                if (utils.sobject_get(&profile_val.sobject.fields, "Name")) |name| {
+                    if (name == .string) return name.string;
+                }
+            }
+        }
+        if (std.ascii.eqlIgnoreCase(self.current_profile_id, "00e000000000001")) {
+            return "System Administrator";
+        }
+        return null;
+    }
+
+    fn user_profile_id(self: *Evaluator, user: *types.SObject) ?[]const u8 {
+        _ = self;
+        if (utils.sobject_get(&user.fields, "ProfileId") orelse
+            utils.sobject_get(&user.fields, "profileId")) |profile_id|
+        {
+            if (profile_id == .string) return profile_id.string;
+        }
+        if (utils.sobject_get(&user.fields, "Profile")) |profile| {
+            if (profile == .sobject) return profile.sobject.id;
+        }
+        return null;
     }
 
     /// Check if an SObject type is a setup/admin object (not CRUD-accessible by Standard User)
@@ -5302,6 +5355,14 @@ pub const Evaluator = struct {
         records: *std.ArrayListUnmanaged(Value),
     ) !void {
         if (records.items.len != 0) return;
+        if (try self.seed_profile_permission_set_assignment_query(
+            from_type,
+            soql,
+            current_env,
+            records,
+        )) {
+            return;
+        }
         if (try self.seed_field_permissions_query_records(from_type, soql, current_env, records)) {
             return;
         }
@@ -5314,6 +5375,101 @@ pub const Evaluator = struct {
         if (try self.generate_metadata_stub(from_type, soql, current_env)) |stub_record| {
             try records.append(self.arena, stub_record);
         }
+    }
+
+    fn seed_profile_permission_set_assignment_query(
+        self: *Evaluator,
+        from_type: []const u8,
+        soql: []const u8,
+        current_env: *Env,
+        records: *std.ArrayListUnmanaged(Value),
+    ) !bool {
+        if (!std.ascii.eqlIgnoreCase(from_type, "PermissionSetAssignment")) return false;
+
+        var emitted_any = false;
+        if (self.current_profile_name()) |profile_name| {
+            if (self.is_system_admin_profile_name(profile_name)) {
+                emitted_any = try self.append_profile_permission_set_assignment(
+                    self.current_user_id,
+                    self.current_profile_id,
+                    soql,
+                    current_env,
+                    records,
+                ) or emitted_any;
+            }
+        }
+
+        if (self.store.get("User")) |users| {
+            for (users.items) |user_val| {
+                if (user_val != .sobject or user_val.sobject.id == null) continue;
+                const profile_name = self.get_user_profile_name(user_val.sobject) orelse continue;
+                if (!self.is_system_admin_profile_name(profile_name)) continue;
+                const profile_id = self.user_profile_id(user_val.sobject) orelse continue;
+                emitted_any = try self.append_profile_permission_set_assignment(
+                    user_val.sobject.id.?,
+                    profile_id,
+                    soql,
+                    current_env,
+                    records,
+                ) or emitted_any;
+            }
+        }
+
+        return emitted_any;
+    }
+
+    fn append_profile_permission_set_assignment(
+        self: *Evaluator,
+        user_id: []const u8,
+        profile_id: []const u8,
+        soql: []const u8,
+        current_env: *Env,
+        records: *std.ArrayListUnmanaged(Value),
+    ) !bool {
+        const permission_set_id = try self.ensure_profile_permission_set(profile_id);
+        const psa = try self.arena.create(types.SObject);
+        psa.* = .{ .type_name = "PermissionSetAssignment" };
+        const psa_id = try std.fmt.allocPrint(self.arena, "0Pa{d:0>15}", .{self.next_id});
+        self.next_id += 1;
+        psa.id = psa_id;
+        try psa.fields.put(self.arena, "Id", Value{ .string = psa_id });
+        try psa.fields.put(self.arena, "AssigneeId", Value{ .string = user_id });
+        try psa.fields.put(self.arena, "PermissionSetId", Value{ .string = permission_set_id });
+
+        const value = Value{ .sobject = psa };
+        if (!self.matches_where(value, soql, current_env)) return false;
+        try records.append(self.arena, value);
+        return true;
+    }
+
+    fn ensure_profile_permission_set(self: *Evaluator, profile_id: []const u8) ![]const u8 {
+        if (self.store.get("PermissionSet")) |permission_sets| {
+            for (permission_sets.items) |item| {
+                if (item != .sobject or item.sobject.id == null) continue;
+                const stored_profile =
+                    utils.sobject_get(&item.sobject.fields, "ProfileId") orelse continue;
+                if (stored_profile == .string and
+                    std.ascii.eqlIgnoreCase(stored_profile.string, profile_id))
+                {
+                    return item.sobject.id.?;
+                }
+            }
+        }
+
+        const ps = try self.arena.create(types.SObject);
+        ps.* = .{ .type_name = "PermissionSet" };
+        const ps_id = try std.fmt.allocPrint(self.arena, "0PS{d:0>15}", .{self.next_id});
+        self.next_id += 1;
+        ps.id = ps_id;
+        try ps.fields.put(self.arena, "Id", Value{ .string = ps_id });
+        try ps.fields.put(self.arena, "Name", Value{ .string = "System_Administrator_Profile" });
+        try ps.fields.put(self.arena, "Label", Value{ .string = "System Administrator Profile" });
+        try ps.fields.put(self.arena, "ProfileId", Value{ .string = profile_id });
+        try ps.fields.put(self.arena, "PermissionsCustomizeApplication", Value{ .boolean = true });
+        try ps.fields.put(self.arena, "PermissionsModifyAllData", Value{ .boolean = true });
+        try ps.fields.put(self.arena, "PermissionsAuthorApex", Value{ .boolean = true });
+        try self.append_store_record("PermissionSet", ps);
+        return ps_id;
     }
 
     fn seed_field_permissions_query_records(
@@ -15055,6 +15211,11 @@ pub const Evaluator = struct {
         _ = self;
         if (map.schema_field_owner == null) return false;
         if (key != .string) return false;
+        if (std.ascii.eqlIgnoreCase(map.schema_field_owner.?, "PermissionSet") and
+            std.mem.startsWith(u8, key.string, "Permissions"))
+        {
+            return true;
+        }
         return is_custom_schema_extension_field_name(key.string);
     }
 
@@ -15065,7 +15226,10 @@ pub const Evaluator = struct {
     ) !?Value {
         const owner = map.schema_field_owner orelse return null;
         if (key != .string) return null;
-        if (!is_custom_schema_extension_field_name(key.string)) return null;
+        const is_permission_field = std.ascii.eqlIgnoreCase(owner, "PermissionSet") and
+            std.mem.startsWith(u8, key.string, "Permissions");
+        if (!is_permission_field and
+            !is_custom_schema_extension_field_name(key.string)) return null;
 
         const token = try self.make_s_object_field_token(owner, key.string);
         try map.entries.put(self.arena, key.string, token);

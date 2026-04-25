@@ -2700,6 +2700,157 @@ test "E2E: FeatureManagement.checkPermission honors assigned custom permissions 
     try std.testing.expectEqual(true, result.value.boolean);
 }
 
+test "E2E: PermissionSet dynamic permission fields are queryable" {
+    const source =
+        \\public class PermissionSetDynamicFieldsTest {
+        \\    public static Integer test() {
+        \\        Map<String, SObjectField> fields =
+        \\            PermissionSet.getSObjectType().getDescribe().fields.getMap();
+        \\        PermissionSet ps = new PermissionSet(Name = 'DynPerms', Label = 'DynPerms');
+        \\        if (fields.containsKey('PermissionsCustomizeApplication')) {
+        \\            ps.put('PermissionsCustomizeApplication', true);
+        \\        }
+        \\        if (fields.containsKey('PermissionsModifyAllData')) {
+        \\            ps.put('PermissionsModifyAllData', true);
+        \\        }
+        \\        if (fields.containsKey('PermissionsAuthorApex')) {
+        \\            ps.put('PermissionsAuthorApex', true);
+        \\        }
+        \\        insert ps;
+        \\        return [
+        \\            SELECT Id
+        \\            FROM PermissionSet
+        \\            WHERE PermissionsCustomizeApplication = TRUE
+        \\            AND PermissionsModifyAllData = TRUE
+        \\            AND PermissionsAuthorApex = TRUE
+        \\        ].size();
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "PermissionSetDynamicFieldsTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqual(@as(i64, 1), result.value.integer);
+}
+
+test "E2E: PermissionSetAssignment matches admin permission subquery" {
+    const source =
+        \\public class PermissionSetAssignmentAdminSubqueryTest {
+        \\    public static Integer test() {
+        \\        Profile p = [SELECT Id FROM Profile WHERE Name = 'Standard User'];
+        \\        User u = new User(
+        \\            ProfileId = p.Id,
+        \\            LastName = 'User',
+        \\            Username = 'psa@example.com',
+        \\            Email = 'psa@example.com',
+        \\            Alias = 'psau'
+        \\        );
+        \\        insert u;
+        \\        PermissionSet ps = new PermissionSet(
+        \\            Name = 'AdminPerms',
+        \\            Label = 'AdminPerms'
+        \\        );
+        \\        ps.put('PermissionsCustomizeApplication', true);
+        \\        ps.put('PermissionsModifyAllData', true);
+        \\        ps.put('PermissionsAuthorApex', true);
+        \\        insert ps;
+        \\        insert new PermissionSetAssignment(AssigneeId = u.Id, PermissionSetId = ps.Id);
+        \\        return [
+        \\            SELECT Id
+        \\            FROM PermissionSetAssignment
+        \\            WHERE AssigneeId IN :new List<User>{ u }
+        \\            AND PermissionSetId IN (
+        \\                SELECT Id
+        \\                FROM PermissionSet
+        \\                WHERE PermissionsCustomizeApplication = TRUE
+        \\                AND PermissionsModifyAllData = TRUE
+        \\                AND PermissionsAuthorApex = TRUE
+        \\            )
+        \\        ].size();
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "PermissionSetAssignmentAdminSubqueryTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqual(@as(i64, 1), result.value.integer);
+}
+
+test "E2E: runAs assigns an id to an uninserted user for later setup DML" {
+    const source =
+        \\public class RunAsUninsertedUserIdTest {
+        \\    public static Boolean test() {
+        \\        Profile p = [SELECT Id FROM Profile WHERE Name = 'Standard User'];
+        \\        User u = new User(
+        \\            ProfileId = p.Id,
+        \\            LastName = 'User',
+        \\            Username = 'runas.id@example.com',
+        \\            Email = 'runas.id@example.com',
+        \\            Alias = 'ruid'
+        \\        );
+        \\        System.runAs(u) {}
+        \\        PermissionSet ps = new PermissionSet(Name = 'RunAsPerms', Label = 'RunAsPerms');
+        \\        ps.put('PermissionsCustomizeApplication', true);
+        \\        ps.put('PermissionsModifyAllData', true);
+        \\        ps.put('PermissionsAuthorApex', true);
+        \\        insert ps;
+        \\        insert new PermissionSetAssignment(AssigneeId = u.Id, PermissionSetId = ps.Id);
+        \\        return [
+        \\            SELECT Id
+        \\            FROM PermissionSetAssignment
+        \\            WHERE AssigneeId = :u.Id
+        \\        ].size() == 1;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "RunAsUninsertedUserIdTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqual(true, result.value.boolean);
+}
+
+test "E2E: uninserted standard runAs user remains standard when queried" {
+    const source =
+        \\public class RunAsUninsertedStandardQueryTest {
+        \\    public static String test() {
+        \\        Profile p = [SELECT Id FROM Profile WHERE Name = 'Standard User'];
+        \\        User u = new User(
+        \\            ProfileId = p.Id,
+        \\            LastName = 'User',
+        \\            Username = 'runas.standard@example.com',
+        \\            Email = 'runas.standard@example.com',
+        \\            Alias = 'rstd'
+        \\        );
+        \\        String profileName = null;
+        \\        System.runAs(u) {
+        \\            profileName = [
+        \\                SELECT Profile.Name
+        \\                FROM User
+        \\                WHERE Id = :UserInfo.getUserId()
+        \\            ].Profile.Name;
+        \\        }
+        \\        return profileName;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "RunAsUninsertedStandardQueryTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("Standard User", result.value.string);
+}
+
 test "E2E: standard user custom object describe is not updateable by default" {
     const source =
         \\public class StandardUserCrudTest {
