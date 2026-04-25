@@ -9993,30 +9993,10 @@ pub const Evaluator = struct {
                 try sob.fields.put(self.arena, fk, fv);
             }
         }
-        try self.apply_known_custom_setting_defaults(sob);
         if (setup_owner_id) |owner_id| {
             try sob.fields.put(self.arena, "SetupOwnerId", Value{ .string = owner_id });
         }
         return Value{ .sobject = sob };
-    }
-
-    fn apply_known_custom_setting_defaults(self: *Evaluator, sob: *types.SObject) !void {
-        if (!std.ascii.eqlIgnoreCase(sob.type_name, "Data_Import_Settings__c")) return;
-        try self.put_default_sobject_field(
-            sob,
-            "Default_Data_Import_Field_Mapping_Set__c",
-            Value{ .string = "Default_Field_Mapping_Set" },
-        );
-        try self.put_default_sobject_field(
-            sob,
-            "Contact_Matching_Rule__c",
-            Value{ .string = "Firstname,Lastname,Email" },
-        );
-        try self.put_default_sobject_field(
-            sob,
-            "Field_Mapping_Method__c",
-            Value{ .string = "Help Text" },
-        );
     }
 
     fn put_default_sobject_field(

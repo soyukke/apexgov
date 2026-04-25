@@ -7603,13 +7603,17 @@ test "E2E: NPSP Address insert updates household and contact mailing fields" {
     try std.testing.expectEqualStrings("Seattle:Seattle", result.value.string);
 }
 
-test "E2E: Data Import settings default field mapping set is populated" {
+test "E2E: Data Import settings getInstance keeps unset fields null" {
     const source =
         \\public class DataImportSettingsDefaultsProbe {
         \\    public static String test() {
         \\        Data_Import_Settings__c settings = Data_Import_Settings__c.getInstance();
-        \\        return settings.Default_Data_Import_Field_Mapping_Set__c + ':' +
-        \\            settings.Contact_Matching_Rule__c;
+        \\        String defaultSet = settings.Default_Data_Import_Field_Mapping_Set__c;
+        \\        String contactRule = settings.Contact_Matching_Rule__c;
+        \\        String mappingMethod = settings.Field_Mapping_Method__c;
+        \\        return (defaultSet == null ? 'null' : defaultSet) + ':' +
+        \\            (contactRule == null ? 'null' : contactRule) + ':' +
+        \\            (mappingMethod == null ? 'null' : mappingMethod);
         \\    }
         \\}
     ;
@@ -7620,7 +7624,7 @@ test "E2E: Data Import settings default field mapping set is populated" {
     defer result.deinit();
 
     try std.testing.expectEqualStrings(
-        "Default_Field_Mapping_Set:Firstname,Lastname,Email",
+        "null:null:null",
         result.value.string,
     );
 }
