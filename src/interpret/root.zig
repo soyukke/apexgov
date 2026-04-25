@@ -7737,6 +7737,61 @@ test "E2E: Opportunity CampaignId is a known standard field" {
     try std.testing.expectEqualStrings("true:true", result.value.string);
 }
 
+test "E2E: Account and Contact address geocode fields are known standard fields" {
+    const source =
+        \\public class StandardAddressGeocodeFieldsProbe {
+        \\    public static String test() {
+        \\        Account account = new Account(Name = 'Acme');
+        \\        account.put('BillingLatitude', 37.1);
+        \\        account.put('BillingLongitude', -122.2);
+        \\        Contact contact = new Contact(LastName = 'Smith');
+        \\        contact.put('Salutation', 'Dr.');
+        \\        contact.put('MailingLatitude', 35.3);
+        \\        contact.put('MailingLongitude', -120.4);
+        \\        Boolean accountDescribed = Account.SObjectType.getDescribe()
+        \\            .fields.getMap().containsKey('BillingLatitude');
+        \\        Boolean activityDescribed = Account.SObjectType.getDescribe()
+        \\            .fields.getMap().containsKey('LastActivityDate');
+        \\        Boolean contactDescribed = Contact.SObjectType.getDescribe()
+        \\            .fields.getMap().containsKey('MailingLongitude');
+        \\        return String.valueOf(account.get('BillingLatitude')) + ':' +
+        \\            String.valueOf(contact.get('Salutation')) + ':' +
+        \\            String.valueOf(accountDescribed) + ':' +
+        \\            String.valueOf(activityDescribed) + ':' +
+        \\            String.valueOf(contactDescribed);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "StandardAddressGeocodeFieldsProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("37.1:Dr.:true:true:true", result.value.string);
+}
+
+test "E2E: custom object fields shortcut returns SObjectField tokens" {
+    const source =
+        \\public class CustomObjectFieldsShortcutProbe {
+        \\    public static String test() {
+        \\        SObject row = new Widget__c(Name = 'w');
+        \\        row.put(Widget__c.fields.Amount__c, 42);
+        \\        return String.valueOf(Widget__c.fields.Id) + ':' +
+        \\            String.valueOf(Widget__c.fields.Amount__c) + ':' +
+        \\            String.valueOf(row.get(Widget__c.fields.Amount__c));
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "CustomObjectFieldsShortcutProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("Id:Amount__c:42", result.value.string);
+}
+
 test "E2E: NPSP data import address mapping falls back when metadata value is null" {
     const source =
         \\public class NpspAddressMappingFallbackProbe {

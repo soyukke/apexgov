@@ -17675,6 +17675,14 @@ pub const Evaluator = struct {
         if (fa.object.* == .field_access) {
             const inner_fa = fa.object.field_access;
             if (inner_fa.object.* == .identifier and
+                std.ascii.eqlIgnoreCase(inner_fa.field, "fields"))
+            {
+                return try self.make_s_object_field_token(
+                    inner_fa.object.identifier.name,
+                    fa.field,
+                );
+            }
+            if (inner_fa.object.* == .identifier and
                 std.ascii.eqlIgnoreCase(inner_fa.object.identifier.name, "ApexPages") and
                 std.ascii.eqlIgnoreCase(inner_fa.field, "Severity"))
             {
