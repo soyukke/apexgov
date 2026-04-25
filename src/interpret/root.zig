@@ -16158,3 +16158,132 @@ test "E2E: Contact update refreshes compound Name" {
 
     try std.testing.expectEqualStrings("C1:c2 C1", result.value.string);
 }
+
+test "E2E: where-like build uses SOQL branch when groups are filterable" {
+    const source =
+        \\public class StaticWhereBuildProbe {
+        \\    private List<GroupExpression> groups;
+        \\    private String logicOperator = 'AND';
+        \\    private Boolean isFilterable {
+        \\        get {
+        \\            if (isFilterable == null) {
+        \\                isFilterable = true;
+        \\                for (GroupExpression groupExp : groups) {
+        \\                    if (!groupExp.isFilterable()) {
+        \\                        isFilterable = false;
+        \\                    }
+        \\                }
+        \\            }
+        \\            return isFilterable;
+        \\        }
+        \\        set;
+        \\    }
+        \\    public StaticWhereBuildProbe() {
+        \\        groups = new List<GroupExpression>();
+        \\    }
+        \\    public StaticWhereBuildProbe add(GroupExpression groupExp) {
+        \\        groups.add(groupExp);
+        \\        return this;
+        \\    }
+        \\    public String build() {
+        \\        List<String> result = new List<String>();
+        \\        Boolean filterable = isFilterable();
+        \\        if (filterable) {
+        \\            for (GroupExpression groupExp : groups) result.add(groupExp.toString());
+        \\        } else {
+        \\            for (GroupExpression groupExp : groups) result.add(groupExp.getSearchValue());
+        \\        }
+        \\        return String.join(result, ' ' + logicOperator + ' ');
+        \\    }
+        \\    public Boolean isFilterable() {
+        \\        return isFilterable;
+        \\    }
+        \\    public class GroupExpression {
+        \\        private List<FieldExpression> fieldExpressions;
+        \\        private Boolean isFilterable {
+        \\            get {
+        \\                if (isFilterable == null) {
+        \\                    isFilterable = true;
+        \\                    for (FieldExpression fieldExp : fieldExpressions) {
+        \\                        if (!fieldExp.isFilterable()) isFilterable = false;
+        \\                    }
+        \\                }
+        \\                return isFilterable;
+        \\            }
+        \\            set;
+        \\        }
+        \\        public GroupExpression() {
+        \\            fieldExpressions = new List<FieldExpression>();
+        \\        }
+        \\        public GroupExpression add(FieldExpression fieldExp) {
+        \\            fieldExpressions.add(fieldExp);
+        \\            return this;
+        \\        }
+        \\        public Boolean isFilterable() { return isFilterable; }
+        \\        public override String toString() {
+        \\            List<String> result = new List<String>();
+        \\            for (FieldExpression fieldExp : fieldExpressions) result.add(fieldExp.toString());
+        \\            return String.join(result, ' AND ');
+        \\        }
+        \\        public String getSearchValue() {
+        \\            List<String> result = new List<String>();
+        \\            for (FieldExpression fieldExp : fieldExpressions) {
+        \\                result.add(fieldExp.getSearchValue());
+        \\            }
+        \\            return String.join(result, ' AND ') + '*';
+        \\        }
+        \\    }
+        \\    public class FieldExpression {
+        \\        private Schema.SObjectField sObjField;
+        \\        private Object value;
+        \\        public Boolean isFilterable {
+        \\            get {
+        \\                if (isFilterable == null) {
+        \\                    isFilterable = sObjField.getDescribe().isFilterable();
+        \\                }
+        \\                return isFilterable;
+        \\            }
+        \\            set;
+        \\        }
+        \\        public FieldExpression(Schema.SObjectField sObjField) {
+        \\            this.sObjField = sObjField;
+        \\        }
+        \\        public FieldExpression equals(Object value) {
+        \\            this.value = value;
+        \\            return this;
+        \\        }
+        \\        public Boolean isFilterable() { return isFilterable; }
+        \\        public override String toString() {
+        \\            return String.valueOf(sObjField) + ' = ' +
+        \\                '\'' + String.valueOf(value) + '\'';
+        \\        }
+        \\        public String getSearchValue() { return String.valueOf(value); }
+        \\    }
+        \\    private static FieldExpression nameFieldExp =
+        \\        new FieldExpression(Account.Name);
+        \\    private static FieldExpression websiteFieldExp =
+        \\        new FieldExpression(Account.Website);
+        \\    static {
+        \\        nameFieldExp.isFilterable = true;
+        \\        websiteFieldExp.isFilterable = true;
+        \\    }
+        \\    public static String test() {
+        \\        websiteFieldExp.isFilterable = true;
+        \\        return new StaticWhereBuildProbe()
+        \\            .add(new GroupExpression().add(nameFieldExp.equals('foo')))
+        \\            .add(new GroupExpression().add(websiteFieldExp.equals('bar.com')))
+        \\            .build();
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "StaticWhereBuildProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings(
+        "Name = 'foo' AND Website = 'bar.com'",
+        result.value.string,
+    );
+}

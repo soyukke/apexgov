@@ -100,6 +100,7 @@ pub const Evaluator = struct {
     // Property getter currently being evaluated
     // (to prevent infinite recursion in self-referencing getters)
     evaluating_getter: ?[]const u8 = null,
+    evaluating_getter_instance: ?*types.ObjectInstance = null,
     // JSON round-trip: store last serialized value for deserialize
     last_json_value: ?Value = null,
     // SOSL fixed search results (set by Test.setFixedSearchResults)
@@ -10311,7 +10312,8 @@ pub const Evaluator = struct {
         const this_check = current_env.get_this() orelse return null;
         if (this_check != .object) return null;
         const already_in_instance_getter = if (self.evaluating_getter) |eg|
-            std.ascii.eqlIgnoreCase(eg, id_name)
+            std.ascii.eqlIgnoreCase(eg, id_name) and
+                self.evaluating_getter_instance == this_check.object
         else
             false;
         const shadowed_by_typed_local = current_env.get_declared_type(id_name) != null;
@@ -12632,11 +12634,14 @@ pub const Evaluator = struct {
                     const getter_env = self.global_env.child() catch return Value.null_val;
                     const saved_class = self.current_class;
                     const saved_getter = self.evaluating_getter;
+                    const saved_getter_instance = self.evaluating_getter_instance;
                     self.current_class = current_class_name;
                     self.evaluating_getter = class_name;
+                    self.evaluating_getter_instance = null;
                     defer {
                         self.current_class = saved_class;
                         self.evaluating_getter = saved_getter;
+                        self.evaluating_getter_instance = saved_getter_instance;
                     }
 
                     const getter_result = self.exec_block(
@@ -17474,7 +17479,9 @@ pub const Evaluator = struct {
         field_decl: anytype,
     ) anyerror!Value {
         if (self.evaluating_getter) |eg| {
-            if (std.ascii.eqlIgnoreCase(eg, field_decl.name)) {
+            if (std.ascii.eqlIgnoreCase(eg, field_decl.name) and
+                self.evaluating_getter_instance == instance)
+            {
                 if (field_decl.modifiers.is_static) {
                     return self.read_static_backing_value(owner_class_name, field_decl.name);
                 }
@@ -17497,11 +17504,14 @@ pub const Evaluator = struct {
 
         const saved_class = self.current_class;
         const saved_getter = self.evaluating_getter;
+        const saved_getter_instance = self.evaluating_getter_instance;
         self.current_class = owner_class_name;
         self.evaluating_getter = field_decl.name;
+        self.evaluating_getter_instance = instance;
         defer {
             self.current_class = saved_class;
             self.evaluating_getter = saved_getter;
+            self.evaluating_getter_instance = saved_getter_instance;
         }
 
         const result = self.exec_block(field_decl.getter_body.?, getter_env) catch |err| {
@@ -22949,11 +22959,14 @@ pub const Evaluator = struct {
                             const getter_env = self.global_env.child() catch return null;
                             const saved_class = self.current_class;
                             const saved_getter = self.evaluating_getter;
+                            const saved_getter_instance = self.evaluating_getter_instance;
                             self.current_class = class_name;
                             self.evaluating_getter = field_name;
+                            self.evaluating_getter_instance = null;
                             defer {
                                 self.current_class = saved_class;
                                 self.evaluating_getter = saved_getter;
+                                self.evaluating_getter_instance = saved_getter_instance;
                             }
 
                             const result =
