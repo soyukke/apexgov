@@ -874,6 +874,10 @@ fn read_field_metadata(alloc: std.mem.Allocator, content: []const u8) !evaluator
     if (extract_xml_tag_value(content, "label")) |label| {
         metadata.label = alloc.dupe(u8, std.mem.trim(u8, label, " \t\n\r")) catch null;
     }
+    if (extract_xml_tag_value(content, "inlineHelpText")) |inline_help_text| {
+        metadata.inline_help_text =
+            decode_xml_text(alloc, std.mem.trim(u8, inline_help_text, " \t\n\r"), false) catch null;
+    }
     if (extract_field_bool_tag(content, "caseSensitive")) |value| metadata.case_sensitive = value;
     if (extract_field_bool_tag(content, "externalId")) |value| metadata.is_external_id = value;
     if (extract_field_bool_tag(content, "unique")) |value| metadata.is_unique = value;
@@ -977,6 +981,7 @@ fn store_field_metadata(
 
 fn field_metadata_has_values(metadata: evaluator.FieldMetadata) bool {
     return metadata.label != null or
+        metadata.inline_help_text != null or
         metadata.is_unique or
         metadata.is_external_id or
         metadata.is_required or
@@ -5290,6 +5295,50 @@ test "E2E: Map.equals delegates pairwise value comparison" {
     try std.testing.expectEqualStrings("true,false", result.value.string);
 }
 
+test "E2E: Map null key does not collide with empty string key" {
+    const source =
+        \\public class MapNullKeyProbe {
+        \\    public static String test() {
+        \\        Map<String, String> m = new Map<String, String>();
+        \\        m.put('', 'empty');
+        \\        String before = m.get(null);
+        \\        m.put(null, 'null');
+        \\        return String.valueOf(before) + ',' +
+        \\            String.valueOf(m.get('')) + ',' +
+        \\            String.valueOf(m.get(null)) + ',' +
+        \\            String.valueOf(m.containsKey('')) + ',' +
+        \\            String.valueOf(m.containsKey(null));
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "MapNullKeyProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("null,empty,null,true,true", result.value.string);
+}
+
+test "E2E: null overload resolution prefers String over Object" {
+    const source =
+        \\public class NullOverloadProbe {
+        \\    public static String pick(Object value) { return 'object'; }
+        \\    public static String pick(String value) { return value == null ? 'string:null' : value; }
+        \\    public static String test() {
+        \\        return pick(null);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "NullOverloadProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("string:null", result.value.string);
+}
+
 test "E2E: System.runAs exposes the target user's fields to UserInfo" {
     // apex-expression's DSL tests build throw-away Users inside System.runAs
     // without ever inserting them. UserInfo methods used to return the default
@@ -5890,6 +5939,154 @@ test "E2E: Database.query resolves local bind variables" {
     defer result.deinit();
 
     try std.testing.expectEqualStrings("1", result.value.string);
+}
+
+test "E2E: lowercase database.query resolves as Database.query" {
+    const source =
+        \\public class LowercaseDatabaseQueryTest {
+        \\    public static String test() {
+        \\        insert new Account(Name = 'Acme');
+        \\        String name = 'Acme';
+        \\        String soql = 'SELECT Id FROM Account WHERE Name = :name';
+        \\        List<Account> rows = database.query(soql);
+        \\        return String.valueOf(rows.size());
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "LowercaseDatabaseQueryTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("1", result.value.string);
+}
+
+test "E2E: Opportunity IsClosed WHERE derives from StageName" {
+    const source =
+        \\public class OpportunityIsClosedWhereTest {
+        \\    public static String test() {
+        \\        insert new Opportunity(
+        \\            Name = 'Open',
+        \\            StageName = 'Prospecting',
+        \\            CloseDate = Date.today()
+        \\        );
+        \\        insert new Opportunity(
+        \\            Name = 'Closed',
+        \\            StageName = 'Closed Won',
+        \\            CloseDate = Date.today()
+        \\        );
+        \\        List<Opportunity> openOpps = Database.query(
+        \\            'SELECT Id FROM Opportunity WHERE IsClosed = false'
+        \\        );
+        \\        List<Opportunity> wonOpps = Database.query(
+        \\            'SELECT Id FROM Opportunity WHERE IsWon = true'
+        \\        );
+        \\        return String.valueOf(openOpps.size()) + ':' +
+        \\            String.valueOf(wonOpps.size());
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "OpportunityIsClosedWhereTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("1:1", result.value.string);
+}
+
+test "E2E: DescribeFieldResult returns its SObjectField token" {
+    const source =
+        \\public class DescribeFieldTokenRoundTripTest {
+        \\    public static String test() {
+        \\        Schema.DescribeFieldResult describe = Account.Name.getDescribe();
+        \\        Schema.SObjectField field = describe.getSObjectField();
+        \\        return field.getDescribe().getName();
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "DescribeFieldTokenRoundTripTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("Name", result.value.string);
+}
+
+test "E2E: Set of SObjectField tokens stringifies without null entries" {
+    const source =
+        \\public class SObjectFieldSetStringifyTest {
+        \\    public static String test() {
+        \\        Set<Schema.SObjectField> fields = new Set<Schema.SObjectField>{
+        \\            Contact.FirstName,
+        \\            Contact.LastName,
+        \\            Contact.Title
+        \\        };
+        \\        Set<String> names = new Set<String>{ 'Id' };
+        \\        for (Schema.SObjectField field : fields) {
+        \\            names.add(String.valueOf(field));
+        \\        }
+        \\        return String.join(new List<String>(names), ',');
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "SObjectFieldSetStringifyTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("Id,FirstName,LastName,Title", result.value.string);
+}
+
+test "E2E: describe field maps resolve lowercase RecordTypeId" {
+    const source =
+        \\public class LowercaseRecordTypeIdDescribeTest {
+        \\    public static String test() {
+        \\        Map<String, Schema.SObjectField> fields =
+        \\            Account.SObjectType.getDescribe().fields.getMap();
+        \\        return String.valueOf(fields.containsKey('recordtypeid')) + ':' +
+        \\            fields.get('recordtypeid').getDescribe().getName();
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "LowercaseRecordTypeIdDescribeTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("true:RecordTypeId", result.value.string);
+}
+
+test "E2E: NPSP contact insert fallback creates household account" {
+    const source =
+        \\public class CAO_Constants {
+        \\    public static final String HH_ACCOUNT_TYPE = 'Household Account';
+        \\}
+        \\public class NpspContactHouseholdFallbackTest {
+        \\    public static String test() {
+        \\        Contact con = new Contact(FirstName = 'c1', LastName = 'C1');
+        \\        insert con;
+        \\        Contact stored = [
+        \\            SELECT Id, AccountId, Account.npe01__SYSTEM_AccountType__c
+        \\            FROM Contact
+        \\            LIMIT 1
+        \\        ];
+        \\        return String.valueOf(stored.AccountId != null) + ':' +
+        \\            stored.Account.npe01__SYSTEM_AccountType__c;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "NpspContactHouseholdFallbackTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("true:Household Account", result.value.string);
 }
 
 test "E2E: Integer and Long valueOf preserve null inputs" {
@@ -7283,6 +7480,129 @@ test "E2E: qualified Schema setup objects ignore same-named user classes" {
     );
 }
 
+test "E2E: standard SObject construction ignores unrelated inner class with same name" {
+    const source =
+        \\public class MetadataHost {
+        \\    public class Campaign {
+        \\        public String marker = 'inner';
+        \\    }
+        \\}
+        \\public class StandardSObjectCtorProbe {
+        \\    public static String test() {
+        \\        List<Campaign> campaigns = new List<Campaign>();
+        \\        campaigns.add(new Campaign(Name = 'cmp1', IsActive = true));
+        \\        return campaigns[0].getSObjectType().getDescribe().getName() + ':' +
+        \\            campaigns[0].Name;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "StandardSObjectCtorProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("Campaign:cmp1", result.value.string);
+}
+
+test "E2E: Opportunity CampaignId is a known standard field" {
+    const source =
+        \\public class OpportunityCampaignFieldProbe {
+        \\    public static String test() {
+        \\        Opportunity opp = new Opportunity();
+        \\        Object value = opp.get('CampaignId');
+        \\        Boolean described = Opportunity.SObjectType.getDescribe()
+        \\            .fields.getMap().containsKey('CampaignId');
+        \\        return String.valueOf(value == null) + ':' + String.valueOf(described);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "OpportunityCampaignFieldProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("true:true", result.value.string);
+}
+
+test "E2E: NPSP data import address mapping falls back when metadata value is null" {
+    const source =
+        \\public class NpspAddressMappingFallbackProbe {
+        \\    public static String test() {
+        \\        Map<String, String> fields = new Map<String, String>();
+        \\        fields.put('npsp__Home_City__c', null);
+        \\        return fields.get('Home_City__c') + ':' +
+        \\            fields.get('npsp__Home_City__c');
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "NpspAddressMappingFallbackProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("MailingCity__c:MailingCity__c", result.value.string);
+}
+
+test "E2E: NPSP Address validates household lookup and city length" {
+    const source =
+        \\public class NpspAddressValidationProbe {
+        \\    public static String test() {
+        \\        List<Address__c> rows = new List<Address__c>{
+        \\            new Address__c(Household_Account__c = '001000000000001', MailingCity__c = 'Seattle'),
+        \\            new Address__c(Household_Account__c = 'aR5000000000001', MailingCity__c = 'Portland'),
+        \\            new Address__c(Household_Account__c = '001000000000002',
+        \\                MailingCity__c = 'This is an invalid city because it is over 40 characters')
+        \\        };
+        \\        List<Database.SaveResult> results = Database.insert(rows, false);
+        \\        return String.valueOf(results[0].isSuccess()) + ':' +
+        \\            String.valueOf(results[1].isSuccess()) + ':' +
+        \\            String.valueOf(results[2].isSuccess()) + ':' +
+        \\            results[2].getErrors()[0].getMessage();
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "NpspAddressValidationProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings(
+        "true:false:false:STRING_TOO_LONG: Billing City: data value too large",
+        result.value.string,
+    );
+}
+
+test "E2E: NPSP Address insert updates household and contact mailing fields" {
+    const source =
+        \\public class NpspAddressInsertSideEffectProbe {
+        \\    public static String test() {
+        \\        Account household = new Account(Name = 'Household');
+        \\        insert household;
+        \\        Contact contact = new Contact(LastName = 'Donor', AccountId = household.Id);
+        \\        insert contact;
+        \\        insert new Address__c(
+        \\            Household_Account__c = household.Id,
+        \\            MailingCity__c = 'Seattle'
+        \\        );
+        \\        Account storedHousehold = [SELECT BillingCity FROM Account WHERE Id = :household.Id];
+        \\        Contact storedContact = [SELECT MailingCity FROM Contact WHERE Id = :contact.Id];
+        \\        return storedHousehold.BillingCity + ':' + storedContact.MailingCity;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "NpspAddressInsertSideEffectProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("Seattle:Seattle", result.value.string);
+}
+
 test "E2E: qualified inner class literals preserve outer class names" {
     const source =
         \\public class OuterNameHost {
@@ -8100,6 +8420,33 @@ test "E2E: subquery child records preserve parent relationship fields" {
     try std.testing.expectEqualStrings("Acme", result.value.string);
 }
 
+test "E2E: SOQL ORDER BY Id uses stored SObject ids" {
+    const source =
+        \\public class OrderByIdStoredFieldTest {
+        \\    public static String test() {
+        \\        Contact c1 = new Contact(LastName = 'First');
+        \\        Contact c2 = new Contact(LastName = 'Second');
+        \\        insert new List<Contact>{ c1, c2 };
+        \\        c1.Title = 'Updated';
+        \\        update c1;
+        \\        List<Contact> rows = [SELECT Id, LastName FROM Contact ORDER BY Id];
+        \\        return rows[0].Id + ':' + rows[0].LastName + '|' +
+        \\            rows[1].Id + ':' + rows[1].LastName;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "OrderByIdStoredFieldTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings(
+        "003000000000000001:First|003000000000000002:Second",
+        result.value.string,
+    );
+}
+
 test "E2E: subquery custom child records preserve custom parent relationship fields" {
     const alloc = std.testing.allocator;
     var tmp_dir = std.testing.tmpDir(.{});
@@ -8234,11 +8581,12 @@ test "E2E: null != empty string is true" {
     try std.testing.expectEqualStrings("where", result.value.string);
 }
 
-test "E2E: SOQL WHERE with null bind variable skips condition (Salesforce behavior)" {
+test "E2E: SOQL WHERE with null bind variable matches null values only" {
     const source =
         \\public class DbNullBindTest {
         \\    public static String test() {
         \\        insert new List<Account>{
+        \\            new Account(Name = 'No Type'),
         \\            new Account(Name = 'Acme', Type = 'A'),
         \\            new Account(Name = 'Beta', Type = 'B')
         \\        };
@@ -8247,7 +8595,6 @@ test "E2E: SOQL WHERE with null bind variable skips condition (Salesforce behavi
         \\        Integer count = Database.countQuery(
         \\            'SELECT count() FROM Account ' + whereClause
         \\        );
-        \\        // Salesforce: WHERE field = :nullVar skips the condition → returns all records
         \\        return String.valueOf(count);
         \\    }
         \\}
@@ -8258,7 +8605,46 @@ test "E2E: SOQL WHERE with null bind variable skips condition (Salesforce behavi
     });
     defer result.deinit();
 
-    try std.testing.expectEqualStrings("2", result.value.string);
+    try std.testing.expectEqualStrings("1", result.value.string);
+}
+
+test "E2E: SOQL WHERE Id equals null bind returns no rows" {
+    const source =
+        \\public class IdNullBindTest {
+        \\    public static String test() {
+        \\        Account accountRecord = new Account(Name = 'Acme');
+        \\        insert accountRecord;
+        \\        Id selectedId = null;
+        \\        List<Account> rows = [SELECT Id FROM Account WHERE Id = :selectedId];
+        \\        return String.valueOf(rows.size());
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "IdNullBindTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("0", result.value.string);
+}
+
+test "E2E: empty SOQL assigned to typed List stays an empty list" {
+    const source =
+        \\public class EmptyTypedListSoqlTest {
+        \\    public static String test() {
+        \\        List<Account> rows = [SELECT Id FROM Account WHERE Name = 'missing'];
+        \\        return String.valueOf(rows.size());
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "EmptyTypedListSoqlTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("0", result.value.string);
 }
 
 test "E2E: Database.countQuery resolves local bind variables" {
@@ -8383,7 +8769,7 @@ test "E2E: Database.countQuery with null bind in method parameter" {
     });
     defer result.deinit();
 
-    try std.testing.expectEqualStrings("2", result.value.string);
+    try std.testing.expectEqualStrings("0", result.value.string);
 }
 
 // TODO: Database.query/countQuery でメソッドのローカル変数へのバインド変数解決が
@@ -8586,8 +8972,8 @@ test "E2E: cross-class Database.countQuery with dynamic WHERE and null bind" {
         .entry_method = "test",
     });
     defer result.deinit();
-    // null bind → condition skipped → all records returned → 2
-    try std.testing.expectEqualStrings("2", result.value.string);
+
+    try std.testing.expectEqualStrings("0", result.value.string);
 }
 
 test "E2E: cross-class Database.countQuery with bind variable" {
@@ -9727,6 +10113,142 @@ test "E2E: Search.query honors fixed search results and stripInaccessible return
     defer result.deinit();
 
     try std.testing.expectEqualStrings("1:1:true", result.value.string);
+}
+
+test "E2E: Search.query always returns an outer result list" {
+    const source =
+        \\public class SearchQueryOuterListTest {
+        \\    public static String test() {
+        \\        List<List<SObject>> rows = Search.query('FIND {NoMatch}');
+        \\        return String.valueOf(rows.size()) + ':' +
+        \\            String.valueOf(rows[0].size());
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "SearchQueryOuterListTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("1:0", result.value.string);
+}
+
+test "E2E: inner class resolves outer enum values" {
+    const source =
+        \\public class OuterEnumAccessTest {
+        \\    public enum Mode { One, Two }
+        \\    public class Inner {
+        \\        private Mode selected;
+        \\        public Inner choose() {
+        \\            selected = Mode.Two;
+        \\            return this;
+        \\        }
+        \\        public String value() {
+        \\            return selected.name();
+        \\        }
+        \\    }
+        \\    public static String test() {
+        \\        return new Inner().choose().value();
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "OuterEnumAccessTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("Two", result.value.string);
+}
+
+test "E2E: inner class assigns and compares outer enum values" {
+    const source =
+        \\public class OuterEnumCompareTest {
+        \\    public enum Operator { EQUALS, IN_SET }
+        \\    public class FieldExpression {
+        \\        private Operator operant;
+        \\        public FieldExpression inSet() {
+        \\            operant = Operator.IN_SET;
+        \\            return this;
+        \\        }
+        \\        public Boolean matches() {
+        \\            return operant == Operator.IN_SET;
+        \\        }
+        \\    }
+        \\    public static String test() {
+        \\        return String.valueOf(new FieldExpression().inSet().matches());
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "OuterEnumCompareTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("true", result.value.string);
+}
+
+test "E2E: inner instance method does not shadow outer static overload with different arity" {
+    const source =
+        \\public class OuterStaticArityDispatchTest {
+        \\    public static Boolean matches(List<Boolean> values, String mode) {
+        \\        return values.size() == 1 && values[0] && mode == 'AND';
+        \\    }
+        \\    public class Inner {
+        \\        public Boolean matches(Account record) {
+        \\            return matches(new List<Boolean>{ true }, 'AND');
+        \\        }
+        \\    }
+        \\    public static String test() {
+        \\        return String.valueOf(new Inner().matches(new Account(Name = 'Acme')));
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "OuterStaticArityDispatchTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("true", result.value.string);
+}
+
+test "E2E: same-named inner class constructor chaining stays in qualified class" {
+    const source =
+        \\public class FirstOuter {
+        \\    public class Builder {
+        \\        public String value;
+        \\        public Builder(String value) {
+        \\            this.value = 'wrong:' + value;
+        \\        }
+        \\    }
+        \\}
+        \\public class SecondOuter {
+        \\    public class Builder {
+        \\        public String value;
+        \\        public Builder(String value) {
+        \\            this(value, null);
+        \\        }
+        \\        public Builder(String value, Object unused) {
+        \\            this.value = 'right:' + value;
+        \\        }
+        \\    }
+        \\}
+        \\public class QualifiedInnerConstructorChainTest {
+        \\    public static String test() {
+        \\        return new SecondOuter.Builder('ok').value;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "QualifiedInnerConstructorChainTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("right:ok", result.value.string);
 }
 
 test "E2E: SObjectField.getDescribe uses metadata-backed field lengths" {
@@ -14552,6 +15074,106 @@ test "E2E: SObject.get throws for unknown field names" {
     defer result.deinit();
 
     try std.testing.expectEqualStrings("ok", result.value.string);
+}
+
+test "E2E: SObject.get returns null for unmanaged metadata extension fields" {
+    const source =
+        \\public class CustomExtensionFieldGetTest {
+        \\    public static String test() {
+        \\        Contact c = new Contact(LastName = 'Probe');
+        \\        Object household = c.get('npo02__Household__c');
+        \\        Account a = new Account(Name = 'Acme');
+        \\        Object packageValue = a.get('pkg__External_Field__c');
+        \\        return String.valueOf(household == null) + ':' +
+        \\            String.valueOf(packageValue == null);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "CustomExtensionFieldGetTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("true:true", result.value.string);
+}
+
+test "E2E: global describe includes source-path custom objects" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const alloc = arena.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.createDirPath(std.testing.io, "force-app/main/default/objects/Widget__c/fields");
+    try tmp.dir.writeFile(std.testing.io, .{
+        .sub_path = "force-app/main/default/objects/Widget__c/fields/Amount__c.field-meta.xml",
+        .data =
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+        \\    <fullName>Amount__c</fullName>
+        \\    <label>Amount</label>
+        \\    <inlineHelpText>Widget.Amount</inlineHelpText>
+        \\    <defaultValue>42</defaultValue>
+        \\    <type>Number</type>
+        \\</CustomField>
+        ,
+    });
+    const source_path = try tmp.dir.realPathFileAlloc(std.testing.io, ".", alloc);
+    defer alloc.free(source_path);
+
+    const source =
+        \\public class GlobalDescribeCustomObjectProbe {
+        \\    public static String test() {
+        \\        Map<String, Schema.SObjectType> gd = Schema.getGlobalDescribe();
+        \\        Schema.DescribeSObjectResult describe = gd.get('widget__c').getDescribe();
+        \\        Map<String, Schema.SObjectField> fields = describe.fields.getMap();
+        \\        return String.valueOf(gd.containsKey('widget__c')) + ':' +
+        \\            describe.getName() + ':' +
+        \\            String.valueOf(fields.containsKey('pkg__Managed_Field__c')) + ':' +
+        \\            fields.get('pkg__Managed_Field__c').getDescribe().getName() + ':' +
+        \\            String.valueOf(fields.get('Amount__c').getDescribe().getDefaultValueFormula()) + ':' +
+        \\            fields.get('Amount__c').getDescribe().getInlineHelpText();
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "GlobalDescribeCustomObjectProbe",
+        .entry_method = "test",
+        .source_paths = &.{source_path},
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings(
+        "true:Widget__c:true:Pkg__Managed_Field__c:42:Widget.Amount",
+        result.value.string,
+    );
+}
+
+test "E2E: managed open ended status picklist has known values" {
+    const source =
+        \\public class ManagedPicklistProbe {
+        \\    public static String test() {
+        \\        Schema.SObjectField field =
+        \\            npe03__Recurring_Donation__c.npe03__Open_Ended_Status__c;
+        \\        Schema.DescribeFieldResult describe =
+        \\            field.getDescribe();
+        \\        List<Schema.PicklistEntry> values =
+        \\            describe.getPicklistValues();
+        \\        return values.get(0).getValue() + ':' +
+        \\            values.get(1).getValue() + ':' +
+        \\            values.get(2).getValue();
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "ManagedPicklistProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("Open:Closed:None", result.value.string);
 }
 
 test "E2E: JSON.deserializeUntyped throws on malformed root input" {

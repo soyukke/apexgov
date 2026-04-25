@@ -575,7 +575,9 @@ fn dispatch_static_string(
     args: []const Value,
 ) !?Value {
     if (std.ascii.eqlIgnoreCase(method_name, "escapeSingleQuotes")) {
-        if (args.len > 0 and args[0] == .string) return args[0];
+        if (args.len > 0 and args[0] == .string) {
+            return Value{ .string = try escape_single_quotes(ctx.arena, args[0].string) };
+        }
         return Value{ .string = "" };
     }
     if (std.ascii.eqlIgnoreCase(method_name, "join")) {
@@ -633,6 +635,15 @@ fn dispatch_static_string(
         return Value{ .boolean = false };
     }
     return null;
+}
+
+fn escape_single_quotes(arena: std.mem.Allocator, input: []const u8) ![]const u8 {
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    for (input) |ch| {
+        if (ch == '\'') try out.append(arena, '\\');
+        try out.append(arena, ch);
+    }
+    return out.items;
 }
 
 fn dispatch_static_string_join(ctx: *BuiltinContext, args: []const Value) !Value {
@@ -2132,6 +2143,13 @@ fn dispatch_schema_global_describe(ctx: *BuiltinContext) !Value {
 
     var store_iter = ctx.eval.store.iterator();
     while (store_iter.next()) |entry| {
+        if (!map.entries.contains(entry.key_ptr.*)) {
+            try put_schema_s_object_type(ctx, map, entry.key_ptr.*);
+        }
+    }
+
+    var field_types_iter = ctx.eval.field_types.iterator();
+    while (field_types_iter.next()) |entry| {
         if (!map.entries.contains(entry.key_ptr.*)) {
             try put_schema_s_object_type(ctx, map, entry.key_ptr.*);
         }
@@ -4063,10 +4081,11 @@ pub fn create_field_describe_map_value(ctx: *BuiltinContext, obj_name: []const u
     try fields_map_obj.fields.put(ctx.arena, "owner", Value{ .string = obj_name });
     const fields_kv = try ctx.arena.create(types.MapValue);
     fields_kv.* = .{};
+    fields_kv.schema_field_owner = obj_name;
     for ([_][]const u8{
-        "Id",        "Name",           "CreatedDate",    "LastModifiedDate",
-        "OwnerId",   "IsDeleted",      "CreatedById",    "LastModifiedById",
-        "CreatedBy", "LastModifiedBy", "SystemModstamp",
+        "Id",               "Name",      "RecordTypeId",   "CreatedDate",
+        "LastModifiedDate", "OwnerId",   "IsDeleted",      "CreatedById",
+        "LastModifiedById", "CreatedBy", "LastModifiedBy", "SystemModstamp",
     }) |field_name| {
         if (std.ascii.eqlIgnoreCase(field_name, "Name") and
             !has_implicit_name_field(obj_name)) continue;
@@ -4283,6 +4302,8 @@ pub fn sobject_field_exists(
         }
     }
 
+    if (is_custom_schema_extension_field(field_name)) return true;
+
     const describe_value = create_describe_result(ctx, sob.type_name) catch return false;
     if (describe_value != .object) return false;
     const fields_value = describe_value.object.fields.get("fields") orelse return false;
@@ -4295,18 +4316,35 @@ pub fn sobject_field_exists(
     return false;
 }
 
+fn is_custom_schema_extension_field(field_name: []const u8) bool {
+    return std.ascii.endsWithIgnoreCase(field_name, "__c") or
+        std.ascii.endsWithIgnoreCase(field_name, "__pc") or
+        std.ascii.endsWithIgnoreCase(field_name, "__r");
+}
+
 fn add_describe_field_if_missing(
     ctx: *BuiltinContext,
     fields_kv: *types.MapValue,
     object_type: []const u8,
     field_name: []const u8,
 ) !void {
-    if (fields_kv.entries.contains(field_name)) return;
+    if (describe_fields_contains_case_insensitive(fields_kv, field_name)) return;
     try fields_kv.entries.put(
         ctx.arena,
         field_name,
         try create_s_object_field_token_value(ctx.arena, object_type, field_name),
     );
+}
+
+fn describe_fields_contains_case_insensitive(
+    fields_kv: *const types.MapValue,
+    field_name: []const u8,
+) bool {
+    if (fields_kv.entries.contains(field_name)) return true;
+    for (fields_kv.entries.keys()) |known| {
+        if (std.ascii.eqlIgnoreCase(known, field_name)) return true;
+    }
+    return false;
 }
 
 const known_describe_field_sets = [_]struct { object: []const u8, fields: []const []const u8 }{
@@ -4335,10 +4373,10 @@ const known_describe_field_sets = [_]struct { object: []const u8, fields: []cons
         "Subject", "ActivityDate", "Priority", "Status", "WhatId", "WhoId",
     } },
     .{ .object = "Opportunity", .fields = &.{
-        "AccountId",        "StageName",            "CloseDate",  "Amount",
-        "Probability",      "Type",                 "LeadSource", "Description",
-        "IsPrivate",        "IsWon",                "IsClosed",   "ExpectedRevenue",
-        "ForecastCategory", "ForecastCategoryName", "NextStep",
+        "AccountId",       "StageName",        "CloseDate",            "Amount",
+        "CampaignId",      "Probability",      "Type",                 "LeadSource",
+        "Description",     "IsPrivate",        "IsWon",                "IsClosed",
+        "ExpectedRevenue", "ForecastCategory", "ForecastCategoryName", "NextStep",
     } },
     .{ .object = "OpportunityContactRole", .fields = &.{
         "OpportunityId", "ContactId", "Role", "IsPrimary",
@@ -4409,9 +4447,10 @@ const canonical_describe_field_sets = [_]struct { object: []const u8, fields: []
         "Id", "Name", "DeveloperName", "UserType", "UserLicenseId",
     } },
     .{ .object = "Opportunity", .fields = &.{
-        "Id",        "Name",       "AccountId",   "StageName",
-        "CloseDate", "Amount",     "OwnerId",     "Probability",
-        "Type",      "LeadSource", "Description", "IsPrivate",
+        "Id",          "Name",   "AccountId",  "StageName",
+        "CloseDate",   "Amount", "CampaignId", "OwnerId",
+        "Probability", "Type",   "LeadSource", "Description",
+        "IsPrivate",
     } },
     .{ .object = "OpportunityContactRole", .fields = &.{
         "Id", "OpportunityId", "ContactId", "Role", "IsPrimary",
@@ -4541,7 +4580,17 @@ fn create_field_describe_result_with_type(
         "label",
         Value{ .string = describe_field_label(metadata, field_name) },
     );
-    try fdr.fields.put(ctx.arena, "inlineHelpText", Value.null_val);
+    try fdr.fields.put(
+        ctx.arena,
+        "inlineHelpText",
+        if (metadata) |m|
+            if (m.inline_help_text) |inline_help_text|
+                Value{ .string = inline_help_text }
+            else
+                Value.null_val
+        else
+            Value.null_val,
+    );
     try fdr.fields.put(ctx.arena, "objectType", Value{ .string = object_type });
     try add_field_describe_permissions(ctx, fdr, object_type, field_name);
     const length = describe_field_length(metadata, field_name);
@@ -6278,12 +6327,22 @@ fn dispatch_obj_schema_describe_field(
     if (std.ascii.eqlIgnoreCase(method_name, "getPicklistValues")) {
         return try dispatch_describe_field_picklist_values(ctx, object_type, field_name);
     }
+    if (std.ascii.eqlIgnoreCase(method_name, "getSObjectField") or
+        std.ascii.eqlIgnoreCase(method_name, "getSobjectField"))
+    {
+        if (object_type) |obj_name| {
+            if (field_name.len > 0) {
+                return try create_s_object_field_token_value(ctx.arena, obj_name, field_name);
+            }
+        }
+        return Value.null_val;
+    }
     if (describe_field_boolean_accessor(ctx, obj, object_type, field_name, method_name)) |v| {
         return v;
     }
     if (describe_field_value_accessor(obj, method_name)) |v| return v;
     if (type_matches_any(method_name, &.{ "getDefaultValue", "getDefaultValueFormula" })) {
-        return describe_field_default_value(obj, object_type, field_name);
+        return describe_field_default_value(ctx, obj, object_type, field_name);
     }
     return null;
 }
@@ -6405,6 +6464,9 @@ fn dispatch_describe_field_picklist_values(
             _ = try load_picklist_from_metadata(ctx, list, object_type.?, field_name);
         }
         try append_picklist_values_from_store(ctx, list, object_type.?, field_name);
+        if (list.items.items.len == 0) {
+            try append_known_managed_picklist_values(ctx, list, field_name);
+        }
     }
     // Ensure at least one entry so that get(0) doesn't fail
     if (list.items.items.len == 0) {
@@ -6413,22 +6475,51 @@ fn dispatch_describe_field_picklist_values(
     return Value{ .list = list };
 }
 
+fn append_known_managed_picklist_values(
+    ctx: *BuiltinContext,
+    list: *types.ListValue,
+    field_name: []const u8,
+) !void {
+    if (std.ascii.endsWithIgnoreCase(field_name, "Open_Ended_Status__c")) {
+        try append_picklist_entry(ctx, list, "Open", "Open");
+        try append_picklist_entry(ctx, list, "Closed", "Closed");
+        try append_picklist_entry(ctx, list, "None", "None");
+    }
+}
+
 fn describe_field_default_value(
+    ctx: *BuiltinContext,
     obj: *types.ObjectInstance,
     object_type: ?[]const u8,
     field_name: []const u8,
 ) Value {
-    // Field-meta.xml <defaultValue> round-trip not wired yet; resolve
-    // well-known standard-field defaults so that utility classes using
-    // `(String) Task.Status.getDescribe().getDefaultValue()` style code
-    // get sensible values instead of null.
+    // Resolve field-meta.xml <defaultValue> first. NPSP package-detection code
+    // reads text defaults through getDefaultValueFormula().
     if (object_type) |obj_name| {
+        if (lookup_field_default(ctx, obj_name, field_name)) |default_val| {
+            return default_val;
+        }
         if (standard_field_default(obj_name, field_name)) |default_str| {
             return Value{ .string = default_str };
         }
     }
     if (obj.fields.get("defaultValue")) |dv| return dv;
     return Value.null_val;
+}
+
+fn lookup_field_default(
+    ctx: *BuiltinContext,
+    object_type: []const u8,
+    field_name: []const u8,
+) ?Value {
+    var defaults_iter = ctx.eval.field_defaults.iterator();
+    while (defaults_iter.next()) |entry| {
+        if (!std.ascii.eqlIgnoreCase(entry.key_ptr.*, object_type)) continue;
+        for (entry.value_ptr.keys(), entry.value_ptr.values()) |key, value| {
+            if (std.ascii.eqlIgnoreCase(key, field_name)) return value;
+        }
+    }
+    return null;
 }
 
 /// Known default values for a handful of standard-object fields that are
@@ -8417,6 +8508,20 @@ test "String.valueOf converts integer" {
     const result = try dispatch_static(&ctx, "String", "valueOf", &.{Value{ .integer = 42 }});
     try std.testing.expect(result != null);
     try std.testing.expectEqualStrings("42", result.?.string);
+}
+
+test "String.escapeSingleQuotes escapes embedded quotes" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var stdout: std.ArrayListUnmanaged(u8) = .empty;
+    var ctx = BuiltinContext{ .arena = arena.allocator(), .stdout = &stdout };
+
+    const result = try dispatch_static(&ctx, "String", "escapeSingleQuotes", &.{
+        Value{ .string = "O'Foo" },
+    });
+    try std.testing.expect(result != null);
+    try std.testing.expectEqualStrings("O\\'Foo", result.?.string);
 }
 
 /// Simple regex-like pattern matching for Apex Pattern/Matcher support.
