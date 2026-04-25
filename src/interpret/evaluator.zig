@@ -4470,8 +4470,14 @@ pub const Evaluator = struct {
         stored: *types.SObject,
     ) !void {
         const now_str = builtins.current_date_time_string(self.arena) catch "2026-01-01T00:00:00Z";
-        obj.fields.put(self.arena, "LastModifiedDate", Value{ .string = now_str }) catch {};
-        obj.fields.put(
+        utils.sobject_put(
+            &obj.fields,
+            self.arena,
+            "LastModifiedDate",
+            Value{ .string = now_str },
+        ) catch {};
+        utils.sobject_put(
+            &obj.fields,
             self.arena,
             "LastModifiedById",
             Value{ .string = "005000000000001" },
@@ -4483,13 +4489,37 @@ pub const Evaluator = struct {
             const keys = self.arena.dupe([]const u8, obj.fields.keys()) catch return;
             const vals = self.arena.dupe(Value, obj.fields.values()) catch return;
             for (keys, vals) |k, v| {
-                stored.fields.put(self.arena, k, v) catch {};
+                utils.sobject_put(&stored.fields, self.arena, k, v) catch {};
             }
         } else {
             for (obj.fields.keys(), obj.fields.values()) |k, v| {
-                stored.fields.put(self.arena, k, v) catch {};
+                utils.sobject_put(&stored.fields, self.arena, k, v) catch {};
             }
         }
+        try self.refresh_contact_or_lead_name_after_update(obj, stored);
+    }
+
+    fn refresh_contact_or_lead_name_after_update(
+        self: *Evaluator,
+        obj: *types.SObject,
+        stored: *types.SObject,
+    ) !void {
+        if (!std.ascii.eqlIgnoreCase(stored.type_name, "Contact") and
+            !std.ascii.eqlIgnoreCase(stored.type_name, "Lead"))
+        {
+            return;
+        }
+        if (utils.sobject_get(&obj.fields, "FirstName") == null and
+            utils.sobject_get(&obj.fields, "LastName") == null)
+        {
+            return;
+        }
+        try utils.sobject_put(
+            &stored.fields,
+            self.arena,
+            "Name",
+            Value{ .string = try self.contact_or_lead_insert_name(stored) },
+        );
     }
 
     fn put_last_modified_by_stub(self: *Evaluator, obj: *types.SObject) !void {
@@ -5853,8 +5883,16 @@ pub const Evaluator = struct {
         for (records.items) |*rec| {
             if (rec.* != .sobject) continue;
             const parent_id = rec.sobject.id orelse continue;
+            const parent_developer_name = if (std.mem.endsWith(u8, from_type, "__mdt"))
+                self.get_s_object_field_value_case_insensitive(
+                    rec.sobject,
+                    "DeveloperName",
+                )
+            else
+                null;
             var child_records: std.ArrayListUnmanaged(Value) = .empty;
             if (child_type) |ct| {
+                if (std.mem.endsWith(u8, ct, "__mdt")) self.ensure_custom_metadata_loaded(ct);
                 var child_iter = self.store.iterator();
                 while (child_iter.next()) |child_entry| {
                     if (std.ascii.eqlIgnoreCase(child_entry.key_ptr.*, ct)) {
@@ -5865,10 +5903,19 @@ pub const Evaluator = struct {
                                     &child_rec.sobject.fields,
                                     fk_field,
                                 )) |fk_val| {
-                                    if (fk_val == .string and
-                                        std.ascii.eqlIgnoreCase(fk_val.string, parent_id))
-                                    {
-                                        try child_records.append(self.arena, child_rec);
+                                    if (fk_val == .string) {
+                                        const matches_id =
+                                            std.ascii.eqlIgnoreCase(fk_val.string, parent_id);
+                                        const matches_developer_name =
+                                            parent_developer_name != null and
+                                            parent_developer_name.? == .string and
+                                            std.ascii.eqlIgnoreCase(
+                                                fk_val.string,
+                                                parent_developer_name.?.string,
+                                            );
+                                        if (matches_id or matches_developer_name) {
+                                            try child_records.append(self.arena, child_rec);
+                                        }
                                     }
                                 }
                             }
@@ -7227,6 +7274,14 @@ pub const Evaluator = struct {
             }
         }
 
+        if (std.mem.endsWith(u8, mdt_type, "__mdt")) {
+            try self.put_default_sobject_field(
+                sob,
+                "Is_Deleted__c",
+                Value{ .boolean = false },
+            );
+        }
+
         return sob;
     }
 
@@ -7273,11 +7328,55 @@ pub const Evaluator = struct {
             fd.* = .{ .type_name = "FieldDefinition" };
             try fd.fields.put(
                 self.arena,
+                "DeveloperName",
+                Value{ .string = field_value },
+            );
+            try fd.fields.put(
+                self.arena,
                 "QualifiedAPIName",
                 Value{ .string = field_value },
             );
+            try self.apply_known_mdt_relationship_fields(fd, field_name, field_value);
             try sob.fields.put(self.arena, rel_name, Value{ .sobject = fd });
         }
+    }
+
+    fn apply_known_mdt_relationship_fields(
+        self: *Evaluator,
+        rel: *types.SObject,
+        field_name: []const u8,
+        field_value: []const u8,
+    ) !void {
+        if (!std.ascii.eqlIgnoreCase(field_name, "Target_Object_Mapping__c")) return;
+        const object_api = npsp_data_import_target_object_api(field_value) orelse return;
+        try rel.fields.put(self.arena, "Object_API_Name__c", Value{ .string = object_api });
+        try rel.fields.put(
+            self.arena,
+            "Legacy_Data_Import_Object_Name__c",
+            Value{ .string = field_value },
+        );
+    }
+
+    fn npsp_data_import_target_object_api(mapping_name: []const u8) ?[]const u8 {
+        const mappings = [_]struct { name: []const u8, object_api: []const u8 }{
+            .{ .name = "Account1", .object_api = "Account" },
+            .{ .name = "Account2", .object_api = "Account" },
+            .{ .name = "Address", .object_api = "Address__c" },
+            .{ .name = "Contact1", .object_api = "Contact" },
+            .{ .name = "Contact2", .object_api = "Contact" },
+            .{ .name = "Household", .object_api = "Account" },
+            .{ .name = "Opportunity", .object_api = "Opportunity" },
+            .{ .name = "Payment", .object_api = "npe01__OppPayment__c" },
+            .{ .name = "Recurring_Donation", .object_api = "npe03__Recurring_Donation__c" },
+            .{ .name = "GAU_Allocation_1", .object_api = "npsp__Allocation__c" },
+            .{ .name = "GAU_Allocation_2", .object_api = "npsp__Allocation__c" },
+            .{ .name = "Opportunity_Contact_Role_1", .object_api = "OpportunityContactRole" },
+            .{ .name = "Opportunity_Contact_Role_2", .object_api = "OpportunityContactRole" },
+        };
+        for (mappings) |mapping| {
+            if (std.ascii.eqlIgnoreCase(mapping_name, mapping.name)) return mapping.object_api;
+        }
+        return null;
     }
 
     fn xml_tag_value(self: *Evaluator, xml: []const u8, tag_name: []const u8) ?[]const u8 {
@@ -8600,6 +8699,11 @@ pub const Evaluator = struct {
         if (self.resolve_custom_child_relationship(parent_type, relationship)) |custom| {
             return custom.child_type;
         }
+        if (std.ascii.eqlIgnoreCase(parent_type, "Data_Import_Object_Mapping__mdt") and
+            std.ascii.eqlIgnoreCase(relationship, "Data_Import_Field_Mappings__r"))
+        {
+            return "Data_Import_Field_Mapping__mdt";
+        }
         // Common Salesforce relationship mappings
         const mappings = .{
             .{ "Contacts", "Contact" },
@@ -8658,6 +8762,12 @@ pub const Evaluator = struct {
     ) []const u8 {
         if (self.resolve_custom_child_relationship(parent_type, relationship)) |custom| {
             if (std.ascii.eqlIgnoreCase(custom.child_type, child_type)) return custom.fk_field;
+        }
+        if (std.ascii.eqlIgnoreCase(parent_type, "Data_Import_Object_Mapping__mdt") and
+            std.ascii.eqlIgnoreCase(child_type, "Data_Import_Field_Mapping__mdt") and
+            std.ascii.eqlIgnoreCase(relationship, "Data_Import_Field_Mappings__r"))
+        {
+            return "Target_Object_Mapping__c";
         }
         // Self-referencing hierarchy relationships use ParentId regardless of
         // the logical parent type name.
@@ -8755,8 +8865,12 @@ pub const Evaluator = struct {
             if (parent_type_opt == null or fk_val_opt == null) return;
             if (fk_val_opt.? != .string) return;
             const parent_type = parent_type_opt.?;
-            const parent_rec =
-                self.find_record_by_id(parent_type, fk_val_opt.?.string) orelse return;
+            const parent_rec = self.find_parent_relationship_record(
+                current_type,
+                parent_ref,
+                parent_type,
+                fk_val_opt.?.string,
+            ) orelse return;
             if (parent_rec != .sobject) return;
 
             const parent_sob = try self.ensure_parent_relationship_sobject(
@@ -8819,6 +8933,29 @@ pub const Evaluator = struct {
             Value{ .sobject = parent_sob },
         );
         return parent_sob;
+    }
+
+    fn find_parent_relationship_record(
+        self: *Evaluator,
+        current_type: []const u8,
+        parent_ref: []const u8,
+        parent_type: []const u8,
+        fk_value: []const u8,
+    ) ?Value {
+        if (self.find_record_by_id(parent_type, fk_value)) |record| return record;
+        if (std.mem.endsWith(u8, current_type, "__mdt")) {
+            if (self.find_custom_metadata_record_by_developer_name(
+                parent_type,
+                fk_value,
+            )) |record| return record;
+            if (self.known_custom_metadata_parent_type(current_type, parent_ref)) |known_type| {
+                if (self.find_custom_metadata_record_by_developer_name(
+                    known_type,
+                    fk_value,
+                )) |record| return record;
+            }
+        }
+        return null;
     }
 
     /// SOQL SELECT 内の数式フィールド（<Relationship>_<Field>__c）を FK 経由で親から解決する。
@@ -8973,6 +9110,7 @@ pub const Evaluator = struct {
         object_type: []const u8,
         ref: []const u8,
     ) ?[]const u8 {
+        if (self.known_custom_metadata_parent_type(object_type, ref)) |target| return target;
         const fk_field = self.parent_ref_to_fk(ref);
         if (self.get_field_metadata(object_type, fk_field)) |meta| {
             if (meta.reference_to) |target_type| return target_type;
@@ -8990,6 +9128,45 @@ pub const Evaluator = struct {
             }
         }
         return self.parent_ref_to_type(ref);
+    }
+
+    fn known_custom_metadata_parent_type(
+        self: *Evaluator,
+        object_type: []const u8,
+        ref: []const u8,
+    ) ?[]const u8 {
+        _ = self;
+        if (!std.mem.endsWith(u8, object_type, "__mdt")) return null;
+        const mappings = .{
+            .{
+                "Data_Import_Field_Mapping_Set__mdt",
+                "Data_Import_Object_Mapping_Set__r",
+                "Data_Import_Object_Mapping_Set__mdt",
+            },
+            .{
+                "Data_Import_Object_Mapping__mdt",
+                "Data_Import_Object_Mapping_Set__r",
+                "Data_Import_Object_Mapping_Set__mdt",
+            },
+            .{
+                "Data_Import_Field_Mapping__mdt",
+                "Data_Import_Field_Mapping_Set__r",
+                "Data_Import_Field_Mapping_Set__mdt",
+            },
+            .{
+                "Data_Import_Field_Mapping__mdt",
+                "Target_Object_Mapping__r",
+                "Data_Import_Object_Mapping__mdt",
+            },
+        };
+        inline for (mappings) |mapping| {
+            if (std.ascii.eqlIgnoreCase(object_type, mapping[0]) and
+                std.ascii.eqlIgnoreCase(ref, mapping[1]))
+            {
+                return mapping[2];
+            }
+        }
+        return null;
     }
 
     /// Find a record by Id in the store.
@@ -9012,6 +9189,30 @@ pub const Evaluator = struct {
             std.ascii.eqlIgnoreCase(id, self.current_user_id))
         {
             return self.create_current_user_record() catch null;
+        }
+        return null;
+    }
+
+    fn find_custom_metadata_record_by_developer_name(
+        self: *Evaluator,
+        type_name: []const u8,
+        developer_name: []const u8,
+    ) ?Value {
+        if (!std.mem.endsWith(u8, type_name, "__mdt")) return null;
+        self.ensure_custom_metadata_loaded(type_name);
+        var store_iter = self.store.iterator();
+        while (store_iter.next()) |entry| {
+            if (!std.ascii.eqlIgnoreCase(entry.key_ptr.*, type_name)) continue;
+            for (entry.value_ptr.items) |record| {
+                if (record != .sobject) continue;
+                if (utils.sobject_get(&record.sobject.fields, "DeveloperName")) |value| {
+                    if (value == .string and
+                        std.ascii.eqlIgnoreCase(value.string, developer_name))
+                    {
+                        return record;
+                    }
+                }
+            }
         }
         return null;
     }
@@ -9792,10 +9993,42 @@ pub const Evaluator = struct {
                 try sob.fields.put(self.arena, fk, fv);
             }
         }
+        try self.apply_known_custom_setting_defaults(sob);
         if (setup_owner_id) |owner_id| {
             try sob.fields.put(self.arena, "SetupOwnerId", Value{ .string = owner_id });
         }
         return Value{ .sobject = sob };
+    }
+
+    fn apply_known_custom_setting_defaults(self: *Evaluator, sob: *types.SObject) !void {
+        if (!std.ascii.eqlIgnoreCase(sob.type_name, "Data_Import_Settings__c")) return;
+        try self.put_default_sobject_field(
+            sob,
+            "Default_Data_Import_Field_Mapping_Set__c",
+            Value{ .string = "Default_Field_Mapping_Set" },
+        );
+        try self.put_default_sobject_field(
+            sob,
+            "Contact_Matching_Rule__c",
+            Value{ .string = "Firstname,Lastname,Email" },
+        );
+        try self.put_default_sobject_field(
+            sob,
+            "Field_Mapping_Method__c",
+            Value{ .string = "Help Text" },
+        );
+    }
+
+    fn put_default_sobject_field(
+        self: *Evaluator,
+        sob: *types.SObject,
+        field_name: []const u8,
+        value: Value,
+    ) !void {
+        if (utils.sobject_get(&sob.fields, field_name)) |existing| {
+            if (existing != .null_val) return;
+        }
+        try sob.fields.put(self.arena, field_name, value);
     }
 
     fn clone_custom_setting_record(
@@ -15292,6 +15525,20 @@ pub const Evaluator = struct {
                 return Value{ .string = "" };
             }
             return Value{ .string = result };
+        }
+        if (std.ascii.eqlIgnoreCase(method, "replaceFirst") and
+            args.len >= 2 and
+            args[0] == .string and
+            args[1] == .string)
+        {
+            const all_matches = try regex.find_all(self.arena, args[0].string, s);
+            if (all_matches.len == 0) return Value{ .string = s };
+            const span = all_matches[0].group(0) orelse return Value{ .string = s };
+            var result: std.ArrayListUnmanaged(u8) = .empty;
+            try result.appendSlice(self.arena, s[0..span.start]);
+            try result.appendSlice(self.arena, args[1].string);
+            try result.appendSlice(self.arena, s[span.end..]);
+            return Value{ .string = result.items };
         }
         if (std.ascii.eqlIgnoreCase(method, "equals") and
             args.len > 0 and

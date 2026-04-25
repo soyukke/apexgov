@@ -7603,6 +7603,80 @@ test "E2E: NPSP Address insert updates household and contact mailing fields" {
     try std.testing.expectEqualStrings("Seattle:Seattle", result.value.string);
 }
 
+test "E2E: Data Import settings default field mapping set is populated" {
+    const source =
+        \\public class DataImportSettingsDefaultsProbe {
+        \\    public static String test() {
+        \\        Data_Import_Settings__c settings = Data_Import_Settings__c.getInstance();
+        \\        return settings.Default_Data_Import_Field_Mapping_Set__c + ':' +
+        \\            settings.Contact_Matching_Rule__c;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "DataImportSettingsDefaultsProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings(
+        "Default_Field_Mapping_Set:Firstname,Lastname,Email",
+        result.value.string,
+    );
+}
+
+test "E2E: custom metadata lookup stubs expose developer and object names" {
+    const alloc = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try tmp_dir.dir.createDirPath(std.testing.io, "customMetadata");
+    try tmp_dir.dir.writeFile(std.testing.io, .{
+        .sub_path = "customMetadata/Data_Import_Field_Mapping.Home_City.md-meta.xml",
+        .data =
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<CustomMetadata xmlns="http://soap.sforce.com/2006/04/metadata"
+        \\    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        \\    xmlns:xsd="http://www.w3.org/2001/XMLSchema">
+        \\    <label>Home City</label>
+        \\    <values>
+        \\        <field>Data_Import_Field_Mapping_Set__c</field>
+        \\        <value xsi:type="xsd:string">Default_Field_Mapping_Set</value>
+        \\    </values>
+        \\    <values>
+        \\        <field>Target_Object_Mapping__c</field>
+        \\        <value xsi:type="xsd:string">Address</value>
+        \\    </values>
+        \\</CustomMetadata>
+        ,
+    });
+    const tmp_path = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", alloc);
+    defer alloc.free(tmp_path);
+
+    const source =
+        \\public class CustomMetadataRelationshipStubProbe {
+        \\    public static String test() {
+        \\        Data_Import_Field_Mapping__mdt mapping =
+        \\            Data_Import_Field_Mapping__mdt.getInstance('Home_City');
+        \\        return mapping.Data_Import_Field_Mapping_Set__r.DeveloperName + ':' +
+        \\            mapping.Target_Object_Mapping__r.DeveloperName + ':' +
+        \\            mapping.Target_Object_Mapping__r.Object_API_Name__c;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "CustomMetadataRelationshipStubProbe",
+        .entry_method = "test",
+        .source_paths = &.{tmp_path},
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings(
+        "Default_Field_Mapping_Set:Address:Address__c",
+        result.value.string,
+    );
+}
+
 test "E2E: qualified inner class literals preserve outer class names" {
     const source =
         \\public class OuterNameHost {
@@ -16028,4 +16102,55 @@ test "E2E: try/finally runs after catch rethrows and when no catch matches" {
             "start-nocatch|noCatchFinally|outerNoCatch:noCatchBoom",
         result.value.string,
     );
+}
+
+test "E2E: String.replaceFirst replaces only the first regex match" {
+    const source =
+        \\public class StringReplaceFirstProbe {
+        \\    public static String test() {
+        \\        return 'npsp__Field__c'.replaceFirst('npsp__', '') + ':' +
+        \\            'abc123abc'.replaceFirst('[a-z]+', 'X');
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "StringReplaceFirstProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("Field__c:X123abc", result.value.string);
+}
+
+test "E2E: Contact update refreshes compound Name" {
+    const source =
+        \\public class ContactUpdateNameProbe {
+        \\    public static String test() {
+        \\        Contact c = new Contact(FirstName = 'c2', LastName = 'C2');
+        \\        insert c;
+        \\        Contact updateContact = [
+        \\            SELECT Id, FirstName, LastName, Name
+        \\            FROM Contact
+        \\            WHERE Id = :c.Id
+        \\            LIMIT 1
+        \\        ];
+        \\        updateContact.LastName = 'C1';
+        \\        Database.upsert(new List<SObject>{ updateContact }, false);
+        \\        Contact loaded = [
+        \\            SELECT Id, FirstName, LastName, Name
+        \\            FROM Contact
+        \\            WHERE Id = :c.Id
+        \\            LIMIT 1
+        \\        ];
+        \\        return loaded.LastName + ':' + loaded.Name;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "ContactUpdateNameProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("C1:c2 C1", result.value.string);
 }
