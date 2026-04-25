@@ -5958,6 +5958,7 @@ pub const Evaluator = struct {
         "PermissionSetLicense",
         "EmailTemplate",
         "Folder",
+        "Report",
         "Document",
         "CampaignMember",
         "CampaignMemberStatus",
@@ -8489,11 +8490,21 @@ pub const Evaluator = struct {
             const contains = self.bind_collection_contains(field.value, cmp_val);
             return if (op.kind == .neq) !contains else contains;
         }
-        if (op.kind == .neq) return !utils.value_eql(field.value, cmp_val);
+        if (op.kind == .neq) return !where_values_equal(field_name, field.value, cmp_val);
         if (where_operator_is_ordered(op.kind)) {
             return eval_ordered_where_comparison(field.value, cmp_val, op.kind);
         }
-        return utils.value_eql(field.value, cmp_val);
+        return where_values_equal(field_name, field.value, cmp_val);
+    }
+
+    fn where_values_equal(field_name: []const u8, lhs: Value, rhs: Value) bool {
+        if (std.mem.endsWith(u8, field_name, ".NamespacePrefix") or
+            std.ascii.eqlIgnoreCase(field_name, "NamespacePrefix"))
+        {
+            if (lhs == .null_val and rhs == .string and rhs.string.len == 0) return true;
+            if (rhs == .null_val and lhs == .string and lhs.string.len == 0) return true;
+        }
+        return utils.value_eql(lhs, rhs);
     }
 
     fn parse_where_operator(cond: []const u8) ?WhereOperator {
@@ -10217,6 +10228,52 @@ pub const Evaluator = struct {
         return null;
     }
 
+    fn list_custom_setting_record_key(record: *types.SObject) ?[]const u8 {
+        if (utils.sobject_get(&record.fields, "Name")) |name| {
+            if (name == .string and name.string.len > 0) return name.string;
+        }
+        if (utils.sobject_get(&record.fields, "DeveloperName")) |dev_name| {
+            if (dev_name == .string and dev_name.string.len > 0) return dev_name.string;
+        }
+        return record.id;
+    }
+
+    fn find_list_custom_setting_record(
+        self: *Evaluator,
+        class_name: []const u8,
+        name: []const u8,
+    ) ?*types.SObject {
+        var cs_iter = self.store.iterator();
+        while (cs_iter.next()) |entry| {
+            if (!std.ascii.eqlIgnoreCase(entry.key_ptr.*, class_name)) continue;
+            for (entry.value_ptr.items) |item| {
+                if (item != .sobject) continue;
+                const key = list_custom_setting_record_key(item.sobject) orelse continue;
+                if (std.ascii.eqlIgnoreCase(key, name)) return item.sobject;
+            }
+        }
+        return null;
+    }
+
+    fn list_custom_setting_get_all(self: *Evaluator, class_name: []const u8) !Value {
+        const map = try self.arena.create(types.MapValue);
+        map.* = .{};
+        var cs_iter = self.store.iterator();
+        while (cs_iter.next()) |entry| {
+            if (!std.ascii.eqlIgnoreCase(entry.key_ptr.*, class_name)) continue;
+            for (entry.value_ptr.items) |item| {
+                if (item != .sobject) continue;
+                const key = list_custom_setting_record_key(item.sobject) orelse continue;
+                try map.entries.put(
+                    self.arena,
+                    key,
+                    try self.clone_custom_setting_record(item.sobject, null, false),
+                );
+            }
+        }
+        return Value{ .map = map };
+    }
+
     fn custom_setting_kind(self: *Evaluator, class_name: []const u8) ?[]const u8 {
         if (self.custom_setting_kinds.get(class_name)) |kind| return kind;
         if (self.custom_setting_types.get(class_name) != null) return "Hierarchy";
@@ -10264,55 +10321,113 @@ pub const Evaluator = struct {
         const is_hierarchy = kind != null and std.ascii.eqlIgnoreCase(kind.?, "Hierarchy");
 
         if (std.ascii.eqlIgnoreCase(method_name, "getOrgDefaults")) {
-            if (is_hierarchy) {
-                if (self.find_custom_setting_record(class_name, "00D000000000001")) |org_defaults| {
-                    return try self.clone_custom_setting_record(org_defaults, null, false);
-                }
-                return try self.default_custom_setting_record(class_name, "00D000000000001");
-            }
-            if (self.first_custom_setting_record(class_name)) |record| {
-                return try self.clone_custom_setting_record(record, null, false);
-            }
-            return try self.default_custom_setting_record(class_name, null);
+            return try self.custom_setting_get_org_defaults(class_name, is_hierarchy);
         }
 
         if (std.ascii.eqlIgnoreCase(method_name, "getInstance")) {
             if (is_hierarchy) {
-                const owner_id = if (args.len > 0 and args[0] == .string and args[0].string.len > 0)
-                    args[0].string
-                else
-                    self.current_user_id;
-                const profile_id = self.current_profile_id;
-                const org_id = "00D000000000001";
-
-                if (self.find_custom_setting_record(class_name, owner_id)) |user_record| {
-                    return try self.clone_custom_setting_record(user_record, owner_id, false);
-                }
-                if (self.find_custom_setting_record(class_name, profile_id)) |profile_record| {
-                    return try self.clone_custom_setting_record(profile_record, owner_id, true);
-                }
-                if (self.find_custom_setting_record(class_name, org_id)) |org_defaults| {
-                    return try self.clone_custom_setting_record(org_defaults, owner_id, true);
-                }
-                return try self.default_custom_setting_record(class_name, owner_id);
+                return try self.hierarchy_custom_setting_get_instance(class_name, args);
             }
 
-            if (self.first_custom_setting_record(class_name)) |record| {
-                return try self.clone_custom_setting_record(record, null, false);
-            }
-            return try self.default_custom_setting_record(class_name, null);
+            return try self.handle_list_custom_setting_static_method(
+                class_name,
+                method_name,
+                args,
+            );
+        }
+
+        if (!is_hierarchy) {
+            return try self.handle_list_custom_setting_static_method(
+                class_name,
+                method_name,
+                args,
+            );
         }
 
         if (std.ascii.eqlIgnoreCase(method_name, "getValues") and
             args.len > 0 and
             args[0] == .string)
         {
-            if (self.find_custom_setting_record(class_name, args[0].string)) |record| {
-                return try self.clone_custom_setting_record(record, null, false);
+            if (self.find_custom_setting_record(class_name, args[0].string)) |found| {
+                return try self.clone_custom_setting_record(found, null, false);
             }
             return Value.null_val;
         }
 
+        return null;
+    }
+
+    fn custom_setting_get_org_defaults(
+        self: *Evaluator,
+        class_name: []const u8,
+        is_hierarchy: bool,
+    ) !Value {
+        if (is_hierarchy) {
+            if (self.find_custom_setting_record(class_name, "00D000000000001")) |record| {
+                return try self.clone_custom_setting_record(record, null, false);
+            }
+            return try self.default_custom_setting_record(class_name, "00D000000000001");
+        }
+        if (self.first_custom_setting_record(class_name)) |record| {
+            return try self.clone_custom_setting_record(record, null, false);
+        }
+        return try self.default_custom_setting_record(class_name, null);
+    }
+
+    fn hierarchy_custom_setting_get_instance(
+        self: *Evaluator,
+        class_name: []const u8,
+        args: []const Value,
+    ) !Value {
+        const owner_id = if (args.len > 0 and args[0] == .string and args[0].string.len > 0)
+            args[0].string
+        else
+            self.current_user_id;
+        const profile_id = self.current_profile_id;
+        const org_id = "00D000000000001";
+
+        if (self.find_custom_setting_record(class_name, owner_id)) |user_record| {
+            return try self.clone_custom_setting_record(user_record, owner_id, false);
+        }
+        if (self.find_custom_setting_record(class_name, profile_id)) |profile_record| {
+            return try self.clone_custom_setting_record(profile_record, owner_id, true);
+        }
+        if (self.find_custom_setting_record(class_name, org_id)) |org_defaults| {
+            return try self.clone_custom_setting_record(org_defaults, owner_id, true);
+        }
+        return try self.default_custom_setting_record(class_name, owner_id);
+    }
+
+    fn handle_list_custom_setting_static_method(
+        self: *Evaluator,
+        class_name: []const u8,
+        method_name: []const u8,
+        args: []const Value,
+    ) !?Value {
+        if (std.ascii.eqlIgnoreCase(method_name, "getAll")) {
+            return try self.list_custom_setting_get_all(class_name);
+        }
+        if (std.ascii.eqlIgnoreCase(method_name, "getInstance")) {
+            if (args.len > 0 and args[0] == .string) {
+                if (self.find_list_custom_setting_record(class_name, args[0].string)) |record| {
+                    return try self.clone_custom_setting_record(record, null, false);
+                }
+                return Value.null_val;
+            }
+            if (self.first_custom_setting_record(class_name)) |record| {
+                return try self.clone_custom_setting_record(record, null, false);
+            }
+            return try self.default_custom_setting_record(class_name, null);
+        }
+        if (std.ascii.eqlIgnoreCase(method_name, "getValues") and
+            args.len > 0 and
+            args[0] == .string)
+        {
+            if (self.find_list_custom_setting_record(class_name, args[0].string)) |record| {
+                return try self.clone_custom_setting_record(record, null, false);
+            }
+            return Value.null_val;
+        }
         return null;
     }
 
@@ -19193,6 +19308,10 @@ pub const Evaluator = struct {
             try self.handle_test_stop_test();
             return .void_val;
         }
+        if (std.ascii.eqlIgnoreCase(method, "setCurrentPage") and args.len >= 1) {
+            try self.set_current_page_reference(args[0]);
+            return .void_val;
+        }
         // Test.setFixedSearchResults(List<Id>)
         if (std.ascii.eqlIgnoreCase(method, "setFixedSearchResults") and args.len >= 1) {
             self.fixed_search_results = args[0];
@@ -19235,6 +19354,38 @@ pub const Evaluator = struct {
             return try self.handle_test_create_stub(args);
         }
         return .void_val;
+    }
+
+    pub fn set_current_page_reference(self: *Evaluator, page_value: Value) !void {
+        const page_ref = if (page_value == .object and
+            std.ascii.eqlIgnoreCase(page_value.object.class_name, "PageReference"))
+            page_value
+        else
+            try self.make_page_reference_value(page_value);
+
+        const key = "ApexPages.currentPageRef";
+        if (self.global_env.bindings.getPtr(key)) |slot| {
+            slot.* = page_ref;
+        } else {
+            try self.global_env.define(key, page_ref);
+        }
+    }
+
+    fn make_page_reference_value(self: *Evaluator, page_value: Value) !Value {
+        const pr = try self.arena.create(types.ObjectInstance);
+        pr.* = .{ .class_name = "PageReference" };
+        const raw_name = try utils.coerce_to_string(page_value, self.arena);
+        const url = if (raw_name.len == 0)
+            ""
+        else if (raw_name[0] == '/')
+            raw_name
+        else
+            try std.fmt.allocPrint(self.arena, "/apex/{s}", .{raw_name});
+        try pr.fields.put(self.arena, "url", Value{ .string = url });
+        const params = try self.arena.create(types.MapValue);
+        params.* = .{};
+        try pr.fields.put(self.arena, "parameters", Value{ .map = params });
+        return Value{ .object = pr };
     }
 
     fn handle_test_stop_test(self: *Evaluator) !void {
@@ -20299,13 +20450,51 @@ pub const Evaluator = struct {
     fn handle_system_schedule(self: *Evaluator, args: []const Value) !Value {
         const job_id = try std.fmt.allocPrint(self.arena, "08e{d:0>15}", .{self.next_id});
         self.next_id += 1;
-        if (args.len >= 2 and args[1] == .string) {
-            try self.scheduled_jobs.put(self.arena, job_id, args[1].string);
-        }
+        const job_name = if (args.len >= 1 and args[0] == .string) args[0].string else job_id;
+        const cron_expr = if (args.len >= 2 and args[1] == .string)
+            args[1].string
+        else
+            "0 0 0 28 5 ? 2099";
+        try self.scheduled_jobs.put(self.arena, job_id, cron_expr);
+        try self.store_scheduled_cron_trigger(job_id, job_name, cron_expr);
         if (args.len >= 3 and args[2] == .object) {
             try self.pending_schedulables.append(self.arena, args[2]);
         }
         return Value{ .string = job_id };
+    }
+
+    fn store_scheduled_cron_trigger(
+        self: *Evaluator,
+        job_id: []const u8,
+        job_name: []const u8,
+        cron_expr: []const u8,
+    ) !void {
+        const detail = try self.arena.create(types.SObject);
+        detail.* = .{ .type_name = "CronJobDetail" };
+        const detail_id = try std.fmt.allocPrint(self.arena, "08a{d:0>15}", .{self.next_id});
+        self.next_id += 1;
+        detail.id = detail_id;
+        try detail.fields.put(self.arena, "Id", Value{ .string = detail_id });
+        try detail.fields.put(self.arena, "Name", Value{ .string = job_name });
+        try detail.fields.put(self.arena, "JobType", Value{ .string = "7" });
+
+        const trigger = try self.arena.create(types.SObject);
+        trigger.* = .{ .type_name = "CronTrigger", .id = job_id };
+        try trigger.fields.put(self.arena, "Id", Value{ .string = job_id });
+        try trigger.fields.put(self.arena, "CronExpression", Value{ .string = cron_expr });
+        try trigger.fields.put(self.arena, "TimesTriggered", Value{ .integer = 0 });
+        try trigger.fields.put(
+            self.arena,
+            "NextFireTime",
+            Value{ .string = "2099-05-28 00:00:00" },
+        );
+        try trigger.fields.put(self.arena, "CronJobDetail", Value{ .sobject = detail });
+        try trigger.fields.put(self.arena, "CronJobDetailId", Value{ .string = detail_id });
+
+        const gop = try self.store.getOrPut(self.arena, "CronTrigger");
+        if (!gop.found_existing) gop.value_ptr.* = .empty;
+        try gop.value_ptr.append(self.arena, Value{ .sobject = trigger });
+        try self.id_type_map.put(self.arena, job_id, "CronTrigger");
     }
 
     fn handle_system_request(self: *Evaluator, method: []const u8, args: []const Value) !Value {
@@ -23535,6 +23724,9 @@ pub const Evaluator = struct {
         trimmed: []const u8,
         type_hint: []const u8,
     ) ?Value {
+        if (is_json_map_type(type_hint)) {
+            return self.parse_json_map_value(trimmed, type_hint);
+        }
         if (is_framework_json_object_type(type_hint)) {
             return self.parse_json_framework_object_value(trimmed, type_hint);
         }
@@ -23542,6 +23734,59 @@ pub const Evaluator = struct {
             return self.parse_json_user_class_object_value(trimmed, type_hint);
         }
         return self.parse_json_s_object_value(trimmed, type_hint);
+    }
+
+    fn is_json_map_type(type_hint: []const u8) bool {
+        return std.ascii.startsWithIgnoreCase(type_hint, "Map<") or
+            std.ascii.eqlIgnoreCase(type_hint, "Map") or
+            std.ascii.eqlIgnoreCase(type_hint, "System.Map");
+    }
+
+    fn parse_json_map_value(
+        self: *Evaluator,
+        trimmed: []const u8,
+        type_hint: []const u8,
+    ) ?Value {
+        const map = self.arena.create(types.MapValue) catch return null;
+        map.* = .{};
+        const value_type = json_map_value_type(type_hint);
+        var cursor: usize = 1;
+        while (true) {
+            switch (next_json_object_field(trimmed, cursor)) {
+                .field => |field| {
+                    if (field.value.len > 0) {
+                        if (self.parse_json_value(field.value, value_type)) |v| {
+                            map.entries.put(self.arena, field.key, v) catch {};
+                        }
+                    }
+                    cursor = field.next_index;
+                },
+                .end => break,
+                .malformed => return null,
+            }
+        }
+        return Value{ .map = map };
+    }
+
+    fn json_map_value_type(type_hint: []const u8) []const u8 {
+        const lt = std.mem.indexOfScalar(u8, type_hint, '<') orelse return "Object";
+        const gt = std.mem.lastIndexOfScalar(u8, type_hint, '>') orelse return "Object";
+        if (gt <= lt + 1) return "Object";
+        const inner = type_hint[lt + 1 .. gt];
+        var depth: usize = 0;
+        var comma_index: ?usize = null;
+        for (inner, 0..) |ch, i| {
+            if (ch == '<') {
+                depth += 1;
+            } else if (ch == '>') {
+                if (depth > 0) depth -= 1;
+            } else if (ch == ',' and depth == 0) {
+                comma_index = i;
+                break;
+            }
+        }
+        const comma = comma_index orelse return "Object";
+        return std.mem.trim(u8, inner[comma + 1 ..], " \t\r\n");
     }
 
     fn is_framework_json_object_type(type_hint: []const u8) bool {
@@ -23978,6 +24223,7 @@ pub const Evaluator = struct {
         "PermissionSetLicense",
         "EmailTemplate",
         "Folder",
+        "Report",
         "Document",
         "CampaignMember",
         "CampaignMemberStatus",

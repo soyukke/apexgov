@@ -1541,6 +1541,32 @@ fn write_generic_hierarchy_custom_setting_fixture(dir: anytype) !void {
     });
 }
 
+fn write_generic_list_custom_setting_fixture(dir: anytype) !void {
+    try dir.createDirPath(std.testing.io, "objects/ListSettings__c/fields");
+    try dir.writeFile(std.testing.io, .{
+        .sub_path = "objects/ListSettings__c/ListSettings__c.object-meta.xml",
+        .data =
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<CustomObject xmlns="http://soap.sforce.com/2006/04/metadata">
+        \\    <customSettingsType>List</customSettingsType>
+        \\    <label>List Settings</label>
+        \\    <visibility>Public</visibility>
+        \\</CustomObject>
+        ,
+    });
+    try dir.writeFile(std.testing.io, .{
+        .sub_path = "objects/ListSettings__c/fields/Flag__c.field-meta.xml",
+        .data =
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+        \\    <fullName>Flag__c</fullName>
+        \\    <type>Text</type>
+        \\    <length>255</length>
+        \\</CustomField>
+        ,
+    });
+}
+
 fn write_generic_hierarchy_custom_setting_defaults_fixture(dir: anytype) !void {
     try write_generic_hierarchy_custom_setting_fixture(dir);
     try dir.writeFile(std.testing.io, .{
@@ -6926,6 +6952,40 @@ test "E2E: hierarchy custom setting getInstance returns user-scoped inherited se
     try std.testing.expectEqualStrings("true:true:org", result.value.string);
 }
 
+test "E2E: list custom setting getAll and getValues use Name keys" {
+    const alloc = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try write_generic_list_custom_setting_fixture(tmp_dir.dir);
+    const tmp_path = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", alloc);
+    defer alloc.free(tmp_path);
+
+    const source =
+        \\public class ListSettingAccessTest {
+        \\    public static String test() {
+        \\        ListSettings__c row = new ListSettings__c(Name = 'foo', Flag__c = 'bar');
+        \\        insert row;
+        \\        Map<String, ListSettings__c> rows = ListSettings__c.getAll();
+        \\        ListSettings__c fromValues = ListSettings__c.getValues('foo');
+        \\        ListSettings__c fromInstance = ListSettings__c.getInstance('foo');
+        \\        return String.valueOf(rows.get('foo').Flag__c) + ':' +
+        \\            String.valueOf(fromValues.Flag__c) + ':' +
+        \\            String.valueOf(fromInstance.Flag__c) + ':' +
+        \\            String.valueOf(rows.get(row.Id) == null);
+        \\    }
+        \\}
+    ;
+    const result = try run(alloc, std.testing.io, source, .{
+        .entry_class = "ListSettingAccessTest",
+        .entry_method = "test",
+        .source_paths = &.{tmp_path},
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("bar:bar:bar:true", result.value.string);
+}
+
 test "E2E: hierarchy custom setting accessors return detached records" {
     const alloc = std.testing.allocator;
     var tmp_dir = std.testing.tmpDir(.{});
@@ -11954,6 +12014,26 @@ test "E2E: System.currentPageReference reuses ApexPages current page parameters"
     try std.testing.expectEqualStrings("/home", result.value.string);
 }
 
+test "E2E: Test.setCurrentPage installs ApexPages current page" {
+    const source =
+        \\public class SetCurrentPageReferenceTest {
+        \\    public static String test() {
+        \\        Test.setCurrentPage(Page.MyPanel);
+        \\        ApexPages.currentPage().getParameters().put('panel', 'idPanel');
+        \\        return System.currentPageReference().getUrl() + ':' +
+        \\            String.valueOf(System.currentPageReference().getParameters().get('panel'));
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "SetCurrentPageReferenceTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("/apex/MyPanel?panel=idPanel:idPanel", result.value.string);
+}
+
 test "resetForTest should not leak: arena memory must not grow linearly with test iterations" {
     // テストごとに新しい evaluator を作り、テストアリーナを reset(.retain_capacity) する。
     // テストアリーナの容量が線形に増加しないことを検証する。
@@ -12696,6 +12776,67 @@ test "E2E: executeBatch creates queryable AsyncApexJob records" {
     try std.testing.expectEqualStrings("1:BatchApex:Completed:Test User", result.value.string);
 }
 
+test "E2E: AsyncApexJob namespace prefix matches blank namespace filters" {
+    const source =
+        \\global class AsyncJobNamespaceProbeBatch implements Database.Batchable<SObject> {
+        \\    global Iterable<SObject> start(Database.BatchableContext bc) {
+        \\        return new List<SObject>();
+        \\    }
+        \\    global void execute(Database.BatchableContext bc, List<SObject> scope) {}
+        \\    global void finish(Database.BatchableContext bc) {}
+        \\}
+        \\public class AsyncJobNamespaceProbeTest {
+        \\    public static Integer test() {
+        \\        Database.executeBatch(new AsyncJobNamespaceProbeBatch());
+        \\        String namespacePrefix = '';
+        \\        return [
+        \\            SELECT Id
+        \\            FROM AsyncApexJob
+        \\            WHERE JobType = 'BatchApex'
+        \\                AND ApexClass.Name = 'AsyncJobNamespaceProbeBatch'
+        \\                AND ApexClass.NamespacePrefix = :namespacePrefix
+        \\        ].size();
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "AsyncJobNamespaceProbeTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqual(@as(i64, 1), result.value.integer);
+}
+
+test "E2E: System.schedule creates queryable CronTrigger records" {
+    const source =
+        \\global class CronProbeJob implements Schedulable {
+        \\    global void execute(SchedulableContext sc) {}
+        \\}
+        \\public class CronTriggerProbeTest {
+        \\    public static String test() {
+        \\        System.schedule('Nightly Job', '0 0 23 ? * *', new CronProbeJob());
+        \\        Set<String> jobNames = new Set<String>{ 'Nightly Job' };
+        \\        List<CronTrigger> jobs = [
+        \\            SELECT Id, CronExpression, CronJobDetail.Name
+        \\            FROM CronTrigger
+        \\            WHERE CronJobDetail.Name IN :jobNames
+        \\                AND CronJobDetail.JobType = '7'
+        \\        ];
+        \\        return String.valueOf(jobs.size()) + ':' +
+        \\            jobs[0].CronJobDetail.Name + ':' + jobs[0].CronExpression;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "CronTriggerProbeTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("1:Nightly Job:0 0 23 ? * *", result.value.string);
+}
+
 test "E2E: executeBatch publishes BatchApexErrorEvent for raises-platform-events batches" {
     const source =
         \\trigger BatchFailureTrigger on BatchApexErrorEvent (after insert) {
@@ -13135,6 +13276,35 @@ test "E2E: JSON.deserialize preserves user-defined field initializers for omitte
     defer result.deinit();
 
     try std.testing.expectEqualStrings("ok", result.value.string);
+}
+
+test "E2E: JSON.deserialize restores typed map values" {
+    const source =
+        \\public class JsonTypedMapValueTest {
+        \\    public class Summary {
+        \\        public String batchId;
+        \\        public Integer total;
+        \\    }
+        \\    public static String test() {
+        \\        Summary summary = new Summary();
+        \\        summary.batchId = '707000000000001';
+        \\        summary.total = 2;
+        \\        Map<String, Summary> original = new Map<String, Summary>{ 'run' => summary };
+        \\        String payload = JSON.serialize(original);
+        \\        Map<String, Summary> restored =
+        \\            (Map<String, Summary>) JSON.deserialize(payload, Map<String, Summary>.class);
+        \\        return restored.keySet().size() + ':' + restored.get('run').batchId + ':' +
+        \\            String.valueOf(restored.get('run').total);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "JsonTypedMapValueTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("1:707000000000001:2", result.value.string);
 }
 
 test "E2E: static singleton field initializer constructs the instance" {
@@ -15567,6 +15737,23 @@ test "E2E: BusinessHours query and diff return default day duration" {
     defer result.deinit();
 
     try std.testing.expectEqualStrings("Default:86400000", result.value.string);
+}
+
+test "E2E: Report SOQL is a known standard object" {
+    const source =
+        \\public class ReportQueryKnownTypeTest {
+        \\    public static Integer test() {
+        \\        return [SELECT Id FROM Report WHERE DeveloperName = 'Missing_Report'].size();
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "ReportQueryKnownTypeTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqual(@as(i64, 0), result.value.integer);
 }
 
 test "E2E: List.sort propagates Comparable exceptions" {

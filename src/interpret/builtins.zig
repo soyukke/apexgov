@@ -3113,6 +3113,10 @@ fn dispatch_static_test(
         ctx.eval.reserved_single_email_capacity = 0;
         return .void_val;
     }
+    if (std.ascii.eqlIgnoreCase(method_name, "setCurrentPage") and args.len >= 1) {
+        try ctx.eval.set_current_page_reference(args[0]);
+        return .void_val;
+    }
     if (std.ascii.eqlIgnoreCase(method_name, "setCreatedDate")) {
         return try set_created_date_for_record(ctx, args);
     }
