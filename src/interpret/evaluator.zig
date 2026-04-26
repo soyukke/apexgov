@@ -3006,6 +3006,7 @@ pub const Evaluator = struct {
         if (std.ascii.eqlIgnoreCase(type_name, "PermissionSetAssignment")) {
             return .{ '0', 'P', 'a' };
         }
+        if (std.ascii.eqlIgnoreCase(type_name, "AsyncApexJob")) return .{ '7', '0', '7' };
         if (std.ascii.eqlIgnoreCase(type_name, "FieldPermissions")) return .{ '0', 'F', 'P' };
         if (std.ascii.eqlIgnoreCase(type_name, "ObjectPermissions")) return .{ '0', 'O', 'P' };
         if (std.ascii.eqlIgnoreCase(type_name, "Attachment")) return .{ '0', '0', 'P' };
@@ -3051,6 +3052,7 @@ pub const Evaluator = struct {
         if (std.mem.eql(u8, prefix, "501")) return "Solution";
         if (std.mem.eql(u8, prefix, "800")) return "Contract";
         if (std.mem.eql(u8, prefix, "801")) return "Order";
+        if (std.mem.eql(u8, prefix, "707")) return "AsyncApexJob";
         if (std.ascii.eqlIgnoreCase(prefix, "00D")) return "Organization";
         return "SObject";
     }
@@ -17186,6 +17188,8 @@ pub const Evaluator = struct {
             "DataRow",
             "VisualEditor.DynamicPickListRows",
             "DynamicPickListRows",
+            "Auth.JWT",
+            "JWT",
         };
         for (non_sobject_types) |nst| {
             if (!std.ascii.eqlIgnoreCase(type_name, nst)) continue;

@@ -7792,6 +7792,72 @@ test "E2E: custom object fields shortcut returns SObjectField tokens" {
     try std.testing.expectEqualStrings("Id:Amount__c:42", result.value.string);
 }
 
+test "E2E: AsyncApexJob describe key prefix matches generated job ids" {
+    const source =
+        \\public class AsyncApexJobKeyPrefixProbe {
+        \\    public static String test() {
+        \\        String prefix = AsyncApexJob.SObjectType.getDescribe().getKeyPrefix();
+        \\        Id mockJobId = (Id)(prefix + '000000000001');
+        \\        return prefix + ':' + mockJobId.getSObjectType().getDescribe().getName();
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "AsyncApexJobKeyPrefixProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("707:AsyncApexJob", result.value.string);
+}
+
+test "E2E: EncodingUtil base64 and Crypto.generateMac use raw blob bytes" {
+    const source =
+        \\public class Base64MacProbe {
+        \\    public static String test() {
+        \\        String encoded = EncodingUtil.base64Encode(Blob.valueOf('1234'));
+        \\        String decoded = EncodingUtil.base64Decode(encoded).toString();
+        \\        Blob mac = Crypto.generateMac(
+        \\            'HmacSHA256',
+        \\            Blob.valueOf('data'),
+        \\            Blob.valueOf('key')
+        \\        );
+        \\        String mac64 = EncodingUtil.base64Encode(mac);
+        \\        return encoded + ':' + decoded + ':' + mac64;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "Base64MacProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings(
+        "MTIzNA==:1234:UDH+PZicbRU3oBP6bnOdojRj/a7DtwE32Cjjas4iG9A=",
+        result.value.string,
+    );
+}
+
+test "E2E: Auth.JWT renders JSON payload for signing" {
+    const source =
+        \\public class AuthJwtJsonProbe {
+        \\    public static String test() {
+        \\        Auth.JWT jwt = new Auth.JWT();
+        \\        jwt.setIss('issuer');
+        \\        return jwt.toJSONString();
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "AuthJwtJsonProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("{\"iss\":\"issuer\"}", result.value.string);
+}
+
 test "E2E: NPSP data import address mapping falls back when metadata value is null" {
     const source =
         \\public class NpspAddressMappingFallbackProbe {

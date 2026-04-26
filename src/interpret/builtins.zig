@@ -2875,8 +2875,8 @@ fn dispatch_static_crypto(
         const key_bytes = if (args.len >= 3) blob_to_bytes(args[2]) else "key";
         var mac: [32]u8 = undefined;
         std.crypto.auth.hmac.sha2.HmacSha256.create(&mac, data_bytes, key_bytes);
-        const hex_str = try bytes_to_hex_alloc(ctx.arena, &mac);
-        return try make_blob_object(ctx, Value{ .string = hex_str });
+        const raw = try ctx.arena.dupe(u8, &mac);
+        return try make_blob_object(ctx, Value{ .string = raw });
     }
     if (std.ascii.eqlIgnoreCase(method_name, "generateAesKey")) {
         const key_size: usize = if (args.len > 0 and args[0] == .integer)
@@ -3000,17 +3000,16 @@ fn dispatch_static_encoding_util(
         return Value{ .string = try out.toOwnedSlice(ctx.arena) };
     }
     if (std.ascii.eqlIgnoreCase(method_name, "base64Encode") and args.len > 0) {
-        if (args[0] == .object) {
-            return args[0].object.fields.get("value") orelse Value{ .string = "" };
-        }
-        return Value{ .string = "base64encoded" };
+        const raw_bytes = blob_to_bytes(args[0]);
+        return Value{ .string = try base64_encode_alloc(ctx.arena, raw_bytes) };
     }
     if (std.ascii.eqlIgnoreCase(method_name, "base64Decode") and
         args.len > 0 and args[0] == .string)
     {
         const blob = try ctx.arena.create(types.ObjectInstance);
         blob.* = .{ .class_name = "Blob" };
-        try blob.fields.put(ctx.arena, "value", args[0]);
+        const decoded = base64_decode_alloc(ctx.arena, args[0].string) catch args[0].string;
+        try blob.fields.put(ctx.arena, "value", Value{ .string = decoded });
         return Value{ .object = blob };
     }
     if (std.ascii.eqlIgnoreCase(method_name, "convertToHex") and args.len > 0) {
@@ -5240,6 +5239,7 @@ fn dispatch_object_instance(
     args: []const Value,
 ) !?Value {
     if (try dispatch_obj_iterator(ctx, obj, method_name)) |v| return v;
+    if (try dispatch_obj_auth_jwt(ctx, obj, method_name, args)) |v| return v;
     if (try dispatch_obj_platform_classes(ctx, obj, method_name, args)) |v| return v;
     if (try dispatch_obj_schema_classes(ctx, obj, method_name, args)) |v| return v;
     return dispatch_obj_common(ctx, obj, method_name, args);
@@ -5313,6 +5313,36 @@ fn dispatch_obj_platform_classes(
         if (try dispatch_obj_flow_interview(ctx, obj, method_name, args)) |v| return v;
     }
     if (try dispatch_obj_invocable(ctx, obj, method_name, args)) |v| return v;
+    return null;
+}
+
+fn dispatch_obj_auth_jwt(
+    ctx: *BuiltinContext,
+    obj: *types.ObjectInstance,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
+    if (!type_matches_any(obj.class_name, &.{ "Auth.JWT", "JWT" })) return null;
+    if (std.ascii.eqlIgnoreCase(method_name, "setIss") and args.len > 0) {
+        try obj.fields.put(ctx.arena, "iss", args[0]);
+        return Value.void_val;
+    }
+    if (std.ascii.eqlIgnoreCase(method_name, "setSub") and args.len > 0) {
+        try obj.fields.put(ctx.arena, "sub", args[0]);
+        return Value.void_val;
+    }
+    if (std.ascii.eqlIgnoreCase(method_name, "setAud") and args.len > 0) {
+        try obj.fields.put(ctx.arena, "aud", args[0]);
+        return Value.void_val;
+    }
+    if (std.ascii.eqlIgnoreCase(method_name, "toJSONString")) {
+        const payload = try ctx.arena.create(types.MapValue);
+        payload.* = .{};
+        for (obj.fields.keys(), obj.fields.values()) |key, value| {
+            try payload.entries.put(ctx.arena, key, value);
+        }
+        return Value{ .string = try utils.to_json(Value{ .map = payload }, ctx.arena) };
+    }
     return null;
 }
 
@@ -7881,6 +7911,31 @@ fn bytes_to_hex_alloc(arena: std.mem.Allocator, bytes: []const u8) ![]const u8 {
         out[i * 2 + 1] = hex_chars[b & 0x0f];
     }
     return out;
+}
+
+fn base64_encode_alloc(arena: std.mem.Allocator, bytes: []const u8) ![]const u8 {
+    const encoder = std.base64.standard.Encoder;
+    const out = try arena.alloc(u8, encoder.calcSize(bytes.len));
+    return encoder.encode(out, bytes);
+}
+
+fn base64_decode_alloc(arena: std.mem.Allocator, encoded: []const u8) ![]const u8 {
+    const decoder = std.base64.standard.Decoder;
+    const padded = try base64_padded_copy(arena, encoded);
+    const out_len = try decoder.calcSizeForSlice(padded);
+    const out = try arena.alloc(u8, out_len);
+    try decoder.decode(out, padded);
+    return out;
+}
+
+fn base64_padded_copy(arena: std.mem.Allocator, encoded: []const u8) ![]const u8 {
+    const remainder = encoded.len % 4;
+    if (remainder == 0) return encoded;
+    const pad_len = 4 - remainder;
+    const padded = try arena.alloc(u8, encoded.len + pad_len);
+    @memcpy(padded[0..encoded.len], encoded);
+    @memset(padded[encoded.len..], '=');
+    return padded;
 }
 
 /// Convert hex string to bytes, allocated on arena.
