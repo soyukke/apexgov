@@ -9488,13 +9488,7 @@ pub const Evaluator = struct {
         sob: *types.SObject,
         field_name: []const u8,
     ) ?Value {
-        var matched_value: ?Value = null;
-        for (sob.fields.keys(), sob.fields.values()) |k, v| {
-            if (std.ascii.eqlIgnoreCase(k, field_name)) {
-                matched_value = v;
-                break;
-            }
-        }
+        const matched_value = utils.sobject_get(&sob.fields, field_name);
         if (matched_value) |value| {
             if (value != .null_val) {
                 if (value == .string) {
@@ -9523,6 +9517,9 @@ pub const Evaluator = struct {
             }
         }
         if (self.resolve_derived_field_value(sob, field_name)) |derived| return derived;
+        if (try_resolve_parent_relationship_value(self, sob, field_name)) |parent| {
+            return parent;
+        }
         if (self.resolve_custom_child_relationship(sob.type_name, field_name) != null or
             (field_name.len > 3 and
                 std.ascii.eqlIgnoreCase(field_name[field_name.len - 3 ..], "__r") and
@@ -9534,6 +9531,53 @@ pub const Evaluator = struct {
             return self.make_empty_list() catch matched_value;
         }
         return matched_value;
+    }
+
+    fn try_resolve_parent_relationship_value(
+        self: *Evaluator,
+        sob: *types.SObject,
+        field_name: []const u8,
+    ) ?Value {
+        if (!is_parent_relationship_name(field_name)) return null;
+        const fk_field = self.parent_ref_to_fk(field_name);
+        if (std.ascii.eqlIgnoreCase(fk_field, field_name)) return null;
+        const fk_value = utils.sobject_get(&sob.fields, fk_field) orelse return null;
+        if (fk_value != .string) return null;
+        const target_type = self.resolve_s_object_target_type(
+            sob,
+            fk_field,
+            fk_value.string,
+        ) orelse return null;
+        if (self.find_record_by_id(target_type, fk_value.string)) |record| {
+            if (record == .sobject) return record;
+        }
+        return null;
+    }
+
+    fn is_parent_relationship_name(field_name: []const u8) bool {
+        if (field_name.len > 3 and
+            std.ascii.eqlIgnoreCase(field_name[field_name.len - 3 ..], "__r"))
+        {
+            return true;
+        }
+        const standard = .{
+            "Account",
+            "Contact",
+            "Opportunity",
+            "Case",
+            "Lead",
+            "Owner",
+            "CreatedBy",
+            "LastModifiedBy",
+            "Parent",
+            "Profile",
+            "UserRole",
+            "UserLicense",
+        };
+        inline for (standard) |name| {
+            if (std.ascii.eqlIgnoreCase(field_name, name)) return true;
+        }
+        return false;
     }
 
     fn resolve_field_path_value(
@@ -24047,7 +24091,8 @@ pub const Evaluator = struct {
         key: []const u8,
         value_str: []const u8,
     ) void {
-        const val_str = if (value_str.len >= 2) value_str[1 .. value_str.len - 1] else "";
+        const raw = if (value_str.len >= 2) value_str[1 .. value_str.len - 1] else "";
+        const val_str = unescape_json_string_content(self.arena, raw) orelse raw;
         if (std.mem.eql(u8, key, "attributes")) return;
         if (std.ascii.eqlIgnoreCase(key, "Id")) {
             sob.id = val_str;
@@ -24142,21 +24187,21 @@ pub const Evaluator = struct {
         type_hint: []const u8,
     ) ?Value {
         if (trimmed[0] == '"') {
-            if (std.mem.lastIndexOfScalar(u8, trimmed, '"')) |end| {
-                if (end > 0) {
-                    const str_val = trimmed[1..end];
-                    if (std.ascii.eqlIgnoreCase(type_hint, "Date")) {
-                        return builtins.make_date_value(self.arena, str_val) catch
-                            Value{ .string = str_val };
-                    }
-                    if (std.ascii.eqlIgnoreCase(type_hint, "DateTime") or
-                        std.ascii.eqlIgnoreCase(type_hint, "Datetime"))
-                    {
-                        return builtins.make_datetime_value(self.arena, str_val) catch
-                            Value{ .string = str_val };
-                    }
-                    return Value{ .string = str_val };
+            const end = scan_json_string_end(trimmed, 0);
+            if (end > 1 and end <= trimmed.len) {
+                const raw = trimmed[1 .. end - 1];
+                const str_val = unescape_json_string_content(self.arena, raw) orelse raw;
+                if (std.ascii.eqlIgnoreCase(type_hint, "Date")) {
+                    return builtins.make_date_value(self.arena, str_val) catch
+                        Value{ .string = str_val };
                 }
+                if (std.ascii.eqlIgnoreCase(type_hint, "DateTime") or
+                    std.ascii.eqlIgnoreCase(type_hint, "Datetime"))
+                {
+                    return builtins.make_datetime_value(self.arena, str_val) catch
+                        Value{ .string = str_val };
+                }
+                return Value{ .string = str_val };
             }
             return Value{ .string = "" };
         }
@@ -24252,6 +24297,37 @@ pub const Evaluator = struct {
         }
         if (i >= source.len) return source.len;
         return i + 1;
+    }
+
+    fn unescape_json_string_content(
+        arena: std.mem.Allocator,
+        content: []const u8,
+    ) ?[]const u8 {
+        if (std.mem.indexOfScalar(u8, content, '\\') == null) return content;
+        var buf: std.ArrayListUnmanaged(u8) = .empty;
+        var i: usize = 0;
+        while (i < content.len) : (i += 1) {
+            if (content[i] != '\\' or i + 1 >= content.len) {
+                buf.append(arena, content[i]) catch return null;
+                continue;
+            }
+            i += 1;
+            switch (content[i]) {
+                '"' => buf.append(arena, '"') catch return null,
+                '\\' => buf.append(arena, '\\') catch return null,
+                '/' => buf.append(arena, '/') catch return null,
+                'b' => buf.append(arena, 0x08) catch return null,
+                'f' => buf.append(arena, 0x0c) catch return null,
+                'n' => buf.append(arena, '\n') catch return null,
+                'r' => buf.append(arena, '\r') catch return null,
+                't' => buf.append(arena, '\t') catch return null,
+                else => |ch| {
+                    buf.append(arena, '\\') catch return null;
+                    buf.append(arena, ch) catch return null;
+                },
+            }
+        }
+        return buf.items;
     }
 
     const known_s_object_type_names = [_][]const u8{

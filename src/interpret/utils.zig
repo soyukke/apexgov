@@ -297,7 +297,7 @@ pub fn to_json(v: Value, arena: std.mem.Allocator) ![]const u8 {
         .integer => |i| try std.fmt.allocPrint(arena, "{d}", .{i}),
         .long => |i| try std.fmt.allocPrint(arena, "{d}", .{i}),
         .double => |d| try std.fmt.allocPrint(arena, "{d}", .{d}),
-        .string => |s| try std.fmt.allocPrint(arena, "\"{s}\"", .{s}),
+        .string => |s| try json_string(arena, s),
         .void_val => "null",
         .list => |l| blk: {
             var buf: std.ArrayListUnmanaged(u8) = .empty;
@@ -315,7 +315,8 @@ pub fn to_json(v: Value, arena: std.mem.Allocator) ![]const u8 {
             try buf.append(arena, '{');
             for (m.entries.keys(), m.entries.values(), 0..) |k, val, idx| {
                 if (idx > 0) try buf.append(arena, ',');
-                try buf.appendSlice(arena, try std.fmt.allocPrint(arena, "\"{s}\":", .{k}));
+                try buf.appendSlice(arena, try json_string(arena, k));
+                try buf.append(arena, ':');
                 try buf.appendSlice(arena, try to_json(val, arena));
             }
             try buf.append(arena, '}');
@@ -330,19 +331,21 @@ pub fn to_json(v: Value, arena: std.mem.Allocator) ![]const u8 {
                 arena,
                 try std.fmt.allocPrint(
                     arena,
-                    "\"attributes\":{{\"type\":\"{s}\"}}",
-                    .{sob.type_name},
+                    "\"attributes\":{{\"type\":{s}}}",
+                    .{try json_string(arena, sob.type_name)},
                 ),
             );
             // Output Id if present
             if (sob.id) |id| {
-                try buf.appendSlice(arena, try std.fmt.allocPrint(arena, ",\"Id\":\"{s}\"", .{id}));
+                try buf.appendSlice(arena, ",\"Id\":");
+                try buf.appendSlice(arena, try json_string(arena, id));
             }
             for (sob.fields.keys(), sob.fields.values()) |k, val| {
                 // Skip internal attributes field and Id (already output)
                 if (std.ascii.eqlIgnoreCase(k, "Id")) continue;
                 try buf.append(arena, ',');
-                try buf.appendSlice(arena, try std.fmt.allocPrint(arena, "\"{s}\":", .{k}));
+                try buf.appendSlice(arena, try json_string(arena, k));
+                try buf.append(arena, ':');
                 try buf.appendSlice(arena, try to_json(val, arena));
             }
             try buf.append(arena, '}');
@@ -350,6 +353,28 @@ pub fn to_json(v: Value, arena: std.mem.Allocator) ![]const u8 {
         },
         .object => |obj| try object_to_json(obj, arena),
     };
+}
+
+fn json_string(arena: std.mem.Allocator, value: []const u8) ![]const u8 {
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    try buf.append(arena, '"');
+    for (value) |ch| {
+        switch (ch) {
+            '"' => try buf.appendSlice(arena, "\\\""),
+            '\\' => try buf.appendSlice(arena, "\\\\"),
+            '\n' => try buf.appendSlice(arena, "\\n"),
+            '\r' => try buf.appendSlice(arena, "\\r"),
+            '\t' => try buf.appendSlice(arena, "\\t"),
+            0x00...0x07, 0x0b, 0x0c, 0x0e...0x1f => {
+                try buf.appendSlice(arena, "\\u00");
+                try buf.append(arena, "0123456789abcdef"[ch >> 4]);
+                try buf.append(arena, "0123456789abcdef"[ch & 0x0f]);
+            },
+            else => try buf.append(arena, ch),
+        }
+    }
+    try buf.append(arena, '"');
+    return try buf.toOwnedSlice(arena);
 }
 
 /// `to_json` の ObjectInstance 分岐を抽出。Date / Datetime は
@@ -366,7 +391,7 @@ fn object_to_json(obj: *types.ObjectInstance, arena: std.mem.Allocator) anyerror
                     try format_json_date_time_str(arena, val.string)
                 else
                     val.string;
-                return try std.fmt.allocPrint(arena, "\"{s}\"", .{serialized});
+                return try json_string(arena, serialized);
             }
         }
     }
@@ -376,7 +401,8 @@ fn object_to_json(obj: *types.ObjectInstance, arena: std.mem.Allocator) anyerror
     for (obj.fields.keys(), obj.fields.values()) |k, val| {
         if (!first) try buf.append(arena, ',');
         first = false;
-        try buf.appendSlice(arena, try std.fmt.allocPrint(arena, "\"{s}\":", .{k}));
+        try buf.appendSlice(arena, try json_string(arena, k));
+        try buf.append(arena, ':');
         try buf.appendSlice(arena, try to_json(val, arena));
     }
     try buf.append(arena, '}');
@@ -421,6 +447,31 @@ test "valueEql: null != non-null" {
     try std.testing.expect(!value_eql(Value{ .string = "" }, Value.null_val));
 }
 
+test "sobject_get matches known namespace prefixes" {
+    var fields: std.StringArrayHashMapUnmanaged(Value) = .empty;
+    defer fields.deinit(std.testing.allocator);
+
+    try fields.put(
+        std.testing.allocator,
+        "Form_Template__c",
+        Value{ .string = "a01000000000000001" },
+    );
+    try fields.put(
+        std.testing.allocator,
+        "npsp__Relationship__r",
+        Value{ .string = "parent" },
+    );
+
+    try std.testing.expectEqualStrings(
+        "a01000000000000001",
+        sobject_get(&fields, "npsp__Form_Template__c").?.string,
+    );
+    try std.testing.expectEqualStrings(
+        "parent",
+        sobject_get(&fields, "Relationship__r").?.string,
+    );
+}
+
 // ---------------------------------------------------------------------------
 // SObject フィールドのケースインセンシティブアクセス
 // ---------------------------------------------------------------------------
@@ -432,6 +483,22 @@ pub fn sobject_get(fields: *const std.StringArrayHashMapUnmanaged(Value), name: 
     // Fallback: case-insensitive search
     for (fields.keys(), fields.values()) |k, v| {
         if (std.ascii.eqlIgnoreCase(k, name)) return v;
+    }
+    const stripped_name = strip_known_namespace_prefix(name);
+    if (stripped_name.ptr != name.ptr) {
+        if (fields.get(stripped_name)) |v| return v;
+        for (fields.keys(), fields.values()) |k, v| {
+            if (std.ascii.eqlIgnoreCase(k, stripped_name)) return v;
+        }
+    } else {
+        for (fields.keys(), fields.values()) |k, v| {
+            const stripped_key = strip_known_namespace_prefix(k);
+            if (stripped_key.ptr != k.ptr and
+                std.ascii.eqlIgnoreCase(stripped_key, name))
+            {
+                return v;
+            }
+        }
     }
     return null;
 }
@@ -446,8 +513,12 @@ pub fn sobject_put(
 ) !void {
     // Check if there's an existing key with different case
     var existing_key: ?[]const u8 = null;
+    const stripped_name = strip_known_namespace_prefix(name);
     for (fields.keys()) |k| {
-        if (std.ascii.eqlIgnoreCase(k, name)) {
+        const stripped_key = strip_known_namespace_prefix(k);
+        if (std.ascii.eqlIgnoreCase(k, name) or
+            std.ascii.eqlIgnoreCase(stripped_key, stripped_name))
+        {
             existing_key = k;
             break;
         }
@@ -457,6 +528,11 @@ pub fn sobject_put(
     } else {
         try fields.put(arena, name, value);
     }
+}
+
+fn strip_known_namespace_prefix(name: []const u8) []const u8 {
+    if (std.ascii.startsWithIgnoreCase(name, "npsp__")) return name["npsp__".len..];
+    return name;
 }
 
 /// Apex の Double/Decimal を文字列化する。

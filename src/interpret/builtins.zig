@@ -1291,7 +1291,11 @@ fn parse_json_untyped_array(ctx: *BuiltinContext, trimmed: []const u8) anyerror!
         } else if (trimmed[ai] == ',' and arr_depth == 0) {
             const elem = std.mem.trim(u8, trimmed[elem_start..ai], " \t\r\n,");
             if (elem.len > 0 and elem[0] == '"' and elem.len >= 2 and elem[elem.len - 1] == '"') {
-                try list.items.append(ctx.arena, Value{ .string = elem[1 .. elem.len - 1] });
+                if (find_json_string_end_alloc(elem, 1, ctx.arena)) |res| {
+                    try list.items.append(ctx.arena, Value{ .string = res.value });
+                } else {
+                    try list.items.append(ctx.arena, Value{ .string = elem[1 .. elem.len - 1] });
+                }
             }
             elem_start = ai + 1;
         }
@@ -6727,8 +6731,8 @@ fn create_default_http_response(ctx: *BuiltinContext) !Value {
 }
 
 fn get_http_header_value(obj: *types.ObjectInstance, header_name: []const u8) Value {
-    const headers_val = obj.fields.get("headers") orelse return Value{ .string = "" };
-    if (headers_val != .map) return Value{ .string = "" };
+    const headers_val = obj.fields.get("headers") orelse return Value.null_val;
+    if (headers_val != .map) return Value.null_val;
     if (headers_val.map.entries.get(header_name)) |header_val| return header_val;
     var iter = headers_val.map.entries.iterator();
     while (iter.next()) |entry| {
@@ -6736,7 +6740,7 @@ fn get_http_header_value(obj: *types.ObjectInstance, header_name: []const u8) Va
             return entry.value_ptr.*;
         }
     }
-    return Value{ .string = "" };
+    return Value.null_val;
 }
 
 fn dispatch_obj_page_reference(
@@ -9351,6 +9355,8 @@ fn find_json_string_end_alloc(
                         '\\' => buf.append(alloc, '\\') catch return null,
                         '"' => buf.append(alloc, '"') catch return null,
                         '/' => buf.append(alloc, '/') catch return null,
+                        'b' => buf.append(alloc, 0x08) catch return null,
+                        'f' => buf.append(alloc, 0x0c) catch return null,
                         else => |c| {
                             buf.append(alloc, '\\') catch return null;
                             buf.append(alloc, c) catch return null;

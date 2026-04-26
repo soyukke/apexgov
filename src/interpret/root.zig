@@ -4501,6 +4501,76 @@ test "E2E: custom Iterator with HTTP mock and JSON deserialize in for-each" {
     try std.testing.expectEqualStrings("3", result.value.string);
 }
 
+test "E2E: HttpRequest.getHeader returns null for missing header" {
+    const source =
+        \\public class HttpMissingHeaderProbe {
+        \\    public static String test() {
+        \\        HttpRequest req = new HttpRequest();
+        \\        return req.getHeader('missing') == null ? 'null' : req.getHeader('missing');
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "HttpMissingHeaderProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("null", result.value.string);
+}
+
+test "E2E: SOQL parent relationship resolves namespaced custom lookup" {
+    const source =
+        \\public class NamespacedParentLookupProbe {
+        \\    public static String test() {
+        \\        Parent__c parent = new Parent__c(Name = 'Parent Name');
+        \\        insert parent;
+        \\        Child__c child = new Child__c(Parent__c = parent.Id);
+        \\        insert child;
+        \\        Child__c queried = [
+        \\            SELECT npsp__Parent__r.Name
+        \\            FROM Child__c
+        \\            WHERE Id = :child.Id
+        \\        ];
+        \\        return queried.Parent__r.Name;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "NamespacedParentLookupProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("Parent Name", result.value.string);
+}
+
+test "E2E: SOQL parent relationship resolves namespaced NPSP-style lookup" {
+    const source =
+        \\public class NamespacedNpspLookupProbe {
+        \\    public static String test() {
+        \\        Form_Template__c template = new Form_Template__c(Template_JSON__c = 'json');
+        \\        insert template;
+        \\        DataImportBatch__c batch = new DataImportBatch__c(Form_Template__c = template.Id);
+        \\        insert batch;
+        \\        DataImportBatch__c queried = [
+        \\            SELECT npsp__Form_Template__r.Template_JSON__c
+        \\            FROM DataImportBatch__c
+        \\            WHERE Id = :batch.Id
+        \\        ];
+        \\        return queried.Form_Template__r.Template_JSON__c;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "NamespacedNpspLookupProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("json", result.value.string);
+}
+
 test "E2E: getFilteredAttachments full flow" {
     const source =
         \\public class FTest {
@@ -7856,6 +7926,33 @@ test "E2E: Auth.JWT renders JSON payload for signing" {
     defer result.deinit();
 
     try std.testing.expectEqualStrings("{\"iss\":\"issuer\"}", result.value.string);
+}
+
+test "E2E: JSON serialization escapes embedded quotes in strings" {
+    const source =
+        \\public class JsonEscapedStringProbe {
+        \\    public static String test() {
+        \\        Map<String, Object> payload = new Map<String, Object>();
+        \\        payload.put('activeFields', '[{"name":"Donation_Amount__c"}]');
+        \\        payload.put('newline', 'a\nb');
+        \\        String jsonText = JSON.serialize(payload);
+        \\        Map<String, Object> parsed =
+        \\            (Map<String, Object>) JSON.deserializeUntyped(jsonText);
+        \\        return String.valueOf(parsed.get('activeFields')) + ':' +
+        \\            String.valueOf(parsed.get('newline'));
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "JsonEscapedStringProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings(
+        "[{\"name\":\"Donation_Amount__c\"}]:a\nb",
+        result.value.string,
+    );
 }
 
 test "E2E: NPSP data import address mapping falls back when metadata value is null" {
