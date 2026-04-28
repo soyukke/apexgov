@@ -7142,7 +7142,13 @@ fn dispatch_obj_url(
     obj: *types.ObjectInstance,
     method_name: []const u8,
 ) !?Value {
+    if (std.ascii.eqlIgnoreCase(method_name, "getPath")) {
+        return obj.fields.get("Path") orelse Value.null_val;
+    }
     if (std.ascii.eqlIgnoreCase(method_name, "toExternalForm")) {
+        if (obj.fields.get("ExternalForm")) |external| {
+            if (external == .string) return external;
+        }
         const protocol = object_string_field(obj, "Protocol") orelse "https";
         const host = object_string_field(obj, "Host") orelse "test.salesforce.com";
         return Value{ .string = try std.fmt.allocPrint(ctx.arena, "{s}://{s}", .{

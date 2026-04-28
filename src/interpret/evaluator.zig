@@ -19842,6 +19842,8 @@ pub const Evaluator = struct {
             "DynamicPickListRows",
             "Auth.JWT",
             "JWT",
+            "Url",
+            "URL",
         };
         for (non_sobject_types) |nst| {
             if (!std.ascii.eqlIgnoreCase(type_name, nst)) continue;
@@ -19910,6 +19912,12 @@ pub const Evaluator = struct {
         }
         if (std.ascii.eqlIgnoreCase(type_name, "PageReference")) {
             try self.populate_new_page_reference(instance, ne, current_env);
+            return true;
+        }
+        if (std.ascii.eqlIgnoreCase(type_name, "Url") or
+            std.ascii.eqlIgnoreCase(type_name, "URL"))
+        {
+            try self.populate_new_url(instance, ne, current_env);
             return true;
         }
         if (std.ascii.eqlIgnoreCase(type_name, "RestRequest")) {
@@ -20020,6 +20028,30 @@ pub const Evaluator = struct {
         const params = try self.arena.create(types.MapValue);
         params.* = .{};
         try instance.fields.put(self.arena, "parameters", Value{ .map = params });
+    }
+
+    fn populate_new_url(
+        self: *Evaluator,
+        instance: *types.ObjectInstance,
+        ne: *ast.NewExpr,
+        current_env: *Env,
+    ) !void {
+        if (ne.args.len == 0) return;
+        var arg0_copy = ne.args[0];
+        const raw = try self.eval_expr(&arg0_copy, current_env);
+        const url = if (raw == .string) raw.string else try utils.coerce_to_string(raw, self.arena);
+        try instance.fields.put(self.arena, "ExternalForm", Value{ .string = url });
+        const scheme_end = std.mem.indexOf(u8, url, "://") orelse return;
+        const after_host = url[scheme_end + 3 ..];
+        if (std.mem.indexOfScalar(u8, after_host, '/')) |path_start| {
+            try instance.fields.put(
+                self.arena,
+                "Path",
+                Value{ .string = after_host[path_start..] },
+            );
+        } else {
+            try instance.fields.put(self.arena, "Path", Value{ .string = "/" });
+        }
     }
 
     fn populate_new_rest_request(self: *Evaluator, instance: *types.ObjectInstance) !void {

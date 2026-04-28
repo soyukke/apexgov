@@ -18373,6 +18373,24 @@ test "E2E: URL base URL supports toExternalForm" {
     try std.testing.expectEqualStrings("https://test.salesforce.com", result.value.string);
 }
 
+test "E2E: Url constructor exposes path" {
+    const source =
+        \\public class UrlPathProbe {
+        \\    public static String test() {
+        \\        return new Url('https://salesforce.com/testPath').getPath() + ':' +
+        \\            String.valueOf(new Url('www.salesforce.com').getPath());
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "UrlPathProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("/testPath:null", result.value.string);
+}
+
 test "E2E: Contact update refreshes compound Name" {
     const source =
         \\public class ContactUpdateNameProbe {
