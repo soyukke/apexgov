@@ -7226,6 +7226,14 @@ fn dispatch_obj_apex_pages_message(
     if (std.ascii.eqlIgnoreCase(method_name, "getDetail")) {
         return obj.fields.get("detail") orelse Value{ .string = "" };
     }
+    if (std.ascii.eqlIgnoreCase(method_name, "getMessage") or
+        std.ascii.eqlIgnoreCase(method_name, "toString"))
+    {
+        return obj.fields.get("message") orelse
+            obj.fields.get("summary") orelse
+            obj.fields.get("detail") orelse
+            Value{ .string = "" };
+    }
     return null;
 }
 

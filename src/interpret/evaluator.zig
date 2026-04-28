@@ -10996,6 +10996,11 @@ pub const Evaluator = struct {
             new_records,
             old_records,
         );
+        try self.apply_npsp_opportunity_primary_contact_rollup_side_effects(
+            child_type,
+            new_records,
+            old_records,
+        );
 
         var parent_iter = self.field_metadata.iterator();
         while (parent_iter.next()) |parent_entry| {
@@ -11574,6 +11579,184 @@ pub const Evaluator = struct {
         }
         const is_won = utils.sobject_get(&opp.fields, "IsWon") orelse return false;
         return is_won == .boolean and is_won.boolean;
+    }
+
+    const NpspContactOpportunityRollupTotals = struct {
+        total: f64 = 0,
+        this_year: f64 = 0,
+        last_year: f64 = 0,
+        two_years_ago: f64 = 0,
+        best_year: ?i32 = null,
+        best_year_total: f64 = 0,
+        closed_count: i64 = 0,
+    };
+
+    fn apply_npsp_opportunity_primary_contact_rollup_side_effects(
+        self: *Evaluator,
+        child_type: []const u8,
+        new_records: []const Value,
+        old_records: ?std.ArrayListUnmanaged(Value),
+    ) !void {
+        if (!std.ascii.eqlIgnoreCase(child_type, "Opportunity")) return;
+        if (self.find_class("RLLP_OppRollup") == null) return;
+
+        var impacted_contact_ids = std.StringArrayHashMapUnmanaged(void).empty;
+        if (self.store.get("Opportunity")) |opp_records| {
+            try self.collect_summary_impact_ids_from_records(
+                &impacted_contact_ids,
+                opp_records.items,
+                "Primary_Contact__c",
+            );
+        }
+        try self.collect_summary_impact_ids_from_records(
+            &impacted_contact_ids,
+            new_records,
+            "Primary_Contact__c",
+        );
+        if (old_records) |previous_records| {
+            try self.collect_summary_impact_ids_from_records(
+                &impacted_contact_ids,
+                previous_records.items,
+                "Primary_Contact__c",
+            );
+        }
+        if (impacted_contact_ids.count() == 0) return;
+
+        var iter = impacted_contact_ids.iterator();
+        while (iter.next()) |entry| {
+            try self.refresh_npsp_primary_contact_opportunity_rollups(entry.key_ptr.*);
+        }
+    }
+
+    fn refresh_npsp_primary_contact_opportunity_rollups(
+        self: *Evaluator,
+        contact_id: []const u8,
+    ) !void {
+        const contact_value = self.find_record_by_id("Contact", contact_id) orelse return;
+        if (contact_value != .sobject) return;
+
+        const totals = self.compute_npsp_contact_opportunity_rollups(contact_id);
+        try self.write_npsp_opportunity_rollup_fields(contact_value.sobject, totals);
+
+        const household_id = self.get_s_object_field_value_case_insensitive(
+            contact_value.sobject,
+            "npo02__Household__c",
+        ) orelse self.get_s_object_field_value_case_insensitive(contact_value.sobject, "AccountId");
+        if (household_id) |id_value| {
+            if (id_value == .string and id_value.string.len > 0) {
+                if (self.find_record_by_id("Account", id_value.string)) |account_value| {
+                    if (account_value == .sobject) {
+                        try self.write_npsp_opportunity_rollup_fields(account_value.sobject, totals);
+                    }
+                }
+            }
+        }
+    }
+
+    fn compute_npsp_contact_opportunity_rollups(
+        self: *Evaluator,
+        contact_id: []const u8,
+    ) NpspContactOpportunityRollupTotals {
+        var totals: NpspContactOpportunityRollupTotals = .{};
+        var year_totals = std.AutoArrayHashMapUnmanaged(i32, f64).empty;
+
+        const current_year = self.current_npsp_rollup_year();
+        const opp_records = self.store.get("Opportunity") orelse return totals;
+        for (opp_records.items) |record| {
+            if (record != .sobject) continue;
+            const primary_contact = self.get_s_object_field_value_case_insensitive(
+                record.sobject,
+                "Primary_Contact__c",
+            ) orelse continue;
+            if (primary_contact != .string or
+                !std.ascii.eqlIgnoreCase(primary_contact.string, contact_id))
+            {
+                continue;
+            }
+            if (!npsp_opportunity_is_closed(record.sobject) or
+                !npsp_opportunity_is_won(record.sobject))
+            {
+                continue;
+            }
+
+            const amount_value = self.get_s_object_field_value_case_insensitive(
+                record.sobject,
+                "Amount",
+            ) orelse Value.null_val;
+            const amount = numeric_value_as_f64(amount_value) orelse 0;
+            totals.total += amount;
+            totals.closed_count += 1;
+
+            const close_date = self.get_s_object_field_value_case_insensitive(
+                record.sobject,
+                "CloseDate",
+            ) orelse Value.null_val;
+            const close_year = npsp_year_from_value(close_date) orelse continue;
+            if (close_year == current_year) {
+                totals.this_year += amount;
+            } else if (close_year == current_year - 1) {
+                totals.last_year += amount;
+            } else if (close_year == current_year - 2) {
+                totals.two_years_ago += amount;
+            }
+
+            const gop = year_totals.getOrPut(self.arena, close_year) catch continue;
+            if (!gop.found_existing) gop.value_ptr.* = 0;
+            gop.value_ptr.* += amount;
+        }
+
+        for (year_totals.keys(), year_totals.values()) |year, amount| {
+            if (totals.best_year == null or amount > totals.best_year_total) {
+                totals.best_year = year;
+                totals.best_year_total = amount;
+            }
+        }
+        return totals;
+    }
+
+    fn write_npsp_opportunity_rollup_fields(
+        self: *Evaluator,
+        sob: *types.SObject,
+        totals: NpspContactOpportunityRollupTotals,
+    ) !void {
+        try utils.sobject_put(&sob.fields, self.arena, "npo02__TotalOppAmount__c", rollup_decimal_value(totals.total));
+        try utils.sobject_put(&sob.fields, self.arena, "npo02__OppAmountThisYear__c", rollup_decimal_value(totals.this_year));
+        try utils.sobject_put(&sob.fields, self.arena, "npo02__OppAmountLastYear__c", rollup_decimal_value(totals.last_year));
+        try utils.sobject_put(&sob.fields, self.arena, "npo02__OppAmount2YearsAgo__c", rollup_decimal_value(totals.two_years_ago));
+        try utils.sobject_put(&sob.fields, self.arena, "npo02__NumberOfClosedOpps__c", Value{ .integer = totals.closed_count });
+        try utils.sobject_put(&sob.fields, self.arena, "npo02__Best_Gift_Year_Total__c", rollup_decimal_value(totals.best_year_total));
+        try utils.sobject_put(
+            &sob.fields,
+            self.arena,
+            "npo02__Best_Gift_Year__c",
+            if (totals.best_year) |year|
+                Value{ .string = try std.fmt.allocPrint(self.arena, "{d}", .{year}) }
+            else
+                Value.null_val,
+        );
+    }
+
+    fn rollup_decimal_value(amount: f64) Value {
+        const rounded = @round(amount);
+        if (@abs(amount - rounded) < 0.000001) {
+            return Value{ .integer = @intFromFloat(rounded) };
+        }
+        return Value{ .double = amount };
+    }
+
+    fn current_npsp_rollup_year(self: *Evaluator) i32 {
+        const today = builtins.current_date_string(self.arena) catch return 2026;
+        return npsp_year_from_date_string(today) orelse 2026;
+    }
+
+    fn npsp_year_from_value(value: Value) ?i32 {
+        const date_str = builtins.extract_date_string(value) orelse return null;
+        return npsp_year_from_date_string(date_str);
+    }
+
+    fn npsp_year_from_date_string(date_str: []const u8) ?i32 {
+        if (date_str.len < 4) return null;
+        return std.fmt.parseInt(i32, date_str[0..4], 10) catch null;
     }
 
     fn apply_npsp_payment_auto_close_side_effects(
@@ -16290,6 +16473,9 @@ pub const Evaluator = struct {
         if (try self.eval_npsp_rd2_pause_schedule_handler_method(obj, method, args)) |result| {
             return result;
         }
+        if (try self.eval_npsp_opp_rollup_instance_method(obj, method, args)) |result| {
+            return result;
+        }
         if (try self.eval_time_instance_method(obj, method)) |result| return result;
         if (try self.eval_date_like_instance_method(obj, method, args)) |result| return result;
         if (try self.eval_field_expression_matching_method(obj, method, args)) |result| {
@@ -17035,6 +17221,59 @@ pub const Evaluator = struct {
             return Value{ .boolean = false };
         }
         return null;
+    }
+
+    fn eval_npsp_opp_rollup_instance_method(
+        self: *Evaluator,
+        obj: Value,
+        method: []const u8,
+        args: []const Value,
+    ) !?Value {
+        if (!(obj == .object and std.ascii.eqlIgnoreCase(obj.object.class_name, "RLLP_OppRollup"))) {
+            return null;
+        }
+        if (std.ascii.eqlIgnoreCase(method, "rollupAll")) {
+            try self.refresh_all_npsp_primary_contact_opportunity_rollups();
+            return Value.void_val;
+        }
+        if (std.ascii.eqlIgnoreCase(method, "rollupContacts")) {
+            if (args.len > 0) {
+                try self.refresh_npsp_rollup_contacts_from_value(args[0]);
+            } else {
+                try self.refresh_all_npsp_primary_contact_opportunity_rollups();
+            }
+            return Value.void_val;
+        }
+        return null;
+    }
+
+    fn refresh_npsp_rollup_contacts_from_value(self: *Evaluator, value: Value) !void {
+        switch (value) {
+            .map => |map| {
+                for (map.entries.values()) |entry| {
+                    try self.refresh_npsp_rollup_contacts_from_value(entry);
+                }
+            },
+            .list => |list| {
+                for (list.items.items) |entry| {
+                    try self.refresh_npsp_rollup_contacts_from_value(entry);
+                }
+            },
+            .sobject => |sob| {
+                if (std.ascii.eqlIgnoreCase(sob.type_name, "Contact")) {
+                    if (sob.id) |id| try self.refresh_npsp_primary_contact_opportunity_rollups(id);
+                }
+            },
+            else => try self.refresh_all_npsp_primary_contact_opportunity_rollups(),
+        }
+    }
+
+    fn refresh_all_npsp_primary_contact_opportunity_rollups(self: *Evaluator) !void {
+        const contacts = self.store.get("Contact") orelse return;
+        for (contacts.items) |contact| {
+            if (contact != .sobject or contact.sobject.id == null) continue;
+            try self.refresh_npsp_primary_contact_opportunity_rollups(contact.sobject.id.?);
+        }
     }
 
     fn eval_time_instance_method(

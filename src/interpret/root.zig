@@ -14352,6 +14352,27 @@ test "E2E: ApexPages.Message preserves summary when added to page state" {
     try std.testing.expectEqualStrings("Denied:ERROR", result.value.string);
 }
 
+test "E2E: ApexPages.Message string conversion exposes message text" {
+    const source =
+        \\public class ApexPagesMessageStringTest {
+        \\    public static String test() {
+        \\        ApexPages.Message msg = new ApexPages.Message(
+        \\            ApexPages.Severity.ERROR,
+        \\            'Denied'
+        \\        );
+        \\        return String.valueOf(msg) + ':' + msg.toString() + ':' + msg.getMessage();
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "ApexPagesMessageStringTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("Denied:Denied:Denied", result.value.string);
+}
+
 test "E2E: Id.valueOf expands 15-char ids to 18-char ids" {
     const source =
         \\public class IdValueOfTest {
