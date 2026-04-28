@@ -6279,6 +6279,25 @@ test "E2E: Account.Rating describe reports Picklist instead of String" {
     try std.testing.expectEqualStrings("PICKLIST", result.value.string);
 }
 
+test "E2E: NPSP recurring donation amount describe reports currency" {
+    const source =
+        \\public class NpspRecurringDonationAmountDescribeProbe {
+        \\    public static String test() {
+        \\        Schema.DescribeFieldResult dfr =
+        \\            npe03__Recurring_Donation__c.npe03__Amount__c.getDescribe();
+        \\        return dfr.getType().name();
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "NpspRecurringDonationAmountDescribeProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("CURRENCY", result.value.string);
+}
+
 test "E2E: Datetime.valueOf accepts loose single-digit components" {
     // `Datetime.valueOf('2006-5-4 3:2:1')` is real-world input seen in utility code that
     // re-parses user-entered strings. Apex accepts it; we need to as well.

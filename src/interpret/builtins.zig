@@ -4637,7 +4637,7 @@ const known_describe_field_sets = [_]struct { object: []const u8, fields: []cons
         "DefaultProbability", "ForecastCategory", "ForecastCategoryName",
     } },
     .{ .object = "npe03__Recurring_Donation__c", .fields = &.{
-        "Amount",
+        "Amount", "npe03__Amount__c",
     } },
     .{ .object = "User", .fields = &.{
         "Username",       "Email",             "FirstName",    "LastName",
@@ -5045,6 +5045,11 @@ fn infer_field_type_for_object(
 ) []const u8 {
     if (object_type.len > 0) {
         if (infer_standard_picklist_type(object_type, field_name)) |t| return t;
+        if (std.ascii.eqlIgnoreCase(object_type, "npe03__Recurring_Donation__c") and
+            std.ascii.eqlIgnoreCase(field_name, "npe03__Amount__c"))
+        {
+            return "Currency";
+        }
     }
     if (std.ascii.eqlIgnoreCase(field_name, "NumberOfEmployees") or
         std.ascii.eqlIgnoreCase(field_name, "TotalSize"))
