@@ -10108,6 +10108,35 @@ test "E2E: list addAll preserves SObject fields through dedupe map" {
     try std.testing.expectEqualStrings("3", result.value.string);
 }
 
+test "E2E: top-level class name wins over colliding inner class name" {
+    const source =
+        \\public class OuterWithNameCollision {
+        \\    public class SoftCredit {
+        \\        public String marker() {
+        \\            return 'inner';
+        \\        }
+        \\    }
+        \\}
+        \\public class SoftCredit {
+        \\    public String marker() {
+        \\        return 'top';
+        \\    }
+        \\}
+        \\public class TopLevelNameCollisionProbe {
+        \\    public static String test() {
+        \\        return new SoftCredit().marker();
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "TopLevelNameCollisionProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("top", result.value.string);
+}
+
 test "E2E: Type values compare by class name" {
     const source =
         \\public class TypeEqualityProbe {

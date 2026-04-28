@@ -26153,7 +26153,12 @@ pub const Evaluator = struct {
         cd: *ast.ClassDecl,
         fq_name: ?[]const u8,
     ) !void {
-        try self.classes.put(ca, cd.name, cd);
+        if (fq_name == null) {
+            try self.classes.put(ca, cd.name, cd);
+        } else {
+            const gop = try self.classes.getOrPut(ca, cd.name);
+            if (!gop.found_existing) gop.value_ptr.* = cd;
+        }
         if (fq_name) |fq| {
             try self.classes.put(ca, fq, cd);
         }
