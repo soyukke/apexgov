@@ -122,6 +122,8 @@ pub const Evaluator = struct {
     max_call_depth: u32 = 500,
     // Scheduled jobs store (System.schedule → CronTrigger queries)
     scheduled_jobs: std.StringArrayHashMapUnmanaged([]const u8) = .empty,
+    // System.FeatureManagement package values set during the current transaction.
+    feature_management_values: std.StringArrayHashMapUnmanaged(Value) = .empty,
     // Schedulable instances queued during Test.startTest();
     // executed on Test.stopTest()
     pending_schedulables: std.ArrayListUnmanaged(Value) = .empty,

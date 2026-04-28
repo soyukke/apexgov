@@ -1890,6 +1890,24 @@ fn dispatch_static_feature_management(
     method_name: []const u8,
     args: []const Value,
 ) !?Value {
+    if (std.ascii.eqlIgnoreCase(method_name, "setPackageBooleanValue") or
+        std.ascii.eqlIgnoreCase(method_name, "setPackageIntegerValue") or
+        std.ascii.eqlIgnoreCase(method_name, "setPackageDateValue"))
+    {
+        if (args.len >= 2 and args[0] == .string) {
+            try ctx.eval.feature_management_values.put(ctx.arena, args[0].string, args[1]);
+        }
+        return Value.void_val;
+    }
+    if (std.ascii.eqlIgnoreCase(method_name, "checkPackageBooleanValue") or
+        std.ascii.eqlIgnoreCase(method_name, "checkPackageIntegerValue") or
+        std.ascii.eqlIgnoreCase(method_name, "checkPackageDateValue"))
+    {
+        if (args.len >= 1 and args[0] == .string) {
+            if (ctx.eval.feature_management_values.get(args[0].string)) |value| return value;
+        }
+        return Value.null_val;
+    }
     if (!std.ascii.eqlIgnoreCase(method_name, "checkPermission")) return Value{ .boolean = false };
     if (args.len == 0 or args[0] != .string) return Value{ .boolean = false };
 
