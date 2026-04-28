@@ -14895,7 +14895,7 @@ test "E2E: AsyncApexJob namespace prefix matches blank namespace filters" {
     try std.testing.expectEqual(@as(i64, 1), result.value.integer);
 }
 
-test "E2E: System.schedule creates queryable CronTrigger records" {
+test "E2E: System.schedule creates queryable CronTrigger and AsyncApexJob records" {
     const source =
         \\global class CronProbeJob implements Schedulable {
         \\    global void execute(SchedulableContext sc) {}
@@ -14910,8 +14910,14 @@ test "E2E: System.schedule creates queryable CronTrigger records" {
         \\            WHERE CronJobDetail.Name IN :jobNames
         \\                AND CronJobDetail.JobType = '7'
         \\        ];
+        \\        List<AsyncApexJob> asyncJobs = [
+        \\            SELECT Id, ApexClass.Name, JobType
+        \\            FROM AsyncApexJob
+        \\            WHERE JobType = 'ScheduledApex'
+        \\        ];
         \\        return String.valueOf(jobs.size()) + ':' +
-        \\            jobs[0].CronJobDetail.Name + ':' + jobs[0].CronExpression;
+        \\            jobs[0].CronJobDetail.Name + ':' + jobs[0].CronExpression + ':' +
+        \\            String.valueOf(asyncJobs.size()) + ':' + asyncJobs[0].ApexClass.Name;
         \\    }
         \\}
     ;
@@ -14921,7 +14927,10 @@ test "E2E: System.schedule creates queryable CronTrigger records" {
     });
     defer result.deinit();
 
-    try std.testing.expectEqualStrings("1:Nightly Job:0 0 23 ? * *", result.value.string);
+    try std.testing.expectEqualStrings(
+        "1:Nightly Job:0 0 23 ? * *:1:CronProbeJob",
+        result.value.string,
+    );
 }
 
 test "E2E: executeBatch publishes BatchApexErrorEvent for raises-platform-events batches" {

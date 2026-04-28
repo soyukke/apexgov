@@ -23724,6 +23724,7 @@ pub const Evaluator = struct {
         try self.scheduled_jobs.put(self.arena, job_id, cron_expr);
         try self.store_scheduled_cron_trigger(job_id, job_name, cron_expr);
         if (args.len >= 3 and args[2] == .object) {
+            _ = try self.create_async_apex_job("ScheduledApex", args[2].object.class_name, "execute");
             try self.pending_schedulables.append(self.arena, args[2]);
         }
         return Value{ .string = job_id };
