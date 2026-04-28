@@ -6480,6 +6480,25 @@ test "E2E: null overload resolution prefers String over Object" {
     try std.testing.expectEqualStrings("string:null", result.value.string);
 }
 
+test "E2E: non-id string overload prefers String over Id" {
+    const source =
+        \\public class StringIdOverloadProbe {
+        \\    public static String pick(Id value) { return 'id'; }
+        \\    public static String pick(String value) { return 'string:' + value; }
+        \\    public static String test() {
+        \\        return pick('GAU 2');
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "StringIdOverloadProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("string:GAU 2", result.value.string);
+}
+
 test "E2E: System.runAs exposes the target user's fields to UserInfo" {
     // apex-expression's DSL tests build throw-away Users inside System.runAs
     // without ever inserting them. UserInfo methods used to return the default
@@ -7182,6 +7201,34 @@ test "E2E: Opportunity IsClosed WHERE derives from StageName" {
     defer result.deinit();
 
     try std.testing.expectEqualStrings("1:1", result.value.string);
+}
+
+test "E2E: Opportunity IsClosed SELECT derives from StageName" {
+    const source =
+        \\public class OpportunityIsClosedSelectTest {
+        \\    public static String test() {
+        \\        insert new Opportunity(
+        \\            Name = 'Closed',
+        \\            StageName = 'Closed Won',
+        \\            CloseDate = Date.today()
+        \\        );
+        \\        Opportunity opp = [
+        \\            SELECT IsClosed, IsWon
+        \\            FROM Opportunity
+        \\            WHERE Name = 'Closed'
+        \\            LIMIT 1
+        \\        ];
+        \\        return String.valueOf(opp.IsClosed) + ':' + String.valueOf(opp.IsWon);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "OpportunityIsClosedSelectTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("true:true", result.value.string);
 }
 
 test "E2E: DescribeFieldResult returns its SObjectField token" {
@@ -14282,6 +14329,49 @@ test "E2E: executeBatch uses QueryLocator records produced from SOQL literals" {
     defer result.deinit();
 
     try std.testing.expectEqual(@as(i64, 1), result.value.integer);
+}
+
+test "E2E: executeBatch skips execute for empty QueryLocator scope" {
+    const source =
+        \\global class EmptyQueryLocatorBatch implements Database.Batchable<SObject> {
+        \\    public static Integer processed = 0;
+        \\    public static Boolean finished = false;
+        \\    global Database.QueryLocator start(Database.BatchableContext bc) {
+        \\        return Database.getQueryLocator([
+        \\            SELECT Id FROM Account WHERE Name = 'Missing'
+        \\        ]);
+        \\    }
+        \\    global void execute(Database.BatchableContext bc, List<SObject> scope) {
+        \\        processed++;
+        \\    }
+        \\    global void finish(Database.BatchableContext bc) {
+        \\        finished = true;
+        \\    }
+        \\}
+        \\public class EmptyQueryLocatorBatchTest {
+        \\    public static String test() {
+        \\        insert new Account(Name = 'Keep');
+        \\        String jobId = Database.executeBatch(new EmptyQueryLocatorBatch());
+        \\        AsyncApexJob job = [
+        \\            SELECT JobItemsProcessed, TotalJobItems
+        \\            FROM AsyncApexJob
+        \\            WHERE Id = :jobId
+        \\            LIMIT 1
+        \\        ];
+        \\        return String.valueOf(EmptyQueryLocatorBatch.processed) +
+        \\            ':' + String.valueOf(EmptyQueryLocatorBatch.finished) +
+        \\            ':' + String.valueOf(job.JobItemsProcessed) +
+        \\            ':' + String.valueOf(job.TotalJobItems);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "EmptyQueryLocatorBatchTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("0:true:0:0", result.value.string);
 }
 
 test "E2E: executeBatch queues chained jobs triggered from finish" {

@@ -6380,8 +6380,11 @@ pub const Evaluator = struct {
     ) !void {
         for (records.items) |item| {
             if (item != .sobject) continue;
-            const selected_value =
-                self.get_s_object_field_value_case_insensitive(item.sobject, field_name) orelse
+            const selected_value = self.get_s_object_field_value_case_insensitive(
+                item.sobject,
+                field_name,
+            ) orelse
+                computed_where_field_value(item.sobject, field_name) orelse
                 Value.null_val;
             try utils.sobject_put(&item.sobject.fields, self.arena, field_name, selected_value);
             if (!is_to_label) continue;
@@ -26428,14 +26431,18 @@ pub const Evaluator = struct {
 
         const record_list = try self.arena.create(types.ListValue);
         record_list.* = .{ .items = all_records };
-        _ = try self.call_batch_lifecycle_phase(
-            batch_class,
-            batch_obj,
-            batch_job_id,
-            "execute",
-            &.{ batch_context_value, Value{ .list = record_list } },
-        );
-        self.update_async_apex_job_items(batch_job_id, 1, 1);
+        if (all_records.items.len > 0) {
+            _ = try self.call_batch_lifecycle_phase(
+                batch_class,
+                batch_obj,
+                batch_job_id,
+                "execute",
+                &.{ batch_context_value, Value{ .list = record_list } },
+            );
+            self.update_async_apex_job_items(batch_job_id, 1, 1);
+        } else {
+            self.update_async_apex_job_items(batch_job_id, 0, 0);
+        }
         _ = try self.call_batch_lifecycle_phase(
             batch_class,
             batch_obj,
@@ -27900,7 +27907,7 @@ fn overload_score_for_null_arg(pt: []const u8) i32 {
 fn overload_score_for_string_arg(value: []const u8, pt: []const u8) i32 {
     if (std.ascii.eqlIgnoreCase(pt, "String")) return 2;
     if (std.ascii.eqlIgnoreCase(pt, "Id")) {
-        return if (Evaluator.is_salesforce_id_string(value)) 3 else 2;
+        return if (Evaluator.is_salesforce_id_string(value)) 3 else 1;
     }
     if (std.ascii.eqlIgnoreCase(pt, "Object")) return 1;
     if (std.ascii.eqlIgnoreCase(pt, "Date") and
