@@ -6534,6 +6534,23 @@ test "E2E: System.runAs exposes the target user's fields to UserInfo" {
     try std.testing.expectEqualStrings("Bob|Smith|bob@example.com|en_US", result.value.string);
 }
 
+test "E2E: UserInfo.getUiThemeDisplayed defaults to Classic" {
+    const source =
+        \\public class UiThemeDisplayedProbe {
+        \\    public static String test() {
+        \\        return UserInfo.getUiThemeDisplayed();
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "UiThemeDisplayedProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("Theme3", result.value.string);
+}
+
 test "E2E: bare method call inside a subclass resolves to inherited builtin" {
     // fflib_HttpException and similar user exception subclasses call bare
     // `setMessage(s)` from their constructors. The interpreter used to leave the

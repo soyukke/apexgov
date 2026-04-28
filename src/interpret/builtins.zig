@@ -1877,7 +1877,7 @@ fn dispatch_static_user_info(ctx: *BuiltinContext, method_name: []const u8) !?Va
         return Value{ .boolean = false };
     }
     if (std.ascii.eqlIgnoreCase(method_name, "getUiThemeDisplayed")) {
-        return Value{ .string = "Theme4d" };
+        return Value{ .string = "Theme3" };
     }
     if (std.ascii.eqlIgnoreCase(method_name, "getSessionId")) {
         return Value{ .string = "mock-session-id" };
