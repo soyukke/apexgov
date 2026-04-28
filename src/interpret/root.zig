@@ -6298,6 +6298,32 @@ test "E2E: NPSP recurring donation amount describe reports currency" {
     try std.testing.expectEqualStrings("CURRENCY", result.value.string);
 }
 
+test "E2E: SObjectField constructor argument coerces to DescribeFieldResult" {
+    const source =
+        \\public class SObjectFieldDescribeConstructorArgProbe {
+        \\    public class Column {
+        \\        public String typeName;
+        \\        public Column(Schema.DescribeFieldResult field) {
+        \\            typeName = field.getType().name();
+        \\        }
+        \\    }
+        \\    public static String test() {
+        \\        Column column = new Column(
+        \\            Schema.SObjectType.npe03__Recurring_Donation__c.fields.npe03__Amount__c
+        \\        );
+        \\        return column.typeName;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "SObjectFieldDescribeConstructorArgProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("CURRENCY", result.value.string);
+}
+
 test "E2E: Datetime.valueOf accepts loose single-digit components" {
     // `Datetime.valueOf('2006-5-4 3:2:1')` is real-world input seen in utility code that
     // re-parses user-entered strings. Apex accepts it; we need to as well.

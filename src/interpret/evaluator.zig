@@ -2043,11 +2043,11 @@ pub const Evaluator = struct {
         const method_env = try self.global_env.child();
 
         for (method.params, 0..) |param, i| {
+            const declared_type = self.render_type_ref(param.type_ref);
             const val = if (i < args.len)
-                try self.prepare_method_arg_value(args[i])
+                try self.prepare_declared_arg_value(args[i], declared_type)
             else
                 Value.null_val;
-            const declared_type = self.render_type_ref(param.type_ref);
             try method_env.define_typed(
                 param.name,
                 self.annotate_declared_collection_type(val, declared_type),
@@ -15652,6 +15652,35 @@ pub const Evaluator = struct {
         };
     }
 
+    fn prepare_declared_arg_value(
+        self: *Evaluator,
+        value: Value,
+        declared_type: []const u8,
+    ) !Value {
+        const prepared = try self.prepare_method_arg_value(value);
+        if (!is_describe_field_result_type(declared_type)) return prepared;
+        if (prepared != .object) return prepared;
+        if (!is_s_object_field_object(prepared.object.class_name)) return prepared;
+
+        var builtin_ctx = self.make_builtin_context();
+        return (try builtins.dispatch_instance(
+            &builtin_ctx,
+            prepared,
+            "getDescribe",
+            &.{},
+        )) orelse prepared;
+    }
+
+    fn is_describe_field_result_type(type_name: []const u8) bool {
+        return std.ascii.eqlIgnoreCase(type_name, "DescribeFieldResult") or
+            std.ascii.eqlIgnoreCase(type_name, "Schema.DescribeFieldResult");
+    }
+
+    fn is_s_object_field_object(class_name: []const u8) bool {
+        return std.ascii.eqlIgnoreCase(class_name, "SObjectField") or
+            std.ascii.eqlIgnoreCase(class_name, "Schema.SObjectField");
+    }
+
     fn connect_api_create_record_ref(self: *Evaluator, record_id: []const u8) !Value {
         const record = try self.connect_api_create_object("ConnectApi.Record");
         try record.fields.put(self.arena, "id", Value{ .string = record_id });
@@ -24618,11 +24647,11 @@ pub const Evaluator = struct {
             };
         }
         for (method.params, 0..) |param, i| {
+            const declared_type = self.render_type_ref(param.type_ref);
             const val = if (i < args.len)
-                try self.prepare_method_arg_value(args[i])
+                try self.prepare_declared_arg_value(args[i], declared_type)
             else
                 Value.null_val;
-            const declared_type = self.render_type_ref(param.type_ref);
             try method_env.define_typed(
                 param.name,
                 self.annotate_declared_collection_type(val, declared_type),
@@ -25785,8 +25814,11 @@ pub const Evaluator = struct {
             };
         }
         for (cd.params, 0..) |param, pi| {
-            const pval = if (pi < args.len) args[pi] else Value.null_val;
             const declared_type = self.render_type_ref(param.type_ref);
+            const pval = if (pi < args.len)
+                try self.prepare_declared_arg_value(args[pi], declared_type)
+            else
+                Value.null_val;
             try ctor_env.define_typed(
                 param.name,
                 self.annotate_declared_collection_type(pval, declared_type),
