@@ -7248,6 +7248,66 @@ test "E2E: Opportunity IsClosed SELECT derives from StageName" {
     try std.testing.expectEqualStrings("true:true", result.value.string);
 }
 
+test "E2E: Opportunity IsClosed field access derives from StageName" {
+    const source =
+        \\public class OpportunityIsClosedAccessTest {
+        \\    public static String test() {
+        \\        Opportunity opp = new Opportunity(
+        \\            Name = 'Donation',
+        \\            CloseDate = Date.today(),
+        \\            StageName = 'Closed Won'
+        \\        );
+        \\        return String.valueOf(opp.IsClosed) + ':' + String.valueOf(opp.IsWon);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "OpportunityIsClosedAccessTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("true:true", result.value.string);
+}
+
+test "E2E: CampaignMember HasResponded SELECT derives from member status" {
+    const source =
+        \\public class CampaignMemberHasRespondedSelectTest {
+        \\    public static String test() {
+        \\        Campaign campaign = new Campaign(Name = 'Appeal');
+        \\        insert campaign;
+        \\        insert new CampaignMemberStatus(
+        \\            CampaignId = campaign.Id,
+        \\            Label = 'Responded',
+        \\            HasResponded = true,
+        \\            SortOrder = 1
+        \\        );
+        \\        Contact contact = new Contact(LastName = 'Smith');
+        \\        insert contact;
+        \\        insert new CampaignMember(
+        \\            CampaignId = campaign.Id,
+        \\            ContactId = contact.Id,
+        \\            Status = 'Responded'
+        \\        );
+        \\        CampaignMember member = [
+        \\            SELECT HasResponded
+        \\            FROM CampaignMember
+        \\            WHERE ContactId = :contact.Id
+        \\            LIMIT 1
+        \\        ];
+        \\        return String.valueOf(member.HasResponded);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "CampaignMemberHasRespondedSelectTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("true", result.value.string);
+}
+
 test "E2E: DescribeFieldResult returns its SObjectField token" {
     const source =
         \\public class DescribeFieldTokenRoundTripTest {

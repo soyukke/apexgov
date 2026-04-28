@@ -6384,7 +6384,7 @@ pub const Evaluator = struct {
                 item.sobject,
                 field_name,
             ) orelse
-                computed_where_field_value(item.sobject, field_name) orelse
+                self.computed_selected_field_value(item.sobject, field_name) orelse
                 Value.null_val;
             try utils.sobject_put(&item.sobject.fields, self.arena, field_name, selected_value);
             if (!is_to_label) continue;
@@ -9767,6 +9767,50 @@ pub const Evaluator = struct {
         return null;
     }
 
+    fn computed_selected_field_value(
+        self: *Evaluator,
+        sob: *types.SObject,
+        field_name: []const u8,
+    ) ?Value {
+        if (computed_where_field_value(sob, field_name)) |value| return value;
+        if (std.ascii.eqlIgnoreCase(sob.type_name, "CampaignMember") and
+            std.ascii.eqlIgnoreCase(field_name, "HasResponded"))
+        {
+            return self.campaign_member_has_responded(sob);
+        }
+        return null;
+    }
+
+    fn campaign_member_has_responded(self: *Evaluator, member: *types.SObject) ?Value {
+        const campaign_id = self.get_s_object_field_value_case_insensitive(
+            member,
+            "CampaignId",
+        ) orelse return null;
+        const status = self.get_s_object_field_value_case_insensitive(
+            member,
+            "Status",
+        ) orelse return Value{ .boolean = false };
+        if (campaign_id != .string or status != .string) return Value{ .boolean = false };
+        const statuses = self.store.get("CampaignMemberStatus") orelse
+            return Value{ .boolean = false };
+        for (statuses.items) |item| {
+            if (item != .sobject) continue;
+            const candidate_campaign = self.get_s_object_field_value_case_insensitive(
+                item.sobject,
+                "CampaignId",
+            ) orelse continue;
+            const candidate_label = self.get_s_object_field_value_case_insensitive(
+                item.sobject,
+                "Label",
+            ) orelse continue;
+            if (candidate_campaign != .string or candidate_label != .string) continue;
+            if (!std.ascii.eqlIgnoreCase(candidate_campaign.string, campaign_id.string)) continue;
+            if (!std.ascii.eqlIgnoreCase(candidate_label.string, status.string)) continue;
+            return self.get_s_object_field_value_case_insensitive(item.sobject, "HasResponded");
+        }
+        return Value{ .boolean = false };
+    }
+
     fn opportunity_stage_is_closed(sob: *types.SObject) bool {
         const stage = utils.sobject_get(&sob.fields, "StageName") orelse return false;
         if (stage != .string) return false;
@@ -10746,6 +10790,7 @@ pub const Evaluator = struct {
         {
             if (utils.sobject_get(&sob.fields, "npe03__Amount__c")) |amount| return amount;
         }
+        if (computed_where_field_value(sob, field_name)) |computed| return computed;
         if (self.resolve_derived_field_value(sob, field_name)) |derived| return derived;
         if (try_resolve_parent_relationship_value(self, sob, field_name)) |parent| {
             return parent;
