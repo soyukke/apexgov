@@ -14636,7 +14636,7 @@ test "E2E: executeBatch creates queryable AsyncApexJob records" {
         \\            : batchClassName;
         \\        String jobId = Database.executeBatch(new AsyncJobProbeBatch());
         \\        List<AsyncApexJob> jobs = [
-        \\            SELECT Id, JobType, Status, CreatedBy.Name
+        \\            SELECT Id, JobType, Status, CreatedBy.Name, JobItemsProcessed, TotalJobItems
         \\            FROM AsyncApexJob
         \\            WHERE
         \\                Id = :jobId
@@ -14647,7 +14647,9 @@ test "E2E: executeBatch creates queryable AsyncApexJob records" {
         \\        return String.valueOf(jobs.size()) +
         \\            ':' + job.JobType +
         \\            ':' + job.Status +
-        \\            ':' + job.CreatedBy.Name;
+        \\            ':' + job.CreatedBy.Name +
+        \\            ':' + String.valueOf(job.JobItemsProcessed) +
+        \\            ':' + String.valueOf(job.TotalJobItems);
         \\    }
         \\}
     ;
@@ -14657,7 +14659,7 @@ test "E2E: executeBatch creates queryable AsyncApexJob records" {
     });
     defer result.deinit();
 
-    try std.testing.expectEqualStrings("1:BatchApex:Completed:Test User", result.value.string);
+    try std.testing.expectEqualStrings("1:BatchApex:Completed:Test User:1:1", result.value.string);
 }
 
 test "E2E: AsyncApexJob namespace prefix matches blank namespace filters" {

@@ -26161,6 +26161,7 @@ pub const Evaluator = struct {
             if (method_name) |name| Value{ .string = name } else Value.null_val,
         );
         try async_job.fields.put(self.arena, "JobItemsProcessed", Value{ .integer = 0 });
+        try async_job.fields.put(self.arena, "TotalJobItems", Value{ .integer = 0 });
         try async_job.fields.put(self.arena, "NumberOfErrors", Value{ .integer = 0 });
         try async_job.fields.put(self.arena, "ApexClass", Value{ .sobject = apex_class });
         if (utils.sobject_get(&apex_class.fields, "Id")) |apex_class_id| {
@@ -26201,6 +26202,30 @@ pub const Evaluator = struct {
                 self.arena,
                 "NumberOfErrors",
                 Value{ .integer = number_of_errors },
+            ) catch {};
+            break;
+        }
+    }
+
+    fn update_async_apex_job_items(
+        self: *Evaluator,
+        job_id: []const u8,
+        total_items: i64,
+        processed_items: i64,
+    ) void {
+        const jobs = self.store.getPtr("AsyncApexJob") orelse return;
+        for (jobs.items) |item| {
+            if (item != .sobject or item.sobject.id == null) continue;
+            if (!std.ascii.eqlIgnoreCase(item.sobject.id.?, job_id)) continue;
+            item.sobject.fields.put(
+                self.arena,
+                "TotalJobItems",
+                Value{ .integer = total_items },
+            ) catch {};
+            item.sobject.fields.put(
+                self.arena,
+                "JobItemsProcessed",
+                Value{ .integer = processed_items },
             ) catch {};
             break;
         }
@@ -26410,6 +26435,7 @@ pub const Evaluator = struct {
             "execute",
             &.{ batch_context_value, Value{ .list = record_list } },
         );
+        self.update_async_apex_job_items(batch_job_id, 1, 1);
         _ = try self.call_batch_lifecycle_phase(
             batch_class,
             batch_obj,
