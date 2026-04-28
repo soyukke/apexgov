@@ -866,10 +866,21 @@ const Parser = struct {
             }
         }
         const target = try self.expression();
+        const merge_secondary =
+            if (op == .merge and !self.check(.semicolon) and !self.check(.eof))
+                try self.expression()
+            else
+                null;
         _ = self.match_kind(.semicolon);
 
         const stmt = try self.arena.create(ast.DmlStmt);
-        stmt.* = .{ .op = op, .target = target, .is_user_mode = is_user_mode, .loc = loc };
+        stmt.* = .{
+            .op = op,
+            .target = target,
+            .merge_secondary = merge_secondary,
+            .is_user_mode = is_user_mode,
+            .loc = loc,
+        };
         return .{ .dml_stmt = stmt };
     }
 
@@ -1532,6 +1543,7 @@ const Parser = struct {
         node.* = .{
             .type_name = type_name,
             .args = try arr_args.toOwnedSlice(self.arena),
+            .is_array_size = true,
             .loc = loc,
         };
         const result = try self.arena.create(ast.Expr);

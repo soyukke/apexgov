@@ -80,6 +80,7 @@ pub const ListValue = struct {
 pub const MapValue = struct {
     entries: std.StringArrayHashMapUnmanaged(Value) = .empty,
     key_values: std.StringArrayHashMapUnmanaged(Value) = .empty,
+    schema_field_owner: ?[]const u8 = null,
 };
 
 pub const SetValue = struct {

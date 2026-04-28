@@ -129,6 +129,7 @@ pub const NewExpr = struct {
     type_name: TypeRef,
     args: []Expr,
     is_brace_initializer: bool = false,
+    is_array_size: bool = false,
     loc: SourceLoc = .zero,
 };
 
@@ -278,6 +279,7 @@ pub const DmlOp = enum {
 pub const DmlStmt = struct {
     op: DmlOp,
     target: *Expr,
+    merge_secondary: ?*Expr = null,
     is_user_mode: bool = false,
     loc: SourceLoc = .zero,
 };
