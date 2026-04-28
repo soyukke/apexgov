@@ -7308,6 +7308,40 @@ test "E2E: CampaignMember HasResponded SELECT derives from member status" {
     try std.testing.expectEqualStrings("true", result.value.string);
 }
 
+test "E2E: CampaignMemberStatus insert ignores duplicate campaign labels" {
+    const source =
+        \\public class CampaignMemberStatusDuplicateTest {
+        \\    public static Integer test() {
+        \\        Campaign campaign = new Campaign(Name = 'Appeal');
+        \\        insert campaign;
+        \\        List<CampaignMemberStatus> statuses = new List<CampaignMemberStatus>();
+        \\        statuses.add(new CampaignMemberStatus(
+        \\            CampaignId = campaign.Id,
+        \\            Label = 'Follow Up',
+        \\            HasResponded = false,
+        \\            SortOrder = 10
+        \\        ));
+        \\        statuses.add(new CampaignMemberStatus(
+        \\            CampaignId = campaign.Id,
+        \\            Label = 'Follow Up',
+        \\            HasResponded = false,
+        \\            SortOrder = 11
+        \\        ));
+        \\        insert statuses;
+        \\        return [SELECT Id FROM CampaignMemberStatus
+        \\            WHERE CampaignId = :campaign.Id AND Label = 'Follow Up'].size();
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "CampaignMemberStatusDuplicateTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqual(@as(i64, 1), result.value.integer);
+}
+
 test "E2E: DescribeFieldResult returns its SObjectField token" {
     const source =
         \\public class DescribeFieldTokenRoundTripTest {

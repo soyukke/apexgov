@@ -3839,6 +3839,7 @@ pub const Evaluator = struct {
         if (try self.validate_required_fields(obj, false)) |err_msg| {
             try self.throw_dml_exception(err_msg);
         }
+        if (self.campaign_member_status_exists(obj)) return;
 
         const id = try self.assign_insert_id(obj);
         var rollback_this_insert = true;
@@ -3859,6 +3860,33 @@ pub const Evaluator = struct {
         const snapshot = try self.store_insert_snapshot(obj, id, timestamps);
         try self.apply_insert_side_effects(obj, snapshot, id);
         rollback_this_insert = false;
+    }
+
+    fn campaign_member_status_exists(self: *Evaluator, obj: *types.SObject) bool {
+        if (!std.ascii.eqlIgnoreCase(obj.type_name, "CampaignMemberStatus")) return false;
+        const campaign_id =
+            self.get_s_object_field_value_case_insensitive(obj, "CampaignId") orelse return false;
+        const label =
+            self.get_s_object_field_value_case_insensitive(obj, "Label") orelse return false;
+        if (campaign_id != .string or label != .string) return false;
+        const records = self.store.get("CampaignMemberStatus") orelse return false;
+        for (records.items) |record| {
+            if (record != .sobject) continue;
+            const existing_campaign =
+                self.get_s_object_field_value_case_insensitive(
+                    record.sobject,
+                    "CampaignId",
+                ) orelse continue;
+            const existing_label =
+                self.get_s_object_field_value_case_insensitive(
+                    record.sobject,
+                    "Label",
+                ) orelse continue;
+            if (existing_campaign != .string or existing_label != .string) continue;
+            if (!std.ascii.eqlIgnoreCase(existing_campaign.string, campaign_id.string)) continue;
+            if (std.ascii.eqlIgnoreCase(existing_label.string, label.string)) return true;
+        }
+        return false;
     }
 
     const InsertTimestamps = struct {
