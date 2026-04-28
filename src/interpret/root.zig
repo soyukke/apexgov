@@ -4655,6 +4655,24 @@ test "E2E: HttpRequest.getHeader returns null for missing header" {
     try std.testing.expectEqualStrings("null", result.value.string);
 }
 
+test "E2E: HttpRequest.getBody returns empty string when unset" {
+    const source =
+        \\public class HttpUnsetBodyProbe {
+        \\    public static String test() {
+        \\        HttpRequest req = new HttpRequest();
+        \\        return req.getBody();
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "HttpUnsetBodyProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("", result.value.string);
+}
+
 test "E2E: SOQL parent relationship resolves namespaced custom lookup" {
     const source =
         \\public class NamespacedParentLookupProbe {

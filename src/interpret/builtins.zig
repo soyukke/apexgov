@@ -7006,7 +7006,10 @@ fn dispatch_http_getters(
         return obj.fields.get("statusCode") orelse Value{ .integer = 200 };
     }
     if (std.ascii.eqlIgnoreCase(method_name, "getBody")) {
-        return obj.fields.get("body") orelse Value{ .string = "{}" };
+        return obj.fields.get("body") orelse if (std.ascii.eqlIgnoreCase(obj.class_name, "HttpRequest"))
+            Value{ .string = "" }
+        else
+            Value{ .string = "{}" };
     }
     if (std.ascii.eqlIgnoreCase(method_name, "getCompressed")) {
         return obj.fields.get("compressed") orelse Value{ .boolean = false };
