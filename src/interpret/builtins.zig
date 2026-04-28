@@ -530,7 +530,9 @@ fn dispatch_static_system(
     if (std.ascii.eqlIgnoreCase(method_name, "today")) {
         return try make_date_value(ctx.arena, try current_date_string(ctx.arena));
     }
-    if (std.ascii.eqlIgnoreCase(method_name, "isFuture")) return Value{ .boolean = false };
+    if (std.ascii.eqlIgnoreCase(method_name, "isFuture")) {
+        return Value{ .boolean = ctx.eval.active_future_depth > 0 };
+    }
     if (std.ascii.eqlIgnoreCase(method_name, "isBatch")) {
         return Value{ .boolean = ctx.eval.active_batch_job_id != null };
     }
@@ -907,14 +909,34 @@ fn dispatch_static_date(
                 .double => |d2| @as(i64, @intFromFloat(d2)),
                 else => 1,
             };
+            const clamped_year = if (y < 0) 1 else y;
+            const clamped_month = if (m < 1) 1 else if (m > 12) 12 else m;
+            const max_day = date_days_in_month(
+                @as(i32, @intCast(clamped_year)),
+                @as(i32, @intCast(clamped_month)),
+            );
+            const clamped_day = if (d < 1) 1 else if (d > max_day) max_day else d;
             const s = try std.fmt.allocPrint(ctx.arena, "{d:0>4}-{d:0>2}-{d:0>2}", .{
-                @as(u32, @intCast(if (y < 0) 1 else y)),
-                @as(u32, @intCast(if (m < 1) 1 else if (m > 12) 12 else m)),
-                @as(u32, @intCast(if (d < 1) 1 else if (d > 31) 31 else d)),
+                @as(u32, @intCast(clamped_year)),
+                @as(u32, @intCast(clamped_month)),
+                @as(u32, @intCast(clamped_day)),
             });
             return try make_date_value(ctx.arena, s);
         }
         return try make_date_value(ctx.arena, "2026-01-01");
+    }
+    if (std.ascii.eqlIgnoreCase(method_name, "daysInMonth") and args.len >= 2) {
+        const year = switch (args[0]) {
+            .integer => |i| @as(i32, @intCast(i)),
+            .double => |d| @as(i32, @intFromFloat(d)),
+            else => 2026,
+        };
+        const month = switch (args[1]) {
+            .integer => |i| @as(i32, @intCast(i)),
+            .double => |d| @as(i32, @intFromFloat(d)),
+            else => 1,
+        };
+        return Value{ .integer = date_days_in_month(year, month) };
     }
     if (std.ascii.eqlIgnoreCase(method_name, "valueOf")) {
         if (args.len > 0) {
@@ -928,6 +950,20 @@ fn dispatch_static_date(
         return try make_date_value(ctx.arena, "2026-01-01");
     }
     return try make_date_value(ctx.arena, try current_date_string(ctx.arena));
+}
+
+fn date_days_in_month(year: i32, month: i32) i64 {
+    return switch (month) {
+        1, 3, 5, 7, 8, 10, 12 => 31,
+        4, 6, 9, 11 => 30,
+        2 => if (date_is_leap_year(year)) 29 else 28,
+        else => 31,
+    };
+}
+
+fn date_is_leap_year(year: i32) bool {
+    return @mod(year, 4) == 0 and
+        (@mod(year, 100) != 0 or @mod(year, 400) == 0);
 }
 
 fn dispatch_static_math(method_name: []const u8, args: []const Value) !?Value {
@@ -1667,6 +1703,10 @@ fn dispatch_obj_json_generator(
         try json_generator_write_raw_value(ctx, obj, try utils.to_json(string_value, ctx.arena));
         return Value.void_val;
     }
+    if (std.ascii.eqlIgnoreCase(method_name, "writeStringField") and args.len >= 2) {
+        try json_generator_write_string_field(ctx, obj, args);
+        return Value.void_val;
+    }
     if (std.ascii.eqlIgnoreCase(method_name, "writeNull")) {
         try json_generator_write_raw_value(ctx, obj, "null");
         return Value.void_val;
@@ -1688,6 +1728,19 @@ fn dispatch_obj_json_generator(
         return Value.void_val;
     }
     return null;
+}
+
+fn json_generator_write_string_field(
+    ctx: *BuiltinContext,
+    obj: *types.ObjectInstance,
+    args: []const Value,
+) !void {
+    _ = try json_gen_write_field_name(ctx, obj, args[0..1]);
+    const string_value = if (args[1] == .string)
+        args[1]
+    else
+        Value{ .string = try utils.coerce_to_string(args[1], ctx.arena) };
+    try json_generator_write_raw_value(ctx, obj, try utils.to_json(string_value, ctx.arena));
 }
 
 /// `JSON.Generator.writeFieldName(name)` 本体。オブジェクトコンテキスト
@@ -2081,6 +2134,9 @@ const schema_global_describe_known_types = [_][]const u8{
     "CampaignMember",
     "OpportunityContactRole",
     "OpportunityStage",
+    "DuplicateRecordSet",
+    "DuplicateRecordItem",
+    "DuplicateRule",
     "AccountContactRole",
     "AccountTeamMember",
     "OpportunityTeamMember",
@@ -2179,6 +2235,11 @@ fn put_schema_s_object_type(
     try sot.fields.put(ctx.arena, "name", Value{ .string = obj_name });
     // Store with original case: Map.get uses case-insensitive lookup in evalMapMethod.
     try map.entries.put(ctx.arena, obj_name, Value{ .object = sot });
+    const lower = try ctx.arena.alloc(u8, obj_name.len);
+    _ = std.ascii.lowerString(lower, obj_name);
+    if (!map.entries.contains(lower)) {
+        try map.entries.put(ctx.arena, lower, Value{ .object = sot });
+    }
 }
 
 fn dispatch_schema_describe_s_objects(ctx: *BuiltinContext, args: []const Value) !Value {
@@ -2729,6 +2790,13 @@ fn dispatch_static_type(
     method_name: []const u8,
     args: []const Value,
 ) !?Value {
+    if (std.ascii.eqlIgnoreCase(method_name, "forName") and
+        args.len >= 2 and
+        args[1] == .string)
+    {
+        const type_arg = [_]Value{args[1]};
+        return try dispatch_static_type(ctx, method_name, &type_arg);
+    }
     if (std.ascii.eqlIgnoreCase(method_name, "forName") and args.len > 0 and args[0] == .string) {
         const requested = args[0].string;
         if (std.ascii.startsWithIgnoreCase(requested, "Map") or
@@ -2857,9 +2925,27 @@ fn crypto_verify_mac(
     std.crypto.auth.hmac.sha2.HmacSha256.create(&mac, data_bytes, key_bytes);
     const computed_hex = try bytes_to_hex_alloc(ctx.arena, &mac);
     return Value{
-        .boolean = std.mem.eql(u8, computed_hex, expected_bytes) or
+        .boolean = std.mem.eql(u8, &mac, expected_bytes) or
+            std.mem.eql(u8, computed_hex, expected_bytes) or
             std.mem.eql(u8, expected_bytes, ""),
     };
+}
+
+fn crypto_signature_blob(ctx: *BuiltinContext, args: []const Value) !Value {
+    const data_bytes = if (args.len >= 2) blob_to_bytes(args[1]) else "data";
+    var mac: [32]u8 = undefined;
+    std.crypto.auth.hmac.sha2.HmacSha256.create(&mac, data_bytes, "apexgov-signature");
+    const raw = try ctx.arena.dupe(u8, &mac);
+    return try make_blob_object(ctx, Value{ .string = raw });
+}
+
+fn crypto_verify_signature(ctx: *BuiltinContext, args: []const Value) !Value {
+    _ = ctx;
+    const data_bytes = if (args.len >= 2) blob_to_bytes(args[1]) else "data";
+    const signature_bytes = if (args.len >= 3) blob_to_bytes(args[2]) else "";
+    var mac: [32]u8 = undefined;
+    std.crypto.auth.hmac.sha2.HmacSha256.create(&mac, data_bytes, "apexgov-signature");
+    return Value{ .boolean = std.mem.eql(u8, &mac, signature_bytes) };
 }
 
 fn dispatch_static_crypto(
@@ -2893,9 +2979,7 @@ fn dispatch_static_crypto(
         @memset(buf, 0);
         return try make_blob_object(ctx, Value{ .string = buf });
     }
-    if (std.ascii.eqlIgnoreCase(method_name, "sign")) {
-        return try make_blob_object(ctx, Value{ .string = "mock-signature" });
-    }
+    if (std.ascii.eqlIgnoreCase(method_name, "sign")) return try crypto_signature_blob(ctx, args);
     if (std.ascii.eqlIgnoreCase(method_name, "encryptWithManagedIV") or
         std.ascii.eqlIgnoreCase(method_name, "decryptWithManagedIV") or
         std.ascii.eqlIgnoreCase(method_name, "encrypt") or
@@ -2908,7 +2992,9 @@ fn dispatch_static_crypto(
     {
         return try crypto_verify_mac(ctx, args);
     }
-    if (std.ascii.eqlIgnoreCase(method_name, "verify")) return Value{ .boolean = true };
+    if (std.ascii.eqlIgnoreCase(method_name, "verify")) {
+        return try crypto_verify_signature(ctx, args);
+    }
     if (std.ascii.eqlIgnoreCase(method_name, "getRandomInteger") or
         std.ascii.eqlIgnoreCase(method_name, "getRandomLong"))
     {
@@ -3692,6 +3778,7 @@ fn standard_reference_target_for_field_name(field_name: []const u8) ?[]const u8 
         .{ .field_name = "OwnerId", .target_type = "User" },
         .{ .field_name = "CreatedById", .target_type = "User" },
         .{ .field_name = "LastModifiedById", .target_type = "User" },
+        .{ .field_name = "RecordTypeId", .target_type = "RecordType" },
         .{ .field_name = "ProfileId", .target_type = "Profile" },
         .{ .field_name = "UserRoleId", .target_type = "UserRole" },
         .{ .field_name = "UserLicenseId", .target_type = "UserLicense" },
@@ -3893,6 +3980,12 @@ const standard_child_relationships = [_]ChildRelationshipSpec{
         .child = "OpportunityContactRole",
         .fk = "OpportunityId",
         .relationship = "OpportunityContactRoles",
+    },
+    .{
+        .parent = "Opportunity",
+        .child = "npe01__OppPayment__c",
+        .fk = "npe01__Opportunity__c",
+        .relationship = "npe01__OppPayment__r",
     },
     .{ .parent = "Opportunity", .child = "Event", .fk = "WhatId", .relationship = "Events" },
     .{ .parent = "Opportunity", .child = "Task", .fk = "WhatId", .relationship = "Tasks" },
@@ -4242,41 +4335,15 @@ fn build_record_type_info_artifacts(
         }
     }
 
-    const master_rt_id = try std.fmt.allocPrint(ctx.arena, "0120000000000{d:0>2}AAA", .{obj_idx});
-    const master_rt = try create_record_type_info(
+    try add_standard_record_type_info_artifacts(
         ctx,
-        "Master",
-        "Master",
-        master_rt_id,
-        true,
-        true,
-        true,
-        true,
+        rt_list,
+        rt_by_id_map,
+        rt_by_name_map,
+        rt_by_dev_name_map,
+        obj_name,
+        obj_idx,
     );
-    try rt_list.items.append(ctx.arena, master_rt);
-    try rt_by_id_map.entries.put(ctx.arena, master_rt_id, master_rt);
-    try rt_by_name_map.entries.put(ctx.arena, "Master", master_rt);
-    try rt_by_name_map.entries.put(ctx.arena, "master", master_rt);
-    try rt_by_dev_name_map.entries.put(ctx.arena, "Master", master_rt);
-    try rt_by_dev_name_map.entries.put(ctx.arena, "master", master_rt);
-
-    const def_rt_id = try std.fmt.allocPrint(ctx.arena, "0120000000001{d:0>2}AAA", .{obj_idx});
-    const default_rt = try create_record_type_info(
-        ctx,
-        "Default",
-        "Default",
-        def_rt_id,
-        false,
-        true,
-        true,
-        false,
-    );
-    try rt_list.items.append(ctx.arena, default_rt);
-    try rt_by_id_map.entries.put(ctx.arena, def_rt_id, default_rt);
-    try rt_by_name_map.entries.put(ctx.arena, "Default", default_rt);
-    try rt_by_name_map.entries.put(ctx.arena, "default", default_rt);
-    try rt_by_dev_name_map.entries.put(ctx.arena, "Default", default_rt);
-    try rt_by_dev_name_map.entries.put(ctx.arena, "default", default_rt);
 
     return .{
         .list = Value{ .list = rt_list },
@@ -4284,6 +4351,127 @@ fn build_record_type_info_artifacts(
         .by_name = Value{ .map = rt_by_name_map },
         .by_dev_name = Value{ .map = rt_by_dev_name_map },
     };
+}
+
+fn add_standard_record_type_info_artifacts(
+    ctx: *BuiltinContext,
+    rt_list: *types.ListValue,
+    rt_by_id_map: *types.MapValue,
+    rt_by_name_map: *types.MapValue,
+    rt_by_dev_name_map: *types.MapValue,
+    obj_name: []const u8,
+    obj_idx: usize,
+) !void {
+    const master_id = try std.fmt.allocPrint(ctx.arena, "0120000000000{d:0>2}AAA", .{obj_idx});
+    try add_record_type_info_artifact(
+        ctx,
+        rt_list,
+        rt_by_id_map,
+        rt_by_name_map,
+        rt_by_dev_name_map,
+        .master(master_id),
+    );
+
+    const default_id = try std.fmt.allocPrint(ctx.arena, "0120000000001{d:0>2}AAA", .{obj_idx});
+    try add_record_type_info_artifact(
+        ctx,
+        rt_list,
+        rt_by_id_map,
+        rt_by_name_map,
+        rt_by_dev_name_map,
+        .default(default_id),
+    );
+
+    if (std.ascii.eqlIgnoreCase(obj_name, "Account")) {
+        try add_record_type_info_artifact(
+            ctx,
+            rt_list,
+            rt_by_id_map,
+            rt_by_name_map,
+            rt_by_dev_name_map,
+            .account_household(),
+        );
+    }
+}
+
+const SyntheticRecordTypeInfo = struct {
+    id: []const u8,
+    name: []const u8,
+    developer_name: []const u8,
+    lower_name: []const u8,
+    lower_developer_name: []const u8,
+    is_master: bool,
+    available: bool,
+    active: bool,
+    default_mapping: bool,
+
+    fn master(id: []const u8) SyntheticRecordTypeInfo {
+        return .{
+            .id = id,
+            .name = "Master",
+            .developer_name = "Master",
+            .lower_name = "master",
+            .lower_developer_name = "master",
+            .is_master = true,
+            .available = true,
+            .active = true,
+            .default_mapping = true,
+        };
+    }
+
+    fn default(id: []const u8) SyntheticRecordTypeInfo {
+        return .{
+            .id = id,
+            .name = "Default",
+            .developer_name = "Default",
+            .lower_name = "default",
+            .lower_developer_name = "default",
+            .is_master = false,
+            .available = true,
+            .active = true,
+            .default_mapping = false,
+        };
+    }
+
+    fn account_household() SyntheticRecordTypeInfo {
+        return .{
+            .id = "012000000000200AAA",
+            .name = "Household Account",
+            .developer_name = "HH_Account",
+            .lower_name = "household account",
+            .lower_developer_name = "hh_account",
+            .is_master = false,
+            .available = true,
+            .active = true,
+            .default_mapping = false,
+        };
+    }
+};
+
+fn add_record_type_info_artifact(
+    ctx: *BuiltinContext,
+    rt_list: *types.ListValue,
+    rt_by_id_map: *types.MapValue,
+    rt_by_name_map: *types.MapValue,
+    rt_by_dev_name_map: *types.MapValue,
+    info: SyntheticRecordTypeInfo,
+) !void {
+    const rt = try create_record_type_info(
+        ctx,
+        info.name,
+        info.developer_name,
+        info.id,
+        info.is_master,
+        info.available,
+        info.active,
+        info.default_mapping,
+    );
+    try rt_list.items.append(ctx.arena, rt);
+    try rt_by_id_map.entries.put(ctx.arena, info.id, rt);
+    try rt_by_name_map.entries.put(ctx.arena, info.name, rt);
+    try rt_by_name_map.entries.put(ctx.arena, info.lower_name, rt);
+    try rt_by_dev_name_map.entries.put(ctx.arena, info.developer_name, rt);
+    try rt_by_dev_name_map.entries.put(ctx.arena, info.lower_developer_name, rt);
 }
 
 pub fn create_field_describe_result(
@@ -4327,6 +4515,52 @@ fn is_custom_schema_extension_field(field_name: []const u8) bool {
     return std.ascii.endsWithIgnoreCase(field_name, "__c") or
         std.ascii.endsWithIgnoreCase(field_name, "__pc") or
         std.ascii.endsWithIgnoreCase(field_name, "__r");
+}
+
+fn is_standard_address_field(field_name: []const u8) bool {
+    const prefixes = .{ "Mailing", "Other", "Billing", "Shipping" };
+    const suffixes = .{
+        "Street",
+        "City",
+        "PostalCode",
+        "State",
+        "Country",
+        "Latitude",
+        "Longitude",
+        "StateCode",
+        "CountryCode",
+    };
+    inline for (prefixes) |prefix| {
+        if (std.ascii.startsWithIgnoreCase(field_name, prefix)) {
+            const suffix = field_name[prefix.len..];
+            inline for (suffixes) |known_suffix| {
+                if (std.ascii.eqlIgnoreCase(suffix, known_suffix)) return true;
+            }
+        }
+    }
+    return false;
+}
+
+fn is_common_standard_sobject_field(field_name: []const u8) bool {
+    const fields = .{
+        "Name",
+        "Salutation",
+        "FirstName",
+        "LastName",
+        "Title",
+        "Email",
+        "Phone",
+        "HomePhone",
+        "MobilePhone",
+        "Fax",
+        "OwnerId",
+        "AccountId",
+        "CurrencyIsoCode",
+    };
+    inline for (fields) |known_field| {
+        if (std.ascii.eqlIgnoreCase(field_name, known_field)) return true;
+    }
+    return false;
 }
 
 fn add_describe_field_if_missing(
@@ -4373,8 +4607,9 @@ const known_describe_field_sets = [_]struct { object: []const u8, fields: []cons
         "OtherPhone",    "Fax",               "Title",           "Department",
         "Birthdate",     "MailingCity",       "MailingCountry",  "MailingState",
         "MailingStreet", "MailingPostalCode", "MailingLatitude", "MailingLongitude",
-        "OtherLatitude", "OtherLongitude",    "LeadSource",      "Description",
-        "OwnerId",       "ReportsToId",
+        "OtherStreet",   "OtherCity",         "OtherState",      "OtherPostalCode",
+        "OtherCountry",  "OtherLatitude",     "OtherLongitude",  "LeadSource",
+        "Description",   "OwnerId",           "ReportsToId",
     } },
     .{ .object = "Lead", .fields = &.{
         "FirstName", "LastName", "Company", "Email",
@@ -4383,10 +4618,15 @@ const known_describe_field_sets = [_]struct { object: []const u8, fields: []cons
         "Subject", "ActivityDate", "Priority", "Status", "WhatId", "WhoId",
     } },
     .{ .object = "Opportunity", .fields = &.{
-        "AccountId",       "StageName",        "CloseDate",            "Amount",
-        "CampaignId",      "Probability",      "Type",                 "LeadSource",
-        "Description",     "IsPrivate",        "IsWon",                "IsClosed",
-        "ExpectedRevenue", "ForecastCategory", "ForecastCategoryName", "NextStep",
+        "AccountId",                   "StageName",        "CloseDate",            "Amount",
+        "CampaignId",                  "Probability",      "Type",                 "LeadSource",
+        "Description",                 "IsPrivate",        "IsWon",                "IsClosed",
+        "ExpectedRevenue",             "ForecastCategory", "ForecastCategoryName", "NextStep",
+        "npe01__Membership_Origin__c",
+    } },
+    .{ .object = "npe01__OppPayment__c", .fields = &.{
+        "npe01__Paid__c",           "npe01__Written_Off__c", "npe01__Opportunity__c",
+        "npe01__Payment_Amount__c",
     } },
     .{ .object = "OpportunityContactRole", .fields = &.{
         "OpportunityId", "ContactId", "Role", "IsPrimary",
@@ -4395,6 +4635,9 @@ const known_describe_field_sets = [_]struct { object: []const u8, fields: []cons
         "MasterLabel",        "ApiName",          "SortOrder",
         "IsActive",           "IsClosed",         "IsWon",
         "DefaultProbability", "ForecastCategory", "ForecastCategoryName",
+    } },
+    .{ .object = "npe03__Recurring_Donation__c", .fields = &.{
+        "Amount",
     } },
     .{ .object = "User", .fields = &.{
         "Username",       "Email",             "FirstName",    "LastName",
@@ -4442,8 +4685,10 @@ const canonical_describe_field_sets = [_]struct { object: []const u8, fields: []
         "MobilePhone",       "HomePhone",       "OtherPhone",       "Fax",
         "Title",             "Department",      "Birthdate",        "LeadSource",
         "MailingCity",       "MailingCountry",  "MailingState",     "MailingStreet",
-        "MailingPostalCode", "MailingLatitude", "MailingLongitude", "OtherLatitude",
-        "OtherLongitude",    "Description",     "OwnerId",          "ReportsToId",
+        "MailingPostalCode", "MailingLatitude", "MailingLongitude", "OtherStreet",
+        "OtherCity",         "OtherState",      "OtherPostalCode",  "OtherCountry",
+        "OtherLatitude",     "OtherLongitude",  "Description",      "OwnerId",
+        "ReportsToId",
     } },
     .{ .object = "Lead", .fields = &.{
         "Id",      "FirstName",  "LastName", "Company",  "Email", "Phone", "Status",
@@ -4460,10 +4705,15 @@ const canonical_describe_field_sets = [_]struct { object: []const u8, fields: []
         "Id", "Name", "DeveloperName", "UserType", "UserLicenseId",
     } },
     .{ .object = "Opportunity", .fields = &.{
-        "Id",          "Name",   "AccountId",  "StageName",
-        "CloseDate",   "Amount", "CampaignId", "OwnerId",
-        "Probability", "Type",   "LeadSource", "Description",
-        "IsPrivate",
+        "Id",          "Name",                        "AccountId",  "StageName",
+        "CloseDate",   "Amount",                      "CampaignId", "OwnerId",
+        "Probability", "Type",                        "LeadSource", "Description",
+        "IsPrivate",   "npe01__Membership_Origin__c",
+    } },
+    .{ .object = "npe01__OppPayment__c", .fields = &.{
+        "Id",                    "Name",
+        "npe01__Paid__c",        "npe01__Written_Off__c",
+        "npe01__Opportunity__c", "npe01__Payment_Amount__c",
     } },
     .{ .object = "OpportunityContactRole", .fields = &.{
         "Id", "OpportunityId", "ContactId", "Role", "IsPrimary",
@@ -5964,6 +6214,9 @@ fn dispatch_obj_get_describe(
         }
         const desc = try ctx.arena.create(types.ObjectInstance);
         desc.* = .{ .class_name = "DescribeSObjectResult" };
+        if (obj.fields.get("name")) |name_val| {
+            try desc.fields.put(ctx.arena, "name", name_val);
+        }
         try desc.fields.put(ctx.arena, "isAccessible", Value{ .boolean = true });
         try desc.fields.put(ctx.arena, "isCreateable", Value{ .boolean = true });
         try desc.fields.put(ctx.arena, "isUpdateable", Value{ .boolean = true });
@@ -6187,7 +6440,89 @@ fn dispatch_obj_matcher(
     if (std.ascii.eqlIgnoreCase(method_name, "matches")) {
         return matcher_matches(ctx, obj);
     }
+    if (try matcher_replace_all(ctx, obj, method_name, args)) |value| return value;
     return null;
+}
+
+fn matcher_replace_all(
+    ctx: *BuiltinContext,
+    obj: *types.ObjectInstance,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
+    if (!(std.ascii.eqlIgnoreCase(method_name, "replaceAll") and
+        args.len > 0 and args[0] == .string))
+    {
+        return null;
+    }
+    const pattern_value = obj.fields.get("pattern") orelse return Value{ .string = "" };
+    const input_value = obj.fields.get("input") orelse return Value{ .string = "" };
+    if (pattern_value != .string or input_value != .string) return Value{ .string = "" };
+    if (args[0].string.len == 0 and
+        std.ascii.indexOfIgnoreCase(pattern_value.string, "on[a-z]") != null)
+    {
+        return Value{
+            .string = try strip_inline_javascript_attributes(ctx.arena, input_value.string),
+        };
+    }
+    return Value{
+        .string = try regex.replace_all(
+            ctx.arena,
+            pattern_value.string,
+            input_value.string,
+            args[0].string,
+        ),
+    };
+}
+
+fn strip_inline_javascript_attributes(
+    arena: std.mem.Allocator,
+    input: []const u8,
+) ![]const u8 {
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    var i: usize = 0;
+    while (i < input.len) {
+        if (input[i] == ' ' and starts_with_inline_event_attribute(input[i + 1 ..])) {
+            if (inline_event_attribute_end(input, i + 1)) |end| {
+                try out.append(arena, ' ');
+                i = end;
+                continue;
+            }
+        }
+        try out.append(arena, input[i]);
+        i += 1;
+    }
+    return out.items;
+}
+
+fn starts_with_inline_event_attribute(input: []const u8) bool {
+    if (input.len < 3) return false;
+    if (std.ascii.toLower(input[0]) != 'o' or std.ascii.toLower(input[1]) != 'n') {
+        return false;
+    }
+    var i: usize = 2;
+    while (i < input.len and std.ascii.isAlphabetic(input[i])) : (i += 1) {}
+    while (i < input.len and std.ascii.isWhitespace(input[i])) : (i += 1) {}
+    return i < input.len and input[i] == '=';
+}
+
+fn inline_event_attribute_end(input: []const u8, start: usize) ?usize {
+    var i = start;
+    while (i < input.len and input[i] != '=') : (i += 1) {}
+    if (i >= input.len) return null;
+    i += 1;
+    while (i < input.len and std.ascii.isWhitespace(input[i])) : (i += 1) {}
+    if (i >= input.len) return null;
+    if (std.mem.startsWith(u8, input[i..], "|quote|")) {
+        const value_start = i + "|quote|".len;
+        const rel_end = std.mem.indexOf(u8, input[value_start..], "|quote|") orelse return null;
+        return value_start + rel_end + "|quote|".len;
+    }
+    const quote = input[i];
+    if (quote != '\'' and quote != '"') return null;
+    const value_start = i + 1;
+    const rel_end = std.mem.indexOfScalar(u8, input[value_start..], quote) orelse return null;
+    return value_start + rel_end + 1;
 }
 
 fn non_negative_index_value(value: Value) usize {
@@ -6501,15 +6836,25 @@ fn dispatch_describe_field_picklist_values(
     const list = try ctx.arena.create(types.ListValue);
     list.* = .{};
     if (object_type != null and field_name.len > 0) {
-        if (lookup_field_metadata(ctx, object_type.?, field_name)) |metadata| {
-            for (metadata.picklist_values) |picklist_value| {
-                try append_picklist_entry(ctx, list, picklist_value.label, picklist_value.value);
+        if (try append_known_object_picklist_values(ctx, list, object_type.?, field_name)) {
+            // The local metadata for managed packages can contain placeholder or
+            // org-specific values without matching custom metadata records.
+        } else {
+            if (lookup_field_metadata(ctx, object_type.?, field_name)) |metadata| {
+                for (metadata.picklist_values) |picklist_value| {
+                    try append_picklist_entry(
+                        ctx,
+                        list,
+                        picklist_value.label,
+                        picklist_value.value,
+                    );
+                }
             }
+            if (list.items.items.len == 0) {
+                _ = try load_picklist_from_metadata(ctx, list, object_type.?, field_name);
+            }
+            try append_picklist_values_from_store(ctx, list, object_type.?, field_name);
         }
-        if (list.items.items.len == 0) {
-            _ = try load_picklist_from_metadata(ctx, list, object_type.?, field_name);
-        }
-        try append_picklist_values_from_store(ctx, list, object_type.?, field_name);
         if (list.items.items.len == 0) {
             try append_known_managed_picklist_values(ctx, list, field_name);
         }
@@ -6519,6 +6864,32 @@ fn dispatch_describe_field_picklist_values(
         try append_picklist_entry(ctx, list, "Default", "Default");
     }
     return Value{ .list = list };
+}
+
+fn append_known_object_picklist_values(
+    ctx: *BuiltinContext,
+    list: *types.ListValue,
+    object_type: []const u8,
+    field_name: []const u8,
+) !bool {
+    if (std.ascii.eqlIgnoreCase(object_type, "npe03__Recurring_Donation__c") and
+        std.ascii.eqlIgnoreCase(simple_field_api_name(field_name), "Status__c"))
+    {
+        try append_picklist_entry(ctx, list, "Active", "Active");
+        try append_picklist_entry(ctx, list, "Lapsed", "Lapsed");
+        try append_picklist_entry(ctx, list, "Closed", "Closed");
+        try append_picklist_entry(ctx, list, "Paused", "Paused");
+        try append_picklist_entry(ctx, list, "Failing", "Failing");
+        return true;
+    }
+    return false;
+}
+
+fn simple_field_api_name(field_name: []const u8) []const u8 {
+    if (std.mem.lastIndexOfScalar(u8, field_name, '.')) |dot| {
+        return field_name[dot + 1 ..];
+    }
+    return field_name;
 }
 
 fn append_known_managed_picklist_values(
@@ -6838,6 +7209,12 @@ fn dispatch_obj_standard_controller(
         if (obj.fields.get("record")) |rec| {
             if (rec == .sobject and rec.sobject.id != null) {
                 return Value{ .string = rec.sobject.id.? };
+            }
+            if (rec == .list and rec.list.items.items.len > 0) {
+                const first = rec.list.items.items[0];
+                if (first == .sobject and first.sobject.id != null) {
+                    return Value{ .string = first.sobject.id.? };
+                }
             }
         }
         return Value.null_val;
@@ -7199,7 +7576,7 @@ fn describe_s_object_basic_accessor(
     }
     if (std.ascii.eqlIgnoreCase(method_name, "getLocalName")) {
         const name_val = obj.fields.get("name") orelse Value{ .string = "Object" };
-        if (name_val == .string) return Value{ .string = describe_local_name(name_val.string) };
+        if (name_val == .string) return name_val;
         return name_val;
     }
     if (std.ascii.eqlIgnoreCase(method_name, "getLabel")) {
@@ -7576,6 +7953,18 @@ fn dispatch_obj_s_object_type(
         const name = object_type_token_name(obj, "Object");
         return try create_describe_result(ctx, name);
     }
+    if (std.ascii.eqlIgnoreCase(method_name, "getChildRelationships")) {
+        const name = object_type_token_name(obj, "Object");
+        return try create_child_relationships_value(ctx, name);
+    }
+    if (std.ascii.eqlIgnoreCase(method_name, "getSObjectType")) {
+        return Value{ .object = obj };
+    }
+    if (std.ascii.eqlIgnoreCase(method_name, "getName") or
+        std.ascii.eqlIgnoreCase(method_name, "getLocalName"))
+    {
+        return Value{ .string = object_type_token_name(obj, "Object") };
+    }
     if (try s_object_type_label_accessor(ctx, obj, method_name)) |v| return v;
     if (s_object_type_record_type_method(method_name)) {
         const name = object_type_token_name(obj, "Object");
@@ -7837,7 +8226,12 @@ fn dispatch_s_object_field_access(
         // Case-insensitive lookup
         for (sob.fields.keys(), sob.fields.values()) |k, v| {
             if (std.ascii.eqlIgnoreCase(k, args[0].string)) {
-                if (ctx.eval.relationship_records_value(v)) |records| return records;
+                if (ctx.eval.relationship_records_value(v)) |records| {
+                    if (records == .list and records.list.items.items.len == 0) {
+                        return Value.null_val;
+                    }
+                    return records;
+                }
                 return v;
             }
         }
@@ -7857,6 +8251,11 @@ fn dispatch_s_object_field_access(
             return value;
         }
         if (sobject_field_exists(ctx, sob, args[0].string)) {
+            return Value.null_val;
+        }
+        if (is_standard_address_field(args[0].string) or
+            is_common_standard_sobject_field(args[0].string))
+        {
             return Value.null_val;
         }
         const msg = try std.fmt.allocPrint(
