@@ -179,6 +179,8 @@ pub const Evaluator = struct {
     object_labels: std.StringArrayHashMapUnmanaged([]const u8) = .empty,
     /// object-meta.xml `<pluralLabel>` を格納。object_label_plurals[TypeName] = plural label.
     object_label_plurals: std.StringArrayHashMapUnmanaged([]const u8) = .empty,
+    /// CustomLabels.labels-meta.xml values. custom_labels[LabelName] = label value.
+    custom_labels: std.StringArrayHashMapUnmanaged([]const u8) = .empty,
     /// fieldSet-meta.xml から読み取った field set 情報。
     /// field_sets[TypeName][QualifiedFieldSetName] = metadata。
     field_sets: std.StringArrayHashMapUnmanaged(
@@ -13481,9 +13483,10 @@ pub const Evaluator = struct {
 
     fn eval_cast_expr(self: *Evaluator, ce: anytype, current_env: *Env) anyerror!Value {
         const val = try self.eval_expr(ce.operand, current_env);
-        if (try self.eval_sobject_list_cast_expr(val, ce.target_type.name)) |casted| return casted;
+        const target = ce.target_type.name;
+        if (try self.eval_sobject_list_cast_expr(val, target)) |casted| return casted;
         if (val != .object) return val;
-        return self.eval_object_cast_expr(val, ce.target_type.name);
+        return self.eval_object_cast_expr(val, target);
     }
 
     fn eval_sobject_list_cast_expr(
@@ -13530,8 +13533,16 @@ pub const Evaluator = struct {
 
     fn eval_object_cast_expr(self: *Evaluator, val: Value, target: []const u8) anyerror!Value {
         const src_name = val.object.class_name;
+        const target_base = if (std.mem.lastIndexOfScalar(u8, target, '.')) |dot|
+            target[dot + 1 ..]
+        else
+            target;
         if (try self.eval_temporal_object_cast(val, src_name, target)) |result| return result;
-        if (std.ascii.eqlIgnoreCase(src_name, target)) return val;
+        if (std.ascii.eqlIgnoreCase(src_name, target) or
+            std.ascii.eqlIgnoreCase(src_name, target_base))
+        {
+            return val;
+        }
         if (self.is_compatible_object_cast(src_name, target)) return val;
         if (self.is_known_interface_name(target)) {
             return self.raise_type_exception(src_name, target);
@@ -20527,15 +20538,24 @@ pub const Evaluator = struct {
                 (inner.object.* == .identifier and
                     std.ascii.eqlIgnoreCase(inner.object.identifier.name, "Label"));
             if (is_system_label) {
+                if (self.custom_labels.get(fa.field)) |label_value| {
+                    return Value{ .string = label_value };
+                }
                 return Value{ .string = try self.arena.dupe(u8, fa.field) };
             }
             if (self.field_access_expr_is_label_path(fa.object)) {
+                if (self.custom_labels.get(fa.field)) |label_value| {
+                    return Value{ .string = label_value };
+                }
                 return Value{ .string = try self.arena.dupe(u8, fa.field) };
             }
         }
         if (fa.object.* == .identifier and
             std.ascii.eqlIgnoreCase(fa.object.identifier.name, "Label"))
         {
+            if (self.custom_labels.get(fa.field)) |label_value| {
+                return Value{ .string = label_value };
+            }
             return Value{ .string = try self.arena.dupe(u8, fa.field) };
         }
         return null;
@@ -23905,7 +23925,8 @@ pub const Evaluator = struct {
         if (try builtins.dispatch_static(&bctx, "JSON", method, args)) |result| {
             return result;
         }
-        if (self.parse_json_value(json_str, system_json_type_name(args))) |pv| return pv;
+        const type_name = system_json_type_name(args);
+        if (self.parse_json_value(json_str, type_name)) |pv| return pv;
         return Value.null_val;
     }
 

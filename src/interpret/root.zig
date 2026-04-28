@@ -72,6 +72,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, source: []const u8, opts: Options
                 &eval.object_labels,
                 &eval.object_label_plurals,
             );
+            try collect_custom_labels(arena.allocator(), io, path, &eval.custom_labels);
         }
     }
     try eval.load_decls(decls);
@@ -401,6 +402,7 @@ fn load_test_metadata_path(
         &eval.object_labels,
         &eval.object_label_plurals,
     ) catch {};
+    collect_custom_labels(parse_alloc, io, path, &eval.custom_labels) catch {};
     eval.index_custom_metadata_from_path(path) catch {};
 }
 
@@ -572,6 +574,7 @@ fn copy_test_eval_context(
     test_eval.custom_setting_kinds = base_eval.custom_setting_kinds;
     test_eval.object_labels = base_eval.object_labels;
     test_eval.object_label_plurals = base_eval.object_label_plurals;
+    test_eval.custom_labels = base_eval.custom_labels;
     test_eval.field_sets = base_eval.field_sets;
     test_eval.custom_metadata_records = base_eval.custom_metadata_records;
     test_eval.custom_metadata_paths_indexed = base_eval.custom_metadata_paths_indexed;
@@ -1084,6 +1087,49 @@ fn extract_xml_tag_value(content: []const u8, tag_name: []const u8) ?[]const u8 
     const value_start = start_idx + start_tag.len;
     const end_idx = std.mem.indexOfPos(u8, content, value_start, end_tag) orelse return null;
     return content[value_start..end_idx];
+}
+
+fn collect_custom_labels(
+    alloc: std.mem.Allocator,
+    io: std.Io,
+    path: []const u8,
+    custom_labels: *std.StringArrayHashMapUnmanaged([]const u8),
+) !void {
+    var dir = std.Io.Dir.cwd().openDir(io, path, .{ .iterate = true }) catch return;
+    defer dir.close(io);
+
+    var walker = dir.walk(alloc) catch return;
+    defer walker.deinit();
+
+    while (walker.next(io) catch null) |entry| {
+        if (entry.kind != .file) continue;
+        if (!std.mem.endsWith(u8, entry.basename, ".labels-meta.xml")) continue;
+
+        const full_path = std.fs.path.join(alloc, &.{ path, entry.path }) catch continue;
+        const content = std.Io.Dir.cwd().readFileAlloc(
+            io,
+            full_path,
+            alloc,
+            .limited(1024 * 1024),
+        ) catch continue;
+
+        var cursor: usize = 0;
+        while (std.mem.indexOfPos(u8, content, cursor, "<labels>")) |block_start| {
+            const body_start = block_start + "<labels>".len;
+            const block_end = std.mem.indexOfPos(u8, content, body_start, "</labels>") orelse break;
+            const block = content[body_start..block_end];
+            cursor = block_end + "</labels>".len;
+
+            const raw_name = extract_xml_tag_value(block, "fullName") orelse continue;
+            const raw_value = extract_xml_tag_value(block, "value") orelse continue;
+            const name = std.mem.trim(u8, raw_name, " \t\r\n");
+            const value = std.mem.trim(u8, raw_value, " \t\r\n");
+            if (name.len == 0) continue;
+            const key_dup = alloc.dupe(u8, name) catch continue;
+            const val_dup = decode_xml_text(alloc, value, false) catch continue;
+            custom_labels.put(alloc, key_dup, val_dup) catch {};
+        }
+    }
 }
 
 fn parse_summary_filters(
