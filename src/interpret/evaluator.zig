@@ -7259,7 +7259,7 @@ pub const Evaluator = struct {
         current_env: *Env,
         records: *std.ArrayListUnmanaged(Value),
     ) !void {
-        try self.apply_soql_sub_queries(from_type, soql, records);
+        try self.apply_soql_sub_queries(from_type, soql, current_env, records);
         try self.apply_parent_field_lookups(soql, from_type, records);
         try self.resolve_formula_fields(soql, records);
         try self.reorder_soql_records_by_bind(soql, current_env, records);
@@ -7272,9 +7272,24 @@ pub const Evaluator = struct {
         self: *Evaluator,
         from_type: []const u8,
         soql: []const u8,
+        current_env: *Env,
         records: *std.ArrayListUnmanaged(Value),
     ) !void {
-        const sub_info = extract_sub_query(soql) orelse return;
+        var search_offset: usize = 0;
+        while (extract_sub_query_from(soql, search_offset)) |sub_info| {
+            try self.apply_soql_sub_query(from_type, sub_info, current_env, records);
+            search_offset = sub_info.next_index;
+        }
+    }
+
+    fn apply_soql_sub_query(
+        self: *Evaluator,
+        from_type: []const u8,
+        sub_info: SubQueryInfo,
+        current_env: *Env,
+        records: *std.ArrayListUnmanaged(Value),
+    ) !void {
+        _ = current_env;
         const rel_name = sub_info.relationship;
         const child_type = self.resolve_child_type(from_type, rel_name);
         for (records.items) |*rec| {
@@ -9148,7 +9163,7 @@ pub const Evaluator = struct {
         var result: GroupByFieldList = .{};
         const group_by_idx = std.ascii.indexOfIgnoreCase(soql, "group by");
         if (group_by_idx) |gbi| {
-            const gb_clause = std.mem.trim(u8, soql[gbi + 8 ..], " \t\n\r");
+            const gb_clause = trim_group_by_clause(soql[gbi + 8 ..]);
             var gb_iter = std.mem.splitScalar(u8, gb_clause, ',');
             while (gb_iter.next()) |raw_f| {
                 const f = std.mem.trim(u8, raw_f, " \t\n\r");
@@ -9160,6 +9175,23 @@ pub const Evaluator = struct {
             }
         }
         return result;
+    }
+
+    fn trim_group_by_clause(raw_clause: []const u8) []const u8 {
+        var end = raw_clause.len;
+        const trailing_keywords = [_][]const u8{
+            " order by",
+            " limit",
+            " offset",
+            " with",
+            " for",
+        };
+        for (trailing_keywords) |keyword| {
+            if (std.ascii.indexOfIgnoreCase(raw_clause, keyword)) |idx| {
+                if (idx < end) end = idx;
+            }
+        }
+        return std.mem.trim(u8, raw_clause[0..end], " \t\n\r");
     }
 
     fn parse_aggregate_items(self: *Evaluator, select_clause: []const u8) !AggregateItemList {
@@ -9299,7 +9331,7 @@ pub const Evaluator = struct {
         var key_buf: std.ArrayListUnmanaged(u8) = .empty;
         for (group_by_fields) |gb_field| {
             if (key_buf.items.len > 0) try key_buf.append(self.arena, '|');
-            const fv = self.resolve_field_path(record, gb_field);
+            const fv = self.resolve_soql_projection_value(record, gb_field);
             const fv_str = if (fv != null and fv.? != .null_val)
                 (utils.coerce_to_string(fv.?, self.arena) catch "")
             else
@@ -9324,7 +9356,8 @@ pub const Evaluator = struct {
                     self.compute_aggregate(fn_name, ai.field, records),
                 );
             } else if (include_plain_fields and records.len > 0) {
-                const fv = self.resolve_field_path(records[0], ai.field) orelse Value.null_val;
+                const fv = self.resolve_soql_projection_value(records[0], ai.field) orelse
+                    Value.null_val;
                 try agg.fields.put(self.arena, ai.alias, fv);
             }
         }
@@ -9338,6 +9371,7 @@ pub const Evaluator = struct {
         records: []const Value,
     ) Value {
         _ = self;
+        if (soql_date_part_value(fn_name, field, records)) |value| return value;
         if (std.ascii.eqlIgnoreCase(fn_name, "COUNT")) {
             var count: i64 = 0;
             for (records) |r| {
@@ -9391,6 +9425,19 @@ pub const Evaluator = struct {
         return Value{ .integer = count };
     }
 
+    fn soql_date_part_value(
+        fn_name: []const u8,
+        field: []const u8,
+        records: []const Value,
+    ) ?Value {
+        if (records.len == 0) return null;
+        if (!std.ascii.eqlIgnoreCase(fn_name, "CALENDAR_YEAR")) return null;
+        const first = records[0];
+        if (first != .sobject) return null;
+        const raw_value = utils.sobject_get(&first.sobject.fields, field) orelse return null;
+        return calendar_year_value(raw_value);
+    }
+
     /// Resolve a dotted field path like "Log__r.LogPurgeAction__c" on a record.
     fn resolve_field_path(self: *Evaluator, record: Value, path: []const u8) ?Value {
         if (record != .sobject) return null;
@@ -9398,6 +9445,44 @@ pub const Evaluator = struct {
             return self.get_s_object_field_value_case_insensitive(record.sobject, path);
         }
         return self.resolve_field_path_value(record.sobject, path);
+    }
+
+    fn resolve_soql_projection_value(
+        self: *Evaluator,
+        record: Value,
+        expression: []const u8,
+    ) ?Value {
+        if (record != .sobject) return null;
+        if (extract_soql_date_part(expression)) |part| {
+            if (std.ascii.eqlIgnoreCase(part.fn_name, "CALENDAR_YEAR")) {
+                const raw = self.resolve_field_path(record, part.field) orelse return null;
+                return calendar_year_value(raw);
+            }
+        }
+        return self.resolve_field_path(record, expression);
+    }
+
+    const SoqlDatePart = struct {
+        fn_name: []const u8,
+        field: []const u8,
+    };
+
+    fn extract_soql_date_part(expression: []const u8) ?SoqlDatePart {
+        const trimmed = std.mem.trim(u8, expression, " \t\n\r");
+        const open = std.mem.indexOfScalar(u8, trimmed, '(') orelse return null;
+        const close_rel = std.mem.indexOfScalar(u8, trimmed[open + 1 ..], ')') orelse return null;
+        const close = open + 1 + close_rel;
+        const fn_name = std.mem.trim(u8, trimmed[0..open], " \t\n\r");
+        const field = std.mem.trim(u8, trimmed[open + 1 .. close], " \t\n\r");
+        if (fn_name.len == 0 or field.len == 0) return null;
+        return .{ .fn_name = fn_name, .field = field };
+    }
+
+    fn calendar_year_value(value: Value) ?Value {
+        const date_str = builtins.extract_date_string(value) orelse return null;
+        if (date_str.len < 4) return null;
+        const year = std.fmt.parseInt(i64, date_str[0..4], 10) catch return null;
+        return Value{ .integer = year };
     }
 
     /// Execute a SOSL query using fixed search results.
@@ -9793,6 +9878,14 @@ pub const Evaluator = struct {
         sob: *types.SObject,
         field_name: []const u8,
     ) WhereFieldValue {
+        if (extract_soql_date_part(field_name)) |part| {
+            if (std.ascii.eqlIgnoreCase(part.fn_name, "CALENDAR_YEAR")) {
+                const record = Value{ .sobject = sob };
+                if (self.resolve_soql_projection_value(record, field_name)) |value| {
+                    return .{ .value = value, .found = true };
+                }
+            }
+        }
         if (std.ascii.eqlIgnoreCase(field_name, "Id")) {
             if (sob.id) |id| return .{ .value = Value{ .string = id }, .found = true };
         }
@@ -9803,7 +9896,7 @@ pub const Evaluator = struct {
         } else if (self.get_s_object_field_value_case_insensitive(sob, field_name)) |value| {
             return .{ .value = value, .found = true };
         }
-        if (computed_where_field_value(sob, field_name)) |value| {
+        if (self.computed_where_field_value(sob, field_name)) |value| {
             return .{ .value = value, .found = true };
         }
         if (std.ascii.eqlIgnoreCase(field_name, "IsDeleted")) {
@@ -9812,7 +9905,17 @@ pub const Evaluator = struct {
         return .{ .value = Value.null_val, .found = false };
     }
 
-    fn computed_where_field_value(sob: *types.SObject, field_name: []const u8) ?Value {
+    fn computed_where_field_value(
+        self: *Evaluator,
+        sob: *types.SObject,
+        field_name: []const u8,
+    ) ?Value {
+        if ((std.ascii.eqlIgnoreCase(sob.type_name, "Contact") or
+            std.ascii.eqlIgnoreCase(sob.type_name, "Lead")) and
+            std.ascii.eqlIgnoreCase(field_name, "Name"))
+        {
+            return self.person_name_value(sob);
+        }
         if (!std.ascii.eqlIgnoreCase(sob.type_name, "Opportunity")) return null;
         if (std.ascii.eqlIgnoreCase(field_name, "IsClosed")) {
             return Value{ .boolean = opportunity_stage_is_closed(sob) };
@@ -9820,7 +9923,25 @@ pub const Evaluator = struct {
         if (std.ascii.eqlIgnoreCase(field_name, "IsWon")) {
             return Value{ .boolean = opportunity_stage_is_won(sob) };
         }
+        if (std.ascii.eqlIgnoreCase(field_name, "ContactId")) {
+            return utils.sobject_get(&sob.fields, "Primary_Contact__c");
+        }
         return null;
+    }
+
+    fn person_name_value(self: *Evaluator, sob: *types.SObject) ?Value {
+        const last = utils.sobject_get(&sob.fields, "LastName") orelse return null;
+        if (last != .string) return null;
+        const first = utils.sobject_get(&sob.fields, "FirstName") orelse Value.null_val;
+        if (first == .string and first.string.len > 0) {
+            const name = std.fmt.allocPrint(
+                self.arena,
+                "{s} {s}",
+                .{ first.string, last.string },
+            ) catch return last;
+            return Value{ .string = name };
+        }
+        return last;
     }
 
     fn computed_selected_field_value(
@@ -9828,7 +9949,7 @@ pub const Evaluator = struct {
         sob: *types.SObject,
         field_name: []const u8,
     ) ?Value {
-        if (computed_where_field_value(sob, field_name)) |value| return value;
+        if (self.computed_where_field_value(sob, field_name)) |value| return value;
         if (std.ascii.eqlIgnoreCase(sob.type_name, "CampaignMember") and
             std.ascii.eqlIgnoreCase(field_name, "HasResponded"))
         {
@@ -10164,6 +10285,11 @@ pub const Evaluator = struct {
         {
             return "Opportunity";
         }
+        if (std.ascii.eqlIgnoreCase(parent_type, "npe03__Recurring_Donation__c") and
+            std.ascii.eqlIgnoreCase(relationship, "RecurringDonationSchedules__r"))
+        {
+            return "RecurringDonationSchedule__c";
+        }
         if (std.ascii.eqlIgnoreCase(parent_type, "Opportunity") and
             std.ascii.eqlIgnoreCase(relationship, "npe01__OppPayment__r"))
         {
@@ -10239,6 +10365,12 @@ pub const Evaluator = struct {
             std.ascii.eqlIgnoreCase(relationship, "npe03__Donations__r"))
         {
             return "npe03__Recurring_Donation__c";
+        }
+        if (std.ascii.eqlIgnoreCase(parent_type, "npe03__Recurring_Donation__c") and
+            std.ascii.eqlIgnoreCase(child_type, "RecurringDonationSchedule__c") and
+            std.ascii.eqlIgnoreCase(relationship, "RecurringDonationSchedules__r"))
+        {
+            return "RecurringDonation__c";
         }
         if (std.ascii.eqlIgnoreCase(parent_type, "Opportunity") and
             std.ascii.eqlIgnoreCase(child_type, "npe01__OppPayment__c") and
@@ -10847,7 +10979,7 @@ pub const Evaluator = struct {
         {
             if (utils.sobject_get(&sob.fields, "npe03__Amount__c")) |amount| return amount;
         }
-        if (computed_where_field_value(sob, field_name)) |computed| return computed;
+        if (self.computed_where_field_value(sob, field_name)) |computed| return computed;
         if (self.resolve_derived_field_value(sob, field_name)) |derived| return derived;
         if (try_resolve_parent_relationship_value(self, sob, field_name)) |parent| {
             return parent;
@@ -17536,7 +17668,9 @@ pub const Evaluator = struct {
         if (std.ascii.eqlIgnoreCase(method, "date") or std.ascii.eqlIgnoreCase(method, "dateGmt")) {
             return try builtins.make_date_value(self.arena, result.string);
         }
-        if (std.ascii.eqlIgnoreCase(method, "toStartOfMonth")) {
+        if (std.ascii.eqlIgnoreCase(method, "toStartOfMonth") or
+            std.ascii.eqlIgnoreCase(method, "toStartOfWeek"))
+        {
             return try builtins.make_date_value(self.arena, result.string);
         }
         if (std.ascii.eqlIgnoreCase(method, "addDays") or
@@ -19389,6 +19523,15 @@ pub const Evaluator = struct {
                 .m = dt.m,
                 .d = 1,
             });
+        }
+        if (std.ascii.eqlIgnoreCase(method, "toStartOfWeek")) {
+            const dt = parse_iso_date(s) orelse return Value{ .string = s };
+            const days_since_sunday = @mod(iso_date_to_epoch_days(dt.y, dt.m, dt.d) + 4, 7);
+            return try self.date_time_add(
+                s,
+                "addDays",
+                &.{Value{ .integer = -days_since_sunday }},
+            );
         }
         if (std.ascii.eqlIgnoreCase(method, "time")) {
             const dt = parse_iso_date(s) orelse return Value{ .string = "00:00:00" };
@@ -29234,11 +29377,16 @@ fn soql_keyword_at_top_level(soql: []const u8, pos: usize, keyword: []const u8) 
 const SubQueryInfo = struct {
     relationship: []const u8,
     query: []const u8,
+    next_index: usize,
 };
 
 fn extract_sub_query(soql: []const u8) ?SubQueryInfo {
+    return extract_sub_query_from(soql, 0);
+}
+
+fn extract_sub_query_from(soql: []const u8, offset: usize) ?SubQueryInfo {
     // Find pattern: (SELECT ... FROM RelationshipName)
-    var i: usize = 0;
+    var i: usize = offset;
     while (i < soql.len) : (i += 1) {
         if (soql[i] == '(' and i + 8 < soql.len) {
             var depth: u32 = 1;
@@ -29269,7 +29417,11 @@ fn extract_sub_query(soql: []const u8) ?SubQueryInfo {
                     if (end > start) {
                         const raw_rel = inner_query[start..end];
                         const rel = strip_parent_relationship_prefix(raw_rel);
-                        return SubQueryInfo{ .relationship = rel, .query = inner_query };
+                        return SubQueryInfo{
+                            .relationship = rel,
+                            .query = inner_query,
+                            .next_index = close_idx + 1,
+                        };
                     }
                 }
             }
