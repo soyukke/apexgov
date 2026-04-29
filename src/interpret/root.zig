@@ -5441,6 +5441,34 @@ test "E2E: NPSP payment paid total auto-closes opportunity" {
     try std.testing.expectEqualStrings("Closed Won:true:true", result.value.string);
 }
 
+test "E2E: NPSP payment boolean strings normalize on assignment" {
+    const source =
+        \\public class NpspPaymentBooleanStringProbe {
+        \\    public static String test() {
+        \\        npe01__OppPayment__c payment = new npe01__OppPayment__c(
+        \\            npe01__Paid__c = 'True',
+        \\            npe01__Written_Off__c = 'False'
+        \\        );
+        \\        insert payment;
+        \\        npe01__OppPayment__c stored = [
+        \\            SELECT npe01__Paid__c, npe01__Written_Off__c
+        \\            FROM npe01__OppPayment__c
+        \\            WHERE Id = :payment.Id
+        \\        ];
+        \\        return String.valueOf(stored.npe01__Paid__c) + ':' +
+        \\            String.valueOf(stored.npe01__Written_Off__c);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "NpspPaymentBooleanStringProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("true:false", result.value.string);
+}
+
 test "E2E: getFilteredAttachments full flow" {
     const source =
         \\public class FTest {

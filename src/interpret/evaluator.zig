@@ -3839,6 +3839,7 @@ pub const Evaluator = struct {
 
     fn insert_record(self: *Evaluator, obj: *types.SObject) anyerror!void {
         try self.reject_insert_id(obj);
+        try self.normalize_present_s_object_fields(obj);
         try self.apply_missing_field_defaults(obj);
         if (try self.validate_required_fields(obj, false)) |err_msg| {
             try self.throw_dml_exception(err_msg);
@@ -5387,6 +5388,28 @@ pub const Evaluator = struct {
         try self.apply_standard_object_defaults(obj);
     }
 
+    fn normalize_present_s_object_fields(self: *Evaluator, obj: *types.SObject) !void {
+        var builtin_ctx = self.make_builtin_context();
+        const keys = obj.fields.keys();
+        const values = obj.fields.values();
+        for (keys, values) |field_name, *field_value| {
+            if (std.mem.startsWith(u8, field_name, "__")) continue;
+            if (field_value.* != .string) continue;
+            if (!std.ascii.eqlIgnoreCase(obj.type_name, "npe01__OppPayment__c") or
+                !(std.ascii.eqlIgnoreCase(field_name, "npe01__Paid__c") or
+                    std.ascii.eqlIgnoreCase(field_name, "npe01__Written_Off__c")))
+            {
+                continue;
+            }
+            field_value.* = try builtins.normalize_s_object_field_assignment(
+                &builtin_ctx,
+                obj,
+                field_name,
+                field_value.*,
+            );
+        }
+    }
+
     fn apply_standard_object_defaults(self: *Evaluator, obj: *types.SObject) !void {
         if (std.ascii.eqlIgnoreCase(obj.type_name, "User")) {
             if (self.get_s_object_field_value_case_insensitive(obj, "IsActive") == null) {
@@ -5452,6 +5475,7 @@ pub const Evaluator = struct {
 
     fn update_record(self: *Evaluator, obj: *types.SObject) anyerror!void {
         if (is_empty_query_sobject(obj)) return;
+        try self.normalize_present_s_object_fields(obj);
         // Validate only fields explicitly present (Salesforce doesn't
         // re-validate all required fields on update)
         if (try self.validate_required_fields(obj, true)) |err_msg| {

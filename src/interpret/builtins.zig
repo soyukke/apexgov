@@ -5068,6 +5068,12 @@ fn infer_field_type_for_object(
         {
             return "Currency";
         }
+        if (std.ascii.eqlIgnoreCase(object_type, "npe01__OppPayment__c") and
+            (std.ascii.eqlIgnoreCase(field_name, "npe01__Paid__c") or
+                std.ascii.eqlIgnoreCase(field_name, "npe01__Written_Off__c")))
+        {
+            return "Boolean";
+        }
     }
     if (std.ascii.eqlIgnoreCase(field_name, "NumberOfEmployees") or
         std.ascii.eqlIgnoreCase(field_name, "TotalSize"))
