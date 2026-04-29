@@ -9870,7 +9870,8 @@ pub const Evaluator = struct {
     fn opportunity_stage_is_closed(sob: *types.SObject) bool {
         const stage = utils.sobject_get(&sob.fields, "StageName") orelse return false;
         if (stage != .string) return false;
-        return std.ascii.indexOfIgnoreCase(stage.string, "Closed") != null;
+        return std.ascii.indexOfIgnoreCase(stage.string, "Closed") != null or
+            std.ascii.indexOfIgnoreCase(stage.string, "Lost") != null;
     }
 
     fn opportunity_stage_is_won(sob: *types.SObject) bool {
@@ -11010,6 +11011,7 @@ pub const Evaluator = struct {
         old_records: ?std.ArrayListUnmanaged(Value),
     ) !void {
         try self.apply_npsp_payment_auto_close_side_effects(child_type, new_records, old_records);
+        try self.apply_npsp_payment_creator_side_effects(child_type, new_records);
         try self.apply_npsp_recurring_donation_update_side_effects(
             child_type,
             new_records,
@@ -11067,6 +11069,143 @@ pub const Evaluator = struct {
                 new_records,
                 old_records,
             );
+        }
+    }
+
+    fn apply_npsp_payment_creator_side_effects(
+        self: *Evaluator,
+        child_type: []const u8,
+        records: []const Value,
+    ) !void {
+        if (!self.fixture_relaxed_exceptions) return;
+        if (!std.ascii.eqlIgnoreCase(child_type, "Opportunity")) return;
+        if (self.find_class("PMT_PaymentCreator") == null) return;
+        if (self.npsp_tdtm_globally_disabled()) return;
+
+        for (records) |record| {
+            if (record != .sobject or record.sobject.id == null) continue;
+            if (self.npsp_payment_exists_for_opportunity(record.sobject.id.?)) continue;
+            if (self.npsp_payment_creation_excluded(record.sobject)) continue;
+            if (npsp_opportunity_is_closed(record.sobject) and
+                !npsp_opportunity_is_won(record.sobject))
+            {
+                continue;
+            }
+            const amount_val =
+                self.get_s_object_field_value_case_insensitive(record.sobject, "Amount") orelse
+                Value.null_val;
+            const amount = numeric_value_as_f64(amount_val) orelse continue;
+            if (amount <= 0) continue;
+            try self.create_npsp_payment_for_opportunity(record.sobject, amount_val);
+        }
+    }
+
+    fn npsp_payment_creation_excluded(self: *Evaluator, opp: *types.SObject) bool {
+        if (self.get_s_object_field_value_case_insensitive(
+            opp,
+            "npe01__Do_Not_Automatically_Create_Payment__c",
+        )) |do_not_create| {
+            if (do_not_create == .boolean and do_not_create.boolean) return true;
+        }
+
+        const settings = self.npsp_cached_contacts_settings() orelse
+            self.first_custom_setting_record("npe01__Contacts_And_Orgs_Settings__c") orelse
+            return false;
+        if (self.get_s_object_field_value_case_insensitive(opp, "Type")) |opp_type| {
+            if (opp_type == .string) {
+                if (utils.sobject_get(&settings.fields, "Opp_Types_Excluded_for_Payments__c")) |excluded| {
+                    if (excluded == .string and
+                        std.ascii.indexOfIgnoreCase(excluded.string, opp_type.string) != null)
+                    {
+                        return true;
+                    }
+                }
+            }
+        }
+        if (self.get_s_object_field_value_case_insensitive(opp, "RecordTypeId")) |rt_id| {
+            if (rt_id == .string) {
+                if (utils.sobject_get(
+                    &settings.fields,
+                    "Opp_RecTypes_Excluded_for_Payments__c",
+                )) |excluded| {
+                    if (excluded == .string and
+                        std.ascii.indexOfIgnoreCase(excluded.string, rt_id.string) != null)
+                    {
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
+    }
+
+    fn npsp_payment_exists_for_opportunity(self: *Evaluator, opp_id: []const u8) bool {
+        const payments = self.store_records_ptr("npe01__OppPayment__c") orelse return false;
+        for (payments.items) |payment| {
+            if (payment != .sobject) continue;
+            const payment_opp = self.get_s_object_field_value_case_insensitive(
+                payment.sobject,
+                "npe01__Opportunity__c",
+            ) orelse continue;
+            if (payment_opp == .string and std.ascii.eqlIgnoreCase(payment_opp.string, opp_id)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    fn create_npsp_payment_for_opportunity(
+        self: *Evaluator,
+        opp: *types.SObject,
+        amount: Value,
+    ) !void {
+        const opp_id = opp.id orelse return;
+        const payment_id = try self.alloc_id();
+        const payment = try self.arena.create(types.SObject);
+        payment.* = .{ .type_name = "npe01__OppPayment__c", .id = payment_id };
+        try payment.fields.put(self.arena, "Id", Value{ .string = payment_id });
+        try payment.fields.put(self.arena, "npe01__Opportunity__c", Value{ .string = opp_id });
+        try payment.fields.put(self.arena, "npe01__Payment_Amount__c", amount);
+        try payment.fields.put(
+            self.arena,
+            "npe01__Paid__c",
+            Value{ .boolean = npsp_opportunity_is_won(opp) },
+        );
+        try payment.fields.put(self.arena, "npe01__Written_Off__c", Value{ .boolean = false });
+        if (self.get_s_object_field_value_case_insensitive(opp, "CloseDate")) |close_date| {
+            const date_field: []const u8 = if (npsp_opportunity_is_won(opp))
+                "npe01__Payment_Date__c"
+            else
+                "npe01__Scheduled_Date__c";
+            try payment.fields.put(self.arena, date_field, close_date);
+        }
+        try self.apply_npsp_payment_field_mappings(payment, opp);
+        try self.append_sobject_to_store("npe01__OppPayment__c", payment);
+    }
+
+    fn apply_npsp_payment_field_mappings(
+        self: *Evaluator,
+        payment: *types.SObject,
+        opp: *types.SObject,
+    ) !void {
+        const mappings =
+            self.store_records_ptr("npe01__Payment_Field_Mapping_Settings__c") orelse return;
+        for (mappings.items) |mapping_value| {
+            if (mapping_value != .sobject) continue;
+            const opp_field = self.get_s_object_field_value_case_insensitive(
+                mapping_value.sobject,
+                "npe01__Opportunity_Field__c",
+            ) orelse continue;
+            const payment_field = self.get_s_object_field_value_case_insensitive(
+                mapping_value.sobject,
+                "npe01__Payment_Field__c",
+            ) orelse continue;
+            if (opp_field != .string or payment_field != .string) continue;
+            const mapped_value = self.get_s_object_field_value_case_insensitive(
+                opp,
+                opp_field.string,
+            ) orelse continue;
+            try payment.fields.put(self.arena, payment_field.string, mapped_value);
         }
     }
 
@@ -11797,6 +11936,11 @@ pub const Evaluator = struct {
         );
         if (impacted_ids.count() == 0) return;
 
+        var rollup_iter = impacted_ids.iterator();
+        while (rollup_iter.next()) |entry| {
+            try self.refresh_npsp_payment_rollup_fields(entry.key_ptr.*);
+        }
+
         const closed_stage = self.npsp_payment_auto_close_stage_name() orelse return;
         const updates = try self.arena.create(types.ListValue);
         updates.* = .{};
@@ -11861,6 +12005,7 @@ pub const Evaluator = struct {
 
         const paid_amount = self.npsp_paid_payment_total_for_opportunity(opp_id);
         if (paid_amount < amount) return;
+        if (npsp_opportunity_is_closed(opp_record.sobject)) return;
 
         if (self.get_s_object_field_value_case_insensitive(
             opp_record.sobject,
@@ -11878,6 +12023,50 @@ pub const Evaluator = struct {
         try updated.fields.put(self.arena, "IsWon", Value{ .boolean = true });
         try updates.items.append(self.arena, Value{ .sobject = updated });
         try old_opps.append(self.arena, Value{ .sobject = old });
+    }
+
+    fn refresh_npsp_payment_rollup_fields(self: *Evaluator, opp_id: []const u8) !void {
+        const opp_record = self.find_record_by_id("Opportunity", opp_id) orelse return;
+        if (opp_record != .sobject) return;
+
+        const paid_amount = self.npsp_paid_payment_total_for_opportunity(opp_id);
+        const paid_count = self.npsp_paid_payment_count_for_opportunity(opp_id);
+        try utils.sobject_put(
+            &opp_record.sobject.fields,
+            self.arena,
+            "npe01__Payments_Made__c",
+            rollup_decimal_value(paid_amount),
+        );
+        try utils.sobject_put(
+            &opp_record.sobject.fields,
+            self.arena,
+            "npe01__Number_of_Payments__c",
+            Value{ .integer = paid_count },
+        );
+    }
+
+    fn npsp_paid_payment_count_for_opportunity(self: *Evaluator, opp_id: []const u8) i64 {
+        var count: i64 = 0;
+        var store_iter = self.store.iterator();
+        while (store_iter.next()) |entry| {
+            if (!std.ascii.eqlIgnoreCase(entry.key_ptr.*, "npe01__OppPayment__c")) continue;
+            for (entry.value_ptr.items) |record| {
+                if (record != .sobject) continue;
+                const payment_opp = self.get_s_object_field_value_case_insensitive(
+                    record.sobject,
+                    "npe01__Opportunity__c",
+                ) orelse continue;
+                if (payment_opp != .string or !std.mem.eql(u8, payment_opp.string, opp_id)) {
+                    continue;
+                }
+                const paid = self.get_s_object_field_value_case_insensitive(
+                    record.sobject,
+                    "npe01__Paid__c",
+                ) orelse Value{ .boolean = false };
+                if (paid == .boolean and paid.boolean) count += 1;
+            }
+        }
+        return count;
     }
 
     fn npsp_payment_auto_close_stage_name(self: *Evaluator) ?[]const u8 {
@@ -23579,7 +23768,32 @@ pub const Evaluator = struct {
             if (batch_value != .object) continue;
             try self.execute_pending_batch_job(batch_value.object);
         }
+        if (self.fixture_relaxed_exceptions and
+            std.ascii.eqlIgnoreCase(batch.class_name, "PMT_PaymentCreator_BATCH"))
+        {
+            try self.run_npsp_payment_creator_batch_side_effect();
+        }
         return job_id;
+    }
+
+    fn run_npsp_payment_creator_batch_side_effect(self: *Evaluator) !void {
+        const opportunities = self.store_records_ptr("Opportunity") orelse return;
+        for (opportunities.items) |record| {
+            if (record != .sobject or record.sobject.id == null) continue;
+            if (self.npsp_payment_exists_for_opportunity(record.sobject.id.?)) continue;
+            if (self.npsp_payment_creation_excluded(record.sobject)) continue;
+            if (npsp_opportunity_is_closed(record.sobject) and
+                !npsp_opportunity_is_won(record.sobject))
+            {
+                continue;
+            }
+            const amount_val =
+                self.get_s_object_field_value_case_insensitive(record.sobject, "Amount") orelse
+                Value.null_val;
+            const amount = numeric_value_as_f64(amount_val) orelse continue;
+            if (amount <= 0) continue;
+            try self.create_npsp_payment_for_opportunity(record.sobject, amount_val);
+        }
     }
 
     fn enqueue_nested_database_batch(
