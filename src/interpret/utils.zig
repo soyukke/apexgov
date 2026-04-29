@@ -532,6 +532,11 @@ pub fn sobject_put(
 
 fn strip_known_namespace_prefix(name: []const u8) []const u8 {
     if (std.ascii.startsWithIgnoreCase(name, "npsp__")) return name["npsp__".len..];
+    if (std.ascii.startsWithIgnoreCase(name, "npo02__")) return name["npo02__".len..];
+    if (std.ascii.startsWithIgnoreCase(name, "npe01__")) return name["npe01__".len..];
+    if (std.ascii.startsWithIgnoreCase(name, "npe03__")) return name["npe03__".len..];
+    if (std.ascii.startsWithIgnoreCase(name, "npe4__")) return name["npe4__".len..];
+    if (std.ascii.startsWithIgnoreCase(name, "npe5__")) return name["npe5__".len..];
     return name;
 }
 

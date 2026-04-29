@@ -1470,11 +1470,11 @@ fn decode_xml_text(
         }
     }
     const decoded = buf.items;
-    // Strip surrounding single quotes (Apex string literal in metadata)
+    // Strip surrounding Apex string literal quotes in metadata.
     if (strip_outer_quotes and
         decoded.len >= 2 and
-        decoded[0] == '\'' and
-        decoded[decoded.len - 1] == '\'')
+        ((decoded[0] == '\'' and decoded[decoded.len - 1] == '\'') or
+            (decoded[0] == '"' and decoded[decoded.len - 1] == '"')))
     {
         return alloc.dupe(u8, decoded[1 .. decoded.len - 1]);
     }
@@ -1483,6 +1483,18 @@ fn decode_xml_text(
 
 fn decode_xml_default_value(alloc: std.mem.Allocator, raw: []const u8) ![]const u8 {
     return decode_xml_text(alloc, raw, true);
+}
+
+test "metadata default value strips XML-encoded string literal quotes" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const single = try decode_xml_default_value(alloc, "&apos;Default&apos;");
+    try std.testing.expectEqualStrings("Default", single);
+
+    const double = try decode_xml_default_value(alloc, "&quot;Do Not Match&quot;");
+    try std.testing.expectEqualStrings("Do Not Match", double);
 }
 
 /// arena 上の Value を gpa にコピーする。
