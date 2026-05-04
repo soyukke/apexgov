@@ -180,19 +180,42 @@ bench-all: build-fast
         printf "$fmt" REPO PASSED FAILED TOTAL "REAL(s)" "MEM(MB)"
         printf '%s\n' "--------------------------------------------------------------------------------"
     } | tee "$summary"
+    declare -a repos=()
+    declare -A repo_logs=()
+    declare -A repo_pids=()
+    declare -A repo_missing=()
     while IFS= read -r repo || [[ -n "$repo" ]]; do
         repo="${repo%%#*}"
         repo="${repo// /}"
         repo="${repo//$'\t'/}"
         [[ -z "$repo" ]] && continue
+        repos+=("$repo")
         repo_path=".local-fixtures/apex/repos/$repo"
-        echo "=== $repo ===" >> "$log"
         if [[ ! -d "$repo_path" ]]; then
+            repo_missing["$repo"]=1
+            continue
+        fi
+        repo_log="tmp/bench-all-$repo-$ts.log"
+        repo_logs["$repo"]="$repo_log"
+        (
+            /usr/bin/time -l ./zig-out/bin/apexgov interpret test --summary-only "$repo_path"
+        ) > "$repo_log" 2>&1 &
+        repo_pids["$repo"]=$!
+    done < "$targets"
+    for repo in "${repos[@]}"; do
+        if [[ -n "${repo_pids[$repo]:-}" ]]; then
+            wait "${repo_pids[$repo]}" || true
+        fi
+    done
+    for repo in "${repos[@]}"; do
+        if [[ -n "${repo_missing[$repo]:-}" ]]; then
             printf "$fmt" "$repo" MISSING - - - - | tee -a "$summary"
             continue
         fi
-        out=$(/usr/bin/time -l ./zig-out/bin/apexgov interpret test "$repo_path" 2>&1) || true
-        printf '%s\n' "$out" >> "$log"
+        repo_log="${repo_logs[$repo]}"
+        echo "=== $repo ===" >> "$log"
+        cat "$repo_log" >> "$log"
+        out=$(cat "$repo_log")
         results_line=$(printf '%s\n' "$out" | grep -E 'Results: [0-9]+ total' | tail -1 || true)
         total=$(awk '{print $3}' <<< "$results_line")
         passed=$(awk '{print $5}' <<< "$results_line")
@@ -201,7 +224,7 @@ bench-all: build-fast
         mem_bytes=$(printf '%s\n' "$out" | awk '/maximum resident set size/ {print $1; exit}')
         mem_mb=$(awk -v b="${mem_bytes:-0}" 'BEGIN { printf "%.1f", b/1024/1024 }')
         printf "$fmt" "$repo" "${passed:-?}" "${failed:-?}" "${total:-?}" "${real:-?}" "$mem_mb" | tee -a "$summary"
-    done < "$targets"
+    done
     echo
     echo "Log:     $log"
     echo "Summary: $summary"

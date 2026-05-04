@@ -12268,6 +12268,35 @@ test "E2E: replaceAll stack trace cleanup fast path preserves remaining frames" 
     );
 }
 
+test "E2E: replaceAll data mask fast path preserves card and SSN replacements" {
+    const source =
+        \\public class DataMaskReplaceAllFastPathProbe {
+        \\    public static String test() {
+        \\        String ssnPattern = '(^|[^0-9A-Za-z])(\\d{3})[- ]?(\\d{2})[- ]?(\\d{4})(?=[^0-9A-Za-z]|$)';
+        \\        String visaPattern = '(^|[^0-9])(4\\d{3})([- ]?)\\d{4}\\3\\d{4}\\3(\\d{4})(?!\\d)';
+        \\        String mastercardPattern = '(^|[^0-9])(5[1-5]\\d{2}|222[1-9]|22[3-9]\\d|2[3-6]\\d{2}|27[01]\\d|2720)([- ]?)\\d{4}\\3\\d{4}\\3(\\d{4})(?!\\d)';
+        \\        String amexPattern = '(^|[^0-9A-Za-z])(3[47]\\d{2})([- ]?)\\d{6}\\3(\\d{5})(?=[^0-9A-Za-z]|$)';
+        \\        String input = 'SSN 123-45-6789, Visa 4111-1111-1111-1111, MC 5555 5555 5555 4444, Amex 3714 496353 98431, skip abc123456789 and 4111-1111 1111-1111';
+        \\        return input
+        \\            .replaceAll(ssnPattern, '$1XXX-XX-$4')
+        \\            .replaceAll(visaPattern, '$1****-****-****-$4')
+        \\            .replaceAll(mastercardPattern, '$1****-****-****-$4')
+        \\            .replaceAll(amexPattern, '$1****-******-$4');
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "DataMaskReplaceAllFastPathProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings(
+        "SSN XXX-XX-6789, Visa ****-****-****-1111, MC ****-****-****-4444, Amex ****-******-98431, skip abc123456789 and 4111-1111 1111-1111",
+        result.value.string,
+    );
+}
+
 test "Trigger recursion does not StackOverflow" {
     const source =
         \\trigger AccountTrigger on Account (after insert, after update) {

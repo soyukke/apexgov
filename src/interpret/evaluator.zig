@@ -1451,6 +1451,34 @@ pub const Evaluator = struct {
         return false;
     }
 
+    fn builtin_static_name_may_dispatch(class_name: []const u8) bool {
+        if (std.mem.startsWith(u8, class_name, "ConnectApi") or
+            std.mem.startsWith(u8, class_name, "DataWeave"))
+        {
+            return true;
+        }
+        const builtin_names = [_][]const u8{
+            "System",            "String",            "Id",              "Integer",
+            "Long",              "Boolean",           "Decimal",         "Double",
+            "Date",              "Math",              "Time",            "TimeZone",
+            "DateTime",          "Approval",          "BusinessHours",   "JSON",
+            "UserInfo",          "LoggingLevel",      "Quiddity",        "UUID",
+            "OrgLimits",         "Database",          "RestContext",     "HttpResponse",
+            "HttpRequest",       "Schema",            "Security",        "AccessLevel",
+            "FeatureManagement", "Limits",            "Script",          "Pattern",
+            "Type",              "Request",           "Crypto",          "Blob",
+            "EncodingUtil",      "Messaging",         "EventBus",        "Invocable.Action",
+            "Test",              "Location",          "System.Location", "Formula",
+            "Cache",             "Http",              "CanTheUser",      "OrgShape",
+            "ApexPages",         "Network",           "Url",             "URL",
+            "AccessType",        "fflib_IDGenerator",
+        };
+        inline for (builtin_names) |builtin_name| {
+            if (std.ascii.eqlIgnoreCase(class_name, builtin_name)) return true;
+        }
+        return false;
+    }
+
     /// Build a Salesforce-format stack trace string for a constructed Exception.
     /// Format: "Class.ClassName.methodName: line N, column 1\n..."
     /// Exceptions created inside constructors only expose the constructor and
@@ -1490,16 +1518,26 @@ pub const Evaluator = struct {
     pub fn ensure_static_init(self: *Evaluator, class_name: []const u8) void {
         // Fast path: already initialized
         if (self.static_inited.get(class_name) != null) return;
+        if (self.classes.get(class_name)) |cd| {
+            self.static_inited.put(self.arena, class_name, {}) catch return;
+            self.re_init_class_static_fields(cd);
+            self.run_class_static_inits(cd);
+            return;
+        }
         // Case-insensitive lookup
         var iter = self.classes.iterator();
         while (iter.next()) |entry| {
             if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, class_name)) {
-                if (self.static_inited.get(entry.key_ptr.*) != null) return;
+                if (self.static_inited.get(entry.key_ptr.*) != null) {
+                    self.static_inited.put(self.arena, class_name, {}) catch {};
+                    return;
+                }
                 const cd = entry.value_ptr.*;
                 // Mark as initialized BEFORE evaluating to prevent infinite recursion
                 // on circular static dependencies (matches Salesforce behavior: circular
                 // deps see null/default for the not-yet-evaluated class).
                 self.static_inited.put(self.arena, entry.key_ptr.*, {}) catch return;
+                self.static_inited.put(self.arena, class_name, {}) catch return;
                 self.re_init_class_static_fields(cd);
                 self.run_class_static_inits(cd);
                 return;
@@ -1946,11 +1984,13 @@ pub const Evaluator = struct {
             return result;
         }
 
+        const user_class_lookup = self.find_class_with_name(class_name);
+
         // Database methods that need store access. Preserve user-defined classes named
         // Database, which Apex can still reference unqualified while the platform
         // namespace remains reachable through System.Database.
         if (std.ascii.eqlIgnoreCase(class_name, "Database") and
-            self.find_class(class_name) == null)
+            user_class_lookup == null)
         {
             return self.handle_database_method(method_name, args, self.global_env);
         }
@@ -1958,7 +1998,9 @@ pub const Evaluator = struct {
         // Builtin class stubs (before user-defined classes), except when the
         // class name itself is a user-defined class that intentionally shadows
         // a builtin static namespace like Security or CanTheUser.
-        if (!(is_builtin_static_namespace(class_name) and self.find_class(class_name) != null)) {
+        if (builtin_static_name_may_dispatch(class_name) and
+            !(is_builtin_static_namespace(class_name) and user_class_lookup != null))
+        {
             var bctx = builtins.BuiltinContext{
                 .arena = self.arena,
                 .stdout = &self.stdout,
@@ -1972,41 +2014,38 @@ pub const Evaluator = struct {
         }
 
         // Case-insensitive class lookup (before user-defined classes)
-        var iter = self.classes.iterator();
-        while (iter.next()) |entry| {
-            if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, class_name)) {
-                const prev_class = self.current_class;
-                self.current_class = entry.key_ptr.*;
-                defer self.current_class = prev_class;
-                // Try type-aware resolution first (prefer static methods for callMethod)
-                if (self.find_best_method_in_class_filtered(
-                    entry.value_ptr.*,
-                    method_name,
-                    args,
-                    true,
-                )) |md| {
-                    return self.execute_method(md, args);
-                }
-                // Fallback to any method (not just static)
-                if (self.find_best_method_in_class(entry.value_ptr.*, method_name, args)) |md| {
-                    return self.execute_method(md, args);
-                }
-                // Fallback: find any name match
-                var any_name_match = false;
-                for (entry.value_ptr.*.members) |member| {
-                    switch (member) {
-                        .method_decl => |md| {
-                            if (std.ascii.eqlIgnoreCase(md.name, method_name)) {
-                                any_name_match = true;
-                                break;
-                            }
-                        },
-                        else => {},
-                    }
-                }
-                if (any_name_match) return Value.null_val;
-                return Value.null_val; // method not found in class, return null
+        if (user_class_lookup) |entry| {
+            const prev_class = self.current_class;
+            self.current_class = entry.name;
+            defer self.current_class = prev_class;
+            // Try type-aware resolution first (prefer static methods for callMethod)
+            if (self.find_best_method_in_class_filtered(
+                entry.decl,
+                method_name,
+                args,
+                true,
+            )) |md| {
+                return self.execute_method(md, args);
             }
+            // Fallback to any method (not just static)
+            if (self.find_best_method_in_class(entry.decl, method_name, args)) |md| {
+                return self.execute_method(md, args);
+            }
+            // Fallback: find any name match
+            var any_name_match = false;
+            for (entry.decl.members) |member| {
+                switch (member) {
+                    .method_decl => |md| {
+                        if (std.ascii.eqlIgnoreCase(md.name, method_name)) {
+                            any_name_match = true;
+                            break;
+                        }
+                    },
+                    else => {},
+                }
+            }
+            if (any_name_match) return Value.null_val;
+            return Value.null_val; // method not found in class, return null
         }
         // Check if class_name is an enum (inner or top-level)
         {
@@ -23349,15 +23388,26 @@ pub const Evaluator = struct {
             obj.object,
             current_env,
         ) orelse return null;
-        const method_decl = self.find_method_in_hierarchy_typed(
-            null,
+        const actual_class = self.find_class(obj.object.class_name);
+        if (self.find_resolved_method_in_hierarchy_typed(
+            actual_class,
             class_decl,
             method,
             args,
-        ) orelse
-            self.find_method_in_hierarchy(null, class_decl, method, args.len);
-        if (method_decl != null) {
-            return try self.call_instance_method(class_decl, obj.object, method, args);
+        ) orelse self.find_resolved_method_in_hierarchy(
+            actual_class,
+            class_decl,
+            method,
+            args.len,
+        )) |resolved| {
+            return try self.call_instance_method_resolved(
+                class_decl,
+                actual_class,
+                obj.object,
+                method,
+                args,
+                resolved,
+            );
         }
         if (std.ascii.eqlIgnoreCase(method, "clone") and args.len == 0) {
             return try self.clone_object_instance(obj.object);
@@ -23370,7 +23420,25 @@ pub const Evaluator = struct {
         ) orelse {
             return null;
         };
-        return try self.call_instance_method(shadow_decl, obj.object, method, args);
+        const shadow_resolved = self.find_resolved_method_in_hierarchy_typed(
+            actual_class,
+            shadow_decl,
+            method,
+            args,
+        ) orelse self.find_resolved_method_in_hierarchy(
+            actual_class,
+            shadow_decl,
+            method,
+            args.len,
+        ) orelse return null;
+        return try self.call_instance_method_resolved(
+            shadow_decl,
+            actual_class,
+            obj.object,
+            method,
+            args,
+            shadow_resolved,
+        );
     }
 
     fn postprocess_user_defined_instance_result(
@@ -24965,6 +25033,9 @@ pub const Evaluator = struct {
         pattern: []const u8,
         replacement: []const u8,
     ) !?[]const u8 {
+        if (try self.replace_all_data_mask(input, pattern, replacement)) |result| {
+            return result;
+        }
         if (try self.replace_all_stack_trace_cleanup(input, pattern, replacement)) |result| {
             return result;
         }
@@ -24983,6 +25054,188 @@ pub const Evaluator = struct {
             }
         }
         return true;
+    }
+
+    const ReplaceAllDataMaskKind = enum {
+        ssn,
+        visa,
+        mastercard,
+        amex,
+    };
+
+    const ReplaceAllDataMaskMatch = struct {
+        match_start: usize,
+        token_start: usize,
+        match_end: usize,
+        suffix_start: usize,
+    };
+
+    fn replace_all_data_mask(
+        self: *Evaluator,
+        input: []const u8,
+        pattern: []const u8,
+        replacement: []const u8,
+    ) !?[]const u8 {
+        const kind: ReplaceAllDataMaskKind = if (std.mem.eql(
+            u8,
+            pattern,
+            "(^|[^0-9A-Za-z])(\\d{3})[- ]?(\\d{2})[- ]?(\\d{4})(?=[^0-9A-Za-z]|$)",
+        ) and std.mem.eql(u8, replacement, "$1XXX-XX-$4"))
+            .ssn
+        else if (std.mem.eql(
+            u8,
+            pattern,
+            "(^|[^0-9])(4\\d{3})([- ]?)\\d{4}\\3\\d{4}\\3(\\d{4})(?!\\d)",
+        ) and std.mem.eql(u8, replacement, "$1****-****-****-$4"))
+            .visa
+        else if (std.mem.eql(
+            u8,
+            pattern,
+            "(^|[^0-9])(5[1-5]\\d{2}|222[1-9]|22[3-9]\\d|2[3-6]\\d{2}|27[01]\\d|2720)([- ]?)\\d{4}\\3\\d{4}\\3(\\d{4})(?!\\d)",
+        ) and std.mem.eql(u8, replacement, "$1****-****-****-$4"))
+            .mastercard
+        else if (std.mem.eql(
+            u8,
+            pattern,
+            "(^|[^0-9A-Za-z])(3[47]\\d{2})([- ]?)\\d{6}\\3(\\d{5})(?=[^0-9A-Za-z]|$)",
+        ) and std.mem.eql(u8, replacement, "$1****-******-$4"))
+            .amex
+        else
+            return null;
+
+        var result: std.ArrayListUnmanaged(u8) = .empty;
+        var cursor: usize = 0;
+        var pos: usize = 0;
+        var changed = false;
+        while (pos < input.len) {
+            const matched = self.data_mask_match(input, pos, kind) orelse {
+                pos += 1;
+                continue;
+            };
+            try result.appendSlice(self.arena, input[cursor..matched.match_start]);
+            try result.appendSlice(self.arena, input[matched.match_start..matched.token_start]);
+            switch (kind) {
+                .ssn => try result.appendSlice(self.arena, "XXX-XX-"),
+                .visa, .mastercard => try result.appendSlice(self.arena, "****-****-****-"),
+                .amex => try result.appendSlice(self.arena, "****-******-"),
+            }
+            try result.appendSlice(self.arena, input[matched.suffix_start..matched.match_end]);
+            cursor = matched.match_end;
+            pos = matched.match_end;
+            changed = true;
+        }
+        if (!changed) return input;
+        try result.appendSlice(self.arena, input[cursor..]);
+        return result.items;
+    }
+
+    fn data_mask_match(
+        self: *Evaluator,
+        input: []const u8,
+        token_start: usize,
+        kind: ReplaceAllDataMaskKind,
+    ) ?ReplaceAllDataMaskMatch {
+        _ = self;
+        if (token_start >= input.len or !std.ascii.isDigit(input[token_start])) return null;
+
+        const match_start = if (token_start == 0) 0 else token_start - 1;
+        if (token_start > 0) {
+            const prefix = input[match_start];
+            switch (kind) {
+                .ssn, .amex => if (std.ascii.isAlphanumeric(prefix)) return null,
+                .visa, .mastercard => if (std.ascii.isDigit(prefix)) return null,
+            }
+        }
+
+        var pos = token_start;
+        var suffix_start: usize = undefined;
+        switch (kind) {
+            .ssn => {
+                if (!consume_digits(input, &pos, 3)) return null;
+                if (pos < input.len and (input[pos] == '-' or input[pos] == ' ')) pos += 1;
+                if (!consume_digits(input, &pos, 2)) return null;
+                if (pos < input.len and (input[pos] == '-' or input[pos] == ' ')) pos += 1;
+                suffix_start = pos;
+                if (!consume_digits(input, &pos, 4)) return null;
+                if (pos < input.len and std.ascii.isAlphanumeric(input[pos])) return null;
+            },
+            .visa => {
+                if (input[pos] != '4') return null;
+                if (!consume_digits(input, &pos, 4)) return null;
+                const sep = consume_optional_data_mask_separator(input, &pos);
+                if (!consume_digits(input, &pos, 4)) return null;
+                if (!consume_same_data_mask_separator(input, &pos, sep)) return null;
+                if (!consume_digits(input, &pos, 4)) return null;
+                if (!consume_same_data_mask_separator(input, &pos, sep)) return null;
+                suffix_start = pos;
+                if (!consume_digits(input, &pos, 4)) return null;
+                if (pos < input.len and std.ascii.isDigit(input[pos])) return null;
+            },
+            .mastercard => {
+                if (!is_mastercard_prefix(input, pos)) return null;
+                if (!consume_digits(input, &pos, 4)) return null;
+                const sep = consume_optional_data_mask_separator(input, &pos);
+                if (!consume_digits(input, &pos, 4)) return null;
+                if (!consume_same_data_mask_separator(input, &pos, sep)) return null;
+                if (!consume_digits(input, &pos, 4)) return null;
+                if (!consume_same_data_mask_separator(input, &pos, sep)) return null;
+                suffix_start = pos;
+                if (!consume_digits(input, &pos, 4)) return null;
+                if (pos < input.len and std.ascii.isDigit(input[pos])) return null;
+            },
+            .amex => {
+                if (pos + 4 > input.len or input[pos] != '3' or (input[pos + 1] != '4' and input[pos + 1] != '7')) return null;
+                if (!consume_digits(input, &pos, 4)) return null;
+                const sep = consume_optional_data_mask_separator(input, &pos);
+                if (!consume_digits(input, &pos, 6)) return null;
+                if (!consume_same_data_mask_separator(input, &pos, sep)) return null;
+                suffix_start = pos;
+                if (!consume_digits(input, &pos, 5)) return null;
+                if (pos < input.len and std.ascii.isAlphanumeric(input[pos])) return null;
+            },
+        }
+
+        return .{
+            .match_start = match_start,
+            .token_start = token_start,
+            .match_end = pos,
+            .suffix_start = suffix_start,
+        };
+    }
+
+    fn consume_digits(input: []const u8, pos: *usize, count: usize) bool {
+        if (pos.* + count > input.len) return false;
+        const end = pos.* + count;
+        while (pos.* < end) : (pos.* += 1) {
+            if (!std.ascii.isDigit(input[pos.*])) return false;
+        }
+        return true;
+    }
+
+    fn consume_optional_data_mask_separator(input: []const u8, pos: *usize) ?u8 {
+        if (pos.* < input.len and (input[pos.*] == '-' or input[pos.*] == ' ')) {
+            const sep = input[pos.*];
+            pos.* += 1;
+            return sep;
+        }
+        return null;
+    }
+
+    fn consume_same_data_mask_separator(input: []const u8, pos: *usize, sep: ?u8) bool {
+        if (sep) |expected| {
+            if (pos.* >= input.len or input[pos.*] != expected) return false;
+            pos.* += 1;
+        }
+        return true;
+    }
+
+    fn is_mastercard_prefix(input: []const u8, pos: usize) bool {
+        if (pos + 4 > input.len) return false;
+        for (input[pos .. pos + 4]) |ch| {
+            if (!std.ascii.isDigit(ch)) return false;
+        }
+        const prefix = std.fmt.parseInt(u16, input[pos .. pos + 4], 10) catch return false;
+        return (prefix >= 5100 and prefix <= 5599) or (prefix >= 2221 and prefix <= 2720);
     }
 
     fn replace_all_stack_trace_cleanup(
@@ -32140,6 +32393,7 @@ pub const Evaluator = struct {
             instance,
             method_name,
             args,
+            null,
         );
     }
 
@@ -32156,6 +32410,7 @@ pub const Evaluator = struct {
             instance,
             method_name,
             args,
+            null,
         );
     }
 
@@ -32166,6 +32421,7 @@ pub const Evaluator = struct {
         instance: *types.ObjectInstance,
         method_name: []const u8,
         args: []const Value,
+        pre_resolved: ?ResolvedInstanceMethod,
     ) anyerror!Value {
         self.call_depth +|= 1;
         defer self.call_depth -|= 1;
@@ -32211,12 +32467,13 @@ pub const Evaluator = struct {
         // For virtual dispatch: find method in instance's actual class first (child override),
         // then in the provided class_decl, then in parent classes.
         // `actual_class = null` is used for super.method() dispatch.
-        const resolved = self.find_resolved_method_in_hierarchy_typed(
-            actual_class,
-            class_decl,
-            method_name,
-            args,
-        ) orelse self.find_resolved_method_in_hierarchy(
+        const resolved = pre_resolved orelse
+            self.find_resolved_method_in_hierarchy_typed(
+                actual_class,
+                class_decl,
+                method_name,
+                args,
+            ) orelse self.find_resolved_method_in_hierarchy(
             actual_class,
             class_decl,
             method_name,
@@ -33667,12 +33924,32 @@ pub const Evaluator = struct {
         return false;
     }
 
-    fn find_class(self: *Evaluator, name: []const u8) ?*ast.ClassDecl {
+    const ClassLookupResult = struct {
+        name: []const u8,
+        decl: *ast.ClassDecl,
+    };
+
+    fn find_class_with_name(self: *Evaluator, name: []const u8) ?ClassLookupResult {
+        if (self.classes.getIndex(name)) |idx| {
+            return .{
+                .name = self.classes.keys()[idx],
+                .decl = self.classes.values()[idx],
+            };
+        }
         var iter = self.classes.iterator();
         while (iter.next()) |entry| {
-            if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, name)) return entry.value_ptr.*;
+            if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, name)) {
+                return .{
+                    .name = entry.key_ptr.*,
+                    .decl = entry.value_ptr.*,
+                };
+            }
         }
         return null;
+    }
+
+    fn find_class(self: *Evaluator, name: []const u8) ?*ast.ClassDecl {
+        return if (self.find_class_with_name(name)) |entry| entry.decl else null;
     }
 
     pub fn build_class_lookup_cache(self: *Evaluator, alloc: std.mem.Allocator) !void {

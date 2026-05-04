@@ -54,10 +54,20 @@ const ProfileOptions = struct {
 const InterpretTestOptions = struct {
     filter_class: ?[]const u8 = null,
     filter_method: ?[]const u8 = null,
+    summary_only: bool = false,
     paths: std.ArrayList([]const u8) = .empty,
 
     fn deinit(self: *InterpretTestOptions, gpa: std.mem.Allocator) void {
         self.paths.deinit(gpa);
+    }
+};
+
+const SummaryOnlyTestWriter = struct {
+    inner: *Io.Writer,
+
+    pub fn print(self: *SummaryOnlyTestWriter, comptime fmt: []const u8, args: anytype) !void {
+        if (std.mem.startsWith(u8, fmt, "[PASS] ")) return;
+        try self.inner.print(fmt, args);
     }
 };
 
@@ -483,7 +493,7 @@ fn run_interpret_test(gpa: std.mem.Allocator, io: Io, args: []const []const u8) 
             print_stderr(io,
                 \\apexgov interpret test
                 \\  Run Apex test classes using the Zig native interpreter.
-                \\  Usage: apexgov interpret test [--class CLASS] [--method METHOD] <paths...>
+                \\  Usage: apexgov interpret test [--class CLASS] [--method METHOD] [--summary-only] <paths...>
                 \\
             , .{});
             return 0;
@@ -494,6 +504,11 @@ fn run_interpret_test(gpa: std.mem.Allocator, io: Io, args: []const []const u8) 
         }
         if (try consume_option(args, &i, "--method")) |v| {
             opts.filter_method = v;
+            continue;
+        }
+        if (std.mem.eql(u8, args[i], "--summary-only")) {
+            opts.summary_only = true;
+            i += 1;
             continue;
         }
         if (std.mem.startsWith(u8, args[i], "--")) return error.UnknownOption;
@@ -511,7 +526,20 @@ fn run_interpret_test(gpa: std.mem.Allocator, io: Io, args: []const []const u8) 
     var stderr_writer = Io.File.stderr().writer(io, &write_buffer);
     const writer = &stderr_writer.interface;
 
-    var suite = if (opts.filter_class) |class_name|
+    var suite = if (opts.summary_only) blk: {
+        var summary_writer = SummaryOnlyTestWriter{ .inner = writer };
+        break :blk if (opts.filter_class) |class_name|
+            try apexgov.interpret.run_single_test(
+                gpa,
+                io,
+                opts.paths.items,
+                class_name,
+                opts.filter_method,
+                &summary_writer,
+            )
+        else
+            try apexgov.interpret.run_test_suite(gpa, io, opts.paths.items, &summary_writer);
+    } else if (opts.filter_class) |class_name|
         try apexgov.interpret.run_single_test(
             gpa,
             io,
