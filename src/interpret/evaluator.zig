@@ -32584,9 +32584,7 @@ pub const Evaluator = struct {
         const method_env = try self.global_env.child();
         try method_env.define("this", Value{ .object = instance });
         for (instance.fields.keys(), instance.fields.values()) |k, v| {
-            method_env.set(k, v) catch {
-                try method_env.define(k, v);
-            };
+            try method_env.define(k, v);
         }
         for (method.params, 0..) |param, i| {
             const declared_type = self.render_type_ref(param.type_ref);
@@ -32624,7 +32622,7 @@ pub const Evaluator = struct {
     ) void {
         for (instance.fields.keys(), instance.fields.values()) |fk, fv| {
             if (method_has_param_named(method, fk)) continue;
-            if (method_env.get_declared_type(fk) != null) continue;
+            if (method_env.has_local_declared_type(fk)) continue;
             method_env.set(fk, fv) catch {};
         }
     }

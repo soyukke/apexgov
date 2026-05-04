@@ -80,6 +80,15 @@ pub const Env = struct {
         return null;
     }
 
+    pub fn has_local_declared_type(self: *const Env, name: []const u8) bool {
+        if (self.declared_types.contains(name)) return true;
+        const canonical = self.get_lower_index_name(
+            &self.lower_declared_type_names,
+            name,
+        ) orelse return false;
+        return self.declared_types.contains(canonical);
+    }
+
     pub fn set(self: *Env, name: []const u8, value: Value) !void {
         if (self.bindings.getIndex(name)) |idx| {
             self.bindings.values()[idx] = value;
