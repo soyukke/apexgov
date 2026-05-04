@@ -32620,8 +32620,8 @@ pub const Evaluator = struct {
         instance: *types.ObjectInstance,
         method: *ast.MethodDecl,
     ) void {
+        _ = method;
         for (instance.fields.keys(), instance.fields.values()) |fk, fv| {
-            if (method_has_param_named(method, fk)) continue;
             if (method_env.has_local_declared_type(fk)) continue;
             method_env.set(fk, fv) catch {};
         }
