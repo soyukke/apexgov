@@ -32627,13 +32627,6 @@ pub const Evaluator = struct {
         }
     }
 
-    fn method_has_param_named(method: *ast.MethodDecl, name: []const u8) bool {
-        for (method.params) |p| {
-            if (std.ascii.eqlIgnoreCase(p.name, name)) return true;
-        }
-        return false;
-    }
-
     fn method_has_annotation(method: *ast.MethodDecl, annotation_name: []const u8) bool {
         for (method.annotations) |annotation| {
             if (std.ascii.eqlIgnoreCase(annotation, annotation_name)) return true;
