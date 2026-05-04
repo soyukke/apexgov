@@ -128,6 +128,15 @@ pub const TestSuiteResult = struct {
     }
 };
 
+pub const TestShard = struct {
+    index: usize,
+    count: usize,
+
+    fn includes(self: TestShard, ordinal: usize) bool {
+        return ordinal % self.count == self.index;
+    }
+};
+
 const SourceFile = struct { path: []const u8, content: []const u8 };
 
 const SampleAppFixturePaths = struct {
@@ -238,7 +247,17 @@ pub fn run_test_suite(
     paths: []const []const u8,
     writer: anytype,
 ) !TestSuiteResult {
-    return run_tests_filtered(gpa, io, paths, null, null, writer);
+    return run_tests_filtered(gpa, io, paths, null, null, null, writer);
+}
+
+pub fn run_test_suite_sharded(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    paths: []const []const u8,
+    shard: TestShard,
+    writer: anytype,
+) !TestSuiteResult {
+    return run_tests_filtered(gpa, io, paths, null, null, shard, writer);
 }
 
 /// 指定クラス（+ オプションでメソッド）のテストのみ実行する。
@@ -251,7 +270,7 @@ pub fn run_single_test(
     method_name: ?[]const u8,
     writer: anytype,
 ) !TestSuiteResult {
-    return run_tests_filtered(gpa, io, paths, class_name, method_name, writer);
+    return run_tests_filtered(gpa, io, paths, class_name, method_name, null, writer);
 }
 
 /// テスト実行の共通内部関数。filter_class / filter_method が null なら全テスト実行。
@@ -261,6 +280,7 @@ fn run_tests_filtered(
     paths: []const []const u8,
     filter_class: ?[]const u8,
     filter_method: ?[]const u8,
+    shard: ?TestShard,
     writer: anytype,
 ) !TestSuiteResult {
     // 永続アリーナ: パース済み AST・クラス登録・ソースファイル（テスト間で共有）。
@@ -296,6 +316,7 @@ fn run_tests_filtered(
         &eval,
         filter_class,
         filter_method,
+        shard,
         classes_with_statics.items,
         &suite,
         writer,
@@ -440,6 +461,7 @@ fn run_loaded_tests(
     eval: *evaluator.Evaluator,
     filter_class: ?[]const u8,
     filter_method: ?[]const u8,
+    shard: ?TestShard,
     classes_with_statics: []const *ast.ClassDecl,
     suite: *TestSuiteResult,
     writer: anytype,
@@ -447,6 +469,7 @@ fn run_loaded_tests(
     var test_arena = std.heap.ArenaAllocator.init(gpa);
     defer test_arena.deinit();
 
+    var test_ordinal: usize = 0;
     var class_iter = eval.classes.iterator();
     while (class_iter.next()) |entry| {
         const class_name = entry.key_ptr.*;
@@ -460,6 +483,8 @@ fn run_loaded_tests(
             class_name,
             entry.value_ptr.*,
             filter_method,
+            shard,
+            &test_ordinal,
             classes_with_statics,
             &test_arena,
             suite,
@@ -475,6 +500,8 @@ fn run_test_class(
     class_name: []const u8,
     class_decl: *ast.ClassDecl,
     filter_method: ?[]const u8,
+    shard: ?TestShard,
+    test_ordinal: *usize,
     classes_with_statics: []const *ast.ClassDecl,
     test_arena: *std.heap.ArenaAllocator,
     suite: *TestSuiteResult,
@@ -487,6 +514,11 @@ fn run_test_class(
                 if (!is_test_method(method_decl)) continue;
                 if (filter_method) |fm| {
                     if (!std.ascii.eqlIgnoreCase(method_decl.name, fm)) continue;
+                }
+                const ordinal = test_ordinal.*;
+                test_ordinal.* += 1;
+                if (shard) |s| {
+                    if (!s.includes(ordinal)) continue;
                 }
                 try run_test_method(
                     parse_alloc,

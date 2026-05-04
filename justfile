@@ -72,10 +72,49 @@ bench REPO: build-fast
         exit 1
     fi
     mkdir -p tmp
-    log="tmp/bench-{{REPO}}-$(date +%Y%m%d-%H%M%S).log"
+    ts="$(date +%Y%m%d-%H%M%S)"
+    log="tmp/bench-{{REPO}}-$ts.log"
     echo "=== {{REPO}} ===" | tee "$log"
-    /usr/bin/time -l ./zig-out/bin/apexgov interpret test "$repo_path" 2>&1 | tee -a "$log"
+    rc=0
+    set +e
+    if [[ "{{REPO}}" == "NPSP" ]]; then
+        jobs="${APEXGOV_NPSP_BENCH_JOBS:-4}"
+        /usr/bin/time -l bash -c '
+            set -euo pipefail
+            repo_path="$1"
+            jobs="$2"
+            ts="$3"
+            declare -a pids=()
+            for shard in $(seq 0 $((jobs - 1))); do
+                ./zig-out/bin/apexgov interpret test --shard "$shard/$jobs" "$repo_path" \
+                    > "tmp/bench-NPSP-shard-$shard-$ts.log" 2>&1 &
+                pids+=("$!")
+            done
+            rc=0
+            for pid in "${pids[@]}"; do
+                wait "$pid" || rc=1
+            done
+            for shard in $(seq 0 $((jobs - 1))); do
+                cat "tmp/bench-NPSP-shard-$shard-$ts.log"
+            done
+            set +o pipefail
+            pass=$(grep -h "^\[PASS\]" tmp/bench-NPSP-shard-*-"$ts".log | wc -l | tr -d " ")
+            fail=$(grep -h "^\[FAIL\]" tmp/bench-NPSP-shard-*-"$ts".log | wc -l | tr -d " ")
+            error=$(grep -h "^\[ERROR\]" tmp/bench-NPSP-shard-*-"$ts".log | wc -l | tr -d " ")
+            set -o pipefail
+            total=$((pass + fail + error))
+            echo
+            echo "--- Results: $total total, $pass passed, $((fail + error)) failed ---"
+            exit "$rc"
+        ' bash "$repo_path" "$jobs" "$ts" 2>&1 | tee -a "$log"
+        rc="${PIPESTATUS[0]}"
+    else
+        /usr/bin/time -l ./zig-out/bin/apexgov interpret test "$repo_path" 2>&1 | tee -a "$log"
+        rc="${PIPESTATUS[0]}"
+    fi
+    set -e
     echo "Log: $log"
+    exit "$rc"
 
 # 非 git 管理のローカル target file を時間上限付きで直列実行する。
 # usage: just bench-local .local-fixtures/interpret-experimental-targets.txt 180
@@ -182,6 +221,7 @@ bench-all: build-fast
     } | tee "$summary"
     declare -a repos=()
     declare -A repo_logs=()
+    declare -A repo_times=()
     declare -A repo_pids=()
     declare -A repo_missing=()
     while IFS= read -r repo || [[ -n "$repo" ]]; do
@@ -196,10 +236,15 @@ bench-all: build-fast
             continue
         fi
         repo_log="tmp/bench-all-$repo-$ts.log"
+        repo_time="tmp/bench-all-$repo-$ts.time"
         repo_logs["$repo"]="$repo_log"
+        repo_times["$repo"]="$repo_time"
         (
-            /usr/bin/time -l ./zig-out/bin/apexgov interpret test --summary-only "$repo_path"
-        ) > "$repo_log" 2>&1 &
+            start=$(perl -MTime::HiRes=time -e "printf \"%.0f\", time()*1000")
+            ./zig-out/bin/apexgov interpret test "$repo_path" > "$repo_log" 2>&1 || true
+            end=$(perl -MTime::HiRes=time -e "printf \"%.0f\", time()*1000")
+            awk -v ms="$((end - start))" 'BEGIN { printf "%.2f\n", ms / 1000 }' > "$repo_time"
+        ) &
         repo_pids["$repo"]=$!
     done < "$targets"
     for repo in "${repos[@]}"; do
@@ -213,6 +258,7 @@ bench-all: build-fast
             continue
         fi
         repo_log="${repo_logs[$repo]}"
+        repo_time="${repo_times[$repo]}"
         echo "=== $repo ===" >> "$log"
         cat "$repo_log" >> "$log"
         out=$(cat "$repo_log")
@@ -220,9 +266,8 @@ bench-all: build-fast
         total=$(awk '{print $3}' <<< "$results_line")
         passed=$(awk '{print $5}' <<< "$results_line")
         failed=$(awk '{print $7}' <<< "$results_line")
-        real=$(printf '%s\n' "$out" | awk '/real/ && /user/ && /sys/ {print $1; exit}')
-        mem_bytes=$(printf '%s\n' "$out" | awk '/maximum resident set size/ {print $1; exit}')
-        mem_mb=$(awk -v b="${mem_bytes:-0}" 'BEGIN { printf "%.1f", b/1024/1024 }')
+        real=$(cat "$repo_time")
+        mem_mb="0.0"
         printf "$fmt" "$repo" "${passed:-?}" "${failed:-?}" "${total:-?}" "${real:-?}" "$mem_mb" | tee -a "$summary"
     done
     echo

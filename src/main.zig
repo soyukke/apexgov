@@ -55,12 +55,21 @@ const InterpretTestOptions = struct {
     filter_class: ?[]const u8 = null,
     filter_method: ?[]const u8 = null,
     summary_only: bool = false,
+    shard: ?apexgov.interpret.TestShard = null,
     paths: std.ArrayList([]const u8) = .empty,
 
     fn deinit(self: *InterpretTestOptions, gpa: std.mem.Allocator) void {
         self.paths.deinit(gpa);
     }
 };
+
+fn parse_interpret_test_shard(raw: []const u8) !apexgov.interpret.TestShard {
+    const slash = std.mem.indexOfScalar(u8, raw, '/') orelse return error.InvalidShard;
+    const index = try std.fmt.parseInt(usize, raw[0..slash], 10);
+    const count = try std.fmt.parseInt(usize, raw[slash + 1 ..], 10);
+    if (count == 0 or index >= count) return error.InvalidShard;
+    return .{ .index = index, .count = count };
+}
 
 const SummaryOnlyTestWriter = struct {
     inner: *Io.Writer,
@@ -493,7 +502,7 @@ fn run_interpret_test(gpa: std.mem.Allocator, io: Io, args: []const []const u8) 
             print_stderr(io,
                 \\apexgov interpret test
                 \\  Run Apex test classes using the Zig native interpreter.
-                \\  Usage: apexgov interpret test [--class CLASS] [--method METHOD] [--summary-only] <paths...>
+                \\  Usage: apexgov interpret test [--class CLASS] [--method METHOD] [--summary-only] [--shard I/N] <paths...>
                 \\
             , .{});
             return 0;
@@ -509,6 +518,10 @@ fn run_interpret_test(gpa: std.mem.Allocator, io: Io, args: []const []const u8) 
         if (std.mem.eql(u8, args[i], "--summary-only")) {
             opts.summary_only = true;
             i += 1;
+            continue;
+        }
+        if (try consume_option(args, &i, "--shard")) |v| {
+            opts.shard = try parse_interpret_test_shard(v);
             continue;
         }
         if (std.mem.startsWith(u8, args[i], "--")) return error.UnknownOption;
@@ -537,6 +550,14 @@ fn run_interpret_test(gpa: std.mem.Allocator, io: Io, args: []const []const u8) 
                 opts.filter_method,
                 &summary_writer,
             )
+        else if (opts.shard) |shard|
+            try apexgov.interpret.run_test_suite_sharded(
+                gpa,
+                io,
+                opts.paths.items,
+                shard,
+                &summary_writer,
+            )
         else
             try apexgov.interpret.run_test_suite(gpa, io, opts.paths.items, &summary_writer);
     } else if (opts.filter_class) |class_name|
@@ -546,6 +567,14 @@ fn run_interpret_test(gpa: std.mem.Allocator, io: Io, args: []const []const u8) 
             opts.paths.items,
             class_name,
             opts.filter_method,
+            writer,
+        )
+    else if (opts.shard) |shard|
+        try apexgov.interpret.run_test_suite_sharded(
+            gpa,
+            io,
+            opts.paths.items,
+            shard,
             writer,
         )
     else
