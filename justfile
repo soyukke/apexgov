@@ -241,7 +241,25 @@ bench-all: build-fast
         repo_times["$repo"]="$repo_time"
         (
             start=$(perl -MTime::HiRes=time -e "printf \"%.0f\", time()*1000")
-            ./zig-out/bin/apexgov interpret test "$repo_path" > "$repo_log" 2>&1 || true
+            if [[ "$repo" == "NebulaLogger" ]]; then
+                jobs="${APEXGOV_BENCH_ALL_NEBULA_JOBS:-8}"
+                declare -a shard_pids=()
+                for shard in $(seq 0 $((jobs - 1))); do
+                    ./zig-out/bin/apexgov interpret test --summary-only --shard "$shard/$jobs" "$repo_path" \
+                        > "tmp/bench-all-$repo-shard-$shard-$ts.log" 2>&1 &
+                    shard_pids+=("$!")
+                done
+                for pid in "${shard_pids[@]}"; do
+                    wait "$pid" || true
+                done
+                cat tmp/bench-all-$repo-shard-*-"$ts".log > "$repo_log"
+                pass=$(awk '/^--- Results:/ { passed += $5 } END { print passed + 0 }' "$repo_log")
+                fail=$(awk '/^--- Results:/ { failed += $7 } END { print failed + 0 }' "$repo_log")
+                total=$(awk '/^--- Results:/ { total += $3 } END { print total + 0 }' "$repo_log")
+                printf '\n--- Results: %d total, %d passed, %d failed ---\n' "$total" "$pass" "$fail" >> "$repo_log"
+            else
+                ./zig-out/bin/apexgov interpret test --summary-only "$repo_path" > "$repo_log" 2>&1 || true
+            fi
             end=$(perl -MTime::HiRes=time -e "printf \"%.0f\", time()*1000")
             awk -v ms="$((end - start))" 'BEGIN { printf "%.2f\n", ms / 1000 }' > "$repo_time"
         ) &
