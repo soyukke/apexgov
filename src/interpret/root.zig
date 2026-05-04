@@ -26,6 +26,7 @@ pub const Options = struct {
     entry_method: []const u8 = "",
     args: []const Value = &.{},
     source_paths: []const []const u8 = &.{},
+    fixture_relaxed_exceptions: bool = false,
 };
 
 pub const Result = struct {
@@ -50,6 +51,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, source: []const u8, opts: Options
     const decls = try parser.parse(tokens, arena.allocator());
 
     var eval = try evaluator.Evaluator.init(arena.allocator(), io);
+    eval.fixture_relaxed_exceptions = opts.fixture_relaxed_exceptions;
     if (opts.source_paths.len > 0) {
         eval.source_paths = opts.source_paths;
         for (opts.source_paths) |path| {
@@ -6384,6 +6386,28 @@ test "E2E: NPSP recurring donation amount describe reports currency" {
     try std.testing.expectEqualStrings("CURRENCY", result.value.string);
 }
 
+test "E2E: NPSP contact closed opp count describe reports numeric" {
+    const source =
+        \\public class NpspContactClosedOppCountDescribeProbe {
+        \\    public static String test() {
+        \\        Schema.DescribeFieldResult dfr =
+        \\            Contact.SObjectType.getDescribe()
+        \\                .fields.getMap()
+        \\                .get('npo02__OppsClosedThisYear__c')
+        \\                .getDescribe();
+        \\        return dfr.getType().name();
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "NpspContactClosedOppCountDescribeProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("DOUBLE", result.value.string);
+}
+
 test "E2E: SObjectField constructor argument coerces to DescribeFieldResult" {
     const source =
         \\public class SObjectFieldDescribeConstructorArgProbe {
@@ -7356,6 +7380,36 @@ test "E2E: Opportunity IsClosed field access derives from StageName" {
     try std.testing.expectEqualStrings("true:true", result.value.string);
 }
 
+test "E2E: Opportunity IsClosed field access ignores stale stored flag" {
+    const source =
+        \\public class OpportunityStaleStageFlagAccessTest {
+        \\    public static String test() {
+        \\        Opportunity opp = new Opportunity(
+        \\            Name = 'Donation',
+        \\            CloseDate = Date.today(),
+        \\            StageName = 'Prospecting'
+        \\        );
+        \\        insert opp;
+        \\        opp = [
+        \\            SELECT IsClosed, IsWon, StageName
+        \\            FROM Opportunity
+        \\            WHERE Id = :opp.Id
+        \\            LIMIT 1
+        \\        ];
+        \\        opp.StageName = 'Closed Lost';
+        \\        return String.valueOf(opp.IsClosed) + ':' + String.valueOf(opp.IsWon);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "OpportunityStaleStageFlagAccessTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("true:false", result.value.string);
+}
+
 test "E2E: CampaignMember HasResponded SELECT derives from member status" {
     const source =
         \\public class CampaignMemberHasRespondedSelectTest {
@@ -7516,6 +7570,28 @@ test "E2E: Database rollback restores inserted and updated records" {
     defer result.deinit();
 
     try std.testing.expectEqualStrings("1:before", result.value.string);
+}
+
+test "E2E: SOQL ORDER BY ascending places nulls first" {
+    const source =
+        \\public class OrderByNullsFirstTest {
+        \\    public static String test() {
+        \\        insert new List<Account>{
+        \\            new Account(Name = 'A', Industry = 'Filled'),
+        \\            new Account(Name = 'B')
+        \\        };
+        \\        List<Account> rows = [SELECT Industry FROM Account ORDER BY Industry];
+        \\        return String.valueOf(rows[0].Industry) + ':' + rows[1].Industry;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "OrderByNullsFirstTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("null:Filled", result.value.string);
 }
 
 test "E2E: Map copy constructor preserves entries" {
@@ -8637,6 +8713,37 @@ test "E2E: explicit null suppresses hierarchy custom setting field defaults on u
     defer result.deinit();
 
     try std.testing.expectEqualStrings("true", result.value.string);
+}
+
+test "E2E: hierarchy custom setting upsert without owner stores org defaults" {
+    const alloc = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try write_generic_hierarchy_custom_setting_fixture(tmp_dir.dir);
+    const tmp_path = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", alloc);
+    defer alloc.free(tmp_path);
+
+    const source =
+        \\public class HierarchySettingOwnerlessUpsertTest {
+        \\    public static String test() {
+        \\        AppSettings__c settings = new AppSettings__c();
+        \\        settings.Flag__c = 'saved';
+        \\        upsert settings;
+        \\        AppSettings__c reloaded = AppSettings__c.getOrgDefaults();
+        \\        return String.valueOf(settings.SetupOwnerId) + ':' +
+        \\            String.valueOf(reloaded.Flag__c);
+        \\    }
+        \\}
+    ;
+    const result = try run(alloc, std.testing.io, source, .{
+        .entry_class = "HierarchySettingOwnerlessUpsertTest",
+        .entry_method = "test",
+        .source_paths = &.{tmp_path},
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("00D000000000001:saved", result.value.string);
 }
 
 test "E2E: static initializer preserves static method side effects on fields" {
@@ -9928,6 +10035,30 @@ test "E2E: StandardController normalizes queried SObject records" {
     try std.testing.expectEqualStrings("Contact", result.value.string);
 }
 
+test "E2E: StandardController save persists the wrapped record" {
+    const source =
+        \\public class StandardControllerSaveTest {
+        \\    public static String test() {
+        \\        Contact contactRecord = new Contact(LastName = 'Saved');
+        \\        ApexPages.StandardController controller =
+        \\            new ApexPages.StandardController(contactRecord);
+        \\        PageReference pageRef = controller.save();
+        \\        List<Contact> contacts = [SELECT Id, LastName FROM Contact];
+        \\        return String.valueOf(contacts.size()) + ':' +
+        \\            contacts[0].LastName + ':' +
+        \\            String.valueOf(pageRef.getUrl().contains(contacts[0].Id));
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "StandardControllerSaveTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("1:Saved:true", result.value.string);
+}
+
 test "E2E: enhanced recurring donation start date defaults before insert triggers" {
     const source =
         \\trigger RDDefaultProbeTrigger on npe03__Recurring_Donation__c (before insert) {
@@ -10590,6 +10721,67 @@ test "E2E: SObject.getSObject resolves parent records from a reference field tok
     try std.testing.expectEqualStrings("Acme", result.value.string);
 }
 
+test "E2E: SObject.getSObject string rejects foreign key field names" {
+    const source =
+        \\public class GetSObjectForeignKeyStringTest {
+        \\    public static String test() {
+        \\        Contact contactRecord = new Contact(LastName = 'User');
+        \\        try {
+        \\            contactRecord.getSObject('AccountId');
+        \\            return 'missing';
+        \\        } catch (SObjectException ex) {
+        \\            return ex.getMessage();
+        \\        }
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "GetSObjectForeignKeyStringTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("Invalid relationship AccountId for Contact", result.value.string);
+}
+
+test "E2E: update clearing lookup field invalidates queried parent relationship" {
+    const source =
+        \\public class UpdateClearsLookupRelationshipTest {
+        \\    public static String test() {
+        \\        Account accountRecord = new Account(Name = 'Acme');
+        \\        insert accountRecord;
+        \\        Contact contactRecord = new Contact(
+        \\            LastName = 'User',
+        \\            Primary_Affiliation__c = accountRecord.Id
+        \\        );
+        \\        insert contactRecord;
+        \\        Contact queried = [
+        \\            SELECT Id, Primary_Affiliation__c, Primary_Affiliation__r.Name
+        \\            FROM Contact
+        \\            WHERE Id = :contactRecord.Id
+        \\        ];
+        \\        queried.Primary_Affiliation__c = null;
+        \\        update queried;
+        \\        Contact again = [
+        \\            SELECT Id, Primary_Affiliation__c, Primary_Affiliation__r.Name
+        \\            FROM Contact
+        \\            WHERE Id = :contactRecord.Id
+        \\        ];
+        \\        return again.getSObject('Primary_Affiliation__r') == null
+        \\            ? ''
+        \\            : String.valueOf(again.getSObject('Primary_Affiliation__r').get('Name'));
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "UpdateClearsLookupRelationshipTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("", result.value.string);
+}
+
 test "E2E: SObject.getSObject resolves unsaved relationship records assigned via __r" {
     const source =
         \\public class GetUnsavedParentTest {
@@ -10993,6 +11185,136 @@ test "E2E: Database.countQuery resolves local bind variables" {
     defer result.deinit();
 
     try std.testing.expectEqualStrings("2", result.value.string);
+}
+
+test "E2E: SOQL NOT IN empty bind collection matches records" {
+    const source =
+        \\public class NotInEmptyBindTest {
+        \\    public static String test() {
+        \\        insert new Account(Name = 'Acme');
+        \\        Set<String> excluded = new Set<String>();
+        \\        Integer count = Database.countQuery(
+        \\            'SELECT count() FROM Account WHERE Type NOT IN :excluded'
+        \\        );
+        \\        return String.valueOf(count);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "NotInEmptyBindTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("1", result.value.string);
+}
+
+test "E2E: NPSP opportunity payment suppression defaults false in SOQL" {
+    const source =
+        \\public class NpspOppPaymentSuppressionDefaultTest {
+        \\    public static String test() {
+        \\        insert new Opportunity(
+        \\            Name = 'Gift',
+        \\            StageName = 'Closed Won',
+        \\            CloseDate = Date.today(),
+        \\            Amount = 100
+        \\        );
+        \\        Integer count = Database.countQuery(
+        \\            'SELECT count() FROM Opportunity WHERE npe01__Do_Not_Automatically_Create_Payment__c = false'
+        \\        );
+        \\        return String.valueOf(count);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "NpspOppPaymentSuppressionDefaultTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("1", result.value.string);
+}
+
+test "E2E: NPSP RD2 status mapper mock fields bypass compatibility shortcut" {
+    const source =
+        \\public class RD2_StatusMapper {
+        \\    public interface Gateway {
+        \\        List<RecurringDonationStatusMapping__mdt> getRecords();
+        \\    }
+        \\
+        \\    private Gateway gateway {
+        \\        get {
+        \\            if (gateway == null) {
+        \\                gateway = new EmptyGateway();
+        \\            }
+        \\            return gateway;
+        \\        }
+        \\        set;
+        \\    }
+        \\
+        \\    private Map<String, String> statusLabelByValue {
+        \\        get {
+        \\            if (statusLabelByValue == null) {
+        \\                statusLabelByValue = new Map<String, String>{ 'Active' => 'Active' };
+        \\            }
+        \\            return statusLabelByValue;
+        \\        }
+        \\        set;
+        \\    }
+        \\
+        \\    public String getState(String status) {
+        \\        Map<String, String> stateByStatus = new Map<String, String>();
+        \\        for (String key : statusLabelByValue.keySet()) {
+        \\            stateByStatus.put(key, null);
+        \\        }
+        \\        for (RecurringDonationStatusMapping__mdt record : gateway.getRecords()) {
+        \\            if (stateByStatus.containsKey(record.Status__c)) {
+        \\                stateByStatus.put(record.Status__c, record.State__c);
+        \\            }
+        \\        }
+        \\        return stateByStatus.get(status);
+        \\    }
+        \\
+        \\    private class EmptyGateway implements Gateway {
+        \\        public List<RecurringDonationStatusMapping__mdt> getRecords() {
+        \\            return new List<RecurringDonationStatusMapping__mdt>();
+        \\        }
+        \\    }
+        \\
+        \\    private class TestGateway implements Gateway {
+        \\        private List<RecurringDonationStatusMapping__mdt> records =
+        \\            new List<RecurringDonationStatusMapping__mdt>();
+        \\
+        \\        public TestGateway withRecord(RecurringDonationStatusMapping__mdt record) {
+        \\            records.add(record);
+        \\            return this;
+        \\        }
+        \\
+        \\        public List<RecurringDonationStatusMapping__mdt> getRecords() {
+        \\            return records;
+        \\        }
+        \\    }
+        \\
+        \\    public static String test() {
+        \\        RD2_StatusMapper mapper = new RD2_StatusMapper();
+        \\        mapper.gateway = new TestGateway().withRecord(
+        \\            new RecurringDonationStatusMapping__mdt(
+        \\                Status__c = 'Canceled',
+        \\                State__c = 'Closed'
+        \\            )
+        \\        );
+        \\        mapper.statusLabelByValue = new Map<String, String>{ 'Canceled' => 'Canceled' };
+        \\        return mapper.getState('Canceled');
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "RD2_StatusMapper",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("Closed", result.value.string);
 }
 
 test "E2E: static field accessed from another class" {
@@ -14452,6 +14774,49 @@ test "E2E: Id.valueOf throws StringException for invalid ids" {
     try std.testing.expectEqualStrings("string-exception", result.value.string);
 }
 
+test "E2E: Id variable declaration rejects invalid string ids" {
+    const source =
+        \\public class InvalidIdDeclarationTest {
+        \\    public static String test() {
+        \\        try {
+        \\            Id foo = 'foo';
+        \\            return 'no-exception';
+        \\        } catch (System.StringException e) {
+        \\            return 'string-exception';
+        \\        }
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "InvalidIdDeclarationTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("string-exception", result.value.string);
+}
+
+test "E2E: Database.query result assigns to concrete SObject" {
+    const source =
+        \\public class DatabaseQueryAssignmentTest {
+        \\    public static String test() {
+        \\        insert new Account(Name = 'Acme');
+        \\        String soql = 'SELECT Id, Name FROM Account LIMIT 1';
+        \\        Account accountRecord;
+        \\        accountRecord = Database.query(soql);
+        \\        return accountRecord.Name;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "DatabaseQueryAssignmentTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("Acme", result.value.string);
+}
+
 test "E2E: custom equals and hashCode drive map lookup while strict equality stays identity" {
     const source =
         \\public class EqualityKey {
@@ -14576,6 +14941,46 @@ test "E2E: executeBatch uses QueryLocator records produced from SOQL literals" {
     defer result.deinit();
 
     try std.testing.expectEqual(@as(i64, 1), result.value.integer);
+}
+
+test "E2E: QueryLocator captures instance field bind records at start time" {
+    const source =
+        \\global class BoundQueryLocatorBatch implements Database.Batchable<SObject> {
+        \\    public static Integer processed = 0;
+        \\    private List<Id> accountIds;
+        \\    public BoundQueryLocatorBatch(List<Id> ids) {
+        \\        accountIds = ids;
+        \\    }
+        \\    global Database.QueryLocator start(Database.BatchableContext bc) {
+        \\        return Database.getQueryLocator(
+        \\            'SELECT Id FROM Account WHERE Id =: accountIds'
+        \\        );
+        \\    }
+        \\    global void execute(Database.BatchableContext bc, List<SObject> scope) {
+        \\        processed = scope.size();
+        \\    }
+        \\    global void finish(Database.BatchableContext bc) {}
+        \\}
+        \\public class BoundQueryLocatorBatchTest {
+        \\    public static Integer test() {
+        \\        List<Account> accounts = new List<Account>{
+        \\            new Account(Name = 'A'),
+        \\            new Account(Name = 'B')
+        \\        };
+        \\        insert accounts;
+        \\        List<Id> ids = new List<Id>(new Map<Id, Account>(accounts).keySet());
+        \\        Database.executeBatch(new BoundQueryLocatorBatch(ids));
+        \\        return BoundQueryLocatorBatch.processed;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "BoundQueryLocatorBatchTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqual(@as(i64, 2), result.value.integer);
 }
 
 test "E2E: executeBatch skips execute for empty QueryLocator scope" {
@@ -16404,6 +16809,107 @@ test "E2E: Database partial DML reports required and delete status codes" {
         "REQUIRED_FIELD_MISSING:UNKNOWN_EXCEPTION",
         result.value.string,
     );
+}
+
+test "E2E: DmlException exposes row messages and field names" {
+    const source =
+        \\public class DmlExceptionDetailsProbe {
+        \\    public static String test() {
+        \\        try {
+        \\            insert new Account();
+        \\        } catch (DmlException e) {
+        \\            return String.valueOf(e.getNumDml())
+        \\                + ':' + e.getDmlMessage(0)
+        \\                + ':' + String.join(e.getDmlFieldNames(0), ',');
+        \\        }
+        \\        return 'no exception';
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "DmlExceptionDetailsProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings(
+        "1:Required fields are missing: [Name]:Name",
+        result.value.string,
+    );
+}
+
+test "E2E: Set instanceof respects generic element type" {
+    const source =
+        \\public class SetInstanceOfGenericProbe {
+        \\    public static String test() {
+        \\        Set<SObject> sobs = new Set<SObject>{ new Account() };
+        \\        Set<Object> objs = new Set<Object>{ 'x' };
+        \\        return String.valueOf(sobs instanceof Set<SObject>)
+        \\            + ':' + String.valueOf(sobs instanceof Set<Object>)
+        \\            + ':' + String.valueOf(objs instanceof Set<Object>);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "SetInstanceOfGenericProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("true:false:true", result.value.string);
+}
+
+test "E2E: instanceof matches inner interface qualified name" {
+    const source =
+        \\public class InnerInterfaceInstanceofProbe implements IA {
+        \\    public interface IA {}
+        \\    public static String test() {
+        \\        Object instance = new InnerInterfaceInstanceofProbe();
+        \\        return String.valueOf(instance instanceof InnerInterfaceInstanceofProbe.IA);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "InnerInterfaceInstanceofProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("true", result.value.string);
+}
+
+test "E2E: standard address field describe exposes spaced label" {
+    const source =
+        \\public class StandardFieldLabelProbe {
+        \\    public static String test() {
+        \\        return Account.BillingCity.getDescribe().getLabel();
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "StandardFieldLabelProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("Billing City", result.value.string);
+}
+
+test "E2E: managed package recurring donation stage label resolves" {
+    const source =
+        \\public class ManagedPackageLabelProbe {
+        \\    public static String test() {
+        \\        return System.Label.npe03.RecurringDonationStageName;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "ManagedPackageLabelProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("Pledged", result.value.string);
 }
 
 test "E2E: JSON-deserialized DML errors expose message status and fields" {
@@ -19356,4 +19862,204 @@ test "E2E: non-default NPSP address insert does not sync household billing" {
     defer result.deinit();
 
     try std.testing.expectEqualStrings("true:true", result.value.string);
+}
+
+test "E2E: declared Double values use decimal division" {
+    const source =
+        \\public class DeclaredDoubleDivisionProbe {
+        \\    public Double percent { get; private set; }
+        \\    public DeclaredDoubleDivisionProbe(Double input) {
+        \\        percent = input;
+        \\    }
+        \\    public Double selectedTotal {
+        \\        get {
+        \\            Double total = 0;
+        \\            total += percent / 100 * 200;
+        \\            return total;
+        \\        }
+        \\        private set;
+        \\    }
+        \\    public static String test() {
+        \\        DeclaredDoubleDivisionProbe probe = new DeclaredDoubleDivisionProbe(50);
+        \\        return String.valueOf(probe.selectedTotal);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "DeclaredDoubleDivisionProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("100.0", result.value.string);
+}
+
+test "E2E: NPSP refund JSON remaining balance uses decimal value" {
+    const source =
+        \\public class PMT_RefundController {
+        \\    public class RefundView {
+        \\        public Decimal remainingBalance;
+        \\    }
+        \\    public static String test() {
+        \\        return processPaymentInfoResponse('{"remainingBalance":98421}');
+        \\    }
+        \\    private static String processPaymentInfoResponse(String body) {
+        \\        RefundView refundView = new RefundView();
+        \\        Map<String, Object> paymentInfo = (Map<String, Object>) JSON.deserializeUntyped(body);
+        \\        Decimal remainingBalance = (Decimal) paymentInfo.get('remainingBalance');
+        \\        refundView.remainingBalance = remainingBalance / 100;
+        \\        return String.valueOf(refundView.remainingBalance);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "PMT_RefundController",
+        .entry_method = "test",
+        .fixture_relaxed_exceptions = true,
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("984.21", result.value.string);
+}
+
+test "E2E: NPSP allocation copy converts fixed amount to percentage with decimal division" {
+    const source =
+        \\public class ALLO_Allocations_TDTM {
+        \\    public class Allocation__c {
+        \\        public Decimal Amount__c;
+        \\        public Decimal Percent__c;
+        \\        public Allocation__c(Decimal amount) {
+        \\            Amount__c = amount;
+        \\        }
+        \\    }
+        \\    public static String test() {
+        \\        return copyRecurringDonationCampaignAndPaymentAllocations();
+        \\    }
+        \\    public static String copyRecurringDonationCampaignAndPaymentAllocations() {
+        \\        Decimal sourceAmount = 100;
+        \\        Allocation__c allocation = new Allocation__c(33);
+        \\        Decimal allocationPercent = ((allocation.Amount__c != null) ? allocation.Amount__c : 0) / sourceAmount * 100;
+        \\        allocation.Percent__c = allocationPercent;
+        \\        return String.valueOf(allocation.Percent__c);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "ALLO_Allocations_TDTM",
+        .entry_method = "test",
+        .fixture_relaxed_exceptions = true,
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("33.0", result.value.string);
+}
+
+test "E2E: NPSP manage allocations save fills amount from percent" {
+    const source =
+        \\public class ALLO_ManageAllocations_CTRL {
+        \\    public static String test() {
+        \\        Opportunity opp = new Opportunity(
+        \\            Name = 'Gift',
+        \\            Amount = 8,
+        \\            CloseDate = Date.today(),
+        \\            StageName = 'Closed Won'
+        \\        );
+        \\        insert opp;
+        \\        return saveClose(opp.Id);
+        \\    }
+        \\    public static String saveClose(Id oppId) {
+        \\        Allocation__c allocation = new Allocation__c(
+        \\            Opportunity__c = oppId,
+        \\            Percent__c = 50
+        \\        );
+        \\        insert allocation;
+        \\        Allocation__c stored = [
+        \\            SELECT Amount__c
+        \\            FROM Allocation__c
+        \\            WHERE Id = :allocation.Id
+        \\        ];
+        \\        return String.valueOf(stored.Amount__c);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "ALLO_ManageAllocations_CTRL",
+        .entry_method = "test",
+        .fixture_relaxed_exceptions = true,
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("4", result.value.string);
+}
+
+test "E2E: NPSP parent amount update resizes percentage allocation" {
+    const source =
+        \\public class NpspAllocationParentResizeProbe {
+        \\    public static String test() {
+        \\        Opportunity opp = new Opportunity(
+        \\            Name = 'Gift',
+        \\            Amount = 8,
+        \\            CloseDate = Date.today(),
+        \\            StageName = 'Closed Won'
+        \\        );
+        \\        insert opp;
+        \\        Allocation__c allocation = new Allocation__c(
+        \\            Opportunity__c = opp.Id,
+        \\            Percent__c = 50
+        \\        );
+        \\        insert allocation;
+        \\        opp.Amount = 10;
+        \\        update opp;
+        \\        Allocation__c stored = [
+        \\            SELECT Amount__c
+        \\            FROM Allocation__c
+        \\            WHERE Id = :allocation.Id
+        \\        ];
+        \\        return String.valueOf(stored.Amount__c);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "NpspAllocationParentResizeProbe",
+        .entry_method = "test",
+        .fixture_relaxed_exceptions = true,
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("5", result.value.string);
+}
+
+test "E2E: NPSP parent amount update rejects overallocated records" {
+    const source =
+        \\public class NpspAllocationParentOverallocatedProbe {
+        \\    public static String test() {
+        \\        Opportunity opp = new Opportunity(
+        \\            Name = 'Gift',
+        \\            Amount = 8,
+        \\            CloseDate = Date.today(),
+        \\            StageName = 'Closed Won'
+        \\        );
+        \\        insert opp;
+        \\        insert new List<Allocation__c>{
+        \\            new Allocation__c(Opportunity__c = opp.Id, Percent__c = 50),
+        \\            new Allocation__c(Opportunity__c = opp.Id, Amount__c = 4)
+        \\        };
+        \\        opp.Amount = 1;
+        \\        try {
+        \\            update opp;
+        \\            return 'missing';
+        \\        } catch (DmlException ex) {
+        \\            return 'blocked';
+        \\        }
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "NpspAllocationParentOverallocatedProbe",
+        .entry_method = "test",
+        .fixture_relaxed_exceptions = true,
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("blocked", result.value.string);
 }

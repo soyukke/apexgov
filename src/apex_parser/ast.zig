@@ -186,10 +186,17 @@ pub const RunAsStmt = struct {
     loc: SourceLoc = .zero,
 };
 
+pub const VarDeclarator = struct {
+    name: []const u8,
+    initializer: ?*Expr = null,
+    loc: SourceLoc = .zero,
+};
+
 pub const VarDecl = struct {
     type_ref: TypeRef,
     name: []const u8,
     initializer: ?*Expr = null,
+    extra_decls: []const VarDeclarator = &.{},
     loc: SourceLoc = .zero,
 };
 

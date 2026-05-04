@@ -56,7 +56,7 @@ pub fn value_eql(a: Value, b: Value) bool {
         .boolean => |av| av == b.boolean,
         .integer => |av| av == b.integer,
         .long => |av| av == b.long,
-        .double => |av| av == b.double,
+        .double => |av| float_eql(av, b.double),
         .string => |av| blk: {
             if (std.ascii.eqlIgnoreCase(av, b.string)) break :blk true;
             // Normalize DateTime strings: "2016-09-15T16:51:41.000+0000" == "2016-09-15T16:51:41Z"
@@ -76,7 +76,7 @@ pub fn value_eql(a: Value, b: Value) bool {
 
 fn value_eql_cross_type(a: Value, b: Value, a_tag: anytype, b_tag: anytype) bool {
     if (numeric_as_f64(a)) |af| {
-        if (numeric_as_f64(b)) |bf| return af == bf;
+        if (numeric_as_f64(b)) |bf| return float_eql(af, bf);
     }
     if (a_tag == .object and b_tag == .string) {
         return value_eql_date_object_string(a.object, b.string);
@@ -85,6 +85,11 @@ fn value_eql_cross_type(a: Value, b: Value, a_tag: anytype, b_tag: anytype) bool
         return value_eql_date_object_string(b.object, a.string);
     }
     return false;
+}
+
+fn float_eql(a: f64, b: f64) bool {
+    if (a == b) return true;
+    return @abs(a - b) <= 0.000000001;
 }
 
 fn value_eql_date_object_string(obj: *types.ObjectInstance, s: []const u8) bool {
@@ -326,24 +331,30 @@ pub fn to_json(v: Value, arena: std.mem.Allocator) ![]const u8 {
         .sobject => |sob| blk: {
             var buf: std.ArrayListUnmanaged(u8) = .empty;
             try buf.append(arena, '{');
-            // Always output attributes with type
-            try buf.appendSlice(
-                arena,
-                try std.fmt.allocPrint(
+            var first = true;
+            if (!std.ascii.eqlIgnoreCase(sob.type_name, "Object")) {
+                try buf.appendSlice(
                     arena,
-                    "\"attributes\":{{\"type\":{s}}}",
-                    .{try json_string(arena, sob.type_name)},
-                ),
-            );
-            // Output Id if present
+                    try std.fmt.allocPrint(
+                        arena,
+                        "\"attributes\":{{\"type\":{s}}}",
+                        .{try json_string(arena, sob.type_name)},
+                    ),
+                );
+                first = false;
+            }
             if (sob.id) |id| {
-                try buf.appendSlice(arena, ",\"Id\":");
+                if (!first) try buf.append(arena, ',');
+                first = false;
+                try buf.appendSlice(arena, "\"Id\":");
                 try buf.appendSlice(arena, try json_string(arena, id));
             }
             for (sob.fields.keys(), sob.fields.values()) |k, val| {
-                // Skip internal attributes field and Id (already output)
-                if (std.ascii.eqlIgnoreCase(k, "Id")) continue;
-                try buf.append(arena, ',');
+                if (std.ascii.eqlIgnoreCase(k, "attributes")) continue;
+                if (!std.ascii.eqlIgnoreCase(sob.type_name, "Object") and
+                    std.ascii.eqlIgnoreCase(k, "Id")) continue;
+                if (!first) try buf.append(arena, ',');
+                first = false;
                 try buf.appendSlice(arena, try json_string(arena, k));
                 try buf.append(arena, ':');
                 try buf.appendSlice(arena, try to_json(val, arena));

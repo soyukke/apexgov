@@ -892,18 +892,41 @@ const Parser = struct {
     }
 
     fn parse_var_decl_stmt(self: *Parser) !ast.Stmt {
-        const loc = self.current_loc();
         const type_ref = try self.parse_type_ref();
+        const loc = self.current_loc();
         const name = try self.expect_identifier();
 
         var initializer: ?*ast.Expr = null;
         if (self.match_kind(.assign)) {
             initializer = try self.expression();
         }
+
+        var extra_decls: std.ArrayListUnmanaged(ast.VarDeclarator) = .empty;
+        if (initializer == null) {
+            while (self.match_kind(.comma)) {
+                const extra_loc = self.current_loc();
+                const extra_name = try self.expect_identifier();
+                var extra_initializer: ?*ast.Expr = null;
+                if (self.match_kind(.assign)) {
+                    extra_initializer = try self.expression();
+                }
+                try extra_decls.append(self.arena, .{
+                    .name = extra_name,
+                    .initializer = extra_initializer,
+                    .loc = extra_loc,
+                });
+            }
+        }
         _ = self.match_kind(.semicolon);
 
         const decl = try self.arena.create(ast.VarDecl);
-        decl.* = .{ .type_ref = type_ref, .name = name, .initializer = initializer, .loc = loc };
+        decl.* = .{
+            .type_ref = type_ref,
+            .name = name,
+            .initializer = initializer,
+            .extra_decls = try extra_decls.toOwnedSlice(self.arena),
+            .loc = loc,
+        };
         return .{ .var_decl = decl };
     }
 
@@ -1976,6 +1999,24 @@ test "parse variable declaration with binary expression" {
     try std.testing.expectEqualStrings("Integer", stmt.var_decl.type_ref.name);
     try std.testing.expect(stmt.var_decl.initializer != null);
     try std.testing.expect(stmt.var_decl.initializer.?.* == .binary);
+}
+
+test "parse variable declaration with multiple declarators" {
+    const tokens = try lexer.tokenize("Contact first, second = getContact();", std.testing.allocator);
+    defer std.testing.allocator.free(tokens);
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var p = Parser{ .tokens = tokens, .arena = arena.allocator() };
+    const stmt = try p.parse_stmt();
+
+    try std.testing.expect(stmt == .var_decl);
+    try std.testing.expectEqualStrings("first", stmt.var_decl.name);
+    try std.testing.expectEqual(@as(usize, 1), stmt.var_decl.extra_decls.len);
+    try std.testing.expectEqualStrings("second", stmt.var_decl.extra_decls[0].name);
+    try std.testing.expect(stmt.var_decl.extra_decls[0].initializer != null);
+    try std.testing.expect(p.at_end());
 }
 
 test "parse return statement with string literal" {
