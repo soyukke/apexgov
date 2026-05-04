@@ -24918,7 +24918,11 @@ pub const Evaluator = struct {
             args[0] == .string and
             args[1] == .string)
         {
-            const result = try regex.replace_all(self.arena, args[0].string, s, args[1].string);
+            const result = try self.replace_all_fast_path(
+                s,
+                args[0].string,
+                args[1].string,
+            ) orelse try regex.replace_all(self.arena, args[0].string, s, args[1].string);
             const trimmed_result = std.mem.trim(u8, result, " \t\r\n");
             const trimmed_input = std.mem.trim(u8, s, " \t\r\n");
             if (should_drop_replace_all_result(trimmed_result, trimmed_input)) {
@@ -24951,6 +24955,89 @@ pub const Evaluator = struct {
             args[0] == .string)
         {
             return Value{ .boolean = std.ascii.eqlIgnoreCase(s, args[0].string) };
+        }
+        return null;
+    }
+
+    fn replace_all_fast_path(
+        self: *Evaluator,
+        input: []const u8,
+        pattern: []const u8,
+        replacement: []const u8,
+    ) !?[]const u8 {
+        if (try self.replace_all_stack_trace_cleanup(input, pattern, replacement)) |result| {
+            return result;
+        }
+        if (replace_all_literal_pattern(pattern)) {
+            return try std.mem.replaceOwned(u8, self.arena, input, pattern, replacement);
+        }
+        return null;
+    }
+
+    fn replace_all_literal_pattern(pattern: []const u8) bool {
+        if (pattern.len == 0) return false;
+        for (pattern) |ch| {
+            switch (ch) {
+                '.', '*', '+', '?', '[', ']', '(', ')', '{', '}', '|', '^', '$', '\\' => return false,
+                else => {},
+            }
+        }
+        return true;
+    }
+
+    fn replace_all_stack_trace_cleanup(
+        self: *Evaluator,
+        input: []const u8,
+        pattern: []const u8,
+        replacement: []const u8,
+    ) !?[]const u8 {
+        const suffix = ")\\..+?column 1";
+        if (pattern.len <= suffix.len or
+            pattern[0] != '(' or
+            !std.mem.endsWith(u8, pattern, suffix))
+        {
+            return null;
+        }
+        const alternatives = pattern[1 .. pattern.len - suffix.len];
+        if (alternatives.len == 0) return null;
+        var result: std.ArrayListUnmanaged(u8) = .empty;
+        var cursor: usize = 0;
+        var pos: usize = 0;
+        var changed = false;
+        while (pos < input.len) {
+            const match_end = self.stack_trace_cleanup_match_end(input, pos, alternatives) orelse {
+                pos += 1;
+                continue;
+            };
+            try result.appendSlice(self.arena, input[cursor..pos]);
+            try result.appendSlice(self.arena, replacement);
+            cursor = match_end;
+            pos = match_end;
+            changed = true;
+        }
+        if (!changed) return input;
+        try result.appendSlice(self.arena, input[cursor..]);
+        return result.items;
+    }
+
+    fn stack_trace_cleanup_match_end(
+        self: *Evaluator,
+        input: []const u8,
+        pos: usize,
+        alternatives: []const u8,
+    ) ?usize {
+        _ = self;
+        var alt_iter = std.mem.splitScalar(u8, alternatives, '|');
+        while (alt_iter.next()) |alt| {
+            if (alt.len == 0) continue;
+            if (input.len < pos + alt.len + 1) continue;
+            if (!std.mem.eql(u8, input[pos .. pos + alt.len], alt)) continue;
+            if (input[pos + alt.len] != '.') continue;
+            const search_start = pos + alt.len + 1;
+            const line_end = std.mem.indexOfScalarPos(u8, input, search_start, '\n') orelse input.len;
+            const marker_rel = std.mem.indexOf(u8, input[search_start..line_end], "column 1") orelse
+                continue;
+            return search_start + marker_rel + "column 1".len;
         }
         return null;
     }

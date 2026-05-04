@@ -12242,6 +12242,32 @@ test "E2E: replaceAll can collapse ignored constructed stack trace frames to emp
     try std.testing.expectEqualStrings("", result.value.string);
 }
 
+test "E2E: replaceAll stack trace cleanup fast path preserves remaining frames" {
+    const source =
+        \\public class StackTraceCleanupFastPathProbe {
+        \\    public static String test() {
+        \\        String stackTrace =
+        \\            'Class.IgnoredLogger.entry: line 1, column 1\n' +
+        \\            'Class.RealCaller.run: line 2, column 1\n' +
+        \\            'Class.IgnoredBuilder.build: line 3, column 1';
+        \\        return stackTrace
+        \\            .replaceAll('(IgnoredLogger|IgnoredBuilder)\\..+?column 1', '')
+        \\            .trim();
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "StackTraceCleanupFastPathProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings(
+        "Class.\nClass.RealCaller.run: line 2, column 1\nClass.",
+        result.value.string,
+    );
+}
+
 test "Trigger recursion does not StackOverflow" {
     const source =
         \\trigger AccountTrigger on Account (after insert, after update) {
