@@ -188,9 +188,20 @@ pub const Evaluator = struct {
     ) = .empty,
     /// class name (lowercase simple/FQ inner name) -> outer class name.
     outer_class_by_inner_name: std.StringArrayHashMapUnmanaged([]const u8) = .empty,
+    /// class name (lowercase simple/FQ name) -> canonical class map key.
+    class_by_lower_name: std.StringArrayHashMapUnmanaged([]const u8) = .empty,
+    last_class_lookup_name: ?[]const u8 = null,
+    last_class_lookup_result: ?ClassLookupResult = null,
+    prev_class_lookup_name: ?[]const u8 = null,
+    prev_class_lookup_result: ?ClassLookupResult = null,
+    prev2_class_lookup_name: ?[]const u8 = null,
+    prev2_class_lookup_result: ?ClassLookupResult = null,
+    prev3_class_lookup_name: ?[]const u8 = null,
+    prev3_class_lookup_result: ?ClassLookupResult = null,
     class_lookup_cache_built: bool = false,
     static_field_owner_cache: std.StringArrayHashMapUnmanaged(?FieldLookup) = .empty,
     visible_enum_decl_cache: std.StringArrayHashMapUnmanaged(?*ast.EnumDecl) = .empty,
+    soql_bind_cache: ?*std.StringArrayHashMapUnmanaged(Value) = null,
     /// Parsed Custom Metadata records loaded once from source paths.
     custom_metadata_records: std.StringArrayHashMapUnmanaged(
         std.ArrayListUnmanaged(Value),
@@ -1524,24 +1535,19 @@ pub const Evaluator = struct {
             self.run_class_static_inits(cd);
             return;
         }
-        // Case-insensitive lookup
-        var iter = self.classes.iterator();
-        while (iter.next()) |entry| {
-            if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, class_name)) {
-                if (self.static_inited.get(entry.key_ptr.*) != null) {
-                    self.static_inited.put(self.arena, class_name, {}) catch {};
-                    return;
-                }
-                const cd = entry.value_ptr.*;
-                // Mark as initialized BEFORE evaluating to prevent infinite recursion
-                // on circular static dependencies (matches Salesforce behavior: circular
-                // deps see null/default for the not-yet-evaluated class).
-                self.static_inited.put(self.arena, entry.key_ptr.*, {}) catch return;
-                self.static_inited.put(self.arena, class_name, {}) catch return;
-                self.re_init_class_static_fields(cd);
-                self.run_class_static_inits(cd);
+        if (self.find_class_with_name(class_name)) |entry| {
+            if (self.static_inited.get(entry.name) != null) {
+                self.static_inited.put(self.arena, class_name, {}) catch {};
                 return;
             }
+            // Mark as initialized BEFORE evaluating to prevent infinite recursion
+            // on circular static dependencies (matches Salesforce behavior: circular
+            // deps see null/default for the not-yet-evaluated class).
+            self.static_inited.put(self.arena, entry.name, {}) catch return;
+            self.static_inited.put(self.arena, class_name, {}) catch return;
+            self.re_init_class_static_fields(entry.decl);
+            self.run_class_static_inits(entry.decl);
+            return;
         }
     }
 
@@ -7920,6 +7926,11 @@ pub const Evaluator = struct {
         const all_rows_info = strip_all_rows_clause(soql);
         soql = all_rows_info.soql;
         const include_all_rows = all_rows_info.include_all_rows;
+        var bind_cache: std.StringArrayHashMapUnmanaged(Value) = .empty;
+        const previous_bind_cache = self.soql_bind_cache;
+        self.soql_bind_cache = &bind_cache;
+        defer self.soql_bind_cache = previous_bind_cache;
+
         if (try self.execute_soql_early_result(soql, current_env, include_all_rows)) |result| {
             return result;
         }
@@ -10088,6 +10099,19 @@ pub const Evaluator = struct {
     }
 
     fn lookup_bind_value(self: *Evaluator, current_env: *Env, var_name: []const u8) ?Value {
+        if (self.soql_bind_cache) |cache| {
+            if (cache.get(var_name)) |cached| return cached;
+            if (self.lookup_bind_value_uncached(current_env, var_name)) |value| {
+                const key = self.arena.dupe(u8, var_name) catch var_name;
+                cache.put(self.arena, key, value) catch {};
+                return value;
+            }
+            return null;
+        }
+        return self.lookup_bind_value_uncached(current_env, var_name);
+    }
+
+    fn lookup_bind_value_uncached(self: *Evaluator, current_env: *Env, var_name: []const u8) ?Value {
         if (current_env.get(var_name)) |bv| {
             if (bv != .null_val) return bv;
         }
@@ -33930,22 +33954,101 @@ pub const Evaluator = struct {
     };
 
     fn find_class_with_name(self: *Evaluator, name: []const u8) ?ClassLookupResult {
+        if (self.last_class_lookup_name) |cached_name| {
+            if (std.mem.eql(u8, cached_name, name)) return self.last_class_lookup_result;
+        }
+        if (self.prev_class_lookup_name) |cached_name| {
+            if (std.mem.eql(u8, cached_name, name)) {
+                const result = self.prev_class_lookup_result;
+                self.prev_class_lookup_name = self.last_class_lookup_name;
+                self.prev_class_lookup_result = self.last_class_lookup_result;
+                self.last_class_lookup_name = name;
+                self.last_class_lookup_result = result;
+                return result;
+            }
+        }
+        if (self.prev2_class_lookup_name) |cached_name| {
+            if (std.mem.eql(u8, cached_name, name)) {
+                const result = self.prev2_class_lookup_result;
+                self.prev2_class_lookup_name = self.prev_class_lookup_name;
+                self.prev2_class_lookup_result = self.prev_class_lookup_result;
+                self.prev_class_lookup_name = self.last_class_lookup_name;
+                self.prev_class_lookup_result = self.last_class_lookup_result;
+                self.last_class_lookup_name = name;
+                self.last_class_lookup_result = result;
+                return result;
+            }
+        }
+        if (self.prev3_class_lookup_name) |cached_name| {
+            if (std.mem.eql(u8, cached_name, name)) {
+                const result = self.prev3_class_lookup_result;
+                self.prev3_class_lookup_name = self.prev2_class_lookup_name;
+                self.prev3_class_lookup_result = self.prev2_class_lookup_result;
+                self.prev2_class_lookup_name = self.prev_class_lookup_name;
+                self.prev2_class_lookup_result = self.prev_class_lookup_result;
+                self.prev_class_lookup_name = self.last_class_lookup_name;
+                self.prev_class_lookup_result = self.last_class_lookup_result;
+                self.last_class_lookup_name = name;
+                self.last_class_lookup_result = result;
+                return result;
+            }
+        }
         if (self.classes.getIndex(name)) |idx| {
-            return .{
+            const result: ClassLookupResult = .{
                 .name = self.classes.keys()[idx],
                 .decl = self.classes.values()[idx],
             };
+            self.cache_class_lookup(name, result);
+            return result;
+        }
+        var stack_buf: [256]u8 = undefined;
+        if (name.len <= stack_buf.len) {
+            const key = ascii_lower_into(stack_buf[0..], name);
+            if (self.class_by_lower_name.get(key)) |canonical| {
+                if (self.classes.get(canonical)) |decl| {
+                    const result: ClassLookupResult = .{ .name = canonical, .decl = decl };
+                    self.cache_class_lookup(name, result);
+                    return result;
+                }
+            }
+        } else {
+            const key = ascii_lower_alloc(self.arena, name) catch return null;
+            defer self.arena.free(key);
+            if (self.class_by_lower_name.get(key)) |canonical| {
+                if (self.classes.get(canonical)) |decl| {
+                    const result: ClassLookupResult = .{ .name = canonical, .decl = decl };
+                    self.cache_class_lookup(name, result);
+                    return result;
+                }
+            }
         }
         var iter = self.classes.iterator();
         while (iter.next()) |entry| {
             if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, name)) {
-                return .{
+                const result: ClassLookupResult = .{
                     .name = entry.key_ptr.*,
                     .decl = entry.value_ptr.*,
                 };
+                self.cache_class_lookup(name, result);
+                return result;
             }
         }
         return null;
+    }
+
+    fn cache_class_lookup(
+        self: *Evaluator,
+        name: []const u8,
+        result: ClassLookupResult,
+    ) void {
+        self.prev3_class_lookup_name = self.prev2_class_lookup_name;
+        self.prev3_class_lookup_result = self.prev2_class_lookup_result;
+        self.prev2_class_lookup_name = self.prev_class_lookup_name;
+        self.prev2_class_lookup_result = self.prev_class_lookup_result;
+        self.prev_class_lookup_name = self.last_class_lookup_name;
+        self.prev_class_lookup_result = self.last_class_lookup_result;
+        self.last_class_lookup_name = name;
+        self.last_class_lookup_result = result;
     }
 
     fn find_class(self: *Evaluator, name: []const u8) ?*ast.ClassDecl {
@@ -34040,14 +34143,27 @@ pub const Evaluator = struct {
         cd: *ast.ClassDecl,
         fq_name: ?[]const u8,
     ) !void {
+        self.last_class_lookup_name = null;
+        self.last_class_lookup_result = null;
+        self.prev_class_lookup_name = null;
+        self.prev_class_lookup_result = null;
+        self.prev2_class_lookup_name = null;
+        self.prev2_class_lookup_result = null;
+        self.prev3_class_lookup_name = null;
+        self.prev3_class_lookup_result = null;
         if (fq_name == null) {
             try self.classes.put(ca, cd.name, cd);
+            try self.put_class_lookup_cache_entry(ca, cd.name, cd);
         } else {
             const gop = try self.classes.getOrPut(ca, cd.name);
-            if (!gop.found_existing) gop.value_ptr.* = cd;
+            if (!gop.found_existing) {
+                gop.value_ptr.* = cd;
+                try self.put_class_lookup_cache_entry(ca, cd.name, cd);
+            }
         }
         if (fq_name) |fq| {
             try self.classes.put(ca, fq, cd);
+            try self.put_class_lookup_cache_entry(ca, fq, cd);
         }
         for (cd.members) |member| {
             switch (member) {
@@ -34090,6 +34206,22 @@ pub const Evaluator = struct {
                 else => {},
             }
         }
+    }
+
+    fn put_class_lookup_cache_entry(
+        self: *Evaluator,
+        alloc: std.mem.Allocator,
+        name: []const u8,
+        decl: *ast.ClassDecl,
+    ) !void {
+        const key = try ascii_lower_alloc(alloc, name);
+        const gop = try self.class_by_lower_name.getOrPut(alloc, key);
+        if (gop.found_existing) {
+            alloc.free(key);
+            return;
+        }
+        _ = decl;
+        gop.value_ptr.* = name;
     }
 
     fn create_async_apex_job(
