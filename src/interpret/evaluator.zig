@@ -41395,7 +41395,11 @@ pub const Evaluator = struct {
         if (item != .sobject) {
             return try self.build_failed_dml_result(result_class, item, op == .upsert);
         }
-        const snapshot = try self.capture_partial_dml_snapshot();
+        var snapshot_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+        defer snapshot_arena.deinit();
+        const snapshot = try self.capture_partial_dml_snapshot_with_allocator(
+            snapshot_arena.allocator(),
+        );
         return self.execute_partial_single_sobject_dml(
             op,
             result_class,
@@ -41422,17 +41426,31 @@ pub const Evaluator = struct {
     }
 
     fn capture_partial_dml_snapshot(self: *Evaluator) !PartialDmlSnapshot {
+        return self.capture_partial_dml_snapshot_with_allocator(self.arena);
+    }
+
+    fn capture_partial_dml_snapshot_with_allocator(
+        self: *Evaluator,
+        alloc: std.mem.Allocator,
+    ) !PartialDmlSnapshot {
         return .{
-            .database = try self.capture_savepoint_snapshot(),
-            .static_bindings = try self.clone_static_bindings(),
+            .database = try self.capture_savepoint_snapshot_with_allocator(alloc),
+            .static_bindings = try self.clone_static_bindings_with_allocator(alloc),
         };
     }
 
     fn clone_static_bindings(self: *Evaluator) !std.StringArrayHashMapUnmanaged(Value) {
+        return self.clone_static_bindings_with_allocator(self.arena);
+    }
+
+    fn clone_static_bindings_with_allocator(
+        self: *Evaluator,
+        alloc: std.mem.Allocator,
+    ) !std.StringArrayHashMapUnmanaged(Value) {
         var cloned: std.StringArrayHashMapUnmanaged(Value) = .empty;
         for (self.global_env.bindings.keys(), self.global_env.bindings.values()) |key, value| {
             if (!binding_name_is_static_field(key)) continue;
-            try cloned.put(self.arena, key, try self.clone_partial_dml_value(value));
+            try cloned.put(alloc, key, try self.clone_partial_dml_value_with_allocator(value, alloc));
         }
         return cloned;
     }
@@ -41477,77 +41495,136 @@ pub const Evaluator = struct {
     }
 
     fn clone_partial_dml_value(self: *Evaluator, value: Value) anyerror!Value {
+        return self.clone_partial_dml_value_with_allocator(value, self.arena);
+    }
+
+    fn clone_partial_dml_value_with_allocator(
+        self: *Evaluator,
+        value: Value,
+        alloc: std.mem.Allocator,
+    ) anyerror!Value {
         return switch (value) {
-            .sobject => |sob| try self.clone_partial_dml_sobject(sob),
-            .object => |obj| try self.clone_partial_dml_object(obj),
-            .list => |list| try self.clone_partial_dml_list(list),
-            .map => |map| try self.clone_partial_dml_map(map),
-            .set => |set| try self.clone_partial_dml_set(set),
+            .sobject => |sob| try self.clone_partial_dml_sobject_with_allocator(sob, alloc),
+            .object => |obj| try self.clone_partial_dml_object_with_allocator(obj, alloc),
+            .list => |list| try self.clone_partial_dml_list_with_allocator(list, alloc),
+            .map => |map| try self.clone_partial_dml_map_with_allocator(map, alloc),
+            .set => |set| try self.clone_partial_dml_set_with_allocator(set, alloc),
             else => value,
         };
     }
 
     fn clone_partial_dml_sobject(self: *Evaluator, sob: *types.SObject) anyerror!Value {
-        const cloned = try self.arena.create(types.SObject);
+        return self.clone_partial_dml_sobject_with_allocator(sob, self.arena);
+    }
+
+    fn clone_partial_dml_sobject_with_allocator(
+        self: *Evaluator,
+        sob: *types.SObject,
+        alloc: std.mem.Allocator,
+    ) anyerror!Value {
+        const cloned = try alloc.create(types.SObject);
         cloned.* = .{ .type_name = sob.type_name };
         cloned.id = sob.id;
         cloned.is_stripped = sob.is_stripped;
         cloned.is_clone = sob.is_clone;
         for (sob.fields.keys(), sob.fields.values()) |key, field_value| {
-            try cloned.fields.put(self.arena, key, try self.clone_partial_dml_value(field_value));
+            try cloned.fields.put(
+                alloc,
+                key,
+                try self.clone_partial_dml_value_with_allocator(field_value, alloc),
+            );
         }
         return Value{ .sobject = cloned };
     }
 
     fn clone_partial_dml_object(self: *Evaluator, obj: *types.ObjectInstance) anyerror!Value {
-        const cloned = try self.arena.create(types.ObjectInstance);
+        return self.clone_partial_dml_object_with_allocator(obj, self.arena);
+    }
+
+    fn clone_partial_dml_object_with_allocator(
+        self: *Evaluator,
+        obj: *types.ObjectInstance,
+        alloc: std.mem.Allocator,
+    ) anyerror!Value {
+        const cloned = try alloc.create(types.ObjectInstance);
         cloned.* = .{ .class_name = obj.class_name };
         for (obj.fields.keys(), obj.fields.values()) |key, field_value| {
-            try cloned.fields.put(self.arena, key, try self.clone_partial_dml_value(field_value));
+            try cloned.fields.put(
+                alloc,
+                key,
+                try self.clone_partial_dml_value_with_allocator(field_value, alloc),
+            );
         }
         return Value{ .object = cloned };
     }
 
     fn clone_partial_dml_list(self: *Evaluator, list: *types.ListValue) anyerror!Value {
-        const cloned = try self.arena.create(types.ListValue);
+        return self.clone_partial_dml_list_with_allocator(list, self.arena);
+    }
+
+    fn clone_partial_dml_list_with_allocator(
+        self: *Evaluator,
+        list: *types.ListValue,
+        alloc: std.mem.Allocator,
+    ) anyerror!Value {
+        const cloned = try alloc.create(types.ListValue);
         cloned.* = .{
             .element_type = list.element_type,
             .explicitly_generic = list.explicitly_generic,
         };
         for (list.items.items) |item| {
-            try cloned.items.append(self.arena, try self.clone_partial_dml_value(item));
+            try cloned.items.append(
+                alloc,
+                try self.clone_partial_dml_value_with_allocator(item, alloc),
+            );
         }
         return Value{ .list = cloned };
     }
 
     fn clone_partial_dml_map(self: *Evaluator, map: *types.MapValue) anyerror!Value {
-        const cloned = try self.arena.create(types.MapValue);
+        return self.clone_partial_dml_map_with_allocator(map, self.arena);
+    }
+
+    fn clone_partial_dml_map_with_allocator(
+        self: *Evaluator,
+        map: *types.MapValue,
+        alloc: std.mem.Allocator,
+    ) anyerror!Value {
+        const cloned = try alloc.create(types.MapValue);
         cloned.* = .{ .schema_field_owner = map.schema_field_owner };
         for (map.entries.keys(), map.entries.values()) |key, entry_value| {
             try cloned.entries.put(
-                self.arena,
+                alloc,
                 key,
-                try self.clone_partial_dml_value(entry_value),
+                try self.clone_partial_dml_value_with_allocator(entry_value, alloc),
             );
         }
         for (map.key_values.keys(), map.key_values.values()) |key, key_value| {
             try cloned.key_values.put(
-                self.arena,
+                alloc,
                 key,
-                try self.clone_partial_dml_value(key_value),
+                try self.clone_partial_dml_value_with_allocator(key_value, alloc),
             );
         }
         return Value{ .map = cloned };
     }
 
     fn clone_partial_dml_set(self: *Evaluator, set: *types.SetValue) anyerror!Value {
-        const cloned = try self.arena.create(types.SetValue);
+        return self.clone_partial_dml_set_with_allocator(set, self.arena);
+    }
+
+    fn clone_partial_dml_set_with_allocator(
+        self: *Evaluator,
+        set: *types.SetValue,
+        alloc: std.mem.Allocator,
+    ) anyerror!Value {
+        const cloned = try alloc.create(types.SetValue);
         cloned.* = .{ .element_type = set.element_type };
         for (set.entries.keys(), set.entries.values()) |key, entry_value| {
             try cloned.entries.put(
-                self.arena,
+                alloc,
                 key,
-                try self.clone_partial_dml_value(entry_value),
+                try self.clone_partial_dml_value_with_allocator(entry_value, alloc),
             );
         }
         return Value{ .set = cloned };
@@ -42081,10 +42158,17 @@ pub const Evaluator = struct {
     }
 
     fn capture_savepoint_snapshot(self: *Evaluator) !DatabaseSavepointSnapshot {
+        return self.capture_savepoint_snapshot_with_allocator(self.arena);
+    }
+
+    fn capture_savepoint_snapshot_with_allocator(
+        self: *Evaluator,
+        alloc: std.mem.Allocator,
+    ) !DatabaseSavepointSnapshot {
         return .{
-            .store = try self.clone_record_map(self.store),
-            .trash = try self.clone_record_map(self.trash),
-            .id_type_map = try self.clone_string_map(self.id_type_map),
+            .store = try self.clone_record_map_with_allocator(self.store, alloc),
+            .trash = try self.clone_record_map_with_allocator(self.trash, alloc),
+            .id_type_map = try self.clone_string_map_with_allocator(self.id_type_map, alloc),
             .next_id = self.next_id,
         };
     }
@@ -42093,28 +42177,45 @@ pub const Evaluator = struct {
         self: *Evaluator,
         source: std.StringArrayHashMapUnmanaged(std.ArrayListUnmanaged(Value)),
     ) !std.StringArrayHashMapUnmanaged(std.ArrayListUnmanaged(Value)) {
+        return self.clone_record_map_with_allocator(source, self.arena);
+    }
+
+    fn clone_record_map_with_allocator(
+        self: *Evaluator,
+        source: std.StringArrayHashMapUnmanaged(std.ArrayListUnmanaged(Value)),
+        alloc: std.mem.Allocator,
+    ) !std.StringArrayHashMapUnmanaged(std.ArrayListUnmanaged(Value)) {
         var cloned: std.StringArrayHashMapUnmanaged(std.ArrayListUnmanaged(Value)) = .empty;
         var iter = source.iterator();
         while (iter.next()) |entry| {
             var list: std.ArrayListUnmanaged(Value) = .empty;
             for (entry.value_ptr.items) |item| {
-                try list.append(self.arena, try self.clone_savepoint_value(item));
+                try list.append(alloc, try self.clone_savepoint_value_with_allocator(item, alloc));
             }
-            try cloned.put(self.arena, entry.key_ptr.*, list);
+            try cloned.put(alloc, entry.key_ptr.*, list);
         }
         return cloned;
     }
 
     fn clone_savepoint_value(self: *Evaluator, value: Value) !Value {
+        return self.clone_savepoint_value_with_allocator(value, self.arena);
+    }
+
+    fn clone_savepoint_value_with_allocator(
+        self: *Evaluator,
+        value: Value,
+        alloc: std.mem.Allocator,
+    ) !Value {
         if (value != .sobject) return value;
-        const cloned = try self.arena.create(types.SObject);
+        const cloned = try alloc.create(types.SObject);
         cloned.* = .{ .type_name = value.sobject.type_name };
         cloned.id = value.sobject.id;
         cloned.is_stripped = value.sobject.is_stripped;
         cloned.is_clone = value.sobject.is_clone;
         for (value.sobject.fields.keys(), value.sobject.fields.values()) |key, field_value| {
-            try cloned.fields.put(self.arena, key, field_value);
+            try cloned.fields.put(alloc, key, field_value);
         }
+        _ = self;
         return Value{ .sobject = cloned };
     }
 
@@ -42122,11 +42223,20 @@ pub const Evaluator = struct {
         self: *Evaluator,
         source: std.StringArrayHashMapUnmanaged([]const u8),
     ) !std.StringArrayHashMapUnmanaged([]const u8) {
+        return self.clone_string_map_with_allocator(source, self.arena);
+    }
+
+    fn clone_string_map_with_allocator(
+        self: *Evaluator,
+        source: std.StringArrayHashMapUnmanaged([]const u8),
+        alloc: std.mem.Allocator,
+    ) !std.StringArrayHashMapUnmanaged([]const u8) {
         var cloned: std.StringArrayHashMapUnmanaged([]const u8) = .empty;
         var iter = source.iterator();
         while (iter.next()) |entry| {
-            try cloned.put(self.arena, entry.key_ptr.*, entry.value_ptr.*);
+            try cloned.put(alloc, entry.key_ptr.*, entry.value_ptr.*);
         }
+        _ = self;
         return cloned;
     }
 
