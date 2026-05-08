@@ -78,7 +78,17 @@ bench REPO: build-fast
     rc=0
     set +e
     if [[ "{{REPO}}" == "NPSP" ]]; then
-        jobs="${APEXGOV_NPSP_BENCH_JOBS:-4}"
+        if [[ -n "${APEXGOV_NPSP_BENCH_JOBS:-}" ]]; then
+            jobs="$APEXGOV_NPSP_BENCH_JOBS"
+        else
+            mem_bytes="${APEXGOV_NPSP_BENCH_MEM_BYTES:-$(sysctl -n hw.memsize 2>/dev/null || echo 0)}"
+            if [[ "$mem_bytes" =~ ^[0-9]+$ ]] && (( mem_bytes > 0 && mem_bytes <= 8589934592 )); then
+                jobs=2
+            else
+                jobs=4
+            fi
+        fi
+        echo "NPSP bench jobs: $jobs" | tee -a "$log"
         /usr/bin/time -l bash -c '
             set -euo pipefail
             repo_path="$1"
