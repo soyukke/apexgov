@@ -854,7 +854,7 @@ fn dispatch_static_integer(
             } },
             .integer => args[0],
             .long => |l| Value{ .integer = l },
-            .double => |d| Value{ .integer = @intFromFloat(d) },
+            .double => |d| Value{ .integer = @intFromFloat(@round(d)) },
             .null_val => Value.null_val,
             else => Value.null_val,
         };
@@ -1042,11 +1042,7 @@ fn date_is_leap_year(year: i32) bool {
 
 fn dispatch_static_math(method_name: []const u8, args: []const Value) !?Value {
     if (std.ascii.eqlIgnoreCase(method_name, "random")) {
-        // 0.16 移行時の決定論的スタブ: 固定シードで LCG を回す。
-        const ts: u64 = @intCast(current_epoch_seconds());
-        const seed = ts *% 6364136223846793005 +% 1442695040888963407;
-        const val: f64 = @as(f64, @floatFromInt(seed % 1000000)) / 1000000.0;
-        return Value{ .double = val };
+        return Value{ .double = 0.999 };
     }
     if (std.ascii.eqlIgnoreCase(method_name, "abs")) {
         if (args.len > 0) {
@@ -2618,6 +2614,10 @@ fn dispatch_static_limits(ctx: *BuiltinContext, method_name: []const u8) !?Value
     if (ci.eqlIgnoreCase(method_name, "getEmailInvocations")) {
         return Value{ .integer = @intCast(ctx.eval.limits_email_invocations) };
     }
+    if (ci.eqlIgnoreCase(method_name, "getHeapSize")) {
+        ctx.eval.limits_heap_size +|= 1024;
+        return Value{ .integer = @intCast(ctx.eval.limits_heap_size) };
+    }
     // Governor limit maximums (Salesforce default synchronous limits)
     if (ci.eqlIgnoreCase(method_name, "getLimitDmlStatements")) return Value{ .integer = 150 };
     if (ci.eqlIgnoreCase(method_name, "getLimitDmlRows")) return Value{ .integer = 10000 };
@@ -3091,6 +3091,27 @@ fn crypto_verify_signature(ctx: *BuiltinContext, args: []const Value) !Value {
     return Value{ .boolean = std.mem.eql(u8, &mac, signature_bytes) };
 }
 
+fn next_crypto_random_u64(ctx: *BuiltinContext) u64 {
+    const n = ctx.eval.crypto_random_counter;
+    ctx.eval.crypto_random_counter +%= 1;
+    var x = n +% 0x9e37_79b9_7f4a_7c15;
+    x = (x ^ (x >> 30)) *% 0xbf58_476d_1ce4_e5b9;
+    x = (x ^ (x >> 27)) *% 0x94d0_49bb_1331_11eb;
+    return x ^ (x >> 31);
+}
+
+fn fill_crypto_random_bytes(ctx: *BuiltinContext, buf: []u8) void {
+    var offset: usize = 0;
+    while (offset < buf.len) {
+        const word = next_crypto_random_u64(ctx);
+        var tmp: [8]u8 = undefined;
+        std.mem.writeInt(u64, &tmp, word, .big);
+        const n = @min(tmp.len, buf.len - offset);
+        @memcpy(buf[offset .. offset + n], tmp[0..n]);
+        offset += n;
+    }
+}
+
 fn dispatch_static_crypto(
     ctx: *BuiltinContext,
     method_name: []const u8,
@@ -3117,9 +3138,7 @@ fn dispatch_static_crypto(
         else
             16;
         const buf = try ctx.arena.alloc(u8, key_size);
-        // 0.16 で `std.crypto.random` は削除。乱数は io 経由 (`std.Io.random`)
-        // だが、Apex テストの決定性を優先して 0 埋めするスタブとする。
-        @memset(buf, 0);
+        fill_crypto_random_bytes(ctx, buf);
         return try make_blob_object(ctx, Value{ .string = buf });
     }
     if (std.ascii.eqlIgnoreCase(method_name, "sign")) return try crypto_signature_blob(ctx, args);
@@ -3141,9 +3160,8 @@ fn dispatch_static_crypto(
     if (std.ascii.eqlIgnoreCase(method_name, "getRandomInteger") or
         std.ascii.eqlIgnoreCase(method_name, "getRandomLong"))
     {
-        // 0.16 で `std.crypto.random` は削除。決定論スタブとして固定値を返す。
-        const buf: [8]u8 = .{ 0, 0, 0, 0, 0, 0, 0, 1 };
-        const val: i64 = @bitCast(buf);
+        const raw = next_crypto_random_u64(ctx);
+        const val: i64 = @intCast(raw & 0x7fff_ffff_ffff_ffff);
         return Value{ .integer = if (val < 0) -val else val };
     }
     return Value.null_val;
@@ -3342,6 +3360,7 @@ fn dispatch_static_test(
         ctx.eval.limits_queueable = 0;
         ctx.eval.limits_callouts = 0;
         ctx.eval.limits_email_invocations = 0;
+        ctx.eval.limits_heap_size = 0;
         ctx.eval.reserved_single_email_capacity = 0;
         return .void_val;
     }
@@ -3760,18 +3779,49 @@ fn dispatch_static_apex_pages(
         return Value.void_val;
     }
     if (std.ascii.eqlIgnoreCase(method_name, "hasMessages")) {
-        return Value{ .boolean = ctx.eval.apex_pages_messages.items.len > 0 };
+        if (args.len == 0) return Value{ .boolean = ctx.eval.apex_pages_messages.items.len > 0 };
+        const severity = apex_pages_severity_arg(args[0]) orelse
+            return Value{ .boolean = ctx.eval.apex_pages_messages.items.len > 0 };
+        for (ctx.eval.apex_pages_messages.items) |msg| {
+            if (apex_pages_message_has_severity(msg, severity)) return Value{ .boolean = true };
+        }
+        return Value{ .boolean = false };
     }
     if (std.ascii.eqlIgnoreCase(method_name, "getMessages")) {
         const list = try ctx.arena.create(types.ListValue);
         list.* = .{};
-        for (ctx.eval.apex_pages_messages.items) |msg| try list.items.append(ctx.arena, msg);
+        const severity = if (args.len > 0) apex_pages_severity_arg(args[0]) else null;
+        for (ctx.eval.apex_pages_messages.items) |msg| {
+            if (severity) |sev| {
+                if (!apex_pages_message_has_severity(msg, sev)) continue;
+            }
+            try list.items.append(ctx.arena, msg);
+        }
         return Value{ .list = list };
     }
     if (std.ascii.eqlIgnoreCase(method_name, "currentPage")) {
         return try ensure_current_page_reference(ctx);
     }
     return Value.null_val;
+}
+
+fn apex_pages_severity_arg(value: Value) ?[]const u8 {
+    return switch (value) {
+        .string => |s| s,
+        .object => |obj| blk: {
+            if (obj.fields.get("severity")) |severity| {
+                if (severity == .string) break :blk severity.string;
+            }
+            break :blk null;
+        },
+        else => null,
+    };
+}
+
+fn apex_pages_message_has_severity(message: Value, expected: []const u8) bool {
+    if (message != .object) return false;
+    const severity = message.object.fields.get("severity") orelse return false;
+    return severity == .string and std.ascii.eqlIgnoreCase(severity.string, expected);
 }
 
 fn ensure_current_page_reference(ctx: *BuiltinContext) !Value {
@@ -4356,6 +4406,8 @@ pub fn create_field_describe_map_value(ctx: *BuiltinContext, obj_name: []const u
         "LastModifiedById", "CreatedBy", "LastModifiedBy", "SystemModstamp",
     }) |field_name| {
         if (skip_implicit_describe_field(obj_name, field_name)) continue;
+        if (std.ascii.eqlIgnoreCase(field_name, "OwnerId") and
+            object_has_master_detail_parent(ctx, obj_name)) continue;
         if (std.ascii.eqlIgnoreCase(field_name, "Name") and
             !has_implicit_name_field(obj_name)) continue;
         try fields_kv.entries.put(
@@ -4395,6 +4447,24 @@ pub fn create_field_describe_map_value(ctx: *BuiltinContext, obj_name: []const u
     }
     try fields_map_obj.fields.put(ctx.arena, "map", Value{ .map = fields_kv });
     return Value{ .object = fields_map_obj };
+}
+
+fn object_has_master_detail_parent(ctx: *BuiltinContext, obj_name: []const u8) bool {
+    const metadata = ctx.eval.field_metadata.get(obj_name) orelse blk: {
+        var type_iter = ctx.eval.field_metadata.iterator();
+        while (type_iter.next()) |entry| {
+            if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, obj_name)) {
+                break :blk entry.value_ptr.*;
+            }
+        }
+        return false;
+    };
+    var iter = metadata.iterator();
+    while (iter.next()) |entry| {
+        const field_type = entry.value_ptr.field_type orelse continue;
+        if (std.ascii.eqlIgnoreCase(field_type, "MasterDetail")) return true;
+    }
+    return false;
 }
 
 fn create_describe_result(ctx: *BuiltinContext, obj_name: []const u8) !Value {
@@ -4814,6 +4884,14 @@ const known_describe_field_sets = [_]struct { object: []const u8, fields: []cons
         "npe01__Paid__c",           "npe01__Written_Off__c", "npe01__Opportunity__c",
         "npe01__Payment_Amount__c",
     } },
+    .{ .object = "npe4__Relationship__c", .fields = &.{
+        "npe4__Contact__c",
+        "npe4__RelatedContact__c",
+        "npe4__ReciprocalRelationship__c",
+        "npe4__Type__c",
+        "npe4__Status__c",
+        "npe4__Description__c",
+    } },
     .{ .object = "OpportunityContactRole", .fields = &.{
         "OpportunityId", "ContactId", "Role", "IsPrimary",
     } },
@@ -4823,7 +4901,11 @@ const known_describe_field_sets = [_]struct { object: []const u8, fields: []cons
         "DefaultProbability", "ForecastCategory", "ForecastCategoryName",
     } },
     .{ .object = "npe03__Recurring_Donation__c", .fields = &.{
-        "Amount", "npe03__Amount__c",
+        "Amount",
+        "npe03__Amount__c",
+        "npe03__Installment_Period__c",
+        "npe03__Open_Ended_Status__c",
+        "npe03__Schedule_Type__c",
     } },
     .{ .object = "User", .fields = &.{
         "Username",       "Email",             "FirstName",    "LastName",
@@ -4901,6 +4983,16 @@ const canonical_describe_field_sets = [_]struct { object: []const u8, fields: []
         "npe01__Paid__c",        "npe01__Written_Off__c",
         "npe01__Opportunity__c", "npe01__Payment_Amount__c",
     } },
+    .{ .object = "npe4__Relationship__c", .fields = &.{
+        "Id",
+        "Name",
+        "npe4__Contact__c",
+        "npe4__RelatedContact__c",
+        "npe4__ReciprocalRelationship__c",
+        "npe4__Type__c",
+        "npe4__Status__c",
+        "npe4__Description__c",
+    } },
     .{ .object = "OpportunityContactRole", .fields = &.{
         "Id", "OpportunityId", "ContactId", "Role", "IsPrimary",
     } },
@@ -4950,7 +5042,6 @@ fn add_describe_fields_from_record(
     for (record.sobject.fields.keys(), record.sobject.fields.values()) |field_name, field_value| {
         if (std.mem.indexOfScalar(u8, field_name, '.') != null) continue;
         if (!describe_field_value_is_scalar(field_value)) continue;
-        if (is_unmetadata_backed_namespaced_field(ctx, object_type, field_name)) continue;
         try add_describe_field_if_missing(ctx, fields_kv, object_type, field_name);
     }
 }
@@ -5033,6 +5124,21 @@ fn canonical_field_api_name(
             if (std.ascii.eqlIgnoreCase(known, field_name)) return known;
         }
     }
+    var field_metadata_map = ctx.eval.field_metadata.get(object_type);
+    if (field_metadata_map == null) {
+        var meta_iter = ctx.eval.field_metadata.iterator();
+        while (meta_iter.next()) |entry| {
+            if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, object_type)) {
+                field_metadata_map = entry.value_ptr.*;
+                break;
+            }
+        }
+    }
+    if (field_metadata_map) |meta_map| {
+        for (meta_map.keys()) |known| {
+            if (std.ascii.eqlIgnoreCase(known, field_name)) return known;
+        }
+    }
     inline for (canonical_describe_field_sets) |entry| {
         if (std.ascii.eqlIgnoreCase(entry.object, object_type)) {
             for (entry.fields) |canonical| {
@@ -5093,6 +5199,11 @@ fn create_field_describe_result_with_type(
     try fdr.fields.put(ctx.arena, "type", Value{ .string = ft });
     const is_sortable = !std.ascii.eqlIgnoreCase(ft, "TEXTAREA");
     try fdr.fields.put(ctx.arena, "isSortable", Value{ .boolean = is_sortable });
+    if (metadata) |m| {
+        if (m.relationship_order) |order| {
+            try fdr.fields.put(ctx.arena, "relationshipOrder", Value{ .integer = order });
+        }
+    }
     if (std.ascii.eqlIgnoreCase(ft, "REFERENCE")) {
         if (try default_relationship_name(ctx.arena, field_name)) |relationship_name| {
             try fdr.fields.put(ctx.arena, "relationshipName", Value{ .string = relationship_name });
@@ -5277,6 +5388,22 @@ fn infer_field_type_for_object(
             std.ascii.eqlIgnoreCase(field_name, "npe03__Amount__c"))
         {
             return "Currency";
+        }
+        if (std.ascii.eqlIgnoreCase(object_type, "npe03__Recurring_Donation__c") and
+            std.ascii.eqlIgnoreCase(field_name, "npe03__Installment_Period__c"))
+        {
+            return "Picklist";
+        }
+        if (std.ascii.eqlIgnoreCase(object_type, "npe03__Recurring_Donation__c") and
+            (field_api_name_matches(field_name, "npe03__Open_Ended_Status__c") or
+                field_api_name_matches(field_name, "npe03__Schedule_Type__c")))
+        {
+            return "Picklist";
+        }
+        if (std.ascii.eqlIgnoreCase(object_type, "Opportunity") and
+            field_api_name_matches(field_name, "Primary_Contact__c"))
+        {
+            return "Reference";
         }
         if (std.ascii.eqlIgnoreCase(object_type, "npe01__OppPayment__c") and
             (std.ascii.eqlIgnoreCase(field_name, "npe01__Paid__c") or
@@ -7187,6 +7314,31 @@ fn append_known_object_picklist_values(
         try append_picklist_entry(ctx, list, "Failing", "Failing");
         return true;
     }
+    if (std.ascii.eqlIgnoreCase(object_type, "npe03__Recurring_Donation__c") and
+        field_api_name_matches(field_name, "npe03__Installment_Period__c"))
+    {
+        try append_picklist_entry(ctx, list, "Monthly", "Monthly");
+        try append_picklist_entry(ctx, list, "Weekly", "Weekly");
+        try append_picklist_entry(ctx, list, "Quarterly", "Quarterly");
+        try append_picklist_entry(ctx, list, "1st and 15th", "1st and 15th");
+        try append_picklist_entry(ctx, list, "Yearly", "Yearly");
+        return true;
+    }
+    if (std.ascii.eqlIgnoreCase(object_type, "npe03__Recurring_Donation__c") and
+        field_api_name_matches(field_name, "npe03__Open_Ended_Status__c"))
+    {
+        try append_picklist_entry(ctx, list, "Open", "Open");
+        try append_picklist_entry(ctx, list, "Closed", "Closed");
+        try append_picklist_entry(ctx, list, "None", "None");
+        return true;
+    }
+    if (std.ascii.eqlIgnoreCase(object_type, "npe03__Recurring_Donation__c") and
+        field_api_name_matches(field_name, "npe03__Schedule_Type__c"))
+    {
+        try append_picklist_entry(ctx, list, "Multiply By", "Multiply By");
+        try append_picklist_entry(ctx, list, "Divide By", "Divide By");
+        return true;
+    }
     return false;
 }
 
@@ -7195,6 +7347,17 @@ fn simple_field_api_name(field_name: []const u8) []const u8 {
         return field_name[dot + 1 ..];
     }
     return field_name;
+}
+
+fn field_api_name_matches(field_name: []const u8, canonical: []const u8) bool {
+    if (std.ascii.eqlIgnoreCase(field_name, canonical)) return true;
+    const simple = simple_field_api_name(field_name);
+    if (std.ascii.eqlIgnoreCase(simple, canonical)) return true;
+    if (std.ascii.endsWithIgnoreCase(canonical, "__c")) {
+        const without_suffix = canonical[0 .. canonical.len - 3];
+        if (std.ascii.eqlIgnoreCase(simple, without_suffix)) return true;
+    }
+    return false;
 }
 
 fn append_known_managed_picklist_values(
@@ -7558,16 +7721,21 @@ fn dispatch_obj_standard_controller(
             if (value == .string) value.string else ""
         else
             "";
+        const url_id = record_url_id(id);
         const pr = try ctx.arena.create(types.ObjectInstance);
         pr.* = .{ .class_name = "PageReference" };
         try pr.fields.put(
             ctx.arena,
             "url",
-            Value{ .string = try std.fmt.allocPrint(ctx.arena, "/{s}", .{id}) },
+            Value{ .string = try std.fmt.allocPrint(ctx.arena, "/{s}", .{url_id}) },
         );
         return Value{ .object = pr };
     }
     return null;
+}
+
+fn record_url_id(id: []const u8) []const u8 {
+    return if (id.len > 15) id[0..15] else id;
 }
 
 fn dispatch_obj_standard_set_controller(
@@ -7601,13 +7769,68 @@ fn dispatch_obj_standard_set_controller(
         }
         return Value{ .integer = 0 };
     }
-    if (type_matches_any(method_name, &.{ "first", "last", "next", "previous" })) {
+    if (std.ascii.eqlIgnoreCase(method_name, "getPageNumber")) {
+        return obj.fields.get("pageNumber") orelse Value{ .integer = 1 };
+    }
+    const page_size = standard_set_controller_page_size(obj);
+    const result_size = standard_set_controller_result_size(obj);
+    const page_number = standard_set_controller_page_number(obj);
+    const total_pages = if (result_size == 0)
+        1
+    else
+        @divTrunc(result_size + page_size - 1, page_size);
+    if (std.ascii.eqlIgnoreCase(method_name, "first")) {
+        try obj.fields.put(ctx.arena, "pageNumber", Value{ .integer = 1 });
         return Value.void_val;
     }
-    if (type_matches_any(method_name, &.{ "getHasNext", "getHasPrevious" })) {
-        return Value{ .boolean = false };
+    if (std.ascii.eqlIgnoreCase(method_name, "last")) {
+        try obj.fields.put(ctx.arena, "pageNumber", Value{ .integer = total_pages });
+        return Value.void_val;
+    }
+    if (std.ascii.eqlIgnoreCase(method_name, "next")) {
+        try obj.fields.put(
+            ctx.arena,
+            "pageNumber",
+            Value{ .integer = @min(page_number + 1, total_pages) },
+        );
+        return Value.void_val;
+    }
+    if (std.ascii.eqlIgnoreCase(method_name, "previous")) {
+        try obj.fields.put(
+            ctx.arena,
+            "pageNumber",
+            Value{ .integer = @max(page_number - 1, 1) },
+        );
+        return Value.void_val;
+    }
+    if (std.ascii.eqlIgnoreCase(method_name, "getHasNext")) {
+        return Value{ .boolean = page_number < total_pages };
+    }
+    if (std.ascii.eqlIgnoreCase(method_name, "getHasPrevious")) {
+        return Value{ .boolean = page_number > 1 };
     }
     return null;
+}
+
+fn standard_set_controller_page_size(obj: *types.ObjectInstance) i64 {
+    if (obj.fields.get("pageSize")) |value| {
+        if (value == .integer and value.integer > 0) return value.integer;
+    }
+    return 20;
+}
+
+fn standard_set_controller_page_number(obj: *types.ObjectInstance) i64 {
+    if (obj.fields.get("pageNumber")) |value| {
+        if (value == .integer and value.integer > 0) return value.integer;
+    }
+    return 1;
+}
+
+fn standard_set_controller_result_size(obj: *types.ObjectInstance) i64 {
+    if (obj.fields.get("records")) |records| {
+        if (records == .list) return @intCast(records.list.items.items.len);
+    }
+    return 0;
 }
 
 fn dispatch_obj_type(
@@ -8203,6 +8426,12 @@ fn describe_field_result_value_accessor(
     if (std.ascii.eqlIgnoreCase(method_name, "getInlineHelpText")) {
         return obj.fields.get("inlineHelpText") orelse Value.null_val;
     }
+    if (std.ascii.eqlIgnoreCase(method_name, "getRelationshipOrder")) {
+        return obj.fields.get("relationshipOrder") orelse Value.null_val;
+    }
+    if (std.ascii.eqlIgnoreCase(method_name, "getRelationshipName")) {
+        return obj.fields.get("relationshipName") orelse Value.null_val;
+    }
     if (std.ascii.eqlIgnoreCase(method_name, "getLabel")) {
         return obj.fields.get("label") orelse
             obj.fields.get("name") orelse
@@ -8514,8 +8743,8 @@ fn dispatch_s_object_errors(
     // is responsible for translating the attached errors into a DmlException when it
     // commits.
     if (std.ascii.eqlIgnoreCase(method_name, "addError") and args.len > 0) {
-        const msg_val = if (args.len >= 2) args[1] else args[0];
-        const field_val: ?Value = if (args.len >= 2) args[0] else null;
+        const msg_val = if (args.len >= 2 and args[1] != .boolean) args[1] else args[0];
+        const field_val: ?Value = if (args.len >= 2 and args[1] != .boolean) args[0] else null;
         const err_obj = try ctx.arena.create(types.ObjectInstance);
         err_obj.* = .{ .class_name = "Database.Error" };
         try err_obj.fields.put(ctx.arena, "message", msg_val);
@@ -9321,6 +9550,11 @@ fn resolve_field_read_permission(
         if (restricted_core_field_allowed(object_type, field_name)) return true;
         return false;
     }
+    if (eval.is_standard_user and
+        standard_user_denies_custom_field(eval, object_type, field_name, "read"))
+    {
+        return false;
+    }
     return true;
 }
 
@@ -9347,7 +9581,29 @@ fn resolve_field_write_permission(
         if (restricted_core_field_allowed(object_type, field_name)) return true;
         return false;
     }
+    if (eval.is_standard_user and
+        standard_user_denies_custom_field(eval, object_type, field_name, operation))
+    {
+        return false;
+    }
     return true;
+}
+
+fn standard_user_denies_custom_field(
+    eval: *evaluator_mod.Evaluator,
+    object_type: ?[]const u8,
+    field_name: []const u8,
+    operation: []const u8,
+) bool {
+    if (!is_custom_or_packaged_field(field_name)) return false;
+    if (is_field_allowed_by_perm_sets(eval, object_type, field_name, operation)) return false;
+    return true;
+}
+
+fn is_custom_or_packaged_field(field_name: []const u8) bool {
+    return std.ascii.endsWithIgnoreCase(field_name, "__c") or
+        std.ascii.endsWithIgnoreCase(field_name, "__pc") or
+        std.ascii.indexOfIgnoreCase(field_name, "__") != null;
 }
 
 // ---------------------------------------------------------------------------
