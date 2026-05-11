@@ -270,9 +270,10 @@ fn coerce_object_to_string(obj: *types.ObjectInstance, arena: std.mem.Allocator)
             if (n == .string) return n.string;
         }
     }
-    // Date/Datetime/Blob -> return the stored value string
+    // Date/Datetime/Time/Blob -> return the stored value string
     if (std.ascii.eqlIgnoreCase(obj.class_name, "Date") or
         std.ascii.eqlIgnoreCase(obj.class_name, "Datetime") or
+        std.ascii.eqlIgnoreCase(obj.class_name, "Time") or
         std.ascii.eqlIgnoreCase(obj.class_name, "Blob"))
     {
         if (obj.fields.get("value")) |bv| {
