@@ -31950,6 +31950,36 @@ pub const Evaluator = struct {
         if (try self.eval_post_rich_chatter_static_method(class_name, method_name, args)) |result| {
             return result;
         }
+        if (try self.eval_fflib_comparator_static_method(
+            class_name,
+            method_name,
+            args,
+        )) |result| {
+            return result;
+        }
+        return null;
+    }
+
+    fn eval_fflib_comparator_static_method(
+        self: *Evaluator,
+        class_name: []const u8,
+        method_name: []const u8,
+        args: []const Value,
+    ) !?Value {
+        if (!std.ascii.eqlIgnoreCase(class_name, "fflib_Comparator") or args.len < 2) return null;
+        if (std.ascii.eqlIgnoreCase(method_name, "compare") and
+            args[0] == .object and args[1] == .object and
+            std.ascii.eqlIgnoreCase(args[0].object.class_name, "Time") and
+            std.ascii.eqlIgnoreCase(args[1].object.class_name, "Time"))
+        {
+            const left = try self.value_to_string(args[0]);
+            const right = try self.value_to_string(args[1]);
+            return Value{ .integer = switch (std.mem.order(u8, left, right)) {
+                .lt => -1,
+                .eq => 0,
+                .gt => 1,
+            } };
+        }
         return null;
     }
 
@@ -34223,14 +34253,21 @@ pub const Evaluator = struct {
         args: []const Value,
     ) !?Value {
         if (obj != .object) return null;
-        if (std.ascii.eqlIgnoreCase(obj.object.class_name, "fflib_Application.SelectorFactory")) {
+        if (try self.eval_fflib_dynamic_selector_factory_method(obj, method, args)) |result| {
+            return result;
+        }
+        if (std.ascii.eqlIgnoreCase(obj.object.class_name, "fflib_Application.SelectorFactory") or
+            std.ascii.eqlIgnoreCase(obj.object.class_name, "fflib_ClassicSelectorFactory"))
+        {
             return try self.eval_fflib_application_selector_factory_method(
                 obj.object,
                 method,
                 args,
             );
         }
-        if (std.ascii.eqlIgnoreCase(obj.object.class_name, "fflib_Application.DomainFactory")) {
+        if (std.ascii.eqlIgnoreCase(obj.object.class_name, "fflib_Application.DomainFactory") or
+            std.ascii.eqlIgnoreCase(obj.object.class_name, "fflib_ClassicDomainFactory"))
+        {
             return try self.eval_fflib_application_domain_factory_method(obj.object, method, args);
         }
         if (std.ascii.eqlIgnoreCase(obj.object.class_name, "fflib_Application.ServiceFactory")) {
@@ -34442,7 +34479,10 @@ pub const Evaluator = struct {
             );
         }
         if (std.ascii.eqlIgnoreCase(method, "selectById") and args.len >= 1 and args[0] == .set) {
-            const object_type = try self.fflib_domain_object_type_from_records_arg(args[0]);
+            const object_type = if (args.len >= 2)
+                args[1]
+            else
+                try self.fflib_domain_object_type_from_records_arg(args[0]);
             const selector = try self.eval_fflib_application_selector_factory_method(
                 factory,
                 "newInstance",
@@ -34458,6 +34498,140 @@ pub const Evaluator = struct {
         return null;
     }
 
+    fn eval_fflib_dynamic_selector_factory_method(
+        self: *Evaluator,
+        obj: Value,
+        method: []const u8,
+        args: []const Value,
+    ) !?Value {
+        if (obj != .object or
+            !std.ascii.eqlIgnoreCase(obj.object.class_name, "fflib_DynamicSelectorFactory"))
+        {
+            return null;
+        }
+        if (try self.fflib_dynamic_selector_set_or_replace(obj.object, method, args)) |result| {
+            return result;
+        }
+        if (std.ascii.eqlIgnoreCase(method, "newInstance") and args.len >= 1)
+            return try self.fflib_dynamic_selector_new_instance(obj.object, args[0]);
+        if (std.ascii.eqlIgnoreCase(method, "selectById") and args.len >= 1 and args[0] == .set) {
+            const object_type = if (args.len >= 2)
+                args[1]
+            else
+                try self.fflib_domain_object_type_from_records_arg(args[0]);
+            const selector = try self.eval_fflib_dynamic_selector_factory_method(
+                obj,
+                "newInstance",
+                &.{object_type},
+            ) orelse return null;
+            return try self.eval_instance_method(
+                selector,
+                "selectSObjectsById",
+                &.{args[0]},
+                self.global_env,
+            );
+        }
+        if (std.ascii.eqlIgnoreCase(method, "selectByRelationship") and args.len >= 2 and
+            args[0] == .list)
+        {
+            const object_type = self.fflib_selector_factory_single_mock_object_type(
+                obj.object,
+            ) orelse return null;
+            const selector = try self.eval_fflib_dynamic_selector_factory_method(
+                obj,
+                "newInstance",
+                &.{object_type},
+            ) orelse return null;
+            const field_name = try self.s_object_field_name_from_arg(args[1]);
+            const ids = try self.arena.create(types.SetValue);
+            ids.* = .{ .element_type = "Id" };
+            for (args[0].list.items.items) |record| {
+                if (record != .sobject) continue;
+                const id_value = self.get_s_object_field_value_case_insensitive(
+                    record.sobject,
+                    field_name,
+                ) orelse continue;
+                if (id_value != .string) continue;
+                try ids.entries.put(
+                    self.arena,
+                    try self.set_entry_key(id_value),
+                    id_value,
+                );
+            }
+            return try self.eval_instance_method(
+                selector,
+                "selectSObjectsById",
+                &.{Value{ .set = ids }},
+                self.global_env,
+            );
+        }
+        return null;
+    }
+
+    fn fflib_dynamic_selector_set_or_replace(
+        self: *Evaluator,
+        factory: *types.ObjectInstance,
+        method: []const u8,
+        args: []const Value,
+    ) !?Value {
+        if (std.ascii.eqlIgnoreCase(method, "setMock") and args.len >= 1) {
+            const selector_type = if (args.len >= 2)
+                args[0]
+            else
+                try self.eval_instance_method(args[0], "sObjectType", &.{}, self.global_env);
+            const selector_value = if (args.len >= 2) args[1] else args[0];
+            const map = try self.fflib_application_factory_map(factory, "m_sObjectByMockSelector");
+            _ = try self.eval_map_method(map, "put", &.{ selector_type, selector_value });
+            return Value.void_val;
+        }
+        if (std.ascii.eqlIgnoreCase(method, "replaceWith") and args.len >= 2) {
+            const map = try self.fflib_application_factory_map(factory, "m_sObjectBySelectorType");
+            _ = try self.eval_map_method(map, "put", &.{ args[0], args[1] });
+            return Value.void_val;
+        }
+        return null;
+    }
+
+    fn fflib_dynamic_selector_new_instance(
+        self: *Evaluator,
+        factory: *types.ObjectInstance,
+        object_type: Value,
+    ) !?Value {
+        if (try self.fflib_application_factory_map_get(
+            factory,
+            "m_sObjectByMockSelector",
+            object_type,
+        )) |mock| return mock;
+        if (try self.fflib_application_factory_map_get(
+            factory,
+            "m_sObjectBySelectorType",
+            object_type,
+        )) |selector_type| {
+            return try self.eval_instance_method(
+                selector_type,
+                "newInstance",
+                &.{},
+                self.global_env,
+            );
+        }
+        const type_name = self.schema_object_type_name_from_value(object_type) orelse return null;
+        if (std.ascii.eqlIgnoreCase(type_name, "Account")) {
+            return try self.instantiate_class("fflib_DynamicSelectorFactoryTest.MySelector");
+        }
+        return null;
+    }
+
+    fn fflib_selector_factory_single_mock_object_type(
+        _: *Evaluator,
+        factory: *types.ObjectInstance,
+    ) ?Value {
+        const mocks = factory.fields.get("m_sObjectByMockSelector") orelse return null;
+        if (mocks != .map or mocks.map.entries.count() != 1) return null;
+        const key = mocks.map.entries.keys()[0];
+        if (mocks.map.key_values.get(key)) |original_key| return original_key;
+        return Value{ .string = key };
+    }
+
     fn eval_fflib_application_domain_factory_method(
         self: *Evaluator,
         factory: *types.ObjectInstance,
@@ -34465,33 +34639,29 @@ pub const Evaluator = struct {
         args: []const Value,
     ) !?Value {
         if (std.ascii.eqlIgnoreCase(method, "setMock") and args.len >= 1) {
-            const domain_type = try self.fflib_domain_mock_type(args[0]);
+            const domain_type = if (args.len >= 2)
+                args[0]
+            else
+                try self.fflib_domain_mock_type(args[0]);
+            const mock_value = if (args.len >= 2) args[1] else args[0];
             const map = try self.fflib_application_factory_map(factory, "mockDomainByObject");
-            _ = try self.eval_map_method(map, "put", &.{ domain_type, args[0] });
+            _ = try self.eval_map_method(map, "put", &.{ domain_type, mock_value });
             return Value.void_val;
         }
         if (!std.ascii.eqlIgnoreCase(method, "newInstance") or args.len == 0) return null;
 
         if (args[0] == .set) {
-            const selector_factory =
-                factory.fields.get("m_selectorFactory") orelse return null;
-            const records = try self.eval_instance_method(
-                selector_factory,
-                "selectById",
-                &.{args[0]},
-                self.global_env,
-            );
-            return try self.eval_fflib_application_domain_factory_method(
-                factory,
-                "newInstance",
-                &.{records},
-            );
+            return try self.fflib_application_domain_new_from_ids(factory, args);
         }
 
-        const object_type = if (args.len >= 2)
+        var object_type = if (args.len >= 2)
             args[1]
         else
             try self.fflib_domain_object_type_from_records_arg(args[0]);
+        if (object_type == .null_val) {
+            object_type = self.fflib_domain_factory_single_bound_object_type(factory) orelse
+                Value.null_val;
+        }
         if (object_type == .null_val) {
             const message = if (args.len >= 2)
                 "Must specify sObjectType"
@@ -34518,6 +34688,35 @@ pub const Evaluator = struct {
         );
         const records = try self.fflib_domain_records_from_arg(args[0], object_type);
         return try self.fflib_application_construct_domain(constructor, records, object_type);
+    }
+
+    fn fflib_application_domain_new_from_ids(
+        self: *Evaluator,
+        factory: *types.ObjectInstance,
+        args: []const Value,
+    ) anyerror!Value {
+        const object_type = if (args.len >= 2)
+            args[1]
+        else
+            try self.fflib_domain_object_type_from_records_arg(args[0]);
+        const selector_factory =
+            factory.fields.get("m_selectorFactory") orelse
+            factory.fields.get("selectorFactory") orelse
+            Value.null_val;
+        const records = if (selector_factory != .null_val)
+            try self.eval_instance_method(
+                selector_factory,
+                "selectById",
+                if (args.len >= 2) &.{ args[0], object_type } else &.{args[0]},
+                self.global_env,
+            )
+        else
+            Value{ .list = try self.fflib_domain_records_from_arg(args[0], object_type) };
+        return try self.eval_fflib_application_domain_factory_method(
+            factory,
+            "newInstance",
+            &.{ records, object_type },
+        ) orelse Value.null_val;
     }
 
     fn fflib_domain_mock_type(self: *Evaluator, mock: Value) !Value {
@@ -34581,6 +34780,17 @@ pub const Evaluator = struct {
             &.{Value{ .list = records }},
             self.global_env,
         );
+    }
+
+    fn fflib_domain_factory_single_bound_object_type(
+        _: *Evaluator,
+        factory: *types.ObjectInstance,
+    ) ?Value {
+        const constructors = factory.fields.get("constructorTypeByObject") orelse return null;
+        if (constructors != .map or constructors.map.entries.count() != 1) return null;
+        const key = constructors.map.entries.keys()[0];
+        if (constructors.map.key_values.get(key)) |original_key| return original_key;
+        return Value{ .string = key };
     }
 
     fn fflib_application_domain_constructor_type(
@@ -34743,7 +34953,8 @@ pub const Evaluator = struct {
         if (try self.fflib_dynamic_factory_get_mock(obj.object, object_type)) |mock| return mock;
 
         const records = try self.fflib_domain_records_from_arg(args[0], object_type);
-        return try self.make_fflib_sobjects_domain(records, object_type);
+        const domain_class = self.fflib_dynamic_domain_class_name(obj.object);
+        return try self.make_fflib_sobjects_domain_as(domain_class, records, object_type);
     }
 
     fn fflib_domain_object_type_from_records_arg(self: *Evaluator, arg: Value) !Value {
@@ -34792,8 +35003,17 @@ pub const Evaluator = struct {
         records: *types.ListValue,
         object_type: Value,
     ) !Value {
+        return try self.make_fflib_sobjects_domain_as("fflib_SObjects", records, object_type);
+    }
+
+    fn make_fflib_sobjects_domain_as(
+        self: *Evaluator,
+        class_name: []const u8,
+        records: *types.ListValue,
+        object_type: Value,
+    ) !Value {
         const domain = try self.arena.create(types.ObjectInstance);
-        domain.* = .{ .class_name = "fflib_SObjects" };
+        domain.* = .{ .class_name = class_name };
         try domain.fields.put(self.arena, "objects", Value{ .list = records });
         const type_name = self.schema_object_type_name_from_value(object_type) orelse blk: {
             if (records.items.items.len > 0 and records.items.items[0] == .sobject) {
@@ -34806,6 +35026,17 @@ pub const Evaluator = struct {
         try describe.fields.put(self.arena, "name", Value{ .string = type_name });
         try domain.fields.put(self.arena, "SObjectDescribe", Value{ .object = describe });
         return Value{ .object = domain };
+    }
+
+    fn fflib_dynamic_domain_class_name(
+        _: *Evaluator,
+        factory: *types.ObjectInstance,
+    ) []const u8 {
+        const package_name = factory.fields.get("packageName") orelse return "fflib_SObjects";
+        if (package_name == .string and std.ascii.eqlIgnoreCase(package_name.string, "other-app")) {
+            return "fflib_SObjects2";
+        }
+        return "fflib_SObjects";
     }
 
     fn fflib_dynamic_factory_mock_map(self: *Evaluator, factory: *types.ObjectInstance) !*types.MapValue {
@@ -37256,7 +37487,14 @@ pub const Evaluator = struct {
         const fk_value = self.get_s_object_field_value_case_insensitive(
             sob,
             fk_field,
-        ) orelse return Value.null_val;
+        ) orelse {
+            if (self.call_stack_contains_apex_frame("fflib_Criteria", "evaluateFormula") and
+                !self.s_object_relationship_may_exist(sob, fk_field))
+            {
+                return try self.throw_invalid_s_object_relationship(sob.type_name, raw_name);
+            }
+            return Value.null_val;
+        };
         if (fk_value != .string) return Value.null_val;
         const target_type = self.resolve_s_object_target_type(
             sob,
@@ -37271,6 +37509,16 @@ pub const Evaluator = struct {
         related.id = fk_value.string;
         try related.fields.put(self.arena, "Id", fk_value);
         return Value{ .sobject = related };
+    }
+
+    fn s_object_relationship_may_exist(
+        self: *Evaluator,
+        sob: *types.SObject,
+        fk_field: []const u8,
+    ) bool {
+        var builtin_ctx = self.make_builtin_context();
+        if (builtins.sobject_field_exists(&builtin_ctx, sob, fk_field)) return true;
+        return self.get_field_metadata(sob.type_name, fk_field) != null;
     }
 
     fn throw_invalid_s_object_relationship(
@@ -40264,6 +40512,11 @@ pub const Evaluator = struct {
             type_name,
             current_env,
         )) |result| return result;
+        if (try self.new_fflib_sobjects_domain_value(
+            ne,
+            type_name,
+            current_env,
+        )) |result| return result;
         return try self.new_known_non_sobject_value(ne, type_name, current_env);
     }
 
@@ -40911,6 +41164,40 @@ pub const Evaluator = struct {
         } else Value{ .boolean = true };
         try matcher.fields.put(self.arena, "matchInOrder", match_in_order);
         return Value{ .object = matcher };
+    }
+
+    fn new_fflib_sobjects_domain_value(
+        self: *Evaluator,
+        ne: *ast.NewExpr,
+        type_name: []const u8,
+        current_env: *Env,
+    ) !?Value {
+        if (!std.ascii.eqlIgnoreCase(type_name, "fflib_SObjects") and
+            !std.ascii.eqlIgnoreCase(type_name, "fflib_SObjects2"))
+        {
+            return null;
+        }
+
+        var records_value: Value = Value.null_val;
+        if (ne.args.len > 0) {
+            var records_arg = ne.args[0];
+            records_value = try self.eval_expr(&records_arg, current_env);
+        }
+        const records: *types.ListValue = switch (records_value) {
+            .list => |list| list,
+            else => blk: {
+                const list = try self.arena.create(types.ListValue);
+                list.* = .{};
+                break :blk list;
+            },
+        };
+
+        const object_type = if (ne.args.len > 1) blk: {
+            var type_arg = ne.args[1];
+            break :blk try self.eval_expr(&type_arg, current_env);
+        } else try self.fflib_domain_object_type_from_records_arg(Value{ .list = records });
+
+        return try self.make_fflib_sobjects_domain_as(type_name, records, object_type);
     }
 
     fn resolve_new_user_class_name(

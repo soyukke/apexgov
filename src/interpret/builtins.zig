@@ -3605,7 +3605,7 @@ fn evaluate_simple_equality_formula(formula: []const u8, record: Value) bool {
     if (lhs_raw.len == 0 or rhs_raw.len == 0) return false;
 
     // Resolve lhs as a dotted path on the record's TriggerRecord.
-    const field_val = resolve_formula_lhs(record, lhs_raw) orelse return false;
+    const field_val = resolve_formula_expr(record, lhs_raw) orelse return false;
 
     // Decode rhs: quoted string, boolean, or number.
     if (rhs_raw.len >= 2 and (rhs_raw[0] == '\'' or rhs_raw[0] == '"') and
@@ -3627,10 +3627,31 @@ fn evaluate_simple_equality_formula(formula: []const u8, record: Value) bool {
     return false;
 }
 
+fn resolve_formula_expr(receiver: Value, expr: []const u8) ?Value {
+    const trimmed = std.mem.trim(u8, expr, " \t\n\r");
+    if (std.ascii.startsWithIgnoreCase(trimmed, "ISBLANK(") and
+        std.mem.endsWith(u8, trimmed, ")"))
+    {
+        const inner = std.mem.trim(u8, trimmed["ISBLANK(".len .. trimmed.len - 1], " \t\n\r");
+        const value = resolve_formula_lhs(receiver, inner) orelse Value.null_val;
+        return Value{ .boolean = formula_value_is_blank(value) };
+    }
+    return resolve_formula_lhs(receiver, trimmed);
+}
+
+fn formula_value_is_blank(value: Value) bool {
+    return switch (value) {
+        .null_val => true,
+        .string => |s| std.mem.trim(u8, s, " \t\n\r").len == 0,
+        else => false,
+    };
+}
+
 /// Resolve a dotted LHS like "record.Name" or "recordPrior.Description"
 /// against a TriggerRecord wrapper. The TriggerRecord holds two fields —
 /// `newSobject` and `oldSobject` — populated before each evaluate call.
 fn resolve_formula_lhs(receiver: Value, path: []const u8) ?Value {
+    if (receiver == .sobject) return sobject_field_case_insensitive(receiver.sobject, path);
     if (receiver != .object) return null;
     // Accept "record.X" / "recordPrior.X" / "X" (bare identifier resolves
     // against the receiver's fields directly).
@@ -6764,6 +6785,11 @@ fn dispatch_obj_exception_methods(
     if (std.ascii.eqlIgnoreCase(method_name, "getMessage")) {
         return obj.fields.get("message") orelse Value{ .string = "" };
     }
+    if (std.ascii.eqlIgnoreCase(method_name, "toString") and
+        std.mem.endsWith(u8, obj.class_name, "Exception"))
+    {
+        return try render_exception_to_string(ctx, obj);
+    }
     if (std.ascii.eqlIgnoreCase(method_name, "getNumDml")) {
         if (obj.fields.get("dmlMessages")) |messages| {
             if (messages == .list) return Value{ .integer = @intCast(messages.list.items.items.len) };
@@ -6812,6 +6838,29 @@ fn dispatch_obj_exception_methods(
         return try dispatch_obj_type_name(ctx, obj);
     }
     return null;
+}
+
+fn render_exception_to_string(ctx: *BuiltinContext, obj: *types.ObjectInstance) !Value {
+    const type_name = try dispatch_obj_type_name(ctx, obj);
+    const message = obj.fields.get("message") orelse Value{ .string = "" };
+    const raw_type = if (type_name == .string) type_name.string else obj.class_name;
+    const rendered_type = if (std.mem.lastIndexOfScalar(u8, raw_type, '.')) |dot|
+        raw_type[dot + 1 ..]
+    else
+        raw_type;
+    const rendered_message = if (message == .string) message.string else "";
+    if (std.ascii.startsWithIgnoreCase(raw_type, "System.")) {
+        return Value{ .string = try std.fmt.allocPrint(
+            ctx.arena,
+            "{s}: {s}",
+            .{ raw_type, rendered_message },
+        ) };
+    }
+    return Value{ .string = try std.fmt.allocPrint(
+        ctx.arena,
+        "{s}:[]: {s}",
+        .{ rendered_type, rendered_message },
+    ) };
 }
 
 fn dispatch_obj_type_name(ctx: *BuiltinContext, obj: *types.ObjectInstance) !Value {
