@@ -2239,6 +2239,7 @@ fn dispatch_static_schema(
 
 const schema_global_describe_known_types = [_][]const u8{
     "Account",
+    "AccountShare",
     "Contact",
     "Opportunity",
     "Task",
@@ -2261,6 +2262,7 @@ const schema_global_describe_known_types = [_][]const u8{
     "Quote",
     "QuoteLineItem",
     "CaseComment",
+    "ListEmail",
     "Attachment",
     "Note",
     "FeedItem",
@@ -4390,6 +4392,7 @@ fn field_set_member_display_type(
 }
 
 fn has_implicit_name_field(object_type: []const u8) bool {
+    if (std.ascii.eqlIgnoreCase(object_type, "CaseComment")) return false;
     if (std.ascii.eqlIgnoreCase(object_type, "EmailMessage")) return false;
     if (std.ascii.eqlIgnoreCase(object_type, "EmailMessageRelation")) return false;
     if (std.ascii.eqlIgnoreCase(object_type, "OpportunityContactRole")) return false;
@@ -4883,7 +4886,10 @@ const known_describe_field_sets = [_]struct { object: []const u8, fields: []cons
         "MailingStreet", "MailingPostalCode", "MailingLatitude", "MailingLongitude",
         "OtherStreet",   "OtherCity",         "OtherState",      "OtherPostalCode",
         "OtherCountry",  "OtherLatitude",     "OtherLongitude",  "LeadSource",
-        "Description",   "OwnerId",           "ReportsToId",
+        "Description",   "OwnerId",           "ReportsToId",     "DoNotCall",
+    } },
+    .{ .object = "AccountShare", .fields = &.{
+        "AccountId", "UserOrGroupId", "AccountAccessLevel", "RowCause",
     } },
     .{ .object = "Lead", .fields = &.{
         "FirstName", "LastName", "Company", "Email",
@@ -4974,7 +4980,10 @@ const canonical_describe_field_sets = [_]struct { object: []const u8, fields: []
         "MailingPostalCode", "MailingLatitude", "MailingLongitude", "OtherStreet",
         "OtherCity",         "OtherState",      "OtherPostalCode",  "OtherCountry",
         "OtherLatitude",     "OtherLongitude",  "Description",      "OwnerId",
-        "ReportsToId",
+        "ReportsToId",       "DoNotCall",
+    } },
+    .{ .object = "AccountShare", .fields = &.{
+        "Id", "AccountId", "UserOrGroupId", "AccountAccessLevel", "RowCause",
     } },
     .{ .object = "Lead", .fields = &.{
         "Id",      "FirstName",  "LastName", "Company",  "Email", "Phone", "Status",

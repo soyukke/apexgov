@@ -720,8 +720,9 @@ fn record_test_error(
 fn pending_exception_message(test_eval: *evaluator.Evaluator) []const u8 {
     const pending = test_eval.pending_exception orelse return "";
     if (pending != .object) return "";
-    const message = pending.object.fields.get("message") orelse return "";
-    return if (message == .string) message.string else "";
+    const message = pending.object.fields.get("message") orelse return pending.object.class_name;
+    if (message == .string and message.string.len > 0) return message.string;
+    return pending.object.class_name;
 }
 
 fn is_test_class(cd: *ast.ClassDecl) bool {
@@ -2988,6 +2989,202 @@ test "E2E: runAs assigns an id to an uninserted user for later setup DML" {
     ;
     const result = try run(std.testing.allocator, std.testing.io, source, .{
         .entry_class = "RunAsUninsertedUserIdTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqual(true, result.value.boolean);
+}
+
+test "E2E: profile-owned PermissionSet no-access query drives runAs CRUD" {
+    const source =
+        \\public class ProfileOwnedNoAccessPermissionSetTest {
+        \\    public static Boolean test() {
+        \\        PermissionSet ps =
+        \\            [SELECT Profile.Id, Profile.Name
+        \\             FROM PermissionSet
+        \\             WHERE IsOwnedByProfile = true
+        \\             AND Profile.UserType = 'Standard'
+        \\             AND Id NOT IN (SELECT ParentId
+        \\                            FROM ObjectPermissions
+        \\                            WHERE SObjectType = 'Account'
+        \\                            AND PermissionsRead = true)
+        \\             LIMIT 1];
+        \\        User u = new User(
+        \\            ProfileId = ps.Profile.Id,
+        \\            LastName = 'NoAccess',
+        \\            Username = 'noaccess@example.com',
+        \\            Email = 'noaccess@example.com',
+        \\            Alias = 'noacc'
+        \\        );
+        \\        insert u;
+        \\        Boolean objectReadable = true;
+        \\        Boolean fieldReadable = true;
+        \\        System.runAs(u) {
+        \\            objectReadable = Account.SObjectType.getDescribe().isAccessible();
+        \\            fieldReadable = Account.AnnualRevenue.getDescribe().isAccessible();
+        \\        }
+        \\        return ps.Profile.Name == 'Minimum Access - Salesforce' &&
+        \\            objectReadable == false &&
+        \\            fieldReadable == false;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "ProfileOwnedNoAccessPermissionSetTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqual(true, result.value.boolean);
+}
+
+test "E2E: instance field assignment updates existing field case-insensitively" {
+    const source =
+        \\public class CaseInsensitiveInstanceFieldAssignmentTest {
+        \\    private String m_value = 'old';
+        \\    public CaseInsensitiveInstanceFieldAssignmentTest() {
+        \\        m_Value = 'new';
+        \\    }
+        \\    public String getValue() {
+        \\        return m_value;
+        \\    }
+        \\    public static String test() {
+        \\        return new CaseInsensitiveInstanceFieldAssignmentTest().getValue();
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "CaseInsensitiveInstanceFieldAssignmentTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("new", result.value.string);
+}
+
+test "E2E: local variables do not update same-named instance fields case-insensitively" {
+    const source =
+        \\public class LocalVariableFieldShadowTest {
+        \\    public Integer TargetLineNumber { get; private set; }
+        \\    public LocalVariableFieldShadowTest() {
+        \\        this.TargetLineNumber = 5;
+        \\        for (Integer targetLineNumber = 1; targetLineNumber <= 10; targetLineNumber++) {
+        \\        }
+        \\    }
+        \\    public static Integer test() {
+        \\        return new LocalVariableFieldShadowTest().TargetLineNumber;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "LocalVariableFieldShadowTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqual(@as(i64, 5), result.value.integer);
+}
+
+test "E2E: CaseComment describe does not expose implicit Name field" {
+    const source =
+        \\public class CaseCommentDescribeNameTest {
+        \\    public static Boolean test() {
+        \\        Map<String, Schema.SObjectField> fields =
+        \\            CaseComment.SObjectType.getDescribe().fields.getMap();
+        \\        return !fields.containsKey('Name') &&
+        \\            fields.containsKey('CreatedDate') &&
+        \\            fields.containsKey('CommentBody');
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "CaseCommentDescribeNameTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqual(true, result.value.boolean);
+}
+
+test "E2E: ListEmail SObjectType resolves standard child relationship" {
+    const source =
+        \\public class ListEmailSObjectTypeTest {
+        \\    public static Boolean test() {
+        \\        Schema.SObjectType listEmailType = ListEmail.SObjectType;
+        \\        Boolean found = false;
+        \\        if (Schema.getGlobalDescribe().get('ListEmail') != listEmailType) {
+        \\            return false;
+        \\        }
+        \\        for (Schema.ChildRelationship rel :
+        \\            Opportunity.SObjectType.getDescribe().getChildRelationships()) {
+        \\            if (rel.getChildSObject() == listEmailType &&
+        \\                rel.getRelationshipName() == 'ListEmails') {
+        \\                found = true;
+        \\            }
+        \\        }
+        \\        return found;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "ListEmailSObjectTypeTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqual(true, result.value.boolean);
+}
+
+test "E2E: standard Contact and AccountShare describe fields are available" {
+    const source =
+        \\public class StandardDescribeCoverageTest {
+        \\    public static Boolean test() {
+        \\        Map<String, Schema.SObjectField> contactFields =
+        \\            Contact.SObjectType.getDescribe().fields.getMap();
+        \\        Map<String, Schema.SObjectField> shareFields =
+        \\            AccountShare.SObjectType.getDescribe().fields.getMap();
+        \\        return contactFields.get('DoNotCall') == Contact.DoNotCall &&
+        \\            Schema.getGlobalDescribe().get('AccountShare') == AccountShare.SObjectType &&
+        \\            shareFields.get('AccountId') == AccountShare.AccountId &&
+        \\            shareFields.get('UserOrGroupId') == AccountShare.UserOrGroupId &&
+        \\            shareFields.get('AccountAccessLevel') == AccountShare.AccountAccessLevel &&
+        \\            shareFields.get('RowCause') == AccountShare.RowCause;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "StandardDescribeCoverageTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqual(true, result.value.boolean);
+}
+
+test "E2E: insert audit fields use current runAs user" {
+    const source =
+        \\public class InsertAuditRunAsUserTest {
+        \\    public static Boolean test() {
+        \\        Profile p = [SELECT Id FROM Profile WHERE Name = 'Standard User'];
+        \\        User u = new User(
+        \\            ProfileId = p.Id,
+        \\            LastName = 'Audit',
+        \\            Username = 'audit@example.com',
+        \\            Email = 'audit@example.com',
+        \\            Alias = 'aud'
+        \\        );
+        \\        insert u;
+        \\        System.runAs(u) {
+        \\            insert new Account(Name = 'Audit Account');
+        \\        }
+        \\        Account a = [SELECT CreatedById, LastModifiedById FROM Account LIMIT 1];
+        \\        return a.CreatedById == u.Id && a.LastModifiedById == u.Id;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "InsertAuditRunAsUserTest",
         .entry_method = "test",
     });
     defer result.deinit();
