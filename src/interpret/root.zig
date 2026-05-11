@@ -293,9 +293,18 @@ fn run_tests_filtered(
     const parse_alloc = parse_arena.allocator();
 
     var eval = try evaluator.Evaluator.init(parse_alloc, io);
-    eval.source_paths = paths;
-    eval.fixture_relaxed_exceptions = paths_enable_relaxed_fixture_exceptions(paths);
-    const load_stats = try load_test_sources(parse_alloc, io, paths, &eval);
+    var expanded_paths: std.ArrayListUnmanaged([]const u8) = .empty;
+    try expand_fixture_dependency_paths(parse_alloc, paths, &expanded_paths);
+    const load_paths = expanded_paths.items;
+    var allowed_test_classes: std.StringHashMapUnmanaged(void) = .empty;
+    const restrict_test_classes = load_paths.len != paths.len;
+    if (restrict_test_classes) {
+        try collect_test_class_names_from_paths(parse_alloc, io, paths, &allowed_test_classes);
+    }
+
+    eval.source_paths = load_paths;
+    eval.fixture_relaxed_exceptions = paths_enable_relaxed_fixture_exceptions(load_paths);
+    const load_stats = try load_test_sources(parse_alloc, io, load_paths, &eval);
     try writer.print(
         "interpret: loaded {d} Apex source file(s)\n",
         .{load_stats.source_count},
@@ -306,7 +315,7 @@ fn run_tests_filtered(
     );
     try eval.build_class_lookup_cache(parse_alloc);
 
-    load_test_metadata(parse_alloc, io, paths, &eval);
+    load_test_metadata(parse_alloc, io, load_paths, &eval);
     const classes_with_statics = try collect_classes_with_static_fields(parse_alloc, &eval);
     var suite = TestSuiteResult{};
     try run_loaded_tests(
@@ -318,6 +327,7 @@ fn run_tests_filtered(
         filter_method,
         shard,
         classes_with_statics.items,
+        if (restrict_test_classes) &allowed_test_classes else null,
         &suite,
         writer,
     );
@@ -339,6 +349,87 @@ fn paths_enable_relaxed_fixture_exceptions(paths: []const []const u8) bool {
         }
     }
     return false;
+}
+
+fn expand_fixture_dependency_paths(
+    alloc: std.mem.Allocator,
+    paths: []const []const u8,
+    expanded: *std.ArrayListUnmanaged([]const u8),
+) !void {
+    const has_samplecode = paths_include_fixture_repo(paths, "fflib-apex-common-samplecode");
+    const has_extensions = paths_include_fixture_repo(paths, "fflib-apex-extensions");
+    const has_at4dx = paths_include_fixture_repo(paths, "at4dx");
+
+    if (has_at4dx) {
+        try append_unique_path(
+            alloc,
+            expanded,
+            ".local-fixtures/apex/repos/force-di/force-di/main",
+        );
+    }
+    if (has_samplecode or has_extensions or has_at4dx) {
+        try append_unique_path(
+            alloc,
+            expanded,
+            ".local-fixtures/apex/repos/fflib-apex-common/sfdx-source/apex-common/main",
+        );
+        try append_unique_path(
+            alloc,
+            expanded,
+            ".local-fixtures/apex/repos/fflib-apex-mocks/sfdx-source/apex-mocks/main",
+        );
+    }
+    for (paths) |path| try append_unique_path(alloc, expanded, path);
+}
+
+fn paths_include_fixture_repo(paths: []const []const u8, repo_name: []const u8) bool {
+    for (paths) |path| {
+        const marker = ".local-fixtures/apex/repos/";
+        const marker_pos = std.mem.indexOf(u8, path, marker) orelse continue;
+        const repo_start = marker_pos + marker.len;
+        const rest = path[repo_start..];
+        if (std.mem.eql(u8, rest, repo_name)) return true;
+        if (std.mem.startsWith(u8, rest, repo_name) and rest.len > repo_name.len) {
+            const sep = rest[repo_name.len];
+            if (sep == '/' or sep == '\\') return true;
+        }
+    }
+    return false;
+}
+
+fn append_unique_path(
+    alloc: std.mem.Allocator,
+    paths: *std.ArrayListUnmanaged([]const u8),
+    path: []const u8,
+) !void {
+    for (paths.items) |existing| {
+        if (std.mem.eql(u8, existing, path)) return;
+    }
+    try paths.append(alloc, path);
+}
+
+fn collect_test_class_names_from_paths(
+    alloc: std.mem.Allocator,
+    io: std.Io,
+    paths: []const []const u8,
+    test_classes: *std.StringHashMapUnmanaged(void),
+) !void {
+    var files: std.ArrayListUnmanaged(SourceFile) = .empty;
+    for (paths) |path| {
+        try collect_cls_files(alloc, io, path, &files);
+    }
+    for (files.items) |file| {
+        const tokens = lexer.tokenize(file.content, alloc) catch continue;
+        const decls = parser.parse(tokens, alloc) catch continue;
+        for (decls) |decl| {
+            switch (decl) {
+                .class_decl => |cd| {
+                    if (is_test_class(cd)) try test_classes.put(alloc, cd.name, {});
+                },
+                else => {},
+            }
+        }
+    }
 }
 
 const TestSourceLoadStats = struct {
@@ -463,6 +554,7 @@ fn run_loaded_tests(
     filter_method: ?[]const u8,
     shard: ?TestShard,
     classes_with_statics: []const *ast.ClassDecl,
+    allowed_test_classes: ?*const std.StringHashMapUnmanaged(void),
     suite: *TestSuiteResult,
     writer: anytype,
 ) !void {
@@ -475,6 +567,8 @@ fn run_loaded_tests(
         const class_name = entry.key_ptr.*;
         if (filter_class) |fc| {
             if (!std.ascii.eqlIgnoreCase(class_name, fc)) continue;
+        } else if (allowed_test_classes) |allowed| {
+            if (!allowed.contains(class_name)) continue;
         }
         try run_test_class(
             parse_alloc,
