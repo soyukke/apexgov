@@ -33080,6 +33080,9 @@ pub const Evaluator = struct {
             return result;
         }
         if (try self.eval_apex_mocks_instance_method(obj, method, args)) |result| return result;
+        if (try self.eval_fflib_matcher_instance_method(obj, method, args)) |result| {
+            return result;
+        }
         if (try self.eval_datacloud_instance_method(obj, method)) |result| return result;
         if (try self.eval_stub_provider_instance_method(obj, method, args)) |result| return result;
         if (try self.eval_json_parser_instance_method(obj, method, args)) |result| return result;
@@ -33739,15 +33742,202 @@ pub const Evaluator = struct {
         method: []const u8,
         args: []const Value,
     ) !?Value {
-        if (!(obj == .object and
-            std.ascii.eqlIgnoreCase(obj.object.class_name, "fflib_ApexMocks")))
-        {
+        if (obj != .object) return null;
+        if (std.ascii.eqlIgnoreCase(obj.object.class_name, "fflib_ApexMocks.StubBuilder")) {
+            if (obj.object.fields.get("__missing_fflib_apex_mocks") == null) return null;
+            if (std.ascii.eqlIgnoreCase(method, "thenReturn") and args.len >= 1) {
+                try self.fflib_apex_mocks_store_return(obj.object, args[0]);
+                return obj;
+            }
             return null;
+        }
+        if (!std.ascii.eqlIgnoreCase(obj.object.class_name, "fflib_ApexMocks")) return null;
+        if (obj.object.fields.get("__missing_fflib_apex_mocks") == null) return null;
+        if (std.ascii.eqlIgnoreCase(method, "startStubbing") or
+            std.ascii.eqlIgnoreCase(method, "stopStubbing"))
+        {
+            return Value.void_val;
         }
         if (std.ascii.eqlIgnoreCase(method, "mock") and args.len >= 1) {
             return try self.handle_test_create_stub(&.{ args[0], obj });
         }
+        if (std.ascii.eqlIgnoreCase(method, "when") and args.len >= 1) {
+            const key = if (args[0] == .object)
+                args[0].object.fields.get("key") orelse
+                    obj.object.fields.get("__last_key") orelse return Value.null_val
+            else
+                obj.object.fields.get("__last_key") orelse return Value.null_val;
+            if (key != .string) return Value.null_val;
+            const builder = try self.arena.create(types.ObjectInstance);
+            builder.* = .{ .class_name = "fflib_ApexMocks.StubBuilder" };
+            try builder.fields.put(self.arena, "mocks", obj);
+            try builder.fields.put(self.arena, "key", key);
+            try builder.fields.put(
+                self.arena,
+                "__missing_fflib_apex_mocks",
+                Value{ .boolean = true },
+            );
+            if (obj.object.fields.get("__last_method")) |last_method| {
+                try builder.fields.put(self.arena, "method", last_method);
+            }
+            return Value{ .object = builder };
+        }
+        if (std.ascii.eqlIgnoreCase(method, "mockNonVoidMethod") and args.len >= 2) {
+            return try self.fflib_apex_mocks_non_void_method(obj.object, args);
+        }
         return null;
+    }
+
+    fn eval_fflib_matcher_instance_method(
+        self: *Evaluator,
+        obj: Value,
+        method: []const u8,
+        args: []const Value,
+    ) !?Value {
+        if (obj != .object or
+            !std.ascii.eqlIgnoreCase(
+                obj.object.class_name,
+                "fflib_MatcherDefinitions.SObjectsWith",
+            ))
+        {
+            return null;
+        }
+        if (!std.ascii.eqlIgnoreCase(method, "matches") or args.len == 0) return null;
+        return Value{ .boolean = self.fflib_sobjects_with_matches(obj.object, args[0]) };
+    }
+
+    fn fflib_sobjects_with_matches(
+        self: *Evaluator,
+        matcher: *types.ObjectInstance,
+        arg: Value,
+    ) bool {
+        if (arg != .list) return false;
+        const to_match = matcher.fields.get("toMatch") orelse return false;
+        if (to_match != .list) return false;
+        if (arg.list.items.items.len != to_match.list.items.items.len) return false;
+        const in_order = matcher.fields.get("matchInOrder") orelse Value{ .boolean = true };
+        if (in_order == .boolean and !in_order.boolean) {
+            return self.fflib_sobjects_with_matches_any_order(arg.list, to_match.list);
+        }
+        for (arg.list.items.items, to_match.list.items.items) |record, expected| {
+            if (!self.fflib_sobject_matches_expected_fields(record, expected)) return false;
+        }
+        return true;
+    }
+
+    fn fflib_sobjects_with_matches_any_order(
+        self: *Evaluator,
+        records: *types.ListValue,
+        expected_items: *types.ListValue,
+    ) bool {
+        var matched: [64]bool = [_]bool{false} ** 64;
+        if (expected_items.items.items.len > matched.len) return false;
+        for (records.items.items) |record| {
+            var found = false;
+            for (expected_items.items.items, 0..) |expected, i| {
+                if (matched[i]) continue;
+                if (!self.fflib_sobject_matches_expected_fields(record, expected)) continue;
+                matched[i] = true;
+                found = true;
+                break;
+            }
+            if (!found) return false;
+        }
+        return true;
+    }
+
+    fn fflib_sobject_matches_expected_fields(
+        self: *Evaluator,
+        record: Value,
+        expected: Value,
+    ) bool {
+        if (record != .sobject or expected != .map) return false;
+        for (expected.map.entries.keys(), expected.map.entries.values()) |key, expected_value| {
+            const field_key = expected.map.key_values.get(key) orelse Value{ .string = key };
+            const field_name = self.s_object_field_name_from_arg(field_key) catch return false;
+            const actual = self.get_s_object_field_value_case_insensitive(
+                record.sobject,
+                s_object_get_field_name(field_name),
+            ) orelse return false;
+            if (!self.values_equal(actual, expected_value)) return false;
+        }
+        return true;
+    }
+
+    fn fflib_apex_mocks_store_return(
+        self: *Evaluator,
+        builder: *types.ObjectInstance,
+        value: Value,
+    ) !void {
+        const mocks = builder.fields.get("mocks") orelse return;
+        const key = builder.fields.get("key") orelse return;
+        if (mocks != .object or key != .string) return;
+        const returns = try self.object_field_map(mocks.object, "__returns");
+        try returns.entries.put(self.arena, key.string, value);
+        try returns.key_values.put(self.arena, key.string, key);
+        if (builder.fields.get("method")) |method| {
+            if (method == .string) {
+                const method_key = try self.fflib_apex_mock_method_key(method.string);
+                try returns.entries.put(self.arena, method_key, value);
+                try returns.key_values.put(self.arena, method_key, Value{ .string = method_key });
+            }
+        }
+    }
+
+    fn fflib_apex_mocks_non_void_method(
+        self: *Evaluator,
+        mocks: *types.ObjectInstance,
+        args: []const Value,
+    ) !Value {
+        if (args[1] != .string) return Value.null_val;
+        const key = try self.fflib_apex_mock_invocation_key(args[0], args[1].string);
+        const returns = try self.object_field_map(mocks, "__returns");
+        if (returns.entries.get(key)) |value| return value;
+        const method_key = try self.fflib_apex_mock_method_key(args[1].string);
+        if (returns.entries.get(method_key)) |value| return value;
+        try mocks.fields.put(self.arena, "__last_key", Value{ .string = key });
+        try mocks.fields.put(self.arena, "__last_method", args[1]);
+        const invocation = try self.arena.create(types.ObjectInstance);
+        invocation.* = .{ .class_name = "fflib_ApexMocks.Invocation" };
+        try invocation.fields.put(self.arena, "key", Value{ .string = key });
+        try invocation.fields.put(self.arena, "method", args[1]);
+        if (std.ascii.eqlIgnoreCase(args[1].string, "selectSObjectsById") or
+            std.ascii.eqlIgnoreCase(args[1].string, "getRecords"))
+        {
+            return try self.alloc_empty_list_value();
+        }
+        return Value.null_val;
+    }
+
+    fn fflib_apex_mock_invocation_key(
+        self: *Evaluator,
+        target: Value,
+        method: []const u8,
+    ) ![]const u8 {
+        const id: usize = switch (target) {
+            .object => |object| @intFromPtr(object),
+            .sobject => |sobject| @intFromPtr(sobject),
+            else => 0,
+        };
+        return try std.fmt.allocPrint(self.arena, "{d}:{s}", .{ id, method });
+    }
+
+    fn fflib_apex_mock_method_key(self: *Evaluator, method: []const u8) ![]const u8 {
+        return try std.fmt.allocPrint(self.arena, "method:{s}", .{method});
+    }
+
+    fn object_field_map(
+        self: *Evaluator,
+        object: *types.ObjectInstance,
+        field_name: []const u8,
+    ) !*types.MapValue {
+        if (object.fields.get(field_name)) |existing| {
+            if (existing == .map) return existing.map;
+        }
+        const map = try self.arena.create(types.MapValue);
+        map.* = .{};
+        try object.fields.put(self.arena, field_name, Value{ .map = map });
+        return map;
     }
 
     fn eval_fflib_application_factory_method(
@@ -33829,12 +34019,7 @@ pub const Evaluator = struct {
         args: []const Value,
     ) !?Value {
         if (std.ascii.eqlIgnoreCase(method, "setMock") and args.len >= 1) {
-            const domain_type = try self.eval_instance_method(
-                args[0],
-                "getType",
-                &.{},
-                self.global_env,
-            );
+            const domain_type = try self.fflib_domain_mock_type(args[0]);
             const map = try self.fflib_application_factory_map(factory, "mockDomainByObject");
             _ = try self.eval_map_method(map, "put", &.{ domain_type, args[0] });
             return Value.void_val;
@@ -33887,6 +34072,24 @@ pub const Evaluator = struct {
         );
         const records = try self.fflib_domain_records_from_arg(args[0], object_type);
         return try self.fflib_application_construct_domain(constructor, records, object_type);
+    }
+
+    fn fflib_domain_mock_type(self: *Evaluator, mock: Value) !Value {
+        if (mock == .object) {
+            const s_object_type = try self.eval_instance_method(
+                mock,
+                "sObjectType",
+                &.{},
+                self.global_env,
+            );
+            if (s_object_type != .null_val) return s_object_type;
+        }
+        return try self.eval_instance_method(
+            mock,
+            "getType",
+            &.{},
+            self.global_env,
+        );
     }
 
     fn fflib_application_construct_domain(
@@ -39091,6 +39294,11 @@ pub const Evaluator = struct {
         )) |result| {
             return result;
         }
+        if (try self.new_missing_fflib_apex_mocks_value(
+            ne,
+            type_name,
+            current_env,
+        )) |result| return result;
         const obj = try self.new_sobject_from_assignments(ne, type_name, current_env);
         if (self.is_s_object_type_name(type_name)) return Value{ .sobject = obj };
         if (try self.new_fallback_exception_value(
@@ -39928,6 +40136,44 @@ pub const Evaluator = struct {
             type_name,
             current_env,
         );
+    }
+
+    fn new_missing_fflib_apex_mocks_value(
+        self: *Evaluator,
+        ne: *ast.NewExpr,
+        type_name: []const u8,
+        current_env: *Env,
+    ) !?Value {
+        if (std.ascii.eqlIgnoreCase(type_name, "fflib_ApexMocks")) {
+            if (self.find_class(type_name) != null) return null;
+            const mocks = try self.arena.create(types.ObjectInstance);
+            mocks.* = .{ .class_name = "fflib_ApexMocks" };
+            try mocks.fields.put(
+                self.arena,
+                "__missing_fflib_apex_mocks",
+                Value{ .boolean = true },
+            );
+            return Value{ .object = mocks };
+        }
+        if (!std.ascii.eqlIgnoreCase(type_name, "fflib_MatcherDefinitions.SObjectsWith") and
+            !std.ascii.eqlIgnoreCase(type_name, "SObjectsWith"))
+        {
+            return null;
+        }
+        if (self.find_class(type_name) != null) return null;
+        const matcher = try self.arena.create(types.ObjectInstance);
+        matcher.* = .{ .class_name = "fflib_MatcherDefinitions.SObjectsWith" };
+        if (ne.args.len > 0) {
+            var to_match_arg = ne.args[0];
+            const to_match = try self.eval_expr(&to_match_arg, current_env);
+            try matcher.fields.put(self.arena, "toMatch", to_match);
+        }
+        const match_in_order = if (ne.args.len > 1) blk: {
+            var order_arg = ne.args[1];
+            break :blk try self.eval_expr(&order_arg, current_env);
+        } else Value{ .boolean = true };
+        try matcher.fields.put(self.arena, "matchInOrder", match_in_order);
+        return Value{ .object = matcher };
     }
 
     fn resolve_new_user_class_name(
