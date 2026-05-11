@@ -187,6 +187,7 @@ pub const Evaluator = struct {
     // executed on Test.stopTest()
     pending_schedulables: std.ArrayListUnmanaged(Value) = .empty,
     pending_queueables: std.ArrayListUnmanaged(PendingQueueable) = .empty,
+    pending_change_events: std.ArrayListUnmanaged(Value) = .empty,
     pending_npsp_recurring_donation_opportunities: std.ArrayListUnmanaged(PendingNpspRecurringDonationOpportunity) = .empty,
     test_start_active: bool = false,
     partial_dml_active: bool = false,
@@ -371,6 +372,7 @@ pub const Evaluator = struct {
         self.npsp_allocation_triggers_disabled = false;
         self.pending_schedulables = .empty;
         self.pending_queueables = .empty;
+        self.pending_change_events = .empty;
         self.pending_npsp_recurring_donation_opportunities = .empty;
         self.test_start_active = false;
         self.partial_dml_active = false;
@@ -3311,6 +3313,7 @@ pub const Evaluator = struct {
             try self.apply_npsp_bdi_recurring_donation_allocation_side_effects(ot, op, record_list.items);
             try self.clear_npsp_bdi_self_allocation_conflict_errors(ot, op, record_list.items);
             try self.apply_npsp_recurring_donation_allocation_side_effects(ot, op, record_list.items);
+            try self.queue_change_events_for_dml(ot, op, record_list.items);
             try self.apply_npsp_recurring_donation_schedule_side_effects(
                 ot,
                 record_list.items,
@@ -3341,6 +3344,74 @@ pub const Evaluator = struct {
             if (record == .sobject) {
                 try self.apply_actionplans_task_after_update_side_effect(record.sobject);
             }
+        }
+    }
+
+    fn queue_change_events_for_dml(
+        self: *Evaluator,
+        object_type: []const u8,
+        op: ast.DmlOp,
+        records: []const Value,
+    ) !void {
+        if (op != .insert and op != .update and op != .delete) return;
+        const event_type = try std.fmt.allocPrint(self.arena, "{s}ChangeEvent", .{object_type});
+        if (!self.has_trigger_for_object(event_type)) return;
+        const change_type = switch (op) {
+            .insert => "CREATE",
+            .update => "UPDATE",
+            .delete => "DELETE",
+            else => return,
+        };
+        for (records) |record| {
+            if (record != .sobject) continue;
+            try self.pending_change_events.append(
+                self.arena,
+                try self.make_change_event_record(event_type, change_type, record.sobject),
+            );
+        }
+    }
+
+    fn has_trigger_for_object(self: *Evaluator, object_type: []const u8) bool {
+        const lower = std.ascii.allocLowerString(self.arena, object_type) catch return false;
+        defer self.arena.free(lower);
+
+        return self.triggers.get(lower) != null;
+    }
+
+    fn make_change_event_record(
+        self: *Evaluator,
+        event_type: []const u8,
+        change_type: []const u8,
+        source: *types.SObject,
+    ) !Value {
+        const event = try self.arena.create(types.SObject);
+        event.* = .{ .type_name = event_type };
+
+        const header = try self.arena.create(types.ObjectInstance);
+        header.* = .{ .class_name = "EventBus.ChangeEventHeader" };
+        try header.fields.put(self.arena, "changetype", Value{ .string = change_type });
+
+        const ids = try self.arena.create(types.ListValue);
+        ids.* = .{};
+        const source_id = source.id orelse blk: {
+            if (utils.sobject_get(&source.fields, "Id")) |id_value| {
+                if (id_value == .string) break :blk id_value.string;
+            }
+            break :blk try self.alloc_id();
+        };
+        try ids.items.append(self.arena, Value{ .string = source_id });
+        try header.fields.put(self.arena, "recordIds", Value{ .list = ids });
+        try event.fields.put(self.arena, "ChangeEventHeader", Value{ .object = header });
+        return Value{ .sobject = event };
+    }
+
+    fn deliver_pending_change_events(self: *Evaluator) !void {
+        while (self.pending_change_events.items.len > 0) {
+            const event = self.pending_change_events.orderedRemove(0);
+            if (event != .sobject) continue;
+            var records: std.ArrayListUnmanaged(Value) = .empty;
+            try records.append(self.arena, event);
+            try self.fire_trigger(event.sobject.type_name, .after_insert, &records, null);
         }
     }
 
@@ -32660,11 +32731,18 @@ pub const Evaluator = struct {
         if (try self.eval_primitive_scalar_instance_method(obj, method, args)) |result| return result;
         if (try self.eval_http_send_instance_method(obj, method, args)) |result| return result;
         if (try self.eval_type_instance_method(obj, method)) |result| return result;
+        if (try self.eval_event_bus_instance_method(obj, method)) |result| return result;
+        if (try self.eval_change_event_header_instance_method(obj, method)) |result| {
+            return result;
+        }
         if (try self.eval_apex_mocks_instance_method(obj, method, args)) |result| return result;
         if (try self.eval_datacloud_instance_method(obj, method)) |result| return result;
         if (try self.eval_stub_provider_instance_method(obj, method, args)) |result| return result;
         if (try self.eval_json_parser_instance_method(obj, method, args)) |result| return result;
         if (try self.eval_metadata_framework_instance_method(obj, method, args)) |result| {
+            return result;
+        }
+        if (try self.eval_formula_filter_instance_method(obj, method, args)) |result| {
             return result;
         }
         if (try self.eval_npsp_crlp_rollup_metadata_handler_method(obj, method, args)) |result| {
@@ -32919,6 +32997,28 @@ pub const Evaluator = struct {
             try items.items.append(self.arena, args[0]);
         }
         return Value.null_val;
+    }
+
+    fn eval_formula_filter_instance_method(
+        self: *Evaluator,
+        obj: Value,
+        method: []const u8,
+        args: []const Value,
+    ) !?Value {
+        if (obj != .sobject or
+            !std.ascii.eqlIgnoreCase(obj.sobject.type_name, "FormulaFilter") or
+            !std.ascii.eqlIgnoreCase(method, "filterByEntryCriteria"))
+        {
+            return null;
+        }
+
+        const result = try self.arena.create(types.ObjectInstance);
+        result.* = .{ .class_name = "FormulaFilter.Result" };
+        const trigger_new = if (args.len >= 1) args[0] else Value.null_val;
+        const trigger_old = if (args.len >= 2) args[1] else Value.null_val;
+        try result.fields.put(self.arena, "triggerNew", trigger_new);
+        try result.fields.put(self.arena, "triggerOld", trigger_old);
+        return Value{ .object = result };
     }
 
     fn eval_npsp_crlp_rollup_metadata_handler_method(
@@ -33178,6 +33278,36 @@ pub const Evaluator = struct {
     ) anyerror!?Value {
         if (try self.eval_type_name_instance_method(obj, method)) |result| return result;
         return try self.eval_type_new_instance_method(obj, method);
+    }
+
+    fn eval_event_bus_instance_method(
+        self: *Evaluator,
+        obj: Value,
+        method: []const u8,
+    ) !?Value {
+        if (!(obj == .object and
+            std.ascii.eqlIgnoreCase(obj.object.class_name, "EventBus") and
+            std.ascii.eqlIgnoreCase(method, "deliver")))
+        {
+            return null;
+        }
+        try self.deliver_pending_change_events();
+        return Value.void_val;
+    }
+
+    fn eval_change_event_header_instance_method(
+        self: *Evaluator,
+        obj: Value,
+        method: []const u8,
+    ) !?Value {
+        _ = self;
+        if (!(obj == .object and
+            std.ascii.eqlIgnoreCase(obj.object.class_name, "EventBus.ChangeEventHeader") and
+            std.ascii.eqlIgnoreCase(method, "getRecordIds")))
+        {
+            return null;
+        }
+        return obj.object.fields.get("recordIds") orelse Value.null_val;
     }
 
     fn eval_type_name_instance_method(
@@ -41791,6 +41921,7 @@ pub const Evaluator = struct {
     }
 
     fn handle_test_stop_test(self: *Evaluator) !void {
+        try self.deliver_pending_change_events();
         // Execute any Schedulable instances queued via System.schedule between startTest/stopTest.
         while (self.pending_schedulables.items.len > 0) {
             const sched = self.pending_schedulables.orderedRemove(0);
