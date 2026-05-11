@@ -12381,6 +12381,75 @@ test "E2E: child relationship subquery applies literal where filters" {
     try std.testing.expectEqualStrings("1:Open", result.value.string);
 }
 
+test "E2E: child relationship subquery ignores From inside field names" {
+    const alloc = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try write_generic_rollup_metadata_fixture(tmp_dir.dir);
+    const tmp_path = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", alloc);
+    defer alloc.free(tmp_path);
+
+    const source =
+        \\public class ChildSubqueryFromFieldNameTest {
+        \\    public static String test() {
+        \\        Parent__c parentRecord = new Parent__c(Name = 'Acme');
+        \\        insert parentRecord;
+        \\        insert new Child__c(Parent__c = parentRecord.Id, DaysFromStart__c = 2);
+        \\        List<Child__c> partial = [
+        \\            SELECT Id, DaysFromStart__c
+        \\            FROM Child__c
+        \\            WHERE Parent__c = :parentRecord.Id
+        \\        ];
+        \\        update partial;
+        \\        Parent__c queried = [
+        \\            SELECT Id, (SELECT Id, DaysFromStart__c FROM Children__r ORDER BY Id)
+        \\            FROM Parent__c
+        \\            WHERE Id = :parentRecord.Id
+        \\        ];
+        \\        return String.valueOf(queried.Children__r.size()) + ':' +
+        \\            String.valueOf(queried.Children__r[0].DaysFromStart__c);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "ChildSubqueryFromFieldNameTest",
+        .entry_method = "test",
+        .source_paths = &.{tmp_path},
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("1:2", result.value.string);
+}
+
+test "E2E: Case and Contract inserts populate auto-number fields" {
+    const source =
+        \\public class AutoNumberInsertProbe {
+        \\    public static String test() {
+        \\        Case c = new Case(Origin = 'Email', Status = 'New');
+        \\        insert c;
+        \\        Account a = new Account(Name = 'Acme');
+        \\        insert a;
+        \\        Contract contractRecord = new Contract(
+        \\            AccountId = a.Id,
+        \\            StartDate = Date.today(),
+        \\            ContractTerm = 1
+        \\        );
+        \\        insert contractRecord;
+        \\        return String.valueOf(c.CaseNumber != null) + ':' +
+        \\            String.valueOf(contractRecord.ContractNumber != null);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "AutoNumberInsertProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("true:true", result.value.string);
+}
+
 test "E2E: Date plus integer shifts by days" {
     const source =
         \\public class DateIntegerArithmeticTest {
@@ -13626,7 +13695,7 @@ test "PageReference.getUrl appends parameters in insertion order" {
         \\    public static String run() {
         \\        PageReference ref = new PageReference('/flow/ns/testFlow');
         \\        ref.getParameters().put('a', '1');
-        \\        ref.getParameters().put('b', '2');
+        \\        ref.getParameters().put('b', '2,0');
         \\        ref.getParameters().put('c', '3');
         \\        return ref.getUrl();
         \\    }
@@ -13638,7 +13707,7 @@ test "PageReference.getUrl appends parameters in insertion order" {
     });
     defer result.deinit();
 
-    try std.testing.expectEqualStrings("/flow/ns/testFlow?a=1&b=2&c=3", result.value.string);
+    try std.testing.expectEqualStrings("/flow/ns/testFlow?a=1&b=2%2C0&c=3", result.value.string);
 }
 
 test "E2E: Page namespace member returns PageReference" {
@@ -14538,6 +14607,25 @@ test "E2E: SObjectType record type info methods delegate to describe metadata" {
     defer result.deinit();
 
     try std.testing.expectEqualStrings("true:3:Master", result.value.string);
+}
+
+test "E2E: Schema custom object getSObjectType supports describe key prefix" {
+    const alloc = std.testing.allocator;
+    const source =
+        \\public class SchemaCustomObjectTokenProbe {
+        \\    public static String test() {
+        \\        return Schema.APTask__c.getSObjectType().getDescribe().getKeyPrefix()
+        \\            + ':' + Schema.APTask__c.getDescribe().getName();
+        \\    }
+        \\}
+    ;
+    const result = try run(alloc, std.testing.io, source, .{
+        .entry_class = "SchemaCustomObjectTokenProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("atU:APTask__c", result.value.string);
 }
 
 test "E2E: cached DescribeSObjectResult record type info survives selective map clears" {
@@ -16647,7 +16735,7 @@ test "E2E: Test.setCurrentPageReference installs ApexPages current page" {
     defer result.deinit();
 
     const expected =
-        "/apex/ContactMerge?mergeIds=003000000000001,003000000000002" ++
+        "/apex/ContactMerge?mergeIds=003000000000001%2C003000000000002" ++
         ":003000000000001,003000000000002";
     try std.testing.expectEqualStrings(expected, result.value.string);
 }
@@ -21613,6 +21701,77 @@ test "E2E: BusinessHours query and diff return default day duration" {
     defer result.deinit();
 
     try std.testing.expectEqualStrings("Default:86400000", result.value.string);
+}
+
+test "E2E: BusinessHours default predicate query returns synthetic default" {
+    const source =
+        \\public class BusinessHoursDefaultPredicateTest {
+        \\    public static String test() {
+        \\        BusinessHours hours = [
+        \\            SELECT Id, IsDefault
+        \\            FROM BusinessHours
+        \\            WHERE IsDefault = TRUE
+        \\            LIMIT 1
+        \\        ];
+        \\        return String.valueOf(hours.IsDefault) + ':' + hours.Id;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "BusinessHoursDefaultPredicateTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("true:01m000000000001AAA", result.value.string);
+}
+
+test "E2E: TaskPriority queries return default and high priorities" {
+    const source =
+        \\public class TaskPriorityQueryTest {
+        \\    public static String test() {
+        \\        TaskPriority high = [
+        \\            SELECT MasterLabel
+        \\            FROM TaskPriority
+        \\            WHERE IsHighPriority = TRUE
+        \\            LIMIT 1
+        \\        ];
+        \\        TaskPriority normal = [
+        \\            SELECT MasterLabel
+        \\            FROM TaskPriority
+        \\            WHERE IsDefault = TRUE
+        \\            LIMIT 1
+        \\        ];
+        \\        return high.MasterLabel + ':' + normal.MasterLabel;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "TaskPriorityQueryTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("High:Normal", result.value.string);
+}
+
+test "E2E: SObjectType newSObject two-arg overload treats first arg as RecordTypeId" {
+    const source =
+        \\public class NewSObjectRecordTypeIdProbe {
+        \\    public static String test() {
+        \\        Id rtId = Task.SObjectType.getDescribe().getRecordTypeInfos()[0].getRecordTypeId();
+        \\        Task t = (Task) Task.SObjectType.newSObject(rtId, true);
+        \\        return String.valueOf(t.Id) + ':' + t.RecordTypeId + ':' + t.Status;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "NewSObjectRecordTypeIdProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("null:012000000000003AAA:Not Started", result.value.string);
 }
 
 test "E2E: Report SOQL is a known standard object" {

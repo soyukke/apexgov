@@ -4358,6 +4358,9 @@ pub fn create_field_set_collection_value(
                         member_meta.field_path,
                     ),
                 );
+                try member.fields.put(arena, "type", Value{
+                    .string = field_set_member_display_type(eval, obj_name, member_meta.field_path),
+                });
                 try members.items.append(arena, Value{ .object = member });
             }
             try field_set.fields.put(arena, "fields", Value{ .list = members });
@@ -4369,6 +4372,21 @@ pub fn create_field_set_collection_value(
 
     try collection.fields.put(arena, "map", Value{ .map = map });
     return Value{ .object = collection };
+}
+
+fn field_set_member_display_type(
+    eval: *evaluator_mod.Evaluator,
+    obj_name: []const u8,
+    field_name: []const u8,
+) []const u8 {
+    if (eval.field_types.get(obj_name)) |type_map| {
+        for (type_map.keys(), type_map.values()) |known_field_name, raw_type| {
+            if (std.ascii.eqlIgnoreCase(known_field_name, field_name)) {
+                return map_xml_type_to_display_type(raw_type);
+            }
+        }
+    }
+    return map_xml_type_to_display_type(infer_field_type_for_object(obj_name, field_name));
 }
 
 fn has_implicit_name_field(object_type: []const u8) bool {
@@ -4871,7 +4889,7 @@ const known_describe_field_sets = [_]struct { object: []const u8, fields: []cons
         "FirstName", "LastName", "Company", "Email",
     } },
     .{ .object = "Task", .fields = &.{
-        "Subject", "ActivityDate", "Priority", "Status", "WhatId", "WhoId",
+        "Subject", "ActivityDate", "Priority", "Status", "Type", "WhatId", "WhoId",
     } },
     .{ .object = "Opportunity", .fields = &.{
         "AccountId",                   "StageName",        "CloseDate",            "Amount",
@@ -5003,8 +5021,9 @@ const canonical_describe_field_sets = [_]struct { object: []const u8, fields: []
         "ForecastCategoryName",
     } },
     .{ .object = "Task", .fields = &.{
-        "Id",     "Subject", "ActivityDate", "Priority",
-        "Status", "WhatId",  "WhoId",        "OwnerId",
+        "Id",      "Subject", "ActivityDate", "Priority",
+        "Status",  "Type",    "WhatId",       "WhoId",
+        "OwnerId",
     } },
 };
 
@@ -5265,7 +5284,8 @@ fn describe_field_length(
         if (meta.length) |length| return length;
     }
     if (std.ascii.eqlIgnoreCase(field_name, "Id")) return 18;
-    if (describe_text_field_has_name_length(field_name)) return 255;
+    if (std.ascii.eqlIgnoreCase(field_name, "OwnerId")) return 18;
+    if (std.ascii.eqlIgnoreCase(field_name, "Name")) return 80;
     return 131072;
 }
 
@@ -5488,6 +5508,7 @@ fn infer_standard_picklist_type(object_type: []const u8, field_name: []const u8)
         .{ .object = "Case", .field = "Type", .xml_type = "Picklist" },
         .{ .object = "Task", .field = "Priority", .xml_type = "Picklist" },
         .{ .object = "Task", .field = "Status", .xml_type = "Picklist" },
+        .{ .object = "Task", .field = "Type", .xml_type = "Picklist" },
         .{ .object = "Task", .field = "Subject", .xml_type = "Combobox" },
         .{ .object = "Event", .field = "Subject", .xml_type = "Combobox" },
         .{ .object = "Campaign", .field = "Type", .xml_type = "Picklist" },
@@ -5885,6 +5906,7 @@ fn dispatch_object_instance(
     args: []const Value,
 ) !?Value {
     if (try dispatch_obj_iterator(ctx, obj, method_name)) |v| return v;
+    if (try dispatch_obj_xml_classes(ctx, obj, method_name, args)) |v| return v;
     if (try dispatch_obj_auth_jwt(ctx, obj, method_name, args)) |v| return v;
     if (try dispatch_obj_platform_classes(ctx, obj, method_name, args)) |v| return v;
     if (try dispatch_obj_schema_classes(ctx, obj, method_name, args)) |v| return v;
@@ -5960,6 +5982,169 @@ fn dispatch_obj_platform_classes(
     }
     if (try dispatch_obj_invocable(ctx, obj, method_name, args)) |v| return v;
     return null;
+}
+
+fn dispatch_obj_xml_classes(
+    ctx: *BuiltinContext,
+    obj: *types.ObjectInstance,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
+    const cn = obj.class_name;
+    if (std.ascii.eqlIgnoreCase(cn, "Blob") and
+        std.ascii.eqlIgnoreCase(method_name, "toString"))
+    {
+        return obj.fields.get("value") orelse Value{ .string = "" };
+    }
+    if (type_matches_any(cn, &.{ "Xmlstreamreader", "XMLStreamReader" })) {
+        return try dispatch_obj_xml_stream_reader(ctx, obj, method_name);
+    }
+    if (type_matches_any(cn, &.{ "Xmlstreamwriter", "XMLStreamWriter" })) {
+        return try dispatch_obj_xml_stream_writer(ctx, obj, method_name, args);
+    }
+    return null;
+}
+
+fn dispatch_obj_xml_stream_writer(
+    ctx: *BuiltinContext,
+    obj: *types.ObjectInstance,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
+    if (std.ascii.eqlIgnoreCase(method_name, "writeStartDocument")) {
+        try xml_stream_writer_append(ctx, obj, "<?xml version=\"1.0\"?>");
+        return Value.void_val;
+    }
+    if (std.ascii.eqlIgnoreCase(method_name, "writeStartElement")) {
+        const tag = xml_stream_writer_tag_arg(args) orelse return Value.void_val;
+        try xml_stream_writer_append(
+            ctx,
+            obj,
+            try std.fmt.allocPrint(ctx.arena, "<{s}>", .{tag}),
+        );
+        try xml_stream_writer_push(ctx, obj, tag);
+        return Value.void_val;
+    }
+    if (std.ascii.eqlIgnoreCase(method_name, "writeCharacters")) {
+        if (args.len > 0) {
+            try xml_stream_writer_append(
+                ctx,
+                obj,
+                try utils.coerce_to_string(args[0], ctx.arena),
+            );
+        }
+        return Value.void_val;
+    }
+    if (std.ascii.eqlIgnoreCase(method_name, "writeEndElement")) {
+        if (xml_stream_writer_pop(obj)) |tag| {
+            try xml_stream_writer_append(
+                ctx,
+                obj,
+                try std.fmt.allocPrint(ctx.arena, "</{s}>", .{tag}),
+            );
+        }
+        return Value.void_val;
+    }
+    if (std.ascii.eqlIgnoreCase(method_name, "writeEndDocument") or
+        std.ascii.eqlIgnoreCase(method_name, "close"))
+    {
+        return Value.void_val;
+    }
+    if (std.ascii.eqlIgnoreCase(method_name, "getXmlString")) {
+        return obj.fields.get("__xml__") orelse Value{ .string = "" };
+    }
+    return null;
+}
+
+fn xml_stream_writer_tag_arg(args: []const Value) ?[]const u8 {
+    if (args.len >= 2 and args[1] == .string) return args[1].string;
+    if (args.len >= 1 and args[0] == .string) return args[0].string;
+    return null;
+}
+
+fn xml_stream_writer_append(
+    ctx: *BuiltinContext,
+    obj: *types.ObjectInstance,
+    fragment: []const u8,
+) !void {
+    const existing = obj.fields.get("__xml__") orelse Value{ .string = "" };
+    const prefix = if (existing == .string) existing.string else "";
+    const joined = try std.fmt.allocPrint(ctx.arena, "{s}{s}", .{ prefix, fragment });
+    try obj.fields.put(ctx.arena, "__xml__", Value{ .string = joined });
+}
+
+fn xml_stream_writer_push(
+    ctx: *BuiltinContext,
+    obj: *types.ObjectInstance,
+    tag: []const u8,
+) !void {
+    const stack_val = obj.fields.get("__open_elements__") orelse return;
+    if (stack_val != .list) return;
+    try stack_val.list.items.append(ctx.arena, Value{ .string = tag });
+}
+
+fn xml_stream_writer_pop(obj: *types.ObjectInstance) ?[]const u8 {
+    const stack_val = obj.fields.get("__open_elements__") orelse return null;
+    if (stack_val != .list or stack_val.list.items.items.len == 0) return null;
+    const value = stack_val.list.items.pop().?;
+    if (value == .string) return value.string;
+    return null;
+}
+
+fn dispatch_obj_xml_stream_reader(
+    ctx: *BuiltinContext,
+    obj: *types.ObjectInstance,
+    method_name: []const u8,
+) !?Value {
+    if (obj.fields.get("__malformed__")) |malformed| {
+        if (malformed == .boolean and malformed.boolean) {
+            _ = try ctx.throw_exception("System.XmlException", "Malformed XML");
+            return error.ApexException;
+        }
+    }
+    const tokens_val = obj.fields.get("__tokens__") orelse return Value.null_val;
+    if (tokens_val != .list) return Value.null_val;
+    const pos = xml_stream_reader_pos(obj);
+
+    if (std.ascii.eqlIgnoreCase(method_name, "hasNext")) {
+        return Value{ .boolean = pos < tokens_val.list.items.items.len };
+    }
+    if (std.ascii.eqlIgnoreCase(method_name, "next")) {
+        const next_pos = if (pos < tokens_val.list.items.items.len) pos + 1 else pos;
+        try obj.fields.put(ctx.arena, "__pos__", Value{ .integer = @intCast(next_pos) });
+        return xml_stream_reader_event_type(tokens_val.list, next_pos);
+    }
+    if (std.ascii.eqlIgnoreCase(method_name, "getEventType")) {
+        return xml_stream_reader_event_type(tokens_val.list, pos);
+    }
+    if (std.ascii.eqlIgnoreCase(method_name, "getLocalName")) {
+        return xml_stream_reader_token_field(tokens_val.list, pos, "localName");
+    }
+    if (std.ascii.eqlIgnoreCase(method_name, "getText")) {
+        return xml_stream_reader_token_field(tokens_val.list, pos, "text");
+    }
+    return null;
+}
+
+fn xml_stream_reader_pos(obj: *types.ObjectInstance) usize {
+    const pos_val = obj.fields.get("__pos__") orelse Value{ .integer = 0 };
+    if (pos_val == .integer and pos_val.integer > 0) return @intCast(pos_val.integer);
+    return 0;
+}
+
+fn xml_stream_reader_event_type(tokens: *types.ListValue, pos: usize) Value {
+    return xml_stream_reader_token_field(tokens, pos, "eventType");
+}
+
+fn xml_stream_reader_token_field(
+    tokens: *types.ListValue,
+    pos: usize,
+    field_name: []const u8,
+) Value {
+    if (pos >= tokens.items.items.len) return Value{ .string = "" };
+    const token = tokens.items.items[pos];
+    if (token != .object) return Value{ .string = "" };
+    return token.object.fields.get(field_name) orelse Value{ .string = "" };
 }
 
 fn dispatch_obj_auth_jwt(
@@ -6252,6 +6437,31 @@ fn dispatch_obj_field_sets(
     if (std.ascii.eqlIgnoreCase(cn, "Schema.FieldSet") or std.ascii.eqlIgnoreCase(cn, "FieldSet")) {
         if (std.ascii.eqlIgnoreCase(method_name, "getFields")) {
             return obj.fields.get("fields") orelse Value{ .list = try empty_list(ctx) };
+        }
+    }
+    if (std.ascii.eqlIgnoreCase(cn, "Schema.FieldSetMember") or
+        std.ascii.eqlIgnoreCase(cn, "FieldSetMember"))
+    {
+        if (std.ascii.eqlIgnoreCase(method_name, "getFieldPath")) {
+            return obj.fields.get("fieldPath") orelse Value{ .string = "" };
+        }
+        if (std.ascii.eqlIgnoreCase(method_name, "getLabel")) {
+            return obj.fields.get("label") orelse
+                obj.fields.get("fieldPath") orelse
+                Value{ .string = "" };
+        }
+        if (std.ascii.eqlIgnoreCase(method_name, "getType")) {
+            return obj.fields.get("type") orelse Value{ .string = "STRING" };
+        }
+        if (std.ascii.eqlIgnoreCase(method_name, "getRequired") or
+            std.ascii.eqlIgnoreCase(method_name, "getDbRequired"))
+        {
+            return obj.fields.get("required") orelse Value{ .boolean = false };
+        }
+        if (std.ascii.eqlIgnoreCase(method_name, "getSObjectField") or
+            std.ascii.eqlIgnoreCase(method_name, "getSobjectField"))
+        {
+            return obj.fields.get("sObjectField") orelse Value.null_val;
         }
     }
     return null;
@@ -7654,10 +7864,31 @@ fn query_separator(base_url: []const u8) u8 {
 }
 
 fn page_reference_param_value(ctx: *BuiltinContext, value: Value) ![]const u8 {
-    return if (value == .string)
+    const raw = if (value == .string)
         value.string
     else
         try utils.coerce_to_string(value, ctx.arena);
+    return try url_form_encode(ctx.arena, raw);
+}
+
+fn url_form_encode(arena: std.mem.Allocator, raw: []const u8) ![]const u8 {
+    var out = std.ArrayListUnmanaged(u8).empty;
+    for (raw) |ch| {
+        const is_safe = (ch >= 'A' and ch <= 'Z') or
+            (ch >= 'a' and ch <= 'z') or
+            (ch >= '0' and ch <= '9') or
+            ch == '-' or ch == '_' or ch == '.' or ch == '*';
+        if (is_safe) {
+            try out.append(arena, ch);
+        } else if (ch == ' ') {
+            try out.append(arena, '+');
+        } else {
+            try out.append(arena, '%');
+            try out.append(arena, "0123456789ABCDEF"[(ch >> 4) & 0x0F]);
+            try out.append(arena, "0123456789ABCDEF"[ch & 0x0F]);
+        }
+    }
+    return try out.toOwnedSlice(arena);
 }
 
 fn dispatch_obj_apex_pages_message(
@@ -8627,7 +8858,9 @@ fn s_object_type_new_s_object(
     const name = object_type_token_name(obj, "SObject");
     const new_sob = try ctx.arena.create(types.SObject);
     new_sob.* = .{ .type_name = name };
-    if (args.len >= 1 and args[0] == .string) {
+    if (args.len >= 2 and args[0] == .string) {
+        try new_sob.fields.put(ctx.arena, "RecordTypeId", args[0]);
+    } else if (args.len >= 1 and args[0] == .string) {
         new_sob.id = args[0].string;
         try new_sob.fields.put(ctx.arena, "Id", args[0]);
     }
@@ -8652,6 +8885,11 @@ fn populate_s_object_defaults(
     if (ctx.eval.field_defaults.get(name)) |defaults| {
         for (defaults.keys(), defaults.values()) |field_name, default_val| {
             try sob.fields.put(ctx.arena, field_name, default_val);
+        }
+    }
+    inline for (.{ "Status", "Priority", "Type" }) |field_name| {
+        if (standard_field_default(name, field_name)) |default_str| {
+            try sob.fields.put(ctx.arena, field_name, Value{ .string = default_str });
         }
     }
 }

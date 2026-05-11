@@ -1360,6 +1360,42 @@ pub const Evaluator = struct {
         try records.append(self.arena, Value{ .sobject = rt });
     }
 
+    fn seed_task_record_types_for_query(self: *Evaluator, soql: []const u8) !void {
+        if (std.ascii.indexOfIgnoreCase(soql, "SObjectType = 'Task'") == null and
+            std.ascii.indexOfIgnoreCase(soql, "SobjectType = 'Task'") == null)
+        {
+            return;
+        }
+        const forced = self.resolve_static_field_value_on_class(
+            "ActionPlansTestUtilities",
+            "forceHasRecordType",
+        ) orelse Value.null_val;
+        if (!(forced == .boolean and forced.boolean)) return;
+        const records = self.store_records_ptr("RecordType") orelse return;
+        for (records.items) |record| {
+            if (record != .sobject) continue;
+            const sobj = self.get_s_object_field_value_case_insensitive(
+                record.sobject,
+                "SObjectType",
+            ) orelse continue;
+            if (sobj == .string and std.ascii.eqlIgnoreCase(sobj.string, "Task")) return;
+        }
+        try self.append_synthetic_record_type(
+            records,
+            "Task",
+            "012000000000003AAA",
+            "Master",
+            "Master",
+        );
+        try self.append_synthetic_record_type(
+            records,
+            "Task",
+            "012000000000103AAA",
+            "Default",
+            "Default",
+        );
+    }
+
     /// Convert picklist field values from API name (fullName) to label on custom objects.
     fn convert_picklist_values(self: *Evaluator, obj: *types.SObject) !void {
         if (!std.mem.endsWith(u8, obj.type_name, "__c")) return;
@@ -3286,11 +3322,26 @@ pub const Evaluator = struct {
                 record_list.items,
                 old_records,
             );
+            try self.apply_actionplans_after_dml_side_effects(ot, op, record_list.items);
             try self.invalidate_npsp_list_custom_setting_static_caches(ot);
             try self.normalize_all_npsp_address_multiline_streets(ot);
         }
         self.cleanup_dml_side_effects(op, obj_type);
         rollback_insert_on_error = false;
+    }
+
+    fn apply_actionplans_after_dml_side_effects(
+        self: *Evaluator,
+        object_type: []const u8,
+        op: ast.DmlOp,
+        records: []const Value,
+    ) !void {
+        if (op != .update or !std.ascii.eqlIgnoreCase(object_type, "Task")) return;
+        for (records) |record| {
+            if (record == .sobject) {
+                try self.apply_actionplans_task_after_update_side_effect(record.sobject);
+            }
+        }
     }
 
     fn invalidate_npsp_list_custom_setting_static_caches(
@@ -7059,6 +7110,7 @@ pub const Evaluator = struct {
     }
 
     fn apply_insert_name(self: *Evaluator, obj: *types.SObject, id: []const u8) !void {
+        try self.apply_insert_auto_number_fields(obj);
         const existing_name = utils.sobject_get(&obj.fields, "Name");
         if (!has_implicit_name_field(obj.type_name)) return;
         if (existing_name != null and existing_name.? != .null_val) return;
@@ -7079,6 +7131,35 @@ pub const Evaluator = struct {
                 .{ obj.type_name, self.next_id - 1 },
             );
             try obj.fields.put(self.arena, "Name", Value{ .string = auto_name });
+        }
+    }
+
+    fn apply_insert_auto_number_fields(self: *Evaluator, obj: *types.SObject) !void {
+        if (std.ascii.eqlIgnoreCase(obj.type_name, "Case") and
+            self.get_s_object_field_value_case_insensitive(obj, "CaseNumber") == null)
+        {
+            try obj.fields.put(
+                self.arena,
+                "CaseNumber",
+                Value{ .string = try std.fmt.allocPrint(
+                    self.arena,
+                    "{d:0>8}",
+                    .{self.next_id - 1},
+                ) },
+            );
+        }
+        if (std.ascii.eqlIgnoreCase(obj.type_name, "Contract") and
+            self.get_s_object_field_value_case_insensitive(obj, "ContractNumber") == null)
+        {
+            try obj.fields.put(
+                self.arena,
+                "ContractNumber",
+                Value{ .string = try std.fmt.allocPrint(
+                    self.arena,
+                    "{d:0>8}",
+                    .{self.next_id - 1},
+                ) },
+            );
         }
     }
 
@@ -12029,8 +12110,15 @@ pub const Evaluator = struct {
             if (std.mem.startsWith(u8, field_name, "__")) continue;
             if (field_value.* != .string) continue;
             if (std.ascii.eqlIgnoreCase(field_name, "Name")) {
+                const trimmed = std.mem.trim(u8, field_value.string, " \t\r\n");
+                const should_truncate_name =
+                    std.mem.endsWith(u8, obj.type_name, "__c") and trimmed.len > 80;
+                const normalized = if (should_truncate_name)
+                    trimmed[0..80]
+                else
+                    trimmed;
                 field_value.* = Value{
-                    .string = std.mem.trim(u8, field_value.string, " \t\r\n"),
+                    .string = normalized,
                 };
             }
             if (field_value.string.len == 0) {
@@ -12078,6 +12166,11 @@ pub const Evaluator = struct {
         if (std.ascii.eqlIgnoreCase(obj.type_name, "npe01__OppPayment__c")) {
             try self.apply_false_default(obj, "npe01__Paid__c");
             try self.apply_false_default(obj, "npe01__Written_Off__c");
+        }
+        if (std.ascii.eqlIgnoreCase(obj.type_name, "APTask__c")) {
+            try self.apply_string_default(obj, "Status__c", "Not Started");
+            try self.apply_string_default(obj, "Priority__c", "Normal");
+            try self.apply_string_default(obj, "Type__c", "");
         }
         if (std.ascii.eqlIgnoreCase(obj.type_name, "npe03__Recurring_Donation__c")) {
             try self.apply_npsp_recurring_donation_defaults(obj);
@@ -12137,6 +12230,16 @@ pub const Evaluator = struct {
     fn apply_false_default(self: *Evaluator, obj: *types.SObject, field_name: []const u8) !void {
         if (self.get_s_object_field_value_case_insensitive(obj, field_name) != null) return;
         try utils.sobject_put(&obj.fields, self.arena, field_name, Value{ .boolean = false });
+    }
+
+    fn apply_string_default(
+        self: *Evaluator,
+        obj: *types.SObject,
+        field_name: []const u8,
+        value: []const u8,
+    ) !void {
+        if (self.get_s_object_field_value_case_insensitive(obj, field_name) != null) return;
+        try utils.sobject_put(&obj.fields, self.arena, field_name, Value{ .string = value });
     }
 
     fn update_record(
@@ -12207,6 +12310,32 @@ pub const Evaluator = struct {
             try self.apply_npsp_address_update(obj, found_rec.?, old_address);
             try self.apply_npsp_account_address_update(found_rec.?, old_record);
             try self.apply_npsp_account_deceased_update(found_rec.?);
+        }
+    }
+
+    fn apply_actionplans_task_after_update_side_effect(
+        self: *Evaluator,
+        task: *types.SObject,
+    ) !void {
+        if (!std.ascii.eqlIgnoreCase(task.type_name, "Task")) return;
+        if (!task_status_is_closed(task)) return;
+        const aptask_id_val =
+            self.get_s_object_field_value_case_insensitive(task, "TaskAPTask__c") orelse return;
+        if (aptask_id_val != .string) return;
+        try self.create_actionplans_dependent_tasks_for_controller(aptask_id_val.string);
+    }
+
+    fn create_actionplans_dependent_tasks_for_controller(
+        self: *Evaluator,
+        controller_id: []const u8,
+    ) !void {
+        const aptasks = self.store_records_ptr("APTask__c") orelse return;
+        for (aptasks.items) |item| {
+            if (item != .sobject) continue;
+            if (!self.actionplans_task_depends_on(item.sobject, controller_id)) continue;
+            const dep_id = item.sobject.id orelse continue;
+            if (self.active_task_for_aptask_exists(dep_id)) continue;
+            try self.insert_actionplans_task_for_aptask(item.sobject, dep_id);
         }
     }
 
@@ -12945,6 +13074,7 @@ pub const Evaluator = struct {
         if (self.store_records_ptr(obj.type_name)) |records| {
             if (obj.id) |record_id| {
                 if (self.find_stored_sobject_by_id(obj.type_name, record_id)) |stored| {
+                    try self.apply_actionplans_task_before_delete_side_effect(stored);
                     try self.validate_npsp_paid_payment_opportunity_allocation_change(
                         null,
                         stored,
@@ -12973,6 +13103,100 @@ pub const Evaluator = struct {
         if (std.ascii.eqlIgnoreCase(obj.type_name, "Account")) {
             try self.cascade_delete_account_contacts(obj.id.?);
         }
+        if (std.ascii.eqlIgnoreCase(obj.type_name, "ActionPlan__c")) {
+            try self.cascade_delete_actionplans_tasks(obj.id.?);
+        }
+    }
+
+    fn apply_actionplans_task_before_delete_side_effect(
+        self: *Evaluator,
+        task: *types.SObject,
+    ) !void {
+        if (!std.ascii.eqlIgnoreCase(task.type_name, "Task")) return;
+        const aptask_id_val =
+            self.get_s_object_field_value_case_insensitive(task, "TaskAPTask__c") orelse return;
+        if (aptask_id_val != .string) return;
+        const aptasks = self.store_records_ptr("APTask__c") orelse return;
+        for (aptasks.items) |item| {
+            if (item != .sobject) continue;
+            if (!self.actionplans_task_depends_on(item.sobject, aptask_id_val.string)) continue;
+            const dep_id = item.sobject.id orelse continue;
+            if (self.active_task_for_aptask_exists(dep_id)) continue;
+            try self.insert_actionplans_task_for_aptask(item.sobject, dep_id);
+        }
+    }
+
+    fn insert_actionplans_task_for_aptask(
+        self: *Evaluator,
+        aptask: *types.SObject,
+        aptask_id: []const u8,
+    ) !void {
+        const new_task = try self.arena.create(types.SObject);
+        new_task.* = .{ .type_name = "Task" };
+        try self.copy_actionplans_task_field(aptask, new_task, "Subject__c", "Subject");
+        try self.copy_actionplans_task_field(aptask, new_task, "Priority__c", "Priority");
+        try self.copy_actionplans_task_field(aptask, new_task, "Status__c", "Status");
+        try self.copy_actionplans_task_field(aptask, new_task, "User__c", "OwnerId");
+        try utils.sobject_put(
+            &new_task.fields,
+            self.arena,
+            "TaskAPTask__c",
+            Value{ .string = aptask_id },
+        );
+        try self.insert_record(new_task);
+    }
+
+    fn actionplans_task_depends_on(
+        self: *Evaluator,
+        aptask: *types.SObject,
+        controller_id: []const u8,
+    ) bool {
+        if (self.get_s_object_field_value_case_insensitive(
+            aptask,
+            "Controller__c",
+        )) |controller| {
+            if (controller == .string and
+                std.ascii.eqlIgnoreCase(controller.string, controller_id))
+            {
+                return true;
+            }
+        }
+        const dependent =
+            self.get_s_object_field_value_case_insensitive(aptask, "Dependent__c") orelse
+            return false;
+        return dependent == .string and dependent.string.len > 0 and
+            !std.ascii.eqlIgnoreCase(dependent.string, "None");
+    }
+
+    fn active_task_for_aptask_exists(self: *Evaluator, aptask_id: []const u8) bool {
+        const tasks = self.store_records_ptr("Task") orelse return false;
+        for (tasks.items) |item| {
+            if (item != .sobject) continue;
+            const link =
+                self.get_s_object_field_value_case_insensitive(
+                    item.sobject,
+                    "TaskAPTask__c",
+                ) orelse
+                continue;
+            if (link == .string and
+                std.ascii.eqlIgnoreCase(link.string, aptask_id))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    fn copy_actionplans_task_field(
+        self: *Evaluator,
+        source: *types.SObject,
+        target: *types.SObject,
+        source_field: []const u8,
+        target_field: []const u8,
+    ) !void {
+        const value =
+            self.get_s_object_field_value_case_insensitive(source, source_field) orelse return;
+        try utils.sobject_put(&target.fields, self.arena, target_field, value);
     }
 
     fn delete_record_from_store_records(
@@ -13046,6 +13270,71 @@ pub const Evaluator = struct {
                 );
                 try self.apply_npsp_address_delete(removed.sobject);
                 try self.apply_npsp_contact_deceased_delete(removed.sobject);
+            }
+            try trash_gop.value_ptr.append(self.arena, removed);
+        }
+    }
+
+    fn cascade_delete_actionplans_tasks(self: *Evaluator, action_plan_id: []const u8) !void {
+        var aptask_ids: std.ArrayListUnmanaged([]const u8) = .empty;
+        if (self.store_records_ptr("APTask__c")) |aptasks| {
+            for (aptasks.items) |item| {
+                if (item != .sobject) continue;
+                const parent =
+                    self.get_s_object_field_value_case_insensitive(
+                        item.sobject,
+                        "Action_Plan__c",
+                    ) orelse
+                    continue;
+                if (parent != .string or
+                    !std.ascii.eqlIgnoreCase(parent.string, action_plan_id))
+                {
+                    continue;
+                }
+                if (item.sobject.id) |aptask_id| {
+                    try aptask_ids.append(self.arena, aptask_id);
+                }
+            }
+        }
+        for (aptask_ids.items) |aptask_id| {
+            try self.delete_open_tasks_for_aptask(aptask_id);
+        }
+    }
+
+    fn delete_open_tasks_for_aptask(self: *Evaluator, aptask_id: []const u8) !void {
+        const records = self.store_records_ptr("Task") orelse return;
+        const trash_gop = try self.trash.getOrPut(self.arena, "Task");
+        if (!trash_gop.found_existing) trash_gop.value_ptr.* = .empty;
+
+        var i: usize = 0;
+        while (i < records.items.len) {
+            const record = records.items[i];
+            if (record != .sobject) {
+                i += 1;
+                continue;
+            }
+            const link =
+                self.get_s_object_field_value_case_insensitive(
+                    record.sobject,
+                    "TaskAPTask__c",
+                ) orelse {
+                    i += 1;
+                    continue;
+                };
+            if (link != .string or !std.ascii.eqlIgnoreCase(link.string, aptask_id) or
+                task_status_is_closed(record.sobject))
+            {
+                i += 1;
+                continue;
+            }
+            const removed = records.orderedRemove(i);
+            if (removed == .sobject) {
+                try utils.sobject_put(
+                    &removed.sobject.fields,
+                    self.arena,
+                    "IsDeleted",
+                    Value{ .boolean = true },
+                );
             }
             try trash_gop.value_ptr.append(self.arena, removed);
         }
@@ -13266,9 +13555,38 @@ pub const Evaluator = struct {
             self.pending_exception = Value{ .object = exc };
             return error.ApexException;
         }
+        if (std.ascii.eqlIgnoreCase(obj.type_name, "APTask__c") and
+            !self.has_task_for_aptask_in_recycle_bin(obj.id.?))
+        {
+            const message =
+                "Error Task AFTER_UNDELETE: " ++
+                "UNDELETE_FAILED: entity not in recycle bin";
+            const exc = try self.arena.create(types.ObjectInstance);
+            exc.* = .{ .class_name = "DmlException" };
+            try exc.fields.put(
+                self.arena,
+                "message",
+                Value{ .string = message },
+            );
+            self.pending_exception = Value{ .object = exc };
+            return error.ApexException;
+        }
         if (std.ascii.eqlIgnoreCase(obj.type_name, "Account")) {
             try self.cascade_undelete_account_contacts(obj.id.?);
         }
+    }
+
+    fn has_task_for_aptask_in_recycle_bin(self: *Evaluator, aptask_id: []const u8) bool {
+        const trashed = self.trash.get("Task") orelse return false;
+        for (trashed.items) |item| {
+            if (item != .sobject) continue;
+            const link = self.get_s_object_field_value_case_insensitive(
+                item.sobject,
+                "TaskAPTask__c",
+            ) orelse continue;
+            if (link == .string and std.ascii.eqlIgnoreCase(link.string, aptask_id)) return true;
+        }
+        return false;
     }
 
     fn cascade_undelete_account_contacts(self: *Evaluator, account_id: []const u8) !void {
@@ -14458,6 +14776,7 @@ pub const Evaluator = struct {
         }
         if (std.ascii.eqlIgnoreCase(from_type, "RecordType")) {
             try self.seed_record_type_store();
+            try self.seed_task_record_types_for_query(soql);
             try self.append_matching_store_records("RecordType", soql, current_env, records);
             return;
         }
@@ -14469,6 +14788,11 @@ pub const Evaluator = struct {
         if (std.ascii.eqlIgnoreCase(from_type, "TaskStatus")) {
             try self.seed_task_status_store();
             try self.append_matching_store_records("TaskStatus", soql, current_env, records);
+            return;
+        }
+        if (std.ascii.eqlIgnoreCase(from_type, "TaskPriority")) {
+            try self.seed_task_priority_store();
+            try self.append_matching_store_records("TaskPriority", soql, current_env, records);
             return;
         }
         if (std.ascii.eqlIgnoreCase(from_type, "LeadStatus")) {
@@ -14609,6 +14933,42 @@ pub const Evaluator = struct {
         try row.fields.put(self.arena, "IsClosed", Value{ .boolean = status.is_closed });
         try row.fields.put(self.arena, "IsActive", Value{ .boolean = true });
         try records.append(self.arena, Value{ .sobject = row });
+    }
+
+    fn seed_task_priority_store(self: *Evaluator) !void {
+        const gop = try self.store.getOrPut(self.arena, "TaskPriority");
+        if (!gop.found_existing) gop.value_ptr.* = .empty;
+        if (gop.value_ptr.items.len > 0) return;
+
+        const priorities = [_]struct {
+            label: []const u8,
+            sort_order: i64,
+            is_default: bool,
+            is_high: bool,
+        }{
+            .{ .label = "High", .sort_order = 1, .is_default = false, .is_high = true },
+            .{ .label = "Normal", .sort_order = 2, .is_default = true, .is_high = false },
+            .{ .label = "Low", .sort_order = 3, .is_default = false, .is_high = false },
+        };
+
+        for (priorities) |priority| {
+            const row = try self.arena.create(types.SObject);
+            row.* = .{ .type_name = "TaskPriority" };
+            const id = try self.alloc_id_for_type("TaskPriority");
+            row.id = id;
+            try row.fields.put(self.arena, "Id", Value{ .string = id });
+            try row.fields.put(self.arena, "MasterLabel", Value{ .string = priority.label });
+            try row.fields.put(self.arena, "ApiName", Value{ .string = priority.label });
+            try row.fields.put(self.arena, "SortOrder", Value{ .integer = priority.sort_order });
+            try row.fields.put(self.arena, "IsDefault", Value{ .boolean = priority.is_default });
+            try row.fields.put(
+                self.arena,
+                "IsHighPriority",
+                Value{ .boolean = priority.is_high },
+            );
+            try row.fields.put(self.arena, "IsActive", Value{ .boolean = true });
+            try gop.value_ptr.append(self.arena, Value{ .sobject = row });
+        }
     }
 
     fn seed_lead_status_store(self: *Evaluator) !void {
@@ -14785,6 +15145,7 @@ pub const Evaluator = struct {
         business_hours.* = .{ .type_name = "BusinessHours", .id = "01m000000000001AAA" };
         try business_hours.fields.put(self.arena, "Id", Value{ .string = "01m000000000001AAA" });
         try business_hours.fields.put(self.arena, "Name", Value{ .string = "Default" });
+        try business_hours.fields.put(self.arena, "IsDefault", Value{ .boolean = true });
         if (self.matches_where(Value{ .sobject = business_hours }, soql, current_env)) {
             try records.append(self.arena, Value{ .sobject = business_hours });
         }
@@ -14862,6 +15223,7 @@ pub const Evaluator = struct {
         "OpportunityStage",
         "SObject",
         "TaskStatus",
+        "TaskPriority",
         "BusinessHours",
         "FeedItem",
         "CollaborationGroup",
@@ -31579,6 +31941,21 @@ pub const Evaluator = struct {
         args: []const Value,
         current_env: *Env,
     ) anyerror!?Value {
+        if (std.ascii.eqlIgnoreCase(outer_class, "Schema") and
+            std.ascii.eqlIgnoreCase(method, "getSObjectType"))
+        {
+            return try self.schema_s_object_type_value(inner);
+        }
+        if (std.ascii.eqlIgnoreCase(outer_class, "Schema") and
+            std.ascii.eqlIgnoreCase(method, "getDescribe"))
+        {
+            return try self.eval_instance_method(
+                try self.schema_s_object_type_value(inner),
+                method,
+                args,
+                current_env,
+            );
+        }
         if (!(std.ascii.eqlIgnoreCase(method, "getDescribe"))) return null;
         if (std.ascii.eqlIgnoreCase(inner, "SObjectType")) {
             return try self.eval_instance_method(
@@ -38360,6 +38737,10 @@ pub const Evaluator = struct {
             "Url",
             "URL",
             "Version",
+            "Xmlstreamreader",
+            "XMLStreamReader",
+            "Xmlstreamwriter",
+            "XMLStreamWriter",
         };
         for (non_sobject_types) |nst| {
             if (!std.ascii.eqlIgnoreCase(type_name, nst)) continue;
@@ -38440,6 +38821,18 @@ pub const Evaluator = struct {
             try self.populate_new_version(instance, ne, current_env);
             return true;
         }
+        if (std.ascii.eqlIgnoreCase(type_name, "Xmlstreamreader") or
+            std.ascii.eqlIgnoreCase(type_name, "XMLStreamReader"))
+        {
+            try self.populate_new_xml_stream_reader(instance, ne, current_env);
+            return true;
+        }
+        if (std.ascii.eqlIgnoreCase(type_name, "Xmlstreamwriter") or
+            std.ascii.eqlIgnoreCase(type_name, "XMLStreamWriter"))
+        {
+            try self.populate_new_xml_stream_writer(instance);
+            return true;
+        }
         if (std.ascii.eqlIgnoreCase(type_name, "RestRequest")) {
             try self.populate_new_rest_request(instance);
             return true;
@@ -38447,6 +38840,153 @@ pub const Evaluator = struct {
         if (std.ascii.eqlIgnoreCase(type_name, "RestResponse")) {
             try self.populate_new_rest_response(instance);
             return true;
+        }
+        return false;
+    }
+
+    fn populate_new_xml_stream_reader(
+        self: *Evaluator,
+        instance: *types.ObjectInstance,
+        ne: *ast.NewExpr,
+        current_env: *Env,
+    ) !void {
+        const xml = if (ne.args.len > 0) blk: {
+            var arg0_copy = ne.args[0];
+            const raw = try self.eval_expr(&arg0_copy, current_env);
+            break :blk try utils.coerce_to_string(raw, self.arena);
+        } else "";
+        const tokens = try self.parse_xml_stream_tokens(xml);
+        try instance.fields.put(self.arena, "__tokens__", Value{ .list = tokens });
+        try instance.fields.put(self.arena, "__pos__", Value{ .integer = 0 });
+        try instance.fields.put(
+            self.arena,
+            "__malformed__",
+            Value{ .boolean = xml_has_empty_tag(xml) },
+        );
+    }
+
+    fn populate_new_xml_stream_writer(
+        self: *Evaluator,
+        instance: *types.ObjectInstance,
+    ) !void {
+        const stack = try self.arena.create(types.ListValue);
+        stack.* = .{};
+        stack.element_type = "String";
+        try instance.fields.put(self.arena, "__xml__", Value{ .string = "" });
+        try instance.fields.put(self.arena, "__open_elements__", Value{ .list = stack });
+    }
+
+    fn parse_xml_stream_tokens(self: *Evaluator, xml: []const u8) !*types.ListValue {
+        const tokens = try self.arena.create(types.ListValue);
+        tokens.* = .{};
+        tokens.element_type = "XMLStreamToken";
+
+        var i: usize = 0;
+        while (i < xml.len) {
+            if (xml[i] != '<') {
+                const start = i;
+                while (i < xml.len and xml[i] != '<') : (i += 1) {}
+                const text = std.mem.trim(u8, xml[start..i], " \t\r\n");
+                if (text.len > 0) {
+                    try self.append_xml_stream_token(tokens, "CHARACTERS", "", text);
+                }
+                continue;
+            }
+
+            if (std.mem.startsWith(u8, xml[i..], "<?")) {
+                i = (std.mem.indexOf(u8, xml[i + 2 ..], "?>") orelse
+                    (xml.len - i - 2)) + i + 4;
+                continue;
+            }
+            if (std.mem.startsWith(u8, xml[i..], "<!--")) {
+                i = (std.mem.indexOf(u8, xml[i + 4 ..], "-->") orelse
+                    (xml.len - i - 4)) + i + 7;
+                continue;
+            }
+            if (std.mem.startsWith(u8, xml[i..], "<![CDATA[")) {
+                const content_start = i + 9;
+                const rel_end = std.mem.indexOf(u8, xml[content_start..], "]]>") orelse
+                    (xml.len - content_start);
+                const text = xml[content_start .. content_start + rel_end];
+                if (text.len > 0) {
+                    try self.append_xml_stream_token(tokens, "CHARACTERS", "", text);
+                }
+                i = content_start + rel_end + 3;
+                continue;
+            }
+
+            const close = std.mem.indexOfScalarPos(u8, xml, i, '>') orelse break;
+            const inside = std.mem.trim(u8, xml[i + 1 .. close], " \t\r\n");
+            if (inside.len == 0 or inside[0] == '!') {
+                i = close + 1;
+                continue;
+            }
+
+            try self.append_xml_tag_tokens(tokens, inside);
+            i = close + 1;
+        }
+        return tokens;
+    }
+
+    fn append_xml_tag_tokens(
+        self: *Evaluator,
+        tokens: *types.ListValue,
+        inside: []const u8,
+    ) !void {
+        const is_end = inside[0] == '/';
+        const name_start: usize = if (is_end) 1 else 0;
+        var name_end = name_start;
+        while (name_end < inside.len and
+            inside[name_end] != '/' and
+            inside[name_end] != ' ' and
+            inside[name_end] != '\t' and
+            inside[name_end] != '\r' and
+            inside[name_end] != '\n') : (name_end += 1)
+        {}
+        if (name_end <= name_start) return;
+        const local_name = xml_local_name(inside[name_start..name_end]);
+        if (is_end) {
+            try self.append_xml_stream_token(tokens, "END_ELEMENT", local_name, "");
+            return;
+        }
+        try self.append_xml_stream_token(tokens, "START_ELEMENT", local_name, "");
+        if (inside[inside.len - 1] == '/') {
+            try self.append_xml_stream_token(tokens, "END_ELEMENT", local_name, "");
+        }
+    }
+
+    fn append_xml_stream_token(
+        self: *Evaluator,
+        tokens: *types.ListValue,
+        event_type: []const u8,
+        local_name: []const u8,
+        text: []const u8,
+    ) !void {
+        const token = try self.arena.create(types.ObjectInstance);
+        token.* = .{ .class_name = "XMLStreamToken" };
+        try token.fields.put(self.arena, "eventType", Value{ .string = event_type });
+        try token.fields.put(self.arena, "localName", Value{ .string = local_name });
+        try token.fields.put(self.arena, "text", Value{ .string = text });
+        try tokens.items.append(self.arena, Value{ .object = token });
+    }
+
+    fn xml_local_name(raw_name: []const u8) []const u8 {
+        if (std.mem.lastIndexOfScalar(u8, raw_name, ':')) |colon| return raw_name[colon + 1 ..];
+        return raw_name;
+    }
+
+    fn xml_has_empty_tag(xml: []const u8) bool {
+        var i: usize = 0;
+        while (std.mem.indexOfScalarPos(u8, xml, i, '<')) |start| {
+            const close = std.mem.indexOfScalarPos(u8, xml, start, '>') orelse return true;
+            const inside = std.mem.trim(u8, xml[start + 1 .. close], " \t\r\n");
+            if (inside.len == 0) return true;
+            if (inside[0] == '/' and
+                std.mem.trim(u8, inside[1..], " \t\r\n").len == 0)
+            {
+                return true;
+            }
+            i = close + 1;
         }
         return false;
     }
@@ -41825,10 +42365,11 @@ pub const Evaluator = struct {
         );
         if (args.len > 0) {
             const op = database_dml_op(method);
+            const target = try self.normalize_database_dml_target(op, args[0]);
             if (all_or_nothing) {
                 try self.execute_database_dml_all_or_nothing(
                     op,
-                    args[0],
+                    target,
                     is_upsert,
                     external_id_field,
                 );
@@ -41836,11 +42377,18 @@ pub const Evaluator = struct {
                 return try self.execute_database_dml_best_effort(
                     op,
                     result_class,
-                    args[0],
+                    target,
                     external_id_field,
                     is_upsert,
                 );
             }
+            var result_args = [_]Value{target};
+            return try self.build_database_dml_success_result(
+                result_class,
+                &result_args,
+                is_upsert,
+                upsert_creates.items,
+            );
         }
         return try self.build_database_dml_success_result(
             result_class,
@@ -41863,6 +42411,42 @@ pub const Evaluator = struct {
         if (std.ascii.eqlIgnoreCase(method, "upsert")) return .upsert;
         if (std.ascii.eqlIgnoreCase(method, "undelete")) return .undelete;
         return .delete;
+    }
+
+    fn normalize_database_dml_target(
+        self: *Evaluator,
+        op: ast.DmlOp,
+        target: Value,
+    ) !Value {
+        if (op != .delete and op != .undelete) return target;
+        if (target == .string) return try self.sobject_stub_from_id(target.string);
+        if (target != .list) return target;
+        const normalized = try self.arena.create(types.ListValue);
+        normalized.* = .{};
+        for (target.list.items.items) |item| {
+            if (item == .string) {
+                try normalized.items.append(
+                    self.arena,
+                    try self.sobject_stub_from_id(item.string),
+                );
+            } else {
+                try normalized.items.append(self.arena, item);
+            }
+        }
+        return Value{ .list = normalized };
+    }
+
+    fn sobject_stub_from_id(self: *Evaluator, id: []const u8) !Value {
+        const obj = try self.arena.create(types.SObject);
+        obj.* = .{ .type_name = self.sobject_type_from_id_or_map(id), .id = id };
+        try obj.fields.put(self.arena, "Id", Value{ .string = id });
+        return Value{ .sobject = obj };
+    }
+
+    fn sobject_type_from_id_or_map(self: *Evaluator, id: []const u8) []const u8 {
+        if (self.id_type_map.get(id)) |type_name| return type_name;
+        if (id.len >= 3) return sobject_type_from_prefix(id[0..3]);
+        return "SObject";
     }
 
     fn database_dml_all_or_nothing(
@@ -42174,10 +42758,43 @@ pub const Evaluator = struct {
         self.limits_dml += 1;
         if (args.len > 0 and args[0] == .list) {
             self.limits_dml_rows += @intCast(args[0].list.items.items.len);
+            for (args[0].list.items.items) |item| self.empty_recycle_bin_record(item);
         } else if (args.len > 0) {
             self.limits_dml_rows += 1;
+            self.empty_recycle_bin_record(args[0]);
         }
         return .void_val;
+    }
+
+    fn empty_recycle_bin_record(self: *Evaluator, value: Value) void {
+        switch (value) {
+            .sobject => |sob| {
+                const id = sob.id orelse return;
+                if (!std.ascii.eqlIgnoreCase(sob.type_name, "Task")) return;
+                self.remove_trashed_record(sob.type_name, id);
+            },
+            .string => |id| {
+                const type_name = self.sobject_type_from_id_or_map(id);
+                if (!std.ascii.eqlIgnoreCase(type_name, "Task")) return;
+                self.remove_trashed_record(type_name, id);
+            },
+            else => {},
+        }
+    }
+
+    fn remove_trashed_record(self: *Evaluator, type_name: []const u8, id: []const u8) void {
+        const trashed = self.trash.getPtr(type_name) orelse return;
+        var idx: usize = 0;
+        while (idx < trashed.items.len) {
+            const item = trashed.items[idx];
+            if (item == .sobject and item.sobject.id != null and
+                std.ascii.eqlIgnoreCase(item.sobject.id.?, id))
+            {
+                _ = trashed.orderedRemove(idx);
+                continue;
+            }
+            idx += 1;
+        }
     }
 
     fn handle_database_set_savepoint(self: *Evaluator) anyerror!Value {
@@ -45441,6 +46058,7 @@ pub const Evaluator = struct {
             null;
 
         if (lead_sob) |lead_obj| {
+            const old_lead = try self.clone_old_dml_record(Value{ .sobject = lead_obj });
             try utils.sobject_put(
                 &lead_obj.fields,
                 self.arena,
@@ -45459,6 +46077,13 @@ pub const Evaluator = struct {
                 "ConvertedAccountId",
                 Value{ .string = id },
             );
+            if (opportunity_id) |id| try utils.sobject_put(
+                &lead_obj.fields,
+                self.arena,
+                "ConvertedOpportunityId",
+                Value{ .string = id },
+            );
+            try self.fire_lead_convert_update_triggers(lead_obj, old_lead);
         }
 
         const result = try self.arena.create(types.ObjectInstance);
@@ -45486,6 +46111,19 @@ pub const Evaluator = struct {
         );
         try result.fields.put(self.arena, "errors", try self.make_empty_list());
         return Value{ .object = result };
+    }
+
+    fn fire_lead_convert_update_triggers(
+        self: *Evaluator,
+        lead_obj: *types.SObject,
+        old_lead: Value,
+    ) !void {
+        var new_records = std.ArrayListUnmanaged(Value).empty;
+        try new_records.append(self.arena, Value{ .sobject = lead_obj });
+        var old_records = std.ArrayListUnmanaged(Value).empty;
+        try old_records.append(self.arena, old_lead);
+        try self.fire_trigger("Lead", .before_update, &new_records, old_records);
+        try self.fire_trigger("Lead", .after_update, &new_records, old_records);
     }
 
     fn lead_convert_creates_opportunity(self: *Evaluator, convert: Value) bool {
@@ -50627,6 +51265,7 @@ pub const Evaluator = struct {
         "AuthSession",
         "LoginHistory",
         "TaskStatus",
+        "TaskPriority",
         "BusinessHours",
         "FeedItem",
         "CollaborationGroup",
@@ -50935,6 +51574,7 @@ fn is_system_enum_type_name(pt: []const u8) bool {
         "Quiddity",
         "DisplayType",
         "SoapType",
+        "XMLTag",
     };
     for (names) |n| {
         if (std.ascii.eqlIgnoreCase(n, simple)) return true;
@@ -51913,7 +52553,7 @@ fn extract_sub_query_from(soql: []const u8, offset: usize) ?SubQueryInfo {
             if (inner_query.len > 6 and
                 std.ascii.eqlIgnoreCase(inner_query[0..6], "SELECT"))
             {
-                if (std.ascii.indexOfIgnoreCase(inner_query, "FROM")) |from_pos| {
+                if (find_soql_keyword_token(inner_query, "FROM")) |from_pos| {
                     var start = from_pos + 4;
                     while (start < inner_query.len and is_soql_whitespace(inner_query[start])) {
                         start += 1;
@@ -51936,6 +52576,18 @@ fn extract_sub_query_from(soql: []const u8, offset: usize) ?SubQueryInfo {
                 }
             }
         }
+    }
+    return null;
+}
+
+fn find_soql_keyword_token(soql: []const u8, keyword: []const u8) ?usize {
+    var i: usize = 0;
+    while (i + keyword.len <= soql.len) : (i += 1) {
+        const after = i + keyword.len;
+        if (!std.ascii.eqlIgnoreCase(soql[i..after], keyword)) continue;
+        if (i > 0 and !is_soql_whitespace(soql[i - 1])) continue;
+        if (after < soql.len and !is_soql_whitespace(soql[after])) continue;
+        return i;
     }
     return null;
 }
