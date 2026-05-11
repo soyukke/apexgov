@@ -1044,6 +1044,18 @@ fn dispatch_static_math(method_name: []const u8, args: []const Value) !?Value {
     if (std.ascii.eqlIgnoreCase(method_name, "random")) {
         return Value{ .double = 0.999 };
     }
+    if (std.ascii.eqlIgnoreCase(method_name, "pow")) {
+        if (args.len >= 2) {
+            return Value{
+                .double = std.math.pow(
+                    f64,
+                    math_arg_as_f64(args[0]),
+                    math_arg_as_f64(args[1]),
+                ),
+            };
+        }
+        return Value{ .double = 0 };
+    }
     if (std.ascii.eqlIgnoreCase(method_name, "abs")) {
         if (args.len > 0) {
             if (args[0] == .integer) {
@@ -1098,6 +1110,7 @@ fn dispatch_static_math(method_name: []const u8, args: []const Value) !?Value {
         else
             Value{ .integer = 0 };
     }
+    if (dispatch_static_math_unary(method_name, args)) |result| return result;
     if (std.ascii.eqlIgnoreCase(method_name, "max") or
         std.ascii.eqlIgnoreCase(method_name, "min"))
     {
@@ -1112,6 +1125,41 @@ fn dispatch_static_math(method_name: []const u8, args: []const Value) !?Value {
         return Value{ .integer = 0 };
     }
     return Value{ .double = 0 };
+}
+
+fn math_arg_as_f64(v: Value) f64 {
+    return switch (v) {
+        .double => |d| d,
+        .integer => |i| @floatFromInt(i),
+        .long => |i| @floatFromInt(i),
+        .string => |s| std.fmt.parseFloat(f64, s) catch 0,
+        else => 0,
+    };
+}
+
+fn dispatch_static_math_unary(method_name: []const u8, args: []const Value) ?Value {
+    if (args.len == 0) return null;
+    const x = math_arg_as_f64(args[0]);
+    if (std.ascii.eqlIgnoreCase(method_name, "sqrt")) return Value{ .double = @sqrt(x) };
+    if (std.ascii.eqlIgnoreCase(method_name, "acos")) return Value{ .double = std.math.acos(x) };
+    if (std.ascii.eqlIgnoreCase(method_name, "asin")) return Value{ .double = std.math.asin(x) };
+    if (std.ascii.eqlIgnoreCase(method_name, "atan")) return Value{ .double = std.math.atan(x) };
+    if (std.ascii.eqlIgnoreCase(method_name, "cos")) return Value{ .double = @cos(x) };
+    if (std.ascii.eqlIgnoreCase(method_name, "sin")) return Value{ .double = @sin(x) };
+    if (std.ascii.eqlIgnoreCase(method_name, "tan")) return Value{ .double = @tan(x) };
+    if (std.ascii.eqlIgnoreCase(method_name, "cosh")) return Value{ .double = std.math.cosh(x) };
+    if (std.ascii.eqlIgnoreCase(method_name, "sinh")) return Value{ .double = std.math.sinh(x) };
+    if (std.ascii.eqlIgnoreCase(method_name, "tanh")) return Value{ .double = std.math.tanh(x) };
+    if (std.ascii.eqlIgnoreCase(method_name, "exp")) return Value{ .double = @exp(x) };
+    if (std.ascii.eqlIgnoreCase(method_name, "log")) return Value{ .double = @log(x) };
+    if (std.ascii.eqlIgnoreCase(method_name, "log10")) return Value{ .double = @log10(x) };
+    if (std.ascii.eqlIgnoreCase(method_name, "signum")) {
+        if (x > 0) return Value{ .integer = 1 };
+        if (x < 0) return Value{ .integer = -1 };
+        return Value{ .integer = 0 };
+    }
+    if (std.ascii.eqlIgnoreCase(method_name, "rint")) return Value{ .double = @round(x) };
+    return null;
 }
 
 fn dispatch_static_math_extrema(method_name: []const u8, args: []const Value) Value {

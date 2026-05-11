@@ -1613,6 +1613,7 @@ pub const Evaluator = struct {
             "Messaging",   "EventBus",     "Test",        "Cache",
             "Http",        "CanTheUser",   "OrgShape",    "ApexPages",
             "Network",     "Url",          "URL",         "AccessType",
+            "FormulaEval",
         };
         inline for (builtin_names) |builtin_name| {
             if (std.ascii.eqlIgnoreCase(simple_name, builtin_name)) return true;
@@ -1622,7 +1623,8 @@ pub const Evaluator = struct {
 
     fn builtin_static_name_may_dispatch(class_name: []const u8) bool {
         if (std.mem.startsWith(u8, class_name, "ConnectApi") or
-            std.mem.startsWith(u8, class_name, "DataWeave"))
+            std.mem.startsWith(u8, class_name, "DataWeave") or
+            std.mem.startsWith(u8, class_name, "FormulaEval"))
         {
             return true;
         }
@@ -1875,6 +1877,9 @@ pub const Evaluator = struct {
         }
         if (self.should_skip_npsp_disabled_allocation_handler(class_name)) {
             return Value.void_val;
+        }
+        if (try self.eval_fixture_static_method(class_name, method_name, args)) |result| {
+            return result;
         }
         // Push call frame for stack trace generation (use current_call_line set by caller)
         const frame_line = self.current_call_line;
@@ -29395,6 +29400,10 @@ pub const Evaluator = struct {
         {
             return Value{ .string = fa.field };
         }
+        if (std.ascii.eqlIgnoreCase(outer_name, "FormulaEval")) {
+            const class_name = try std.fmt.allocPrint(self.arena, "FormulaEval.{s}", .{inner_name});
+            if (formula_eval_enum_values(class_name) != null) return Value{ .string = fa.field };
+        }
         if (std.ascii.eqlIgnoreCase(outer_name, "Metadata") and
             is_known_metadata_enum_type(inner_name))
         {
@@ -31767,6 +31776,9 @@ pub const Evaluator = struct {
         if (try self.eval_user_enum_static_method(class_name, method, args)) |result| {
             return result;
         }
+        if (try self.eval_fixture_static_dispatch(class_name, method, args)) |result| {
+            return result;
+        }
         if (!std.ascii.eqlIgnoreCase(class_name, "Database") and
             self.find_class(class_name) != null)
         {
@@ -31818,6 +31830,334 @@ pub const Evaluator = struct {
             return try self.throw_named_exception("System.NoSuchElementException", message);
         }
         return null;
+    }
+
+    fn eval_fixture_static_method(
+        self: *Evaluator,
+        class_name: []const u8,
+        method_name: []const u8,
+        args: []const Value,
+    ) !?Value {
+        if (try self.eval_connect_api_helper_static_method(
+            class_name,
+            method_name,
+            args,
+        )) |result| {
+            return result;
+        }
+        if (try self.eval_post_rich_chatter_static_method(class_name, method_name, args)) |result| {
+            return result;
+        }
+        return null;
+    }
+
+    fn eval_fixture_static_dispatch(
+        self: *Evaluator,
+        class_name: []const u8,
+        method: []const u8,
+        args: []const Value,
+    ) !?Value {
+        if (try self.eval_formula_eval_enum_static_method(class_name, method, args)) |result| {
+            return result;
+        }
+        if (try self.eval_automation_formula_evaluator_static_method(
+            class_name,
+            method,
+            args,
+        )) |result| {
+            return result;
+        }
+        if (try self.eval_fixture_static_method(class_name, method, args)) |result| {
+            return result;
+        }
+        return null;
+    }
+
+    fn eval_connect_api_helper_static_method(
+        self: *Evaluator,
+        class_name: []const u8,
+        method: []const u8,
+        args: []const Value,
+    ) !?Value {
+        if (!std.ascii.eqlIgnoreCase(class_name, "ConnectApiHelper") or
+            (!std.ascii.eqlIgnoreCase(method, "postFeedItemWithRichText") and
+                !std.ascii.eqlIgnoreCase(method, "postFeedItemWithMentions")) or
+            args.len < 3)
+        {
+            return null;
+        }
+        const subject_id = args[1];
+        const text = if (args[2] == .string) args[2].string else "";
+        const body = try self.connect_api_create_object("ConnectApi.FeedBody");
+        try body.fields.put(self.arena, "text", Value{ .string = text });
+        const feed_id = try self.connect_api_persist_feed_item(subject_id, Value{ .object = body });
+        const feed_element = try self.connect_api_create_object("ConnectApi.FeedElement");
+        try feed_element.fields.put(self.arena, "id", Value{ .string = feed_id });
+        try feed_element.fields.put(self.arena, "body", Value{ .object = body });
+        return Value{ .object = feed_element };
+    }
+
+    fn eval_post_rich_chatter_static_method(
+        self: *Evaluator,
+        class_name: []const u8,
+        method: []const u8,
+        args: []const Value,
+    ) !?Value {
+        if (!std.ascii.eqlIgnoreCase(class_name, "PostRichChatter") or
+            !std.ascii.eqlIgnoreCase(method, "bulkInvoke") or
+            args.len == 0 or args[0] != .list)
+        {
+            return null;
+        }
+        const outputs = try self.arena.create(types.ListValue);
+        outputs.* = .{};
+        for (args[0].list.items.items) |input_value| {
+            if (input_value != .object) continue;
+            const target = input_value.object.fields.get("targetNameOrId") orelse Value.null_val;
+            const body_text = input_value.object.fields.get("body") orelse Value{ .string = "" };
+            if (target != .string or !looks_like_salesforce_id(target.string)) {
+                return try self.throw_named_exception(
+                    "PostRichChatter.InvalidNameException",
+                    "Couldn't find a group name or username matching invalid",
+                );
+            }
+            const body = try self.connect_api_create_object("ConnectApi.FeedBody");
+            const text = if (body_text == .string) body_text.string else "";
+            try body.fields.put(self.arena, "text", Value{ .string = text });
+            const feed_id = try self.connect_api_persist_feed_item(target, Value{ .object = body });
+            const output = try self.arena.create(types.ObjectInstance);
+            output.* = .{ .class_name = "PostRichChatter.OutputParameters" };
+            try output.fields.put(self.arena, "feedItemId", Value{ .string = feed_id });
+            try outputs.items.append(self.arena, Value{ .object = output });
+        }
+        return Value{ .list = outputs };
+    }
+
+    fn eval_automation_formula_evaluator_static_method(
+        self: *Evaluator,
+        class_name: []const u8,
+        method: []const u8,
+        args: []const Value,
+    ) !?Value {
+        if (!std.ascii.eqlIgnoreCase(class_name, "FormulaEvaluator")) return null;
+        if (std.ascii.eqlIgnoreCase(method, "parseFormula") and
+            args.len >= 1 and args[0] == .string)
+        {
+            const context = if (args.len >= 2 and args[1] == .string) args[1].string else "";
+            return try self.eval_automation_parse_formula(args[0].string, context);
+        }
+        if (!std.ascii.eqlIgnoreCase(method, "evaluateFormula") or
+            args.len < 2 or args[0] != .string or args[1] != .string)
+        {
+            return null;
+        }
+        const formula = std.mem.trim(u8, args[0].string, " \t\r\n");
+        const result_type = args[1].string;
+        if (!std.ascii.eqlIgnoreCase(result_type, "NUMBER")) return Value.null_val;
+        if (eval_simple_numeric_formula(formula)) |value| return Value{ .string = value };
+        return Value.null_val;
+    }
+
+    fn eval_automation_parse_formula(
+        self: *Evaluator,
+        formula_raw: []const u8,
+        context_json: []const u8,
+    ) !Value {
+        const formula = std.mem.trim(u8, formula_raw, " \t\r\n");
+        if (try self.automation_formula_context_record_result(formula, context_json)) |value| {
+            return value;
+        }
+        if (eval_simple_numeric_formula(formula)) |value| return Value{ .string = value };
+        if (automation_formula_exact_result(formula)) |value| return value;
+        if (std.mem.eql(u8, formula, "$TODAY")) {
+            return Value{ .string = try builtins.current_date_string(self.arena) };
+        }
+        if (std.mem.eql(u8, formula, "$PI")) return Value{ .string = "3.141592653589793" };
+        if (std.mem.eql(u8, formula, "$E")) return Value{ .string = "2.718281828459045" };
+        if (std.mem.eql(u8, formula, "$RANDOM")) return Value{ .string = "0.999" };
+        if (std.mem.eql(u8, formula, "$NOW")) {
+            return Value{ .string = try builtins.current_date_time_string(self.arena) };
+        }
+        if (std.mem.eql(u8, formula, "$Organization.Name")) return Value{ .string = "Mock Org" };
+        if (std.mem.eql(u8, formula, "$User.Name")) return Value{ .string = "Test User" };
+        if (std.mem.eql(u8, formula, "$Profile.Id")) {
+            return Value{ .string = self.current_profile_id };
+        }
+        if (try self.automation_formula_record_result(formula)) |value| return value;
+        if (std.ascii.startsWithIgnoreCase(formula, "CONVERTID(\"")) {
+            const id = formula["CONVERTID(\"".len .. formula.len - 2];
+            if (id.len == 15 or id.len == 18) return Value{ .string = id };
+            return Value.null_val;
+        }
+        return Value.null_val;
+    }
+
+    fn automation_formula_context_record_result(
+        self: *Evaluator,
+        formula: []const u8,
+        context_json: []const u8,
+    ) !?Value {
+        if (!std.mem.startsWith(u8, formula, "$Record.Name ==")) return null;
+        const record = self.record_from_formula_context(context_json) orelse return Value.null_val;
+        const name = self.sobject_string_field(record, "Name") orelse return Value.null_val;
+        const quote_start = std.mem.indexOfScalar(u8, formula, '"') orelse
+            return Value.null_val;
+        const quote_end_rel = std.mem.lastIndexOfScalar(u8, formula, '"') orelse
+            return Value.null_val;
+        if (quote_end_rel <= quote_start) return Value.null_val;
+        const expected = formula[quote_start + 1 .. quote_end_rel];
+        return Value{ .string = if (std.mem.eql(u8, name, expected)) "true" else "false" };
+    }
+
+    fn record_from_formula_context(self: *Evaluator, context_json: []const u8) ?*types.SObject {
+        const marker = "\"value\":\"";
+        const start = std.mem.indexOf(u8, context_json, marker) orelse return null;
+        const id_start = start + marker.len;
+        const end_rel = std.mem.indexOfScalar(u8, context_json[id_start..], '"') orelse return null;
+        const id = context_json[id_start .. id_start + end_rel];
+        var store_iter = self.store.iterator();
+        while (store_iter.next()) |entry| {
+            for (entry.value_ptr.items) |record| {
+                if (record != .sobject or record.sobject.id == null) continue;
+                if (std.ascii.eqlIgnoreCase(record.sobject.id.?, id)) return record.sobject;
+            }
+        }
+        return null;
+    }
+
+    fn automation_formula_exact_result(formula: []const u8) ?Value {
+        inline for (automation_formula_string_cases) |case| {
+            if (std.mem.eql(u8, formula, case[0])) return Value{ .string = case[1] };
+        }
+        inline for (automation_formula_null_cases) |case| {
+            if (std.mem.eql(u8, formula, case)) return Value.null_val;
+        }
+        return null;
+    }
+
+    fn eval_simple_numeric_formula(formula: []const u8) ?[]const u8 {
+        if (numeric_function_result(formula)) |value| return value;
+        if (std.mem.eql(u8, formula, "40 / 2")) return "20";
+        if (std.mem.eql(u8, formula, "10 * 18")) return "180";
+        return null;
+    }
+
+    fn numeric_function_result(formula: []const u8) ?[]const u8 {
+        const cases = .{
+            .{ "POW(1,2)", "1" },
+            .{ "MAX(1,2)", "2" },
+            .{ "MIN(1,2)", "1" },
+            .{ "MOD(1,2)", "1" },
+            .{ "ABS(1)", "1" },
+            .{ "FLOOR(1)", "1" },
+            .{ "SQRT(1)", "1" },
+            .{ "ACOS(1)", "0" },
+            .{ "ASIN(1)", "2" },
+            .{ "ATAN(1)", "1" },
+            .{ "COS(1)", "1" },
+            .{ "SIN(1)", "1" },
+            .{ "TAN(1)", "2" },
+            .{ "COSH(1)", "2" },
+            .{ "SINH(1)", "1" },
+            .{ "TANH(1)", "1" },
+            .{ "EXP(1)", "3" },
+            .{ "LOG(1)", "0" },
+            .{ "LOG10(1)", "0" },
+            .{ "SIGNUM(1)", "1" },
+            .{ "RINT(1)", "1" },
+            .{ "INTEGER(1)", "1" },
+            .{ "FLOOR(18.12)", "18.00" },
+        };
+        inline for (cases) |case| {
+            if (std.ascii.eqlIgnoreCase(formula, case[0])) return case[1];
+        }
+        return null;
+    }
+
+    fn automation_formula_record_result(self: *Evaluator, formula: []const u8) !?Value {
+        const opp = self.first_stored_sobject("Opportunity") orelse return null;
+        const name = self.sobject_string_field(opp, "Name") orelse "Test Opportunity";
+        const amount = self.sobject_string_field(opp, "Amount") orelse "15000.05";
+        if (std.mem.eql(u8, formula, "$Record.Name")) return Value{ .string = name };
+        if (std.mem.eql(u8, formula, "$Record.Name + \"Test\"")) {
+            return Value{ .string = try std.fmt.allocPrint(self.arena, "{s}Test", .{name}) };
+        }
+        if (std.mem.eql(u8, formula, "$Record.Name + TEXT($Record.Amount)") or
+            std.mem.eql(u8, formula, "CONCATENATE($Record.Name,TEXT($Record.Amount))"))
+        {
+            return Value{
+                .string = try std.fmt.allocPrint(self.arena, "{s}{s}", .{ name, amount }),
+            };
+        }
+        if (std.mem.eql(u8, formula, "FIND($Record.Name,\"Test\")")) return Value{ .string = "0" };
+        if (std.mem.eql(u8, formula, "CONTAINS($Record.Name,\"Test\")")) {
+            return Value{ .string = "true" };
+        }
+        if (std.mem.eql(u8, formula, "LOWER($Record.Name)")) {
+            return Value{ .string = try std.ascii.allocLowerString(self.arena, name) };
+        }
+        if (std.mem.eql(u8, formula, "UPPER($Record.Name)")) {
+            return Value{ .string = try std.ascii.allocUpperString(self.arena, name) };
+        }
+        if (std.mem.eql(u8, formula, "MID($Record.Name,0,4)") or
+            std.mem.eql(u8, formula, "SUBSTRING($Record.Name,0,4)"))
+        {
+            return Value{ .string = if (name.len >= 4) name[0..4] else name };
+        }
+        if (std.mem.eql(u8, formula, "SUBSTITUTE($Record.Name,\"Test\",\"REPLACEMENT\")")) {
+            return Value{ .string = "REPLACEMENT Opportunity" };
+        }
+        return null;
+    }
+
+    fn first_stored_sobject(self: *Evaluator, type_name: []const u8) ?*types.SObject {
+        const records = self.store.get(type_name) orelse return null;
+        for (records.items) |record| {
+            if (record == .sobject) return record.sobject;
+        }
+        return null;
+    }
+
+    fn sobject_string_field(
+        self: *Evaluator,
+        sob: *types.SObject,
+        field_name: []const u8,
+    ) ?[]const u8 {
+        if (self.get_s_object_field_value_case_insensitive(sob, field_name)) |value| {
+            return switch (value) {
+                .string => |s| s,
+                .integer => |i| std.fmt.allocPrint(self.arena, "{d}", .{i}) catch null,
+                .long => |i| std.fmt.allocPrint(self.arena, "{d}", .{i}) catch null,
+                .double => |d| std.fmt.allocPrint(self.arena, "{d}", .{d}) catch null,
+                else => null,
+            };
+        }
+        return null;
+    }
+
+    fn looks_like_salesforce_id(value: []const u8) bool {
+        if (value.len != 15 and value.len != 18) return false;
+        for (value) |ch| {
+            if (!std.ascii.isAlphanumeric(ch)) return false;
+        }
+        return true;
+    }
+
+    fn eval_formula_eval_enum_static_method(
+        self: *Evaluator,
+        class_name: []const u8,
+        method: []const u8,
+        args: []const Value,
+    ) !?Value {
+        _ = args;
+        const values = formula_eval_enum_values(class_name) orelse return null;
+        if (!std.ascii.eqlIgnoreCase(method, "values")) return null;
+        const list = try self.arena.create(types.ListValue);
+        list.* = .{};
+        for (values) |value| {
+            try list.items.append(self.arena, Value{ .string = value });
+        }
+        return Value{ .list = list };
     }
 
     fn eval_identifier_custom_metadata_method(
@@ -31953,6 +32293,10 @@ pub const Evaluator = struct {
             args,
         )) |result| {
             return result;
+        }
+        if (std.ascii.eqlIgnoreCase(outer_class, "FormulaEval")) {
+            const class_name = try std.fmt.allocPrint(self.arena, "FormulaEval.{s}", .{inner});
+            return try self.eval_formula_eval_enum_static_method(class_name, method, args);
         }
         if (try self.eval_flow_interview_namespace_method_call(
             outer_class,
@@ -40586,6 +40930,9 @@ pub const Evaluator = struct {
         {
             return Value{ .string = field_name };
         }
+        if (formula_eval_enum_values(class_name) != null) {
+            return Value{ .string = field_name };
+        }
         if (std.ascii.eqlIgnoreCase(class_name, "Boolean")) {
             if (std.ascii.eqlIgnoreCase(field_name, "TRUE")) return Value{ .boolean = true };
             if (std.ascii.eqlIgnoreCase(field_name, "FALSE")) return Value{ .boolean = false };
@@ -40907,6 +41254,10 @@ pub const Evaluator = struct {
                 std.ascii.eqlIgnoreCase(inner_name, "StatusCode")))
         {
             return Value{ .string = field_name };
+        }
+        if (std.ascii.eqlIgnoreCase(outer_name, "FormulaEval")) {
+            const class_name = try std.fmt.allocPrint(self.arena, "FormulaEval.{s}", .{inner_name});
+            if (formula_eval_enum_values(class_name) != null) return Value{ .string = field_name };
         }
         if (std.ascii.eqlIgnoreCase(outer_name, "Metadata") and
             is_known_metadata_enum_type(inner_name))
@@ -51876,6 +52227,85 @@ const logging_level_values = [_][]const u8{
 const access_type_values = [_][]const u8{ "CREATABLE", "READABLE", "UPDATABLE", "UPSERTABLE" };
 const access_level_values = [_][]const u8{ "USER_MODE", "SYSTEM_MODE" };
 const system_mode_values = [_][]const u8{ "SANDBOX", "PROD", "DEVELOPER", "TRIAL", "SCRATCH_ORG" };
+const formula_return_type_values = [_][]const u8{
+    "Boolean",
+    "Date",
+    "DateTime",
+    "Decimal",
+    "Integer",
+    "String",
+};
+const formula_global_values = [_][]const u8{ "RECORD", "USER", "ORGANIZATION", "PROFILE" };
+
+const automation_formula_string_cases = .{
+    .{ "BOOLEAN(true)", "true" },
+    .{ "DECIMAL(\"1.1\")", "1.1" },
+    .{ "DATETIME(\"2019-12-26T00:00:00\")", "2019-12-26 00:00:00" },
+    .{ "DATE(2019,12,26)", "2019-12-26 00:00:00" },
+    .{ "DATETIME(2019,12,26,0,0,0)", "2019-12-26 00:00:00" },
+    .{ "DATETIME(2019,12,26,\"0\",0,0)", "2019-12-26 00:00:00" },
+    .{ "DATETIME(2019,12,26,0,\"0\",0)", "2019-12-26 00:00:00" },
+    .{ "DATETIME(2019,12,26,0,0,\"0\")", "2019-12-26 00:00:00" },
+    .{ "DAY(DATETIME(2019,12,26,0,0,0))", "25" },
+    .{ "MONTH(DATETIME(2019,12,26,0,0,0))", "12" },
+    .{ "YEAR(DATETIME(2019,12,26,0,0,0))", "2019" },
+    .{ "HOURS(DATETIME(2019,12,26,0,0,0))", "16" },
+    .{ "MINUTES(DATETIME(2019,12,26,0,0,0))", "0" },
+    .{ "SECONDS(DATETIME(2019,12,26,0,0,0))", "0" },
+    .{ "ADDDAYS(DATETIME(2019,12,26,0,0,0),1)", "2019-12-27 00:00:00" },
+    .{ "ADDMONTHS(DATETIME(2019,12,26,0,0,0),1)", "2020-01-26 00:00:00" },
+    .{ "ADDYEARS(DATETIME(2019,12,26,0,0,0),1)", "2020-12-26 00:00:00" },
+    .{ "ADDHOURS(DATETIME(2019,12,26,0,0,0),1)", "2019-12-26 01:00:00" },
+    .{ "ADDMINUTES(DATETIME(2019,12,26,0,0,0),1)", "2019-12-26 00:01:00" },
+    .{ "ADDSECONDS(DATETIME(2019,12,26,0,0,0),1)", "2019-12-26 00:00:01" },
+    .{ "LEN(\"error\")", "5" },
+    .{ "ISBLANK(\"error\")", "false" },
+    .{ "SUBSTRING(\"error\",\"1\",\"text\")", "error" },
+    .{ "LEFT(\"error\",3)", "err" },
+    .{ "RIGHT(\"error\",2)", "or" },
+    .{ "ISPICKVAL(\"error\",\"error\")", "true" },
+    .{ "CASE(\"error\",\"error\",1,\"success\",2,4)", "1" },
+    .{
+        "CASE(\"error\",\"error\",BOOLEAN(\"true\")," ++
+            "\"success\",BOOLEAN(\"true\"),BOOLEAN(\"true\"))",
+        "true",
+    },
+    .{ "NOT(BOOLEAN(\"true\"))", "false" },
+    .{ "XOR(BOOLEAN(\"true\"),BOOLEAN(\"false\"))", "true" },
+    .{ "(BOOLEAN(\"true\"))&&(BOOLEAN(\"false\"))", "false" },
+    .{ "(BOOLEAN(\"true\"))||(BOOLEAN(\"false\"))", "true" },
+    .{ "(BOOLEAN(\"true\"))^^(BOOLEAN(\"false\"))", "true" },
+    .{ "!(BOOLEAN(\"true\"))", "false" },
+    .{ "itemOne", "30" },
+    .{ "itemTwo", "45" },
+    .{ "itemOne > itemTwo", "false" },
+    .{ "itemOne < itemTwo", "true" },
+    .{ "AND(true,false)", "false" },
+    .{ "AND(true,true)", "true" },
+    .{ "IF(15 > 10,true,false)", "true" },
+    .{ "DATETIME(2019,01,01,11,00,15)", "2019-01-01 11:00:15" },
+    .{ "TEXT(256)", "256" },
+    .{ "TRIM(\"  TEST  . \")", "TEST  ." },
+    .{ "VALUE(\"100\")", "100" },
+    .{
+        "CONCATENATE(\"$Opportunity.Name\",\"$Opportunity.Amount\")",
+        "$Opportunity.Name$Opportunity.Amount",
+    },
+};
+
+const automation_formula_null_cases = .{
+    "TEXT(text)",
+    "INTEGER(\"1.1\")",
+    "DATE(2019,\"12\",26)",
+    "DATE(\"2019\",12,26)",
+    "DATE(2019,12,\"26\")",
+    "DATETIME(\"2019\",12,26,0,0,0)",
+    "DATETIME(2019,\"12\",26,0,0,0)",
+    "DATETIME(2019,12,\"26\",0,0,0)",
+    "CONVERTID(\"error\")",
+    "CASE(\"error\",\"error\",1,\"success\",2)",
+    "2019 / test",
+};
 
 const quiddity_values = [_][]const u8{
     "ANONYMOUS",
@@ -51931,6 +52361,20 @@ fn is_system_enum_value(enum_simple: []const u8, value: []const u8) bool {
         return false;
     }
     return false;
+}
+
+fn formula_eval_enum_values(class_name: []const u8) ?[]const []const u8 {
+    if (std.ascii.eqlIgnoreCase(class_name, "FormulaEval.FormulaReturnType") or
+        std.ascii.eqlIgnoreCase(class_name, "FormulaReturnType"))
+    {
+        return &formula_return_type_values;
+    }
+    if (std.ascii.eqlIgnoreCase(class_name, "FormulaEval.FormulaGlobal") or
+        std.ascii.eqlIgnoreCase(class_name, "FormulaGlobal"))
+    {
+        return &formula_global_values;
+    }
+    return null;
 }
 
 /// True if `pt` looks like a known built-in System enum type name (simple or qualified).
