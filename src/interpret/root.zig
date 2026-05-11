@@ -3086,6 +3086,26 @@ test "E2E: local variables do not update same-named instance fields case-insensi
     try std.testing.expectEqual(@as(i64, 5), result.value.integer);
 }
 
+test "E2E: missing FormulaFilter class passes records through when no entry criteria exists" {
+    const source =
+        \\public class MissingFormulaFilterFallbackTest {
+        \\    public static Integer test() {
+        \\        List<Account> records = new List<Account>{ new Account(Name = 'A') };
+        \\        Object filter = new FormulaFilter(null, null, 'Account');
+        \\        Object result = filter.filterByEntryCriteria(records, null);
+        \\        return ((List<SObject>) result.triggerNew).size();
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "MissingFormulaFilterFallbackTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqual(@as(i64, 1), result.value.integer);
+}
+
 test "E2E: CaseComment describe does not expose implicit Name field" {
     const source =
         \\public class CaseCommentDescribeNameTest {
@@ -21464,6 +21484,35 @@ test "E2E: EventBus.publish keeps live platform event Id field unset" {
     defer result.deinit();
 
     try std.testing.expectEqualStrings("true:true", result.value.string);
+}
+
+test "E2E: Test event bus deliver fires change event triggers" {
+    const source =
+        \\trigger AccountChangeProbeTrigger on AccountChangeEvent(after insert) {
+        \\    AccountChangeProbe.hit =
+        \\        Trigger.new[0].ChangeEventHeader.getRecordIds().size();
+        \\}
+        \\public class AccountChangeProbe {
+        \\    public static Integer hit = 0;
+        \\    public static Integer test() {
+        \\        Account acct = new Account(Name = 'Before');
+        \\        insert acct;
+        \\        Test.startTest();
+        \\        acct.Name = 'After';
+        \\        update acct;
+        \\        Integer beforeStop = hit;
+        \\        Test.stopTest();
+        \\        return beforeStop * 10 + hit;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "AccountChangeProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqual(@as(i64, 1), result.value.integer);
 }
 
 test "E2E: synthetic AppMenuItem query exposes app order entries" {
