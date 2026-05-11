@@ -20900,6 +20900,25 @@ test "E2E: Formula.builder chain returns a FormulaInstance that evaluates simple
     );
 }
 
+test "E2E: FormulaEval enum namespace supports field access and values" {
+    const source =
+        \\global class FormulaEvalEnumProbe {
+        \\    global static String test() {
+        \\        return String.valueOf(FormulaEval.FormulaReturnType.Boolean) +
+        \\            ':' + String.valueOf(FormulaEval.FormulaGlobal.values().size()) +
+        \\            ':' + String.valueOf(Math.pow(2, 3));
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "FormulaEvalEnumProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("Boolean:4:8.0", result.value.string);
+}
+
 test "E2E: QueryException.getInaccessibleFields lists fields blocked in user mode" {
     // Anonymized probe: fflib_SObjectSelectorTest catches a QueryException
     // thrown by a USER_MODE SOQL query run under a minimum-access user and
