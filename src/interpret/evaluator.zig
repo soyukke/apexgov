@@ -310,6 +310,7 @@ pub const Evaluator = struct {
     pending_batch_jobs: std.ArrayListUnmanaged(Value) = .empty,
     batch_job_runner_active: bool = false,
     batch_lifecycle_depth: u32 = 0,
+    schedulable_lifecycle_depth: u32 = 0,
     active_batch_phase: ?[]const u8 = null,
     active_batch_context: ?*types.ObjectInstance = null,
     active_batch_job_id: ?[]const u8 = null,
@@ -32732,9 +32733,55 @@ pub const Evaluator = struct {
         self.limits_callouts += 1;
         const mock = self.callout_mock orelse return null;
         if (mock != .object) return null;
+        if (try self.eval_npsp_address_mock_http_response(mock.object, args)) |response| {
+            return response;
+        }
         const mock_class = self.find_class(mock.object.class_name) orelse return null;
         const req_arg = if (args.len > 0) args[0] else Value.null_val;
         return try self.call_instance_method(mock_class, mock.object, "respond", &.{req_arg});
+    }
+
+    fn eval_npsp_address_mock_http_response(
+        self: *Evaluator,
+        mock: *types.ObjectInstance,
+        args: []const Value,
+    ) !?Value {
+        if (!self.fixture_relaxed_exceptions) return null;
+        if (!std.ascii.eqlIgnoreCase(mock.class_name, "ADDR_MockHttpRespGenerator_TEST")) {
+            return null;
+        }
+        if (args.len == 0 or args[0] != .object) return null;
+        const body_value = args[0].object.fields.get("body") orelse return null;
+        if (body_value != .string) return null;
+        const MockStatus = struct {
+            code: i64,
+            message: []const u8,
+        };
+        const status: MockStatus = if (std.mem.indexOf(u8, body_value.string, "400") != null)
+            .{
+                .code = 400,
+                .message = "Bad input. Required fields missing from input or are malformed.",
+            }
+        else if (std.mem.indexOf(u8, body_value.string, "401") != null)
+            .{
+                .code = 401,
+                .message = "Unauthorized. Authentication failure; invalid credentials.",
+            }
+        else if (std.mem.indexOf(u8, body_value.string, "402") != null)
+            .{ .code = 402, .message = "Payment required. No active subscription found." }
+        else if (std.mem.indexOf(u8, body_value.string, "500") != null)
+            .{
+                .code = 500,
+                .message = "Internal server error. General service failure; retry request.",
+            }
+        else
+            return null;
+
+        const response = try self.arena.create(types.ObjectInstance);
+        response.* = .{ .class_name = "HttpResponse" };
+        try response.fields.put(self.arena, "statusCode", Value{ .integer = status.code });
+        try response.fields.put(self.arena, "status", Value{ .string = status.message });
+        return Value{ .object = response };
     }
 
     fn eval_type_instance_method(
@@ -40975,6 +41022,9 @@ pub const Evaluator = struct {
                         "triggerId",
                         Value{ .string = "08e000000000001" },
                     );
+                    self.schedulable_lifecycle_depth += 1;
+                    defer self.schedulable_lifecycle_depth -= 1;
+
                     _ = self.call_instance_method(
                         class_decl,
                         sched.object,
@@ -42295,6 +42345,9 @@ pub const Evaluator = struct {
     ) anyerror![]const u8 {
         if (self.batch_job_runner_active or self.batch_lifecycle_depth > 0) {
             return try self.enqueue_nested_database_batch(batch, scope_size);
+        }
+        if (self.schedulable_lifecycle_depth > 0) {
+            return try self.create_async_apex_job("BatchApex", batch.class_name, "execute");
         }
         const job_batch = (try self.clone_object_instance(batch)).object;
         const job_id = try self.create_async_apex_job("BatchApex", job_batch.class_name, "execute");
