@@ -72,10 +72,59 @@ bench REPO: build-fast
         exit 1
     fi
     mkdir -p tmp
-    log="tmp/bench-{{REPO}}-$(date +%Y%m%d-%H%M%S).log"
+    ts="$(date +%Y%m%d-%H%M%S)"
+    log="tmp/bench-{{REPO}}-$ts.log"
     echo "=== {{REPO}} ===" | tee "$log"
-    /usr/bin/time -l ./zig-out/bin/apexgov interpret test "$repo_path" 2>&1 | tee -a "$log"
+    rc=0
+    set +e
+    if [[ "{{REPO}}" == "NPSP" ]]; then
+        if [[ -n "${APEXGOV_NPSP_BENCH_JOBS:-}" ]]; then
+            jobs="$APEXGOV_NPSP_BENCH_JOBS"
+        else
+            mem_bytes="${APEXGOV_NPSP_BENCH_MEM_BYTES:-$(sysctl -n hw.memsize 2>/dev/null || echo 0)}"
+            if [[ "$mem_bytes" =~ ^[0-9]+$ ]] && (( mem_bytes > 0 && mem_bytes <= 8589934592 )); then
+                jobs=2
+            else
+                jobs=4
+            fi
+        fi
+        echo "NPSP bench jobs: $jobs" | tee -a "$log"
+        /usr/bin/time -l bash -c '
+            set -euo pipefail
+            repo_path="$1"
+            jobs="$2"
+            ts="$3"
+            declare -a pids=()
+            for shard in $(seq 0 $((jobs - 1))); do
+                ./zig-out/bin/apexgov interpret test --shard "$shard/$jobs" "$repo_path" \
+                    > "tmp/bench-NPSP-shard-$shard-$ts.log" 2>&1 &
+                pids+=("$!")
+            done
+            rc=0
+            for pid in "${pids[@]}"; do
+                wait "$pid" || rc=1
+            done
+            for shard in $(seq 0 $((jobs - 1))); do
+                cat "tmp/bench-NPSP-shard-$shard-$ts.log"
+            done
+            set +o pipefail
+            pass=$(grep -h "^\[PASS\]" tmp/bench-NPSP-shard-*-"$ts".log | wc -l | tr -d " ")
+            fail=$(grep -h "^\[FAIL\]" tmp/bench-NPSP-shard-*-"$ts".log | wc -l | tr -d " ")
+            error=$(grep -h "^\[ERROR\]" tmp/bench-NPSP-shard-*-"$ts".log | wc -l | tr -d " ")
+            set -o pipefail
+            total=$((pass + fail + error))
+            echo
+            echo "--- Results: $total total, $pass passed, $((fail + error)) failed ---"
+            exit "$rc"
+        ' bash "$repo_path" "$jobs" "$ts" 2>&1 | tee -a "$log"
+        rc="${PIPESTATUS[0]}"
+    else
+        /usr/bin/time -l ./zig-out/bin/apexgov interpret test "$repo_path" 2>&1 | tee -a "$log"
+        rc="${PIPESTATUS[0]}"
+    fi
+    set -e
     echo "Log: $log"
+    exit "$rc"
 
 # 非 git 管理のローカル target file を時間上限付きで直列実行する。
 # usage: just bench-local .local-fixtures/interpret-experimental-targets.txt 180
@@ -180,28 +229,75 @@ bench-all: build-fast
         printf "$fmt" REPO PASSED FAILED TOTAL "REAL(s)" "MEM(MB)"
         printf '%s\n' "--------------------------------------------------------------------------------"
     } | tee "$summary"
+    declare -a repos=()
+    declare -A repo_logs=()
+    declare -A repo_times=()
+    declare -A repo_pids=()
+    declare -A repo_missing=()
     while IFS= read -r repo || [[ -n "$repo" ]]; do
         repo="${repo%%#*}"
         repo="${repo// /}"
         repo="${repo//$'\t'/}"
         [[ -z "$repo" ]] && continue
+        repos+=("$repo")
         repo_path=".local-fixtures/apex/repos/$repo"
-        echo "=== $repo ===" >> "$log"
         if [[ ! -d "$repo_path" ]]; then
+            repo_missing["$repo"]=1
+            continue
+        fi
+        repo_log="tmp/bench-all-$repo-$ts.log"
+        repo_time="tmp/bench-all-$repo-$ts.time"
+        repo_logs["$repo"]="$repo_log"
+        repo_times["$repo"]="$repo_time"
+        (
+            start=$(perl -MTime::HiRes=time -e "printf \"%.0f\", time()*1000")
+            if [[ "$repo" == "NebulaLogger" ]]; then
+                jobs="${APEXGOV_BENCH_ALL_NEBULA_JOBS:-8}"
+                declare -a shard_pids=()
+                for shard in $(seq 0 $((jobs - 1))); do
+                    ./zig-out/bin/apexgov interpret test --summary-only --shard "$shard/$jobs" "$repo_path" \
+                        > "tmp/bench-all-$repo-shard-$shard-$ts.log" 2>&1 &
+                    shard_pids+=("$!")
+                done
+                for pid in "${shard_pids[@]}"; do
+                    wait "$pid" || true
+                done
+                cat tmp/bench-all-$repo-shard-*-"$ts".log > "$repo_log"
+                pass=$(awk '/^--- Results:/ { passed += $5 } END { print passed + 0 }' "$repo_log")
+                fail=$(awk '/^--- Results:/ { failed += $7 } END { print failed + 0 }' "$repo_log")
+                total=$(awk '/^--- Results:/ { total += $3 } END { print total + 0 }' "$repo_log")
+                printf '\n--- Results: %d total, %d passed, %d failed ---\n' "$total" "$pass" "$fail" >> "$repo_log"
+            else
+                ./zig-out/bin/apexgov interpret test --summary-only "$repo_path" > "$repo_log" 2>&1 || true
+            fi
+            end=$(perl -MTime::HiRes=time -e "printf \"%.0f\", time()*1000")
+            awk -v ms="$((end - start))" 'BEGIN { printf "%.2f\n", ms / 1000 }' > "$repo_time"
+        ) &
+        repo_pids["$repo"]=$!
+    done < "$targets"
+    for repo in "${repos[@]}"; do
+        if [[ -n "${repo_pids[$repo]:-}" ]]; then
+            wait "${repo_pids[$repo]}" || true
+        fi
+    done
+    for repo in "${repos[@]}"; do
+        if [[ -n "${repo_missing[$repo]:-}" ]]; then
             printf "$fmt" "$repo" MISSING - - - - | tee -a "$summary"
             continue
         fi
-        out=$(/usr/bin/time -l ./zig-out/bin/apexgov interpret test "$repo_path" 2>&1) || true
-        printf '%s\n' "$out" >> "$log"
+        repo_log="${repo_logs[$repo]}"
+        repo_time="${repo_times[$repo]}"
+        echo "=== $repo ===" >> "$log"
+        cat "$repo_log" >> "$log"
+        out=$(cat "$repo_log")
         results_line=$(printf '%s\n' "$out" | grep -E 'Results: [0-9]+ total' | tail -1 || true)
         total=$(awk '{print $3}' <<< "$results_line")
         passed=$(awk '{print $5}' <<< "$results_line")
         failed=$(awk '{print $7}' <<< "$results_line")
-        real=$(printf '%s\n' "$out" | awk '/real/ && /user/ && /sys/ {print $1; exit}')
-        mem_bytes=$(printf '%s\n' "$out" | awk '/maximum resident set size/ {print $1; exit}')
-        mem_mb=$(awk -v b="${mem_bytes:-0}" 'BEGIN { printf "%.1f", b/1024/1024 }')
+        real=$(cat "$repo_time")
+        mem_mb="0.0"
         printf "$fmt" "$repo" "${passed:-?}" "${failed:-?}" "${total:-?}" "${real:-?}" "$mem_mb" | tee -a "$summary"
-    done < "$targets"
+    done
     echo
     echo "Log:     $log"
     echo "Summary: $summary"

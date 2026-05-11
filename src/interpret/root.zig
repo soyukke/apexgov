@@ -26,6 +26,7 @@ pub const Options = struct {
     entry_method: []const u8 = "",
     args: []const Value = &.{},
     source_paths: []const []const u8 = &.{},
+    fixture_relaxed_exceptions: bool = false,
 };
 
 pub const Result = struct {
@@ -50,6 +51,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, source: []const u8, opts: Options
     const decls = try parser.parse(tokens, arena.allocator());
 
     var eval = try evaluator.Evaluator.init(arena.allocator(), io);
+    eval.fixture_relaxed_exceptions = opts.fixture_relaxed_exceptions;
     if (opts.source_paths.len > 0) {
         eval.source_paths = opts.source_paths;
         for (opts.source_paths) |path| {
@@ -72,6 +74,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, source: []const u8, opts: Options
                 &eval.object_labels,
                 &eval.object_label_plurals,
             );
+            try collect_custom_labels(arena.allocator(), io, path, &eval.custom_labels);
         }
     }
     try eval.load_decls(decls);
@@ -122,6 +125,15 @@ pub const TestSuiteResult = struct {
     pub fn deinit(self: *TestSuiteResult) void {
         if (self.arena) |*a| a.deinit();
         self.arena = null;
+    }
+};
+
+pub const TestShard = struct {
+    index: usize,
+    count: usize,
+
+    fn includes(self: TestShard, ordinal: usize) bool {
+        return ordinal % self.count == self.index;
     }
 };
 
@@ -235,7 +247,17 @@ pub fn run_test_suite(
     paths: []const []const u8,
     writer: anytype,
 ) !TestSuiteResult {
-    return run_tests_filtered(gpa, io, paths, null, null, writer);
+    return run_tests_filtered(gpa, io, paths, null, null, null, writer);
+}
+
+pub fn run_test_suite_sharded(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    paths: []const []const u8,
+    shard: TestShard,
+    writer: anytype,
+) !TestSuiteResult {
+    return run_tests_filtered(gpa, io, paths, null, null, shard, writer);
 }
 
 /// 指定クラス（+ オプションでメソッド）のテストのみ実行する。
@@ -248,7 +270,7 @@ pub fn run_single_test(
     method_name: ?[]const u8,
     writer: anytype,
 ) !TestSuiteResult {
-    return run_tests_filtered(gpa, io, paths, class_name, method_name, writer);
+    return run_tests_filtered(gpa, io, paths, class_name, method_name, null, writer);
 }
 
 /// テスト実行の共通内部関数。filter_class / filter_method が null なら全テスト実行。
@@ -258,6 +280,7 @@ fn run_tests_filtered(
     paths: []const []const u8,
     filter_class: ?[]const u8,
     filter_method: ?[]const u8,
+    shard: ?TestShard,
     writer: anytype,
 ) !TestSuiteResult {
     // 永続アリーナ: パース済み AST・クラス登録・ソースファイル（テスト間で共有）。
@@ -293,6 +316,7 @@ fn run_tests_filtered(
         &eval,
         filter_class,
         filter_method,
+        shard,
         classes_with_statics.items,
         &suite,
         writer,
@@ -401,6 +425,7 @@ fn load_test_metadata_path(
         &eval.object_labels,
         &eval.object_label_plurals,
     ) catch {};
+    collect_custom_labels(parse_alloc, io, path, &eval.custom_labels) catch {};
     eval.index_custom_metadata_from_path(path) catch {};
 }
 
@@ -436,6 +461,7 @@ fn run_loaded_tests(
     eval: *evaluator.Evaluator,
     filter_class: ?[]const u8,
     filter_method: ?[]const u8,
+    shard: ?TestShard,
     classes_with_statics: []const *ast.ClassDecl,
     suite: *TestSuiteResult,
     writer: anytype,
@@ -443,6 +469,7 @@ fn run_loaded_tests(
     var test_arena = std.heap.ArenaAllocator.init(gpa);
     defer test_arena.deinit();
 
+    var test_ordinal: usize = 0;
     var class_iter = eval.classes.iterator();
     while (class_iter.next()) |entry| {
         const class_name = entry.key_ptr.*;
@@ -456,6 +483,8 @@ fn run_loaded_tests(
             class_name,
             entry.value_ptr.*,
             filter_method,
+            shard,
+            &test_ordinal,
             classes_with_statics,
             &test_arena,
             suite,
@@ -471,6 +500,8 @@ fn run_test_class(
     class_name: []const u8,
     class_decl: *ast.ClassDecl,
     filter_method: ?[]const u8,
+    shard: ?TestShard,
+    test_ordinal: *usize,
     classes_with_statics: []const *ast.ClassDecl,
     test_arena: *std.heap.ArenaAllocator,
     suite: *TestSuiteResult,
@@ -483,6 +514,11 @@ fn run_test_class(
                 if (!is_test_method(method_decl)) continue;
                 if (filter_method) |fm| {
                     if (!std.ascii.eqlIgnoreCase(method_decl.name, fm)) continue;
+                }
+                const ordinal = test_ordinal.*;
+                test_ordinal.* += 1;
+                if (shard) |s| {
+                    if (!s.includes(ordinal)) continue;
                 }
                 try run_test_method(
                     parse_alloc,
@@ -572,6 +608,7 @@ fn copy_test_eval_context(
     test_eval.custom_setting_kinds = base_eval.custom_setting_kinds;
     test_eval.object_labels = base_eval.object_labels;
     test_eval.object_label_plurals = base_eval.object_label_plurals;
+    test_eval.custom_labels = base_eval.custom_labels;
     test_eval.field_sets = base_eval.field_sets;
     test_eval.custom_metadata_records = base_eval.custom_metadata_records;
     test_eval.custom_metadata_paths_indexed = base_eval.custom_metadata_paths_indexed;
@@ -895,12 +932,29 @@ fn read_field_metadata(alloc: std.mem.Allocator, content: []const u8) !evaluator
         metadata.inline_help_text =
             decode_xml_text(alloc, std.mem.trim(u8, inline_help_text, " \t\n\r"), false) catch null;
     }
+    if (extract_xml_tag_value(content, "type")) |field_type| {
+        metadata.field_type = alloc.dupe(u8, std.mem.trim(u8, field_type, " \t\n\r")) catch null;
+    }
     if (extract_field_bool_tag(content, "caseSensitive")) |value| metadata.case_sensitive = value;
     if (extract_field_bool_tag(content, "externalId")) |value| metadata.is_external_id = value;
     if (extract_field_bool_tag(content, "unique")) |value| metadata.is_unique = value;
     if (extract_field_bool_tag(content, "required")) |value| metadata.is_required = value;
+    if (extract_field_bool_tag(content, "reparentableMasterDetail")) |value| {
+        metadata.reparentable_master_detail = value;
+    }
     if (extract_xml_tag_value(content, "length")) |length| {
         metadata.length = std.fmt.parseInt(i64, std.mem.trim(u8, length, " \t\n\r"), 10) catch null;
+    }
+    if (extract_xml_tag_value(content, "deleteConstraint")) |delete_constraint| {
+        const value = std.mem.trim(u8, delete_constraint, " \t\n\r");
+        metadata.delete_constraint = alloc.dupe(u8, value) catch null;
+    }
+    if (extract_xml_tag_value(content, "relationshipOrder")) |relationship_order| {
+        metadata.relationship_order = std.fmt.parseInt(
+            i64,
+            std.mem.trim(u8, relationship_order, " \t\n\r"),
+            10,
+        ) catch null;
     }
     if (extract_xml_tag_value(content, "formula")) |formula| {
         metadata.formula = decode_xml_text(alloc, formula, false) catch null;
@@ -1004,6 +1058,7 @@ fn field_metadata_has_values(metadata: evaluator.FieldMetadata) bool {
         metadata.is_required or
         metadata.length != null or
         metadata.reference_to != null or
+        metadata.delete_constraint != null or
         metadata.formula != null or
         metadata.summary_operation != null or
         metadata.picklist_values.len > 0;
@@ -1084,6 +1139,49 @@ fn extract_xml_tag_value(content: []const u8, tag_name: []const u8) ?[]const u8 
     const value_start = start_idx + start_tag.len;
     const end_idx = std.mem.indexOfPos(u8, content, value_start, end_tag) orelse return null;
     return content[value_start..end_idx];
+}
+
+fn collect_custom_labels(
+    alloc: std.mem.Allocator,
+    io: std.Io,
+    path: []const u8,
+    custom_labels: *std.StringArrayHashMapUnmanaged([]const u8),
+) !void {
+    var dir = std.Io.Dir.cwd().openDir(io, path, .{ .iterate = true }) catch return;
+    defer dir.close(io);
+
+    var walker = dir.walk(alloc) catch return;
+    defer walker.deinit();
+
+    while (walker.next(io) catch null) |entry| {
+        if (entry.kind != .file) continue;
+        if (!std.mem.endsWith(u8, entry.basename, ".labels-meta.xml")) continue;
+
+        const full_path = std.fs.path.join(alloc, &.{ path, entry.path }) catch continue;
+        const content = std.Io.Dir.cwd().readFileAlloc(
+            io,
+            full_path,
+            alloc,
+            .limited(1024 * 1024),
+        ) catch continue;
+
+        var cursor: usize = 0;
+        while (std.mem.indexOfPos(u8, content, cursor, "<labels>")) |block_start| {
+            const body_start = block_start + "<labels>".len;
+            const block_end = std.mem.indexOfPos(u8, content, body_start, "</labels>") orelse break;
+            const block = content[body_start..block_end];
+            cursor = block_end + "</labels>".len;
+
+            const raw_name = extract_xml_tag_value(block, "fullName") orelse continue;
+            const raw_value = extract_xml_tag_value(block, "value") orelse continue;
+            const name = std.mem.trim(u8, raw_name, " \t\r\n");
+            const value = std.mem.trim(u8, raw_value, " \t\r\n");
+            if (name.len == 0) continue;
+            const key_dup = alloc.dupe(u8, name) catch continue;
+            const val_dup = decode_xml_text(alloc, value, false) catch continue;
+            custom_labels.put(alloc, key_dup, val_dup) catch {};
+        }
+    }
 }
 
 fn parse_summary_filters(
@@ -1230,7 +1328,6 @@ fn collect_custom_setting_types(
                 }
             }
         }
-
         if (std.mem.indexOf(u8, content, "<customSettingsType>") == null) continue;
         const type_key = alloc.dupe(u8, type_name) catch continue;
         custom_setting_types.put(alloc, type_key, {}) catch {};
@@ -1424,11 +1521,11 @@ fn decode_xml_text(
         }
     }
     const decoded = buf.items;
-    // Strip surrounding single quotes (Apex string literal in metadata)
+    // Strip surrounding Apex string literal quotes in metadata.
     if (strip_outer_quotes and
         decoded.len >= 2 and
-        decoded[0] == '\'' and
-        decoded[decoded.len - 1] == '\'')
+        ((decoded[0] == '\'' and decoded[decoded.len - 1] == '\'') or
+            (decoded[0] == '"' and decoded[decoded.len - 1] == '"')))
     {
         return alloc.dupe(u8, decoded[1 .. decoded.len - 1]);
     }
@@ -1437,6 +1534,18 @@ fn decode_xml_text(
 
 fn decode_xml_default_value(alloc: std.mem.Allocator, raw: []const u8) ![]const u8 {
     return decode_xml_text(alloc, raw, true);
+}
+
+test "metadata default value strips XML-encoded string literal quotes" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const single = try decode_xml_default_value(alloc, "&apos;Default&apos;");
+    try std.testing.expectEqualStrings("Default", single);
+
+    const double = try decode_xml_default_value(alloc, "&quot;Do Not Match&quot;");
+    try std.testing.expectEqualStrings("Do Not Match", double);
 }
 
 /// arena 上の Value を gpa にコピーする。
@@ -3022,6 +3131,37 @@ test "E2E: Profile Name IN query preserves standard-user CRUD restrictions in ru
     try std.testing.expectEqualStrings("false:false", result.value.string);
 }
 
+test "E2E: Profile Name bind query preserves read-only delete restrictions in runAs" {
+    const source =
+        \\public class ProfileBindReadOnlyCrudTest {
+        \\    public static String test() {
+        \\        String profileName = 'Read Only';
+        \\        User u = [
+        \\            SELECT Id
+        \\            FROM User
+        \\            WHERE Profile.Name = :profileName
+        \\            AND IsActive = TRUE
+        \\            LIMIT 1
+        \\        ];
+        \\        String result = '';
+        \\        System.runAs(u) {
+        \\            result = String.valueOf(
+        \\                Contact.SObjectType.getDescribe().isDeletable()
+        \\            );
+        \\        }
+        \\        return result;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "ProfileBindReadOnlyCrudTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("false", result.value.string);
+}
+
 test "E2E: synthetic Profile LIKE filters no-match and collapses repeated wildcards" {
     const source =
         \\public class ProfileLikeSearchTest {
@@ -3874,6 +4014,45 @@ test "E2E: standard user cannot access AccountBrand describe fields" {
     try std.testing.expectEqualStrings("false:false:false", result.value.string);
 }
 
+test "E2E: standard user cannot access custom fields without permission sets" {
+    const source =
+        \\public class StandardUserCustomFieldDescribeProbe {
+        \\    public static String test() {
+        \\        Profile p = [
+        \\            SELECT Id
+        \\            FROM Profile
+        \\            WHERE Name = 'Standard User'
+        \\            LIMIT 1
+        \\        ];
+        \\        User u = new User(
+        \\            ProfileId = p.Id,
+        \\            LastName = 'User',
+        \\            Username = 'customfield@example.com',
+        \\            Email = 'customfield@example.com',
+        \\            Alias = 'cfield'
+        \\        );
+        \\        String result = '';
+        \\        System.runAs(u) {
+        \\            Schema.DescribeFieldResult customField =
+        \\                Contact.npo02__Household_Naming_Order__c.getDescribe();
+        \\            Schema.DescribeFieldResult standardField = Contact.LastName.getDescribe();
+        \\            result = String.valueOf(customField.isAccessible()) + ':' +
+        \\                String.valueOf(customField.isUpdateable()) + ':' +
+        \\                String.valueOf(standardField.isAccessible());
+        \\        }
+        \\        return result;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "StandardUserCustomFieldDescribeProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("false:false:true", result.value.string);
+}
+
 test "E2E: StaticResource IN clause returns multiple stubs" {
     // Multi-line SOQL like in apex-recipes
     const source =
@@ -4378,6 +4557,33 @@ test "E2E: enqueueJob executes instance queueable method" {
     try std.testing.expectEqualStrings("queued", result.value.string);
 }
 
+test "E2E: queueable enqueued after startTest runs at stopTest" {
+    const source =
+        \\public class DeferredQueueable implements Queueable {
+        \\    public static String state = 'initial';
+        \\    public void execute(QueueableContext qc) {
+        \\        DeferredQueueable.state = 'executed';
+        \\    }
+        \\}
+        \\public class DeferredQueueableTest {
+        \\    public static String test() {
+        \\        Test.startTest();
+        \\        System.enqueueJob(new DeferredQueueable());
+        \\        String beforeStop = DeferredQueueable.state;
+        \\        Test.stopTest();
+        \\        return beforeStop + ':' + DeferredQueueable.state;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "DeferredQueueableTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("initial:executed", result.value.string);
+}
+
 test "E2E: Limits.getAsyncCalls tracks enqueued queueables" {
     const source =
         \\public class AsyncLimitQueueable implements Queueable {
@@ -4653,6 +4859,24 @@ test "E2E: HttpRequest.getHeader returns null for missing header" {
     defer result.deinit();
 
     try std.testing.expectEqualStrings("null", result.value.string);
+}
+
+test "E2E: HttpRequest.getBody returns empty string when unset" {
+    const source =
+        \\public class HttpUnsetBodyProbe {
+        \\    public static String test() {
+        \\        HttpRequest req = new HttpRequest();
+        \\        return req.getBody();
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "HttpUnsetBodyProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("", result.value.string);
 }
 
 test "E2E: SOQL parent relationship resolves namespaced custom lookup" {
@@ -5377,6 +5601,34 @@ test "E2E: NPSP payment paid total auto-closes opportunity" {
     try std.testing.expectEqualStrings("Closed Won:true:true", result.value.string);
 }
 
+test "E2E: NPSP payment boolean strings normalize on assignment" {
+    const source =
+        \\public class NpspPaymentBooleanStringProbe {
+        \\    public static String test() {
+        \\        npe01__OppPayment__c payment = new npe01__OppPayment__c(
+        \\            npe01__Paid__c = 'True',
+        \\            npe01__Written_Off__c = 'False'
+        \\        );
+        \\        insert payment;
+        \\        npe01__OppPayment__c stored = [
+        \\            SELECT npe01__Paid__c, npe01__Written_Off__c
+        \\            FROM npe01__OppPayment__c
+        \\            WHERE Id = :payment.Id
+        \\        ];
+        \\        return String.valueOf(stored.npe01__Paid__c) + ':' +
+        \\            String.valueOf(stored.npe01__Written_Off__c);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "NpspPaymentBooleanStringProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("true:false", result.value.string);
+}
+
 test "E2E: getFilteredAttachments full flow" {
     const source =
         \\public class FTest {
@@ -5923,6 +6175,110 @@ test "E2E: Date.today().year() returns current year" {
     try std.testing.expectEqualStrings("2026", result.value.string);
 }
 
+test "E2E: Datetime.format supports quoted literals and milliseconds pattern" {
+    const source =
+        \\public class DatetimeFormatPatternProbe {
+        \\    public static String test() {
+        \\        Date d = Date.newInstance(2026, 2, 1);
+        \\        return Datetime.newInstance(d.year(), d.month(), d.day())
+        \\            .format('yyyy-MM-dd\'T\'HH:mm:ss.SSS');
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "DatetimeFormatPatternProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("2026-02-01T00:00:00.000", result.value.string);
+}
+
+test "E2E: JSON deserialize SObject CreatedDate supports dateGmt" {
+    const source =
+        \\public class JsonCreatedDateDateGmtProbe {
+        \\    public static String test() {
+        \\        Date d = Date.newInstance(2026, 2, 1);
+        \\        String createdDateValue = Datetime.newInstance(d.year(), d.month(), d.day())
+        \\            .format('yyyy-MM-dd\'T\'HH:mm:ss.SSS');
+        \\        String payload = '{"attributes":{"type":"Account"},"Name":"Acme","CreatedDate":"' +
+        \\            createdDateValue + '"}';
+        \\        Account accountRecord = (Account) JSON.deserialize(payload, Account.class);
+        \\        return String.valueOf(accountRecord.CreatedDate.dateGmt());
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "JsonCreatedDateDateGmtProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("2026-02-01", result.value.string);
+}
+
+test "E2E: static final Date initialized from System.today supports addMonths" {
+    const source =
+        \\public class StaticFinalDateAddMonthsProbe {
+        \\    private static final Date TODAY = System.today();
+        \\    private static final Date DATE_ESTABLISHED = TODAY.addMonths(-3);
+        \\    public static String test() {
+        \\        return String.valueOf(DATE_ESTABLISHED);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "StaticFinalDateAddMonthsProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("2026-02-01", result.value.string);
+}
+
+test "E2E: map parameter shadows same-named instance field for values iteration" {
+    const source =
+        \\public class MapParameterShadowProbe {
+        \\    public class Record {
+        \\        private SObject opp = new Opportunity();
+        \\        public Record(Opportunity opp) { this.opp = opp; }
+        \\        public Boolean isNew() { return opp.Id == null; }
+        \\        public Date getCloseDate() { return (Date) opp.get('CloseDate'); }
+        \\    }
+        \\    private Map<Date, String> recordByCloseDate = new Map<Date, String>();
+        \\    private Map<Date, Record> boundaryRecordByCloseDate = new Map<Date, Record>();
+        \\
+        \\    public static String test() {
+        \\        MapParameterShadowProbe probe = new MapParameterShadowProbe();
+        \\        Date today = Date.newInstance(2020, 1, 10);
+        \\        Opportunity opp = new Opportunity();
+        \\        opp.Id = '006000000000001';
+        \\        opp.CloseDate = today.addDays(-1);
+        \\        probe.boundaryRecordByCloseDate.put(today.addDays(-1), new Record(opp));
+        \\        return probe.find(probe.boundaryRecordByCloseDate, today.addDays(-3), today);
+        \\    }
+        \\
+        \\    private String find(Map<Date, Record> recordByCloseDate, Date startDate, Date endDate) {
+        \\        for (Record record : recordByCloseDate.values()) {
+        \\            if (record.isNew()) continue;
+        \\            Date closeDate = record.getCloseDate();
+        \\            if (closeDate >= startDate && closeDate <= endDate) {
+        \\                return String.valueOf(closeDate);
+        \\            }
+        \\        }
+        \\        return 'missing';
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "MapParameterShadowProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("2020-01-09", result.value.string);
+}
+
 test "E2E: Datetime.addYears changes year" {
     const source =
         \\public class DtAddYears {
@@ -6261,6 +6617,92 @@ test "E2E: Account.Rating describe reports Picklist instead of String" {
     try std.testing.expectEqualStrings("PICKLIST", result.value.string);
 }
 
+test "E2E: NPSP recurring donation amount describe reports currency" {
+    const source =
+        \\public class NpspRecurringDonationAmountDescribeProbe {
+        \\    public static String test() {
+        \\        Schema.DescribeFieldResult dfr =
+        \\            npe03__Recurring_Donation__c.npe03__Amount__c.getDescribe();
+        \\        return dfr.getType().name();
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "NpspRecurringDonationAmountDescribeProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("CURRENCY", result.value.string);
+}
+
+test "E2E: NPSP contact closed opp count describe reports numeric" {
+    const source =
+        \\public class NpspContactClosedOppCountDescribeProbe {
+        \\    public static String test() {
+        \\        Schema.DescribeFieldResult dfr =
+        \\            Contact.SObjectType.getDescribe()
+        \\                .fields.getMap()
+        \\                .get('npo02__OppsClosedThisYear__c')
+        \\                .getDescribe();
+        \\        return dfr.getType().name();
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "NpspContactClosedOppCountDescribeProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("DOUBLE", result.value.string);
+}
+
+test "E2E: schema field map rejects invalid custom field api names" {
+    const source =
+        \\public class SchemaFieldMapInvalidApiNameProbe {
+        \\    public static String test() {
+        \\        Map<String, Schema.SObjectField> fields =
+        \\            DataImport__c.SObjectType.getDescribe().fields.getMap();
+        \\        return String.valueOf(fields.containsKey('Contact1_bad field__c'));
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "SchemaFieldMapInvalidApiNameProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("false", result.value.string);
+}
+
+test "E2E: SObjectField constructor argument coerces to DescribeFieldResult" {
+    const source =
+        \\public class SObjectFieldDescribeConstructorArgProbe {
+        \\    public class Column {
+        \\        public String typeName;
+        \\        public Column(Schema.DescribeFieldResult field) {
+        \\            typeName = field.getType().name();
+        \\        }
+        \\    }
+        \\    public static String test() {
+        \\        Column column = new Column(
+        \\            Schema.SObjectType.npe03__Recurring_Donation__c.fields.npe03__Amount__c
+        \\        );
+        \\        return column.typeName;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "SObjectFieldDescribeConstructorArgProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("CURRENCY", result.value.string);
+}
+
 test "E2E: Datetime.valueOf accepts loose single-digit components" {
     // `Datetime.valueOf('2006-5-4 3:2:1')` is real-world input seen in utility code that
     // re-parses user-entered strings. Apex accepts it; we need to as well.
@@ -6417,6 +6859,25 @@ test "E2E: null overload resolution prefers String over Object" {
     try std.testing.expectEqualStrings("string:null", result.value.string);
 }
 
+test "E2E: non-id string overload prefers String over Id" {
+    const source =
+        \\public class StringIdOverloadProbe {
+        \\    public static String pick(Id value) { return 'id'; }
+        \\    public static String pick(String value) { return 'string:' + value; }
+        \\    public static String test() {
+        \\        return pick('GAU 2');
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "StringIdOverloadProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("string:GAU 2", result.value.string);
+}
+
 test "E2E: System.runAs exposes the target user's fields to UserInfo" {
     // apex-expression's DSL tests build throw-away Users inside System.runAs
     // without ever inserting them. UserInfo methods used to return the default
@@ -6450,6 +6911,23 @@ test "E2E: System.runAs exposes the target user's fields to UserInfo" {
     defer result.deinit();
 
     try std.testing.expectEqualStrings("Bob|Smith|bob@example.com|en_US", result.value.string);
+}
+
+test "E2E: UserInfo.getUiThemeDisplayed defaults to Classic" {
+    const source =
+        \\public class UiThemeDisplayedProbe {
+        \\    public static String test() {
+        \\        return UserInfo.getUiThemeDisplayed();
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "UiThemeDisplayedProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("Theme3", result.value.string);
 }
 
 test "E2E: bare method call inside a subclass resolves to inherited builtin" {
@@ -7121,6 +7599,158 @@ test "E2E: Opportunity IsClosed WHERE derives from StageName" {
     try std.testing.expectEqualStrings("1:1", result.value.string);
 }
 
+test "E2E: Opportunity IsClosed SELECT derives from StageName" {
+    const source =
+        \\public class OpportunityIsClosedSelectTest {
+        \\    public static String test() {
+        \\        insert new Opportunity(
+        \\            Name = 'Closed',
+        \\            StageName = 'Closed Won',
+        \\            CloseDate = Date.today()
+        \\        );
+        \\        Opportunity opp = [
+        \\            SELECT IsClosed, IsWon
+        \\            FROM Opportunity
+        \\            WHERE Name = 'Closed'
+        \\            LIMIT 1
+        \\        ];
+        \\        return String.valueOf(opp.IsClosed) + ':' + String.valueOf(opp.IsWon);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "OpportunityIsClosedSelectTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("true:true", result.value.string);
+}
+
+test "E2E: Opportunity IsClosed field access derives from StageName" {
+    const source =
+        \\public class OpportunityIsClosedAccessTest {
+        \\    public static String test() {
+        \\        Opportunity opp = new Opportunity(
+        \\            Name = 'Donation',
+        \\            CloseDate = Date.today(),
+        \\            StageName = 'Closed Won'
+        \\        );
+        \\        return String.valueOf(opp.IsClosed) + ':' + String.valueOf(opp.IsWon);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "OpportunityIsClosedAccessTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("true:true", result.value.string);
+}
+
+test "E2E: Opportunity IsClosed field access ignores stale stored flag" {
+    const source =
+        \\public class OpportunityStaleStageFlagAccessTest {
+        \\    public static String test() {
+        \\        Opportunity opp = new Opportunity(
+        \\            Name = 'Donation',
+        \\            CloseDate = Date.today(),
+        \\            StageName = 'Prospecting'
+        \\        );
+        \\        insert opp;
+        \\        opp = [
+        \\            SELECT IsClosed, IsWon, StageName
+        \\            FROM Opportunity
+        \\            WHERE Id = :opp.Id
+        \\            LIMIT 1
+        \\        ];
+        \\        opp.StageName = 'Closed Lost';
+        \\        return String.valueOf(opp.IsClosed) + ':' + String.valueOf(opp.IsWon);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "OpportunityStaleStageFlagAccessTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("true:false", result.value.string);
+}
+
+test "E2E: CampaignMember HasResponded SELECT derives from member status" {
+    const source =
+        \\public class CampaignMemberHasRespondedSelectTest {
+        \\    public static String test() {
+        \\        Campaign campaign = new Campaign(Name = 'Appeal');
+        \\        insert campaign;
+        \\        insert new CampaignMemberStatus(
+        \\            CampaignId = campaign.Id,
+        \\            Label = 'Responded',
+        \\            HasResponded = true,
+        \\            SortOrder = 1
+        \\        );
+        \\        Contact contact = new Contact(LastName = 'Smith');
+        \\        insert contact;
+        \\        insert new CampaignMember(
+        \\            CampaignId = campaign.Id,
+        \\            ContactId = contact.Id,
+        \\            Status = 'Responded'
+        \\        );
+        \\        CampaignMember member = [
+        \\            SELECT HasResponded
+        \\            FROM CampaignMember
+        \\            WHERE ContactId = :contact.Id
+        \\            LIMIT 1
+        \\        ];
+        \\        return String.valueOf(member.HasResponded);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "CampaignMemberHasRespondedSelectTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("true", result.value.string);
+}
+
+test "E2E: CampaignMemberStatus insert ignores duplicate campaign labels" {
+    const source =
+        \\public class CampaignMemberStatusDuplicateTest {
+        \\    public static Integer test() {
+        \\        Campaign campaign = new Campaign(Name = 'Appeal');
+        \\        insert campaign;
+        \\        List<CampaignMemberStatus> statuses = new List<CampaignMemberStatus>();
+        \\        statuses.add(new CampaignMemberStatus(
+        \\            CampaignId = campaign.Id,
+        \\            Label = 'Follow Up',
+        \\            HasResponded = false,
+        \\            SortOrder = 10
+        \\        ));
+        \\        statuses.add(new CampaignMemberStatus(
+        \\            CampaignId = campaign.Id,
+        \\            Label = 'Follow Up',
+        \\            HasResponded = false,
+        \\            SortOrder = 11
+        \\        ));
+        \\        insert statuses;
+        \\        return [SELECT Id FROM CampaignMemberStatus
+        \\            WHERE CampaignId = :campaign.Id AND Label = 'Follow Up'].size();
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "CampaignMemberStatusDuplicateTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqual(@as(i64, 1), result.value.integer);
+}
+
 test "E2E: DescribeFieldResult returns its SObjectField token" {
     const source =
         \\public class DescribeFieldTokenRoundTripTest {
@@ -7209,6 +7839,28 @@ test "E2E: Database rollback restores inserted and updated records" {
     defer result.deinit();
 
     try std.testing.expectEqualStrings("1:before", result.value.string);
+}
+
+test "E2E: SOQL ORDER BY ascending places nulls first" {
+    const source =
+        \\public class OrderByNullsFirstTest {
+        \\    public static String test() {
+        \\        insert new List<Account>{
+        \\            new Account(Name = 'A', Industry = 'Filled'),
+        \\            new Account(Name = 'B')
+        \\        };
+        \\        List<Account> rows = [SELECT Industry FROM Account ORDER BY Industry];
+        \\        return String.valueOf(rows[0].Industry) + ':' + rows[1].Industry;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "OrderByNullsFirstTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("null:Filled", result.value.string);
 }
 
 test "E2E: Map copy constructor preserves entries" {
@@ -7658,6 +8310,53 @@ test "E2E: child insert recomputes rollup summaries and fires parent update trig
     try std.testing.expectEqualStrings("2:1:1", result.value.string);
 }
 
+test "E2E: lookup delete constraint SetNull clears referencing records" {
+    const alloc = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try tmp_dir.dir.createDirPath(std.testing.io, "objects/Parent__c/fields");
+    try tmp_dir.dir.createDirPath(std.testing.io, "objects/Child__c/fields");
+    try tmp_dir.dir.writeFile(std.testing.io, .{
+        .sub_path = "objects/Child__c/fields/Parent__c.field-meta.xml",
+        .data =
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+        \\    <fullName>Parent__c</fullName>
+        \\    <deleteConstraint>SetNull</deleteConstraint>
+        \\    <referenceTo>Parent__c</referenceTo>
+        \\    <relationshipName>Children</relationshipName>
+        \\    <type>Lookup</type>
+        \\</CustomField>
+        ,
+    });
+
+    const tmp_path = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", alloc);
+    defer alloc.free(tmp_path);
+
+    const source =
+        \\public class SetNullDeleteConstraintTest {
+        \\    public static String test() {
+        \\        Parent__c parent = new Parent__c(Name = 'P');
+        \\        insert parent;
+        \\        Child__c child = new Child__c(Name = 'C', Parent__c = parent.Id);
+        \\        insert child;
+        \\        delete parent;
+        \\        Child__c refreshed = [SELECT Parent__c FROM Child__c WHERE Id = :child.Id];
+        \\        return String.valueOf(refreshed.Parent__c == null);
+        \\    }
+        \\}
+    ;
+    const result = try run(alloc, std.testing.io, source, .{
+        .entry_class = "SetNullDeleteConstraintTest",
+        .entry_method = "test",
+        .source_paths = &.{tmp_path},
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("true", result.value.string);
+}
+
 test "E2E: filtered rollup matches enum name string values" {
     const alloc = std.testing.allocator;
     var tmp_dir = std.testing.tmpDir(.{});
@@ -7859,6 +8558,102 @@ test "E2E: insert applies required picklist defaults from field metadata" {
     defer result.deinit();
 
     try std.testing.expectEqualStrings("Draft", result.value.string);
+}
+
+test "E2E: master-detail metadata fields are required on insert" {
+    const alloc = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try tmp_dir.dir.createDirPath(std.testing.io, "objects/Child__c/fields");
+    try tmp_dir.dir.writeFile(std.testing.io, .{
+        .sub_path = "objects/Child__c/fields/Parent__c.field-meta.xml",
+        .data =
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+        \\    <fullName>Parent__c</fullName>
+        \\    <referenceTo>Parent__c</referenceTo>
+        \\    <relationshipName>Children</relationshipName>
+        \\    <type>MasterDetail</type>
+        \\</CustomField>
+        ,
+    });
+    const tmp_path = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", alloc);
+    defer alloc.free(tmp_path);
+
+    const source =
+        \\public class MasterDetailRequiredInsertTest {
+        \\    public static String test() {
+        \\        try {
+        \\            insert new Child__c(Name = 'Orphan', Parent__c = null);
+        \\            return 'no-error';
+        \\        } catch (DmlException ex) {
+        \\            return ex.getDmlMessage(0);
+        \\        }
+        \\    }
+        \\}
+    ;
+    const result = try run(alloc, std.testing.io, source, .{
+        .entry_class = "MasterDetailRequiredInsertTest",
+        .entry_method = "test",
+        .source_paths = &.{tmp_path},
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings(
+        "Required fields are missing: [Parent__c]",
+        result.value.string,
+    );
+}
+
+test "E2E: non-reparentable master-detail fields reject parent changes" {
+    const alloc = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try tmp_dir.dir.createDirPath(std.testing.io, "objects/Child__c/fields");
+    try tmp_dir.dir.writeFile(std.testing.io, .{
+        .sub_path = "objects/Child__c/fields/Parent__c.field-meta.xml",
+        .data =
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+        \\    <fullName>Parent__c</fullName>
+        \\    <referenceTo>Parent__c</referenceTo>
+        \\    <relationshipName>Children</relationshipName>
+        \\    <reparentableMasterDetail>false</reparentableMasterDetail>
+        \\    <type>MasterDetail</type>
+        \\</CustomField>
+        ,
+    });
+    const tmp_path = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", alloc);
+    defer alloc.free(tmp_path);
+
+    const source =
+        \\public class NonReparentableMasterDetailTest {
+        \\    public static String test() {
+        \\        Parent__c firstParent = new Parent__c(Name = 'First');
+        \\        Parent__c secondParent = new Parent__c(Name = 'Second');
+        \\        insert new List<Parent__c>{ firstParent, secondParent };
+        \\        Child__c child = new Child__c(Name = 'Child', Parent__c = firstParent.Id);
+        \\        insert child;
+        \\        child.Parent__c = secondParent.Id;
+        \\        try {
+        \\            update child;
+        \\            return 'no-error';
+        \\        } catch (DmlException ex) {
+        \\            return 'caught';
+        \\        }
+        \\    }
+        \\}
+    ;
+    const result = try run(alloc, std.testing.io, source, .{
+        .entry_class = "NonReparentableMasterDetailTest",
+        .entry_method = "test",
+        .source_paths = &.{tmp_path},
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("caught", result.value.string);
 }
 
 test "E2E: picklist describe preserves metadata order when records only use a subset" {
@@ -8332,6 +9127,37 @@ test "E2E: explicit null suppresses hierarchy custom setting field defaults on u
     try std.testing.expectEqualStrings("true", result.value.string);
 }
 
+test "E2E: hierarchy custom setting upsert without owner stores org defaults" {
+    const alloc = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try write_generic_hierarchy_custom_setting_fixture(tmp_dir.dir);
+    const tmp_path = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", alloc);
+    defer alloc.free(tmp_path);
+
+    const source =
+        \\public class HierarchySettingOwnerlessUpsertTest {
+        \\    public static String test() {
+        \\        AppSettings__c settings = new AppSettings__c();
+        \\        settings.Flag__c = 'saved';
+        \\        upsert settings;
+        \\        AppSettings__c reloaded = AppSettings__c.getOrgDefaults();
+        \\        return String.valueOf(settings.SetupOwnerId) + ':' +
+        \\            String.valueOf(reloaded.Flag__c);
+        \\    }
+        \\}
+    ;
+    const result = try run(alloc, std.testing.io, source, .{
+        .entry_class = "HierarchySettingOwnerlessUpsertTest",
+        .entry_method = "test",
+        .source_paths = &.{tmp_path},
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("00D000000000001:saved", result.value.string);
+}
+
 test "E2E: static initializer preserves static method side effects on fields" {
     const source =
         \\public class StaticInitSideEffectTest {
@@ -8712,6 +9538,36 @@ test "E2E: JSON read-only round-trip preserves typed ApexClass property access" 
         "true:SomeClass:body:2026-04-01T00:00:00Z",
         result.value.string,
     );
+}
+
+test "E2E: typed JSON deserialize coerces quoted primitive fields" {
+    const source =
+        \\public class JsonQuotedPrimitiveCoercionTest {
+        \\    public class Response {
+        \\        public Integer statusCode;
+        \\        public Long sequence;
+        \\        public Decimal amount;
+        \\        public Boolean success;
+        \\    }
+        \\    public static String test() {
+        \\        Response response = (Response) JSON.deserialize(
+        \\            '{"statusCode":"204","sequence":"9001","amount":"12.5","success":"true"}',
+        \\            Response.class
+        \\        );
+        \\        return String.valueOf(response.statusCode == 204) + ':' +
+        \\            String.valueOf(response.sequence == 9001) + ':' +
+        \\            String.valueOf(response.amount == 12.5) + ':' +
+        \\            String.valueOf(response.success == true);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "JsonQuotedPrimitiveCoercionTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("true:true:true:true", result.value.string);
 }
 
 test "E2E: Map<Schema.SObjectField, Object> preserves setup field tokens through keySet/get" {
@@ -9282,6 +10138,151 @@ test "E2E: custom metadata lookup stubs expose developer and object names" {
     );
 }
 
+test "E2E: custom metadata relationship fields compare parent ids in SOQL" {
+    const alloc = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try tmp_dir.dir.createDirPath(std.testing.io, "objects/ChildThing__mdt/fields");
+    try tmp_dir.dir.createDirPath(std.testing.io, "customMetadata");
+    try tmp_dir.dir.writeFile(std.testing.io, .{
+        .sub_path = "objects/ChildThing__mdt/fields/ParentThing__c.field-meta.xml",
+        .data =
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+        \\    <fullName>ParentThing__c</fullName>
+        \\    <referenceTo>ParentThing__mdt</referenceTo>
+        \\    <relationshipName>ChildThings</relationshipName>
+        \\    <type>MetadataRelationship</type>
+        \\</CustomField>
+        ,
+    });
+    try tmp_dir.dir.writeFile(std.testing.io, .{
+        .sub_path = "customMetadata/ParentThing.Primary.md-meta.xml",
+        .data =
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<CustomMetadata xmlns="http://soap.sforce.com/2006/04/metadata">
+        \\    <label>Primary</label>
+        \\</CustomMetadata>
+        ,
+    });
+    try tmp_dir.dir.writeFile(std.testing.io, .{
+        .sub_path = "customMetadata/ChildThing.First.md-meta.xml",
+        .data =
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<CustomMetadata xmlns="http://soap.sforce.com/2006/04/metadata"
+        \\    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        \\    xmlns:xsd="http://www.w3.org/2001/XMLSchema">
+        \\    <label>First</label>
+        \\    <values>
+        \\        <field>ParentThing__c</field>
+        \\        <value xsi:type="xsd:string">Primary</value>
+        \\    </values>
+        \\</CustomMetadata>
+        ,
+    });
+    const tmp_path = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", alloc);
+    defer alloc.free(tmp_path);
+
+    const source =
+        \\public class CustomMetadataRelationshipWhereIdTest {
+        \\    public static String test() {
+        \\        ParentThing__mdt parentRecord = [SELECT Id FROM ParentThing__mdt LIMIT 1];
+        \\        return String.valueOf([
+        \\            SELECT Id
+        \\            FROM ChildThing__mdt
+        \\            WHERE ParentThing__c = :parentRecord.Id
+        \\        ].size());
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "CustomMetadataRelationshipWhereIdTest",
+        .entry_method = "test",
+        .source_paths = &.{tmp_path},
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("1", result.value.string);
+}
+
+test "E2E: nested queue partition object initialized from Set constructor argument" {
+    const source =
+        \\public class NestedQueuePartitionTest {
+        \\    private QueueableIds queueableIds;
+        \\    public NestedQueuePartitionTest(Id recordId, Set<String> ids) {
+        \\        queueableIds = new QueueableIds(ids);
+        \\    }
+        \\    public NestedQueuePartitionTest(Id recordId, QueueableIds queueableIds) {
+        \\        this.queueableIds = queueableIds;
+        \\    }
+        \\    public static String test() {
+        \\        NestedQueuePartitionTest host = new NestedQueuePartitionTest(
+        \\            'a00000000000001',
+        \\            buildIds(120)
+        \\        );
+        \\        return String.valueOf(host.queueableIds.ids.size()) + ':' +
+        \\            String.valueOf(host.queueableIds.partitionSize()) + ':' +
+        \\            String.valueOf(host.queueableIds.hasGroupsToCapture()) + ':' +
+        \\            String.valueOf(host.queueableIds.idsToCapture().size());
+        \\    }
+        \\    private static Set<String> buildIds(Integer count) {
+        \\        Set<String> ids = new Set<String>();
+        \\        for (Integer i = 0; i < count; i++) {
+        \\            ids.add('id-' + i);
+        \\        }
+        \\        return ids;
+        \\    }
+        \\    private class QueueableIds {
+        \\        private List<String> ids;
+        \\        private List<List<String>> partitions;
+        \\        private final Integer MAX_COUNT = 50;
+        \\        private Integer currentPartitionIndex = 0;
+        \\        public QueueableIds(Set<String> ids) {
+        \\            this.ids = new List<String>();
+        \\            this.ids.addAll(ids);
+        \\            partitions = partitionIds(this.ids);
+        \\        }
+        \\        public List<String> idsToCapture() {
+        \\            List<String> currentIds = partitions[currentPartitionIndex];
+        \\            currentPartitionIndex++;
+        \\            return currentIds;
+        \\        }
+        \\        public Integer partitionSize() {
+        \\            return partitions.size();
+        \\        }
+        \\        public Boolean hasGroupsToCapture() {
+        \\            return partitionSize() > currentPartitionIndex;
+        \\        }
+        \\        private List<List<String>> partitionIds(List<String> ids) {
+        \\            List<List<String>> partitions = new List<List<String>>();
+        \\            List<String> currentList = new List<String>();
+        \\            Integer currentCount = 0;
+        \\            for (Integer i = 0; i < ids.size(); i++) {
+        \\                currentList.add(ids[i]);
+        \\                currentCount++;
+        \\                Boolean atLimit = currentCount == MAX_COUNT;
+        \\                Boolean isLast = (i == ids.size() - 1 && currentList.size() > 0);
+        \\                if (atLimit || isLast) {
+        \\                    partitions.add(currentList);
+        \\                    currentCount = 0;
+        \\                    currentList = new List<String>();
+        \\                }
+        \\            }
+        \\            return partitions;
+        \\        }
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "NestedQueuePartitionTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("120:3:true:50", result.value.string);
+}
+
 test "E2E: qualified inner class literals preserve outer class names" {
     const source =
         \\public class OuterNameHost {
@@ -9621,6 +10622,99 @@ test "E2E: StandardController normalizes queried SObject records" {
     try std.testing.expectEqualStrings("Contact", result.value.string);
 }
 
+test "E2E: StandardController save persists the wrapped record" {
+    const source =
+        \\public class StandardControllerSaveTest {
+        \\    public static String test() {
+        \\        Contact contactRecord = new Contact(LastName = 'Saved');
+        \\        ApexPages.StandardController controller =
+        \\            new ApexPages.StandardController(contactRecord);
+        \\        PageReference pageRef = controller.save();
+        \\        List<Contact> contacts = [SELECT Id, LastName FROM Contact];
+        \\        return String.valueOf(contacts.size()) + ':' +
+        \\            contacts[0].LastName + ':' +
+        \\            pageRef.getUrl() + ':' +
+        \\            String.valueOf(pageRef.getUrl() == '/' + String.valueOf(contacts[0].Id).left(15));
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "StandardControllerSaveTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("1:Saved:/003000000000000:true", result.value.string);
+}
+
+test "E2E: StandardController view returns canonical 15 character record URL" {
+    const source =
+        \\public class StandardControllerViewUrlTest {
+        \\    public static String test() {
+        \\        Contact contactRecord = new Contact(LastName = 'Viewed');
+        \\        insert contactRecord;
+        \\        ApexPages.StandardController controller =
+        \\            new ApexPages.StandardController(contactRecord);
+        \\        PageReference pageRef = controller.view();
+        \\        return controller.getId() + ':' + pageRef.getUrl();
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "StandardControllerViewUrlTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("003000000000000001:/003000000000000", result.value.string);
+}
+
+test "E2E: update of missing standard record id throws DmlException" {
+    const source =
+        \\public class MissingStandardUpdateTest {
+        \\    public static String test() {
+        \\        insert new Opportunity(Name = 'Stored', StageName = 'Prospecting', CloseDate = Date.today());
+        \\        try {
+        \\            update new Opportunity(Id = '006000000000001AAA', Name = 'Missing');
+        \\            return 'no error';
+        \\        } catch (DmlException e) {
+        \\            return e.getMessage();
+        \\        }
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "MissingStandardUpdateTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expect(std.mem.indexOf(u8, result.value.string, "invalid cross reference") != null);
+}
+
+test "E2E: SOQL WHERE supports row aliases for direct fields" {
+    const source =
+        \\public class AliasedWhereDirectFieldTest {
+        \\    public static String test() {
+        \\        insert new Account(Name = 'A');
+        \\        List<Account> rows = [
+        \\            SELECT a.Id, a.Name
+        \\            FROM Account a
+        \\            WHERE a.Name = 'A'
+        \\        ];
+        \\        return String.valueOf(rows.size()) + ':' + rows[0].Name;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "AliasedWhereDirectFieldTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("1:A", result.value.string);
+}
+
 test "E2E: enhanced recurring donation start date defaults before insert triggers" {
     const source =
         \\trigger RDDefaultProbeTrigger on npe03__Recurring_Donation__c (before insert) {
@@ -9657,7 +10751,11 @@ test "E2E: missing NPSP payment child relationship defaults to empty list" {
     const source =
         \\public class NpspPaymentChildRelationshipTest {
         \\    public static String test() {
-        \\        Opportunity opp = new Opportunity(Name = 'Gift');
+        \\        Opportunity opp = new Opportunity(
+        \\            Name = 'Gift',
+        \\            StageName = 'Closed Won',
+        \\            CloseDate = Date.today()
+        \\        );
         \\        insert opp;
         \\        Opportunity queried = [SELECT Id FROM Opportunity WHERE Id = :opp.Id];
         \\        return String.valueOf(queried.npe01__OppPayment__r.isEmpty());
@@ -9823,6 +10921,660 @@ test "E2E: static property getter can update its backing value repeatedly" {
     try std.testing.expectEqualStrings("1:2:3", result.value.string);
 }
 
+test "E2E: instance property setter can assign through same property name" {
+    const source =
+        \\public class SelfAssigningPropertySetterProbe {
+        \\    public String marker {
+        \\        get {
+        \\            return marker;
+        \\        }
+        \\        set {
+        \\            this.marker = value;
+        \\        }
+        \\    }
+        \\    public static String test() {
+        \\        SelfAssigningPropertySetterProbe probe =
+        \\            new SelfAssigningPropertySetterProbe();
+        \\        probe.marker = 'stored';
+        \\        return probe.marker;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "SelfAssigningPropertySetterProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("stored", result.value.string);
+}
+
+test "E2E: stub stored in inherited property is invoked from child method" {
+    const source =
+        \\public interface StubProvider {
+        \\    Object handleMethodCall(
+        \\        Object stubbedObject,
+        \\        String stubbedMethodName,
+        \\        Type returnType,
+        \\        List<Type> paramTypes,
+        \\        List<String> params,
+        \\        List<Object> paramValues
+        \\    );
+        \\}
+        \\public virtual class GatewayTarget {
+        \\    public virtual void handleBeforeDelete(List<Object> triggerOld) {
+        \\    }
+        \\}
+        \\public virtual class StubHolderBase {
+        \\    public GatewayTarget gateway {
+        \\        get {
+        \\            if (gateway == null) {
+        \\                gateway = new GatewayTarget();
+        \\            }
+        \\            return gateway;
+        \\        }
+        \\        set;
+        \\    }
+        \\}
+        \\public class StubHolderChild extends StubHolderBase {
+        \\    public void dispatch(List<Object> rows) {
+        \\        gateway.handleBeforeDelete(rows);
+        \\    }
+        \\}
+        \\public class InheritedStubProvider implements StubProvider {
+        \\    public Map<String, Object> calls = new Map<String, Object>();
+        \\    public Object handleMethodCall(
+        \\        Object stubbedObject,
+        \\        String stubbedMethodName,
+        \\        Type returnType,
+        \\        List<Type> paramTypes,
+        \\        List<String> params,
+        \\        List<Object> paramValues
+        \\    ) {
+        \\        calls.put(stubbedMethodName, paramValues[0]);
+        \\        return null;
+        \\    }
+        \\}
+        \\public class InheritedStubPropertyProbe {
+        \\    public static Boolean test() {
+        \\        StubHolderChild child = new StubHolderChild();
+        \\        InheritedStubProvider provider = new InheritedStubProvider();
+        \\        child.gateway = (GatewayTarget) Test.createStub(GatewayTarget.class, provider);
+        \\        List<Object> rows = new List<Object>{ 'old' };
+        \\        child.dispatch(rows);
+        \\        return provider.calls.containsKey('handleBeforeDelete') &&
+        \\            provider.calls.get('handleBeforeDelete') == rows;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "InheritedStubPropertyProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expect(result.value.boolean);
+}
+
+test "E2E: overloaded constructor with Id invokes stubbed selector" {
+    const source =
+        \\public class SelectorTarget {
+        \\    public virtual List<Account> getRows(String fieldName, Id recordId) {
+        \\        return new List<Account>();
+        \\    }
+        \\    public virtual List<Account> getRowsByIds(List<Id> recordIds) {
+        \\        return new List<Account>{ new Account(Name = 'wrong') };
+        \\    }
+        \\}
+        \\public class SelectorHolder {
+        \\    public SelectorTarget selector {
+        \\        get {
+        \\            if (selector == null) {
+        \\                selector = new SelectorTarget();
+        \\            }
+        \\            return selector;
+        \\        }
+        \\        set;
+        \\    }
+        \\    public Integer count;
+        \\    public SelectorHolder(Id recordId, SelectorTarget selector) {
+        \\        this.selector = selector;
+        \\        count = 0;
+        \\        for (Account row : this.selector.getRows('AccountId', recordId)) {
+        \\            count++;
+        \\        }
+        \\    }
+        \\    public SelectorHolder(List<Id> recordIds, SelectorTarget selector) {
+        \\        this.selector = selector;
+        \\        count = 100;
+        \\        for (Account row : this.selector.getRowsByIds(recordIds)) {
+        \\            count++;
+        \\        }
+        \\    }
+        \\}
+        \\public class SelectorRecorder implements StubProvider {
+        \\    public Object handleMethodCall(Object stubbedObject, String stubbedMethodName, Type returnType,
+        \\        List<Type> paramTypes, List<String> params, List<Object> paramValues) {
+        \\        switch on (stubbedMethodName) {
+        \\            when 'getRows' {
+        \\                return new List<Account>{ new Account(Name = 'A'), new Account(Name = 'B') };
+        \\            }
+        \\        }
+        \\        return new List<Account>();
+        \\    }
+        \\}
+        \\public class StubbedIdConstructorProbe {
+        \\    public static String test() {
+        \\        SelectorTarget selector = (SelectorTarget) Test.createStub(
+        \\            SelectorTarget.class,
+        \\            new SelectorRecorder()
+        \\        );
+        \\        SelectorHolder holder = new SelectorHolder('001000000000001', selector);
+        \\        return String.valueOf(holder.count);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "StubbedIdConstructorProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("2", result.value.string);
+}
+
+test "E2E: inner StubProvider can back Test.createStub" {
+    const source =
+        \\public class InnerStubProviderProbe {
+        \\    public virtual class SelectorTarget {
+        \\        public virtual List<Account> getRows(String fieldName, Id recordId) {
+        \\            return new List<Account>();
+        \\        }
+        \\    }
+        \\    private class SelectorRecorder implements StubProvider {
+        \\        public Object handleMethodCall(Object stubbedObject, String stubbedMethodName, Type returnType,
+        \\            List<Type> paramTypes, List<String> params, List<Object> paramValues) {
+        \\            switch on (stubbedMethodName) {
+        \\                when 'getRows' {
+        \\                    return new List<Account>{ new Account(Name = 'A'), new Account(Name = 'B') };
+        \\                }
+        \\            }
+        \\            return new List<Account>();
+        \\        }
+        \\    }
+        \\    public static String test() {
+        \\        SelectorTarget selector = (SelectorTarget) Test.createStub(
+        \\            SelectorTarget.class,
+        \\            new SelectorRecorder()
+        \\        );
+        \\        Integer count = 0;
+        \\        for (Account row : selector.getRows('AccountId', '001000000000001')) {
+        \\            count++;
+        \\        }
+        \\        return String.valueOf(count);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "InnerStubProviderProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("2", result.value.string);
+}
+
+test "E2E: Test.createStub intercepts non-virtual selector method" {
+    const source =
+        \\public class NonVirtualSelectorTarget {
+        \\    public List<Account> getRows(String fieldName, Id recordId) {
+        \\        return new List<Account>();
+        \\    }
+        \\}
+        \\public class NonVirtualStubProbe {
+        \\    private class SelectorRecorder implements StubProvider {
+        \\        public Object handleMethodCall(Object stubbedObject, String stubbedMethodName, Type returnType,
+        \\            List<Type> paramTypes, List<String> params, List<Object> paramValues) {
+        \\            switch on (stubbedMethodName) {
+        \\                when 'getRows' {
+        \\                    return new List<Account>{ new Account(Name = 'A'), new Account(Name = 'B') };
+        \\                }
+        \\            }
+        \\            return new List<Account>();
+        \\        }
+        \\    }
+        \\    public static String test() {
+        \\        NonVirtualSelectorTarget selector = (NonVirtualSelectorTarget) Test.createStub(
+        \\            NonVirtualSelectorTarget.class,
+        \\            new SelectorRecorder()
+        \\        );
+        \\        Integer count = 0;
+        \\        for (Account row : selector.getRows('AccountId', '001000000000001')) {
+        \\            count++;
+        \\        }
+        \\        return String.valueOf(count);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "NonVirtualStubProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("2", result.value.string);
+}
+
+test "E2E: DTO list field initialized and copied through view constructor" {
+    const source =
+        \\public class MiniDonation {
+        \\    public Account account;
+        \\    public MiniDonation(Account account) {
+        \\        this.account = account;
+        \\    }
+        \\}
+        \\public class MiniDonations {
+        \\    private List<MiniDonation> donations = new List<MiniDonation>();
+        \\    public MiniDonations(List<Account> accounts) {
+        \\        for (Account account : accounts) {
+        \\            donations.add(new MiniDonation(account));
+        \\        }
+        \\    }
+        \\    public List<MiniDonation> all() {
+        \\        return donations;
+        \\    }
+        \\}
+        \\public class MiniDonationDTO {
+        \\    public Object account;
+        \\    public MiniDonationDTO(MiniDonation donation) {
+        \\        this.account = donation.account;
+        \\    }
+        \\}
+        \\public class MiniDonationsDTO {
+        \\    public List<MiniDonationDTO> donationDTOs = new List<MiniDonationDTO>();
+        \\    public MiniDonationsDTO(MiniDonations donations) {
+        \\        for (MiniDonation donation : donations.all()) {
+        \\            donationDTOs.add(new MiniDonationDTO(donation));
+        \\        }
+        \\    }
+        \\}
+        \\public class MiniDonationView {
+        \\    public Map<String, Object> account;
+        \\    public MiniDonationView(MiniDonationDTO donationDTO) {
+        \\        this.account = (Map<String, Object>) JSON.deserializeUntyped(JSON.serialize(donationDTO.account));
+        \\    }
+        \\}
+        \\public class MiniDonationsView {
+        \\    public List<MiniDonationView> donations = new List<MiniDonationView>();
+        \\    public MiniDonationsView(MiniDonationsDTO donationsDTO) {
+        \\        for (MiniDonationDTO donationDTO : donationsDTO.donationDTOs) {
+        \\            donations.add(new MiniDonationView(donationDTO));
+        \\        }
+        \\    }
+        \\}
+        \\public class DtoViewListProbe {
+        \\    public static String test() {
+        \\        MiniDonations donations = new MiniDonations(new List<Account>{
+        \\            new Account(Name = 'A'),
+        \\            new Account(Name = 'B')
+        \\        });
+        \\        MiniDonationsView view = new MiniDonationsView(new MiniDonationsDTO(donations));
+        \\        return String.valueOf(view.donations.size());
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "DtoViewListProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("2", result.value.string);
+}
+
+test "E2E: constructor private helper updates unqualified instance field" {
+    const source =
+        \\public class ConstructorHelperFieldProbe {
+        \\    private List<Account> rows;
+        \\    public ConstructorHelperFieldProbe() {
+        \\        initialize();
+        \\    }
+        \\    private void initialize() {
+        \\        if (rows == null) {
+        \\            rows = new List<Account>();
+        \\        }
+        \\        rows.add(new Account(Name = 'A'));
+        \\    }
+        \\    public List<Account> getRows() {
+        \\        return this.rows;
+        \\    }
+        \\    public static String test() {
+        \\        ConstructorHelperFieldProbe probe = new ConstructorHelperFieldProbe();
+        \\        return String.valueOf(probe.getRows().size());
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "ConstructorHelperFieldProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("1", result.value.string);
+}
+
+test "E2E: constructor stores parameter in field with same-named accessor method" {
+    const source =
+        \\public class SameNamedAccessorProbe {
+        \\    private Opportunity opportunity;
+        \\    public SameNamedAccessorProbe(Opportunity opportunity) {
+        \\        this.opportunity = opportunity;
+        \\    }
+        \\    public Opportunity opportunity() {
+        \\        return this.opportunity;
+        \\    }
+        \\    public static String test() {
+        \\        Opportunity opp = new Opportunity(Id = '006000000000001AAA', Name = 'Gift');
+        \\        SameNamedAccessorProbe probe = new SameNamedAccessorProbe(opp);
+        \\        return probe.opportunity().Id;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "SameNamedAccessorProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("006000000000001AAA", result.value.string);
+}
+
+test "E2E: constructor preserves SObject child relationship on stored field" {
+    const source =
+        \\public class StoredRelationshipProbe {
+        \\    private Opportunity opportunity;
+        \\    public StoredRelationshipProbe(Opportunity opportunity) {
+        \\        this.opportunity = opportunity;
+        \\    }
+        \\    public Opportunity opportunity() {
+        \\        return this.opportunity;
+        \\    }
+        \\    public static String test() {
+        \\        Opportunity opportunity = new Opportunity(Id = '006000000000001AAA', Name = 'Gift');
+        \\        List<npe01__OppPayment__c> payments = new List<npe01__OppPayment__c>{
+        \\            new npe01__OppPayment__c(npe01__Paid__c = false, npe01__Written_Off__c = false)
+        \\        };
+        \\        String parentJSON = JSON.serialize(opportunity);
+        \\        String childJSON = '"npe01__OppPayment__r": {"totalSize": 1, "done": true,' +
+        \\            '"records": ' + JSON.serialize(payments) + '}';
+        \\        parentJSON = parentJSON.substring(0, parentJSON.length() - 1) + ',' + childJSON + '}';
+        \\        opportunity = (Opportunity) JSON.deserialize(parentJSON, Opportunity.class);
+        \\        StoredRelationshipProbe probe = new StoredRelationshipProbe(opportunity);
+        \\        return String.valueOf(probe.opportunity().npe01__OppPayment__r.size());
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "StoredRelationshipProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("1", result.value.string);
+}
+
+test "E2E: typed for loop preserves SObject child relationship" {
+    const source =
+        \\public class ForLoopRelationshipProbe {
+        \\    public static String test() {
+        \\        Opportunity opportunity = new Opportunity(Id = '006000000000001AAA', Name = 'Gift');
+        \\        SObject envelope = new SObject();
+        \\        envelope.put('records', new List<npe01__OppPayment__c>{
+        \\            new npe01__OppPayment__c(npe01__Paid__c = false),
+        \\            new npe01__OppPayment__c(npe01__Paid__c = false)
+        \\        });
+        \\        opportunity.put('npe01__OppPayment__r', envelope);
+        \\        List<Opportunity> opportunities = new List<Opportunity>{ opportunity };
+        \\        Integer sizeValue = -1;
+        \\        for (Opportunity row : opportunities) {
+        \\            sizeValue = row.npe01__OppPayment__r.size();
+        \\        }
+        \\        return String.valueOf(sizeValue);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "ForLoopRelationshipProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("2", result.value.string);
+}
+
+test "E2E: constructor called from typed for loop preserves child relationship" {
+    const source =
+        \\public class LoopStoredRelationship {
+        \\    private Opportunity opportunity;
+        \\    public LoopStoredRelationship(Opportunity opportunity) {
+        \\        this.opportunity = opportunity;
+        \\    }
+        \\    public Opportunity opportunity() {
+        \\        return this.opportunity;
+        \\    }
+        \\}
+        \\public class LoopConstructorRelationshipProbe {
+        \\    public static String test() {
+        \\        Opportunity opportunity = new Opportunity(Id = '006000000000001AAA', Name = 'Gift');
+        \\        SObject envelope = new SObject();
+        \\        envelope.put('records', new List<npe01__OppPayment__c>{
+        \\            new npe01__OppPayment__c(npe01__Paid__c = false),
+        \\            new npe01__OppPayment__c(npe01__Paid__c = false)
+        \\        });
+        \\        opportunity.put('npe01__OppPayment__r', envelope);
+        \\        List<Opportunity> opportunities = new List<Opportunity>{ opportunity };
+        \\        List<LoopStoredRelationship> stored = new List<LoopStoredRelationship>();
+        \\        for (Opportunity row : opportunities) {
+        \\            stored.add(new LoopStoredRelationship(row));
+        \\        }
+        \\        return String.valueOf(stored[0].opportunity().npe01__OppPayment__r.size());
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "LoopConstructorRelationshipProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("2", result.value.string);
+}
+
+test "E2E: stubbed selector returns child relationship through aggregate" {
+    const source =
+        \\public class StubRelationshipSelector {
+        \\    public List<Opportunity> getOpenDonations(String fieldName, Id recordId) {
+        \\        return new List<Opportunity>();
+        \\    }
+        \\}
+        \\public class StubRelationshipDonation {
+        \\    private Opportunity opportunity;
+        \\    private List<npe01__OppPayment__c> unpaidPayments;
+        \\    public StubRelationshipDonation(Opportunity opportunity) {
+        \\        this.opportunity = opportunity;
+        \\        unpaidPayments = new List<npe01__OppPayment__c>();
+        \\        for (npe01__OppPayment__c payment : opportunity.npe01__OppPayment__r) {
+        \\            unpaidPayments.add(payment);
+        \\        }
+        \\    }
+        \\    public List<npe01__OppPayment__c> unpaidPayments() {
+        \\        return unpaidPayments;
+        \\    }
+        \\}
+        \\public class StubRelationshipDonations {
+        \\    private List<StubRelationshipDonation> donations = new List<StubRelationshipDonation>();
+        \\    public StubRelationshipDonations(Id donorId, StubRelationshipSelector selector) {
+        \\        for (Opportunity opportunity : selector.getOpenDonations('AccountId', donorId)) {
+        \\            donations.add(new StubRelationshipDonation(opportunity));
+        \\        }
+        \\    }
+        \\    public List<StubRelationshipDonation> all() {
+        \\        return donations;
+        \\    }
+        \\}
+        \\public class StubRelationshipRecorder implements StubProvider {
+        \\    public Object handleMethodCall(Object stubbedObject, String stubbedMethodName, Type returnType,
+        \\        List<Type> paramTypes, List<String> params, List<Object> paramValues) {
+        \\        Opportunity opportunity = new Opportunity(Id = '006000000000001AAA', Name = 'Gift');
+        \\        SObject envelope = new SObject();
+        \\        envelope.put('records', new List<npe01__OppPayment__c>{
+        \\            new npe01__OppPayment__c(npe01__Paid__c = false),
+        \\            new npe01__OppPayment__c(npe01__Paid__c = false),
+        \\            new npe01__OppPayment__c(npe01__Paid__c = false)
+        \\        });
+        \\        opportunity.put('npe01__OppPayment__r', envelope);
+        \\        return new List<Opportunity>{ opportunity };
+        \\    }
+        \\}
+        \\public class StubRelationshipAggregateProbe {
+        \\    public static String test() {
+        \\        StubRelationshipSelector selector = (StubRelationshipSelector) Test.createStub(
+        \\            StubRelationshipSelector.class,
+        \\            new StubRelationshipRecorder()
+        \\        );
+        \\        StubRelationshipDonations donations =
+        \\            new StubRelationshipDonations('001000000000001', selector);
+        \\        return String.valueOf(donations.all()[0].unpaidPayments().size());
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "StubRelationshipAggregateProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("3", result.value.string);
+}
+
+test "E2E: nested constructor overload ignores outer constructor hints" {
+    const source =
+        \\public class ConstructorHintDonation {
+        \\    private Integer selected;
+        \\    public ConstructorHintDonation(Opportunity opportunity) {
+        \\        selected = 7;
+        \\    }
+        \\    public ConstructorHintDonation(Id opportunityId) {
+        \\        selected = 1;
+        \\    }
+        \\    public Integer selectedValue() {
+        \\        return selected;
+        \\    }
+        \\}
+        \\public class ConstructorHintAggregate {
+        \\    private List<ConstructorHintDonation> donations =
+        \\        new List<ConstructorHintDonation>();
+        \\    public ConstructorHintAggregate(Id donorId, List<Opportunity> opportunities) {
+        \\        for (Opportunity opportunity : opportunities) {
+        \\            donations.add(new ConstructorHintDonation(opportunity));
+        \\        }
+        \\    }
+        \\    public Integer selectedValue() {
+        \\        return donations[0].selectedValue();
+        \\    }
+        \\}
+        \\public class ConstructorHintLeakProbe {
+        \\    public static String test() {
+        \\        List<Opportunity> opportunities = new List<Opportunity>{
+        \\            new Opportunity(Id = '006000000000001AAA', Name = 'Gift')
+        \\        };
+        \\        ConstructorHintAggregate aggregate =
+        \\            new ConstructorHintAggregate('001000000000001AAA', opportunities);
+        \\        return String.valueOf(aggregate.selectedValue());
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "ConstructorHintLeakProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("7", result.value.string);
+}
+
+test "E2E: runtime override beats higher-scored ancestor method candidate" {
+    const source =
+        \\global abstract class OverrideDispatchBase {
+        \\    global enum Action { BeforeDelete }
+        \\    global abstract String run(
+        \\        List<SObject> newlist,
+        \\        List<SObject> oldlist,
+        \\        Action triggerAction,
+        \\        Schema.DescribeSObjectResult objResult
+        \\    );
+        \\}
+        \\public class OverrideDispatchChild extends OverrideDispatchBase {
+        \\    public override String run(
+        \\        List<SObject> rds,
+        \\        List<SObject> oldRds,
+        \\        OverrideDispatchBase.Action triggerAction,
+        \\        Schema.DescribeSObjectResult objResult
+        \\    ) {
+        \\        return 'child:' + String.valueOf(oldRds.size()) + ':' +
+        \\            String.valueOf(triggerAction);
+        \\    }
+        \\}
+        \\public class OverrideDispatchProbe {
+        \\    public static String test() {
+        \\        OverrideDispatchChild child = new OverrideDispatchChild();
+        \\        List<SObject> oldRows = new List<SObject>{ new Account(Name = 'Acme') };
+        \\        return child.run(
+        \\            null,
+        \\            oldRows,
+        \\            OverrideDispatchBase.Action.BeforeDelete,
+        \\            Account.SObjectType.getDescribe()
+        \\        );
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "OverrideDispatchProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("child:1:BeforeDelete", result.value.string);
+}
+
+test "E2E: JSON deserialize resolves qualified inner class fields" {
+    const source =
+        \\public class QualifiedJsonOuter {
+        \\    public class Child {
+        \\        public String name;
+        \\    }
+        \\    public class Model {
+        \\        public QualifiedJsonOuter.Child child;
+        \\    }
+        \\    public static String test() {
+        \\        Model model = new Model();
+        \\        model.child = new Child();
+        \\        model.child.name = 'nested';
+        \\        String body = JSON.serialize(model);
+        \\        Model parsed = (Model) JSON.deserialize(body, Model.class);
+        \\        return parsed.child.name;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "QualifiedJsonOuter",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("nested", result.value.string);
+}
+
 test "E2E: list addAll preserves SObject fields through dedupe map" {
     const source =
         \\public class SoftCreditsAddAllProbe {
@@ -9885,6 +11637,62 @@ test "E2E: list addAll preserves SObject fields through dedupe map" {
     defer result.deinit();
 
     try std.testing.expectEqualStrings("3", result.value.string);
+}
+
+test "E2E: unsaved SObject map keys compare by populated fields" {
+    const source =
+        \\public class UnsavedSObjectMapKeyProbe {
+        \\    public static String test() {
+        \\        Map<SObject, String> byContact = new Map<SObject, String>();
+        \\        byContact.put(
+        \\            new Contact(FirstName = 'Ada', LastName = 'Lovelace'),
+        \\            'matched'
+        \\        );
+        \\        SObject sameContact =
+        \\            new Contact(LastName = 'Lovelace', FirstName = 'Ada');
+        \\        SObject differentContact =
+        \\            new Contact(FirstName = 'Ada', LastName = 'Byron');
+        \\        return byContact.get(sameContact) + ':' +
+        \\            String.valueOf(byContact.get(differentContact));
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "UnsavedSObjectMapKeyProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("matched:null", result.value.string);
+}
+
+test "E2E: top-level class name wins over colliding inner class name" {
+    const source =
+        \\public class OuterWithNameCollision {
+        \\    public class SoftCredit {
+        \\        public String marker() {
+        \\            return 'inner';
+        \\        }
+        \\    }
+        \\}
+        \\public class SoftCredit {
+        \\    public String marker() {
+        \\        return 'top';
+        \\    }
+        \\}
+        \\public class TopLevelNameCollisionProbe {
+        \\    public static String test() {
+        \\        return new SoftCredit().marker();
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "TopLevelNameCollisionProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("top", result.value.string);
 }
 
 test "E2E: Type values compare by class name" {
@@ -10227,6 +12035,30 @@ test "E2E: System.Test.testInstall invokes install handlers" {
     try std.testing.expectEqualStrings("1", result.value.string);
 }
 
+test "E2E: System.Test.testUninstall invokes uninstall handlers" {
+    const source =
+        \\global class PackageUninstallHook implements System.UninstallHandler {
+        \\    global void onUninstall(System.UninstallContext uninstallContext) {
+        \\        delete [SELECT Id FROM Account];
+        \\    }
+        \\}
+        \\public class UninstallHandlerTest {
+        \\    public static String test() {
+        \\        insert new Account(Name = 'Installed');
+        \\        System.Test.testUninstall(new PackageUninstallHook());
+        \\        return String.valueOf([SELECT Id FROM Account].size());
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "UninstallHandlerTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("0", result.value.string);
+}
+
 test "E2E: SObject.getSObject resolves parent records from a reference field token" {
     const source =
         \\public class GetSObjectParentTest {
@@ -10252,6 +12084,122 @@ test "E2E: SObject.getSObject resolves parent records from a reference field tok
     defer result.deinit();
 
     try std.testing.expectEqualStrings("Acme", result.value.string);
+}
+
+test "E2E: Map keyed by equivalent unsaved SObject resolves value" {
+    const source =
+        \\public class EquivalentSObjectMapKeyProbe {
+        \\    public static String test() {
+        \\        Contact stored = new Contact(
+        \\            FirstName = 'Ada',
+        \\            LastName = 'Lovelace',
+        \\            MailingStreet = '100 Fake Blvd'
+        \\        );
+        \\        Contact lookup = new Contact(
+        \\            FirstName = 'Ada',
+        \\            LastName = 'Lovelace',
+        \\            MailingStreet = '100 Fake Blvd'
+        \\        );
+        \\        Map<SObject, String> values = new Map<SObject, String>();
+        \\        values.put(stored, 'matched');
+        \\        return values.get(lookup);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "EquivalentSObjectMapKeyProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("matched", result.value.string);
+}
+
+test "E2E: Map literal preserves distinct unsaved SObject keys" {
+    const source =
+        \\public class SObjectMapLiteralKeyProbe {
+        \\    public static String test() {
+        \\        Contact first = new Contact(FirstName = 'Ada', LastName = 'Lovelace');
+        \\        Contact second = new Contact(FirstName = 'Grace', LastName = 'Hopper');
+        \\        Contact equivalentFirst = new Contact(FirstName = 'Ada', LastName = 'Lovelace');
+        \\        Map<SObject, String> values = new Map<SObject, String>{
+        \\            first => 'first',
+        \\            second => 'second'
+        \\        };
+        \\        return String.valueOf(values.size()) + ':' +
+        \\            values.get(equivalentFirst) + ':' +
+        \\            values.get(second);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "SObjectMapLiteralKeyProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("2:first:second", result.value.string);
+}
+
+test "E2E: SObject.getSObject string rejects foreign key field names" {
+    const source =
+        \\public class GetSObjectForeignKeyStringTest {
+        \\    public static String test() {
+        \\        Contact contactRecord = new Contact(LastName = 'User');
+        \\        try {
+        \\            contactRecord.getSObject('AccountId');
+        \\            return 'missing';
+        \\        } catch (SObjectException ex) {
+        \\            return ex.getMessage();
+        \\        }
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "GetSObjectForeignKeyStringTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("Invalid relationship AccountId for Contact", result.value.string);
+}
+
+test "E2E: update clearing lookup field invalidates queried parent relationship" {
+    const source =
+        \\public class UpdateClearsLookupRelationshipTest {
+        \\    public static String test() {
+        \\        Account accountRecord = new Account(Name = 'Acme');
+        \\        insert accountRecord;
+        \\        Contact contactRecord = new Contact(
+        \\            LastName = 'User',
+        \\            Primary_Affiliation__c = accountRecord.Id
+        \\        );
+        \\        insert contactRecord;
+        \\        Contact queried = [
+        \\            SELECT Id, Primary_Affiliation__c, Primary_Affiliation__r.Name
+        \\            FROM Contact
+        \\            WHERE Id = :contactRecord.Id
+        \\        ];
+        \\        queried.Primary_Affiliation__c = null;
+        \\        update queried;
+        \\        Contact again = [
+        \\            SELECT Id, Primary_Affiliation__c, Primary_Affiliation__r.Name
+        \\            FROM Contact
+        \\            WHERE Id = :contactRecord.Id
+        \\        ];
+        \\        return again.getSObject('Primary_Affiliation__r') == null
+        \\            ? ''
+        \\            : String.valueOf(again.getSObject('Primary_Affiliation__r').get('Name'));
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "UpdateClearsLookupRelationshipTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("", result.value.string);
 }
 
 test "E2E: SObject.getSObject resolves unsaved relationship records assigned via __r" {
@@ -10405,6 +12353,53 @@ test "E2E: subquery child records preserve parent relationship fields" {
     defer result.deinit();
 
     try std.testing.expectEqualStrings("Acme", result.value.string);
+}
+
+test "E2E: child relationship subquery applies literal where filters" {
+    const source =
+        \\public class ChildSubqueryWhereFilterTest {
+        \\    public static String test() {
+        \\        Account accountRecord = new Account(Name = 'Acme');
+        \\        insert accountRecord;
+        \\        insert new Contact(LastName = 'Open', AccountId = accountRecord.Id, Title = 'Keep');
+        \\        insert new Contact(LastName = 'Closed', AccountId = accountRecord.Id, Title = 'Drop');
+        \\        Account queried = [
+        \\            SELECT Id, (SELECT Id, LastName FROM Contacts WHERE Title = 'Keep' ORDER BY Id)
+        \\            FROM Account
+        \\            WHERE Id = :accountRecord.Id
+        \\        ];
+        \\        return String.valueOf(queried.Contacts.size()) + ':' + queried.Contacts[0].LastName;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "ChildSubqueryWhereFilterTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("1:Open", result.value.string);
+}
+
+test "E2E: Date plus integer shifts by days" {
+    const source =
+        \\public class DateIntegerArithmeticTest {
+        \\    public static String test() {
+        \\        Date startDate = Date.newInstance(2026, 5, 1);
+        \\        Date nextDate = startDate + 2;
+        \\        Date previousDate = nextDate - 1;
+        \\        return String.valueOf(nextDate.daysBetween(previousDate)) + ':' +
+        \\            String.valueOf(startDate.daysBetween(nextDate));
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "DateIntegerArithmeticTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("-1:2", result.value.string);
 }
 
 test "E2E: SOQL ORDER BY Id uses stored SObject ids" {
@@ -10568,6 +12563,32 @@ test "E2E: null != empty string is true" {
     try std.testing.expectEqualStrings("where", result.value.string);
 }
 
+test "E2E: SOQL empty string comparison matches missing text fields" {
+    const source =
+        \\public class SoqlEmptyStringNullProbe {
+        \\    public static String test() {
+        \\        insert new Account(Name = 'Unset Type');
+        \\        insert new Account(Name = 'Household', npe01__SYSTEM_AccountType__c = 'Household');
+        \\        List<Account> literalMatches = [
+        \\            SELECT Id FROM Account WHERE npe01__SYSTEM_AccountType__c = ''
+        \\        ];
+        \\        String emptyValue = '';
+        \\        List<Account> bindMatches = [
+        \\            SELECT Id FROM Account WHERE npe01__SYSTEM_AccountType__c = :emptyValue
+        \\        ];
+        \\        return String.valueOf(literalMatches.size()) + ':' + String.valueOf(bindMatches.size());
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "SoqlEmptyStringNullProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("1:1", result.value.string);
+}
+
 test "E2E: SOQL WHERE with null bind variable matches null values only" {
     const source =
         \\public class DbNullBindTest {
@@ -10634,6 +12655,76 @@ test "E2E: empty SOQL assigned to typed List stays an empty list" {
     try std.testing.expectEqualStrings("0", result.value.string);
 }
 
+test "E2E: SOQL IN bind evaluates instance property getter" {
+    const source =
+        \\public class GetterBindQueryTest {
+        \\    private Id accountId;
+        \\    private Set<Id> selectedIds {
+        \\        get {
+        \\            return new Set<Id>{ accountId };
+        \\        }
+        \\    }
+        \\    public String run() {
+        \\        Account a = new Account(Name = 'A');
+        \\        insert a;
+        \\        accountId = a.Id;
+        \\        List<Account> rows = [SELECT Id FROM Account WHERE Id IN :selectedIds];
+        \\        return String.valueOf(rows.size());
+        \\    }
+        \\    public static String test() {
+        \\        return new GetterBindQueryTest().run();
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "GetterBindQueryTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("1", result.value.string);
+}
+
+test "E2E: Task IsClosed is computed from Status" {
+    const source =
+        \\public class TaskIsClosedTest {
+        \\    public static String test() {
+        \\        Task t = new Task(Subject = 'Call', Status = 'Completed');
+        \\        Boolean direct = t.IsClosed;
+        \\        insert t;
+        \\        Task refreshed = [SELECT Id, IsClosed FROM Task WHERE Id = :t.Id];
+        \\        return String.valueOf(direct) + ':' + String.valueOf(refreshed.IsClosed);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "TaskIsClosedTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("true:true", result.value.string);
+}
+
+test "E2E: TaskStatus queries return default and closed statuses" {
+    const source =
+        \\public class TaskStatusQueryTest {
+        \\    public static String test() {
+        \\        TaskStatus openStatus = [SELECT MasterLabel FROM TaskStatus WHERE IsDefault = true LIMIT 1];
+        \\        TaskStatus closedStatus = [SELECT MasterLabel FROM TaskStatus WHERE IsClosed = true LIMIT 1];
+        \\        return openStatus.MasterLabel + ':' + closedStatus.MasterLabel;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "TaskStatusQueryTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("Not Started:Completed", result.value.string);
+}
+
 test "E2E: Database.countQuery resolves local bind variables" {
     const source =
         \\public class DbCountBindTest {
@@ -10659,6 +12750,136 @@ test "E2E: Database.countQuery resolves local bind variables" {
     try std.testing.expectEqualStrings("2", result.value.string);
 }
 
+test "E2E: SOQL NOT IN empty bind collection matches records" {
+    const source =
+        \\public class NotInEmptyBindTest {
+        \\    public static String test() {
+        \\        insert new Account(Name = 'Acme');
+        \\        Set<String> excluded = new Set<String>();
+        \\        Integer count = Database.countQuery(
+        \\            'SELECT count() FROM Account WHERE Type NOT IN :excluded'
+        \\        );
+        \\        return String.valueOf(count);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "NotInEmptyBindTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("1", result.value.string);
+}
+
+test "E2E: NPSP opportunity payment suppression defaults false in SOQL" {
+    const source =
+        \\public class NpspOppPaymentSuppressionDefaultTest {
+        \\    public static String test() {
+        \\        insert new Opportunity(
+        \\            Name = 'Gift',
+        \\            StageName = 'Closed Won',
+        \\            CloseDate = Date.today(),
+        \\            Amount = 100
+        \\        );
+        \\        Integer count = Database.countQuery(
+        \\            'SELECT count() FROM Opportunity WHERE npe01__Do_Not_Automatically_Create_Payment__c = false'
+        \\        );
+        \\        return String.valueOf(count);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "NpspOppPaymentSuppressionDefaultTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("1", result.value.string);
+}
+
+test "E2E: NPSP RD2 status mapper mock fields bypass compatibility shortcut" {
+    const source =
+        \\public class RD2_StatusMapper {
+        \\    public interface Gateway {
+        \\        List<RecurringDonationStatusMapping__mdt> getRecords();
+        \\    }
+        \\
+        \\    private Gateway gateway {
+        \\        get {
+        \\            if (gateway == null) {
+        \\                gateway = new EmptyGateway();
+        \\            }
+        \\            return gateway;
+        \\        }
+        \\        set;
+        \\    }
+        \\
+        \\    private Map<String, String> statusLabelByValue {
+        \\        get {
+        \\            if (statusLabelByValue == null) {
+        \\                statusLabelByValue = new Map<String, String>{ 'Active' => 'Active' };
+        \\            }
+        \\            return statusLabelByValue;
+        \\        }
+        \\        set;
+        \\    }
+        \\
+        \\    public String getState(String status) {
+        \\        Map<String, String> stateByStatus = new Map<String, String>();
+        \\        for (String key : statusLabelByValue.keySet()) {
+        \\            stateByStatus.put(key, null);
+        \\        }
+        \\        for (RecurringDonationStatusMapping__mdt record : gateway.getRecords()) {
+        \\            if (stateByStatus.containsKey(record.Status__c)) {
+        \\                stateByStatus.put(record.Status__c, record.State__c);
+        \\            }
+        \\        }
+        \\        return stateByStatus.get(status);
+        \\    }
+        \\
+        \\    private class EmptyGateway implements Gateway {
+        \\        public List<RecurringDonationStatusMapping__mdt> getRecords() {
+        \\            return new List<RecurringDonationStatusMapping__mdt>();
+        \\        }
+        \\    }
+        \\
+        \\    private class TestGateway implements Gateway {
+        \\        private List<RecurringDonationStatusMapping__mdt> records =
+        \\            new List<RecurringDonationStatusMapping__mdt>();
+        \\
+        \\        public TestGateway withRecord(RecurringDonationStatusMapping__mdt record) {
+        \\            records.add(record);
+        \\            return this;
+        \\        }
+        \\
+        \\        public List<RecurringDonationStatusMapping__mdt> getRecords() {
+        \\            return records;
+        \\        }
+        \\    }
+        \\
+        \\    public static String test() {
+        \\        RD2_StatusMapper mapper = new RD2_StatusMapper();
+        \\        mapper.gateway = new TestGateway().withRecord(
+        \\            new RecurringDonationStatusMapping__mdt(
+        \\                Status__c = 'Canceled',
+        \\                State__c = 'Closed'
+        \\            )
+        \\        );
+        \\        mapper.statusLabelByValue = new Map<String, String>{ 'Canceled' => 'Canceled' };
+        \\        return mapper.getState('Canceled');
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "RD2_StatusMapper",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("Closed", result.value.string);
+}
+
 test "E2E: static field accessed from another class" {
     const source =
         \\public class Controller {
@@ -10679,6 +12900,75 @@ test "E2E: static field accessed from another class" {
     defer result.deinit();
 
     try std.testing.expectEqualStrings("9", result.value.string);
+}
+
+test "E2E: static sobject Id field access passes concrete id to parameter" {
+    const source =
+        \\public class StaticSObjectIdProbe {
+        \\    static Account organizationAcct;
+        \\    public static String test() {
+        \\        organizationAcct = new Account(Name = 'Org');
+        \\        insert organizationAcct;
+        \\        return takeId(organizationAcct.Id) + '|' +
+        \\            takeId(StaticSObjectIdProbe.organizationAcct.Id);
+        \\    }
+        \\    static String takeId(Id acctId) {
+        \\        return acctId.left(3);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "StaticSObjectIdProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("001|001", result.value.string);
+}
+
+test "E2E: SObjectType fields token exposes field name" {
+    const source =
+        \\public class SObjectTypeFieldsTokenNameProbe {
+        \\    public static String test() {
+        \\        return String.valueOf(Opportunity.Id) + ':' +
+        \\            String.valueOf(OpportunityContactRole.ContactId) + ':' +
+        \\            String.valueOf(npe01__OppPayment__c.npe01__Opportunity__c) + ':' +
+        \\            String.valueOf(Opportunity.SObjectType) + ':' +
+        \\            SObjectType.Opportunity.fields.AccountId.Name + ':' +
+        \\            SObjectType.Opportunity.fields.Primary_Contact__c.Name;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "SObjectTypeFieldsTokenNameProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings(
+        "Id:ContactId:npe01__Opportunity__c:Opportunity:AccountId:Primary_Contact__c",
+        result.value.string,
+    );
+}
+
+test "E2E: assigning relationship sobject preserves relationship and foreign key" {
+    const source =
+        \\public class RelationshipAssignmentProbe {
+        \\    public static String test() {
+        \\        Account account = new Account(Id = '001000000000001AAA', npe01__SYSTEM_AccountType__c = 'Household');
+        \\        Contact contact = new Contact(Id = '003000000000001AAA');
+        \\        contact.Account = account;
+        \\        return contact.Account.npe01__SYSTEM_AccountType__c + ':' + contact.AccountId;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "RelationshipAssignmentProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("Household:001000000000001AAA", result.value.string);
 }
 
 test "E2E: Schema.DescribeFieldResult.getPicklistValues() returns entries" {
@@ -11482,6 +13772,33 @@ test "AuraHandledException is caught in try-catch" {
     try std.testing.expect(eval.assertion_failure == null);
 }
 
+test "typed catch does not catch unrelated exception" {
+    const source =
+        \\public class TypedCatchUnrelatedExceptionProbe {
+        \\    public class CustomException extends Exception {}
+        \\    public static String test() {
+        \\        try {
+        \\            try {
+        \\                throw new CustomException('custom');
+        \\            } catch (AuraHandledException ex) {
+        \\                return 'wrong:' + ex.getMessage();
+        \\            }
+        \\        } catch (Exception ex) {
+        \\            return ex.getMessage();
+        \\        }
+        \\        return 'missing';
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "TypedCatchUnrelatedExceptionProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("custom", result.value.string);
+}
+
 test "Type.forName returns null for non-existent class" {
     // Matches Apex semantics: bogus names resolve to null; loaded user classes, known
     // SObjects, primitives, and the collection generics still produce a Type token.
@@ -11582,6 +13899,61 @@ test "E2E: replaceAll can collapse ignored constructed stack trace frames to emp
     defer result.deinit();
 
     try std.testing.expectEqualStrings("", result.value.string);
+}
+
+test "E2E: replaceAll stack trace cleanup fast path preserves remaining frames" {
+    const source =
+        \\public class StackTraceCleanupFastPathProbe {
+        \\    public static String test() {
+        \\        String stackTrace =
+        \\            'Class.IgnoredLogger.entry: line 1, column 1\n' +
+        \\            'Class.RealCaller.run: line 2, column 1\n' +
+        \\            'Class.IgnoredBuilder.build: line 3, column 1';
+        \\        return stackTrace
+        \\            .replaceAll('(IgnoredLogger|IgnoredBuilder)\\..+?column 1', '')
+        \\            .trim();
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "StackTraceCleanupFastPathProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings(
+        "Class.\nClass.RealCaller.run: line 2, column 1\nClass.",
+        result.value.string,
+    );
+}
+
+test "E2E: replaceAll data mask fast path preserves card and SSN replacements" {
+    const source =
+        \\public class DataMaskReplaceAllFastPathProbe {
+        \\    public static String test() {
+        \\        String ssnPattern = '(^|[^0-9A-Za-z])(\\d{3})[- ]?(\\d{2})[- ]?(\\d{4})(?=[^0-9A-Za-z]|$)';
+        \\        String visaPattern = '(^|[^0-9])(4\\d{3})([- ]?)\\d{4}\\3\\d{4}\\3(\\d{4})(?!\\d)';
+        \\        String mastercardPattern = '(^|[^0-9])(5[1-5]\\d{2}|222[1-9]|22[3-9]\\d|2[3-6]\\d{2}|27[01]\\d|2720)([- ]?)\\d{4}\\3\\d{4}\\3(\\d{4})(?!\\d)';
+        \\        String amexPattern = '(^|[^0-9A-Za-z])(3[47]\\d{2})([- ]?)\\d{6}\\3(\\d{5})(?=[^0-9A-Za-z]|$)';
+        \\        String input = 'SSN 123-45-6789, Visa 4111-1111-1111-1111, MC 5555 5555 5555 4444, Amex 3714 496353 98431, skip abc123456789 and 4111-1111 1111-1111';
+        \\        return input
+        \\            .replaceAll(ssnPattern, '$1XXX-XX-$4')
+        \\            .replaceAll(visaPattern, '$1****-****-****-$4')
+        \\            .replaceAll(mastercardPattern, '$1****-****-****-$4')
+        \\            .replaceAll(amexPattern, '$1****-******-$4');
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "DataMaskReplaceAllFastPathProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings(
+        "SSN XXX-XX-6789, Visa ****-****-****-1111, MC ****-****-****-4444, Amex ****-******-98431, skip abc123456789 and 4111-1111 1111-1111",
+        result.value.string,
+    );
 }
 
 test "Trigger recursion does not StackOverflow" {
@@ -11907,6 +14279,26 @@ test "E2E: SObjectType token supports lowercase member and value equality" {
     try std.testing.expectEqualStrings("true:true:npe01__OppPayment__c", result.value.string);
 }
 
+test "E2E: SObjectType argument coerces to DescribeSObjectResult parameter" {
+    const source =
+        \\public class DescribeSObjectArgCoercionTest {
+        \\    public static String label(Schema.DescribeSObjectResult describeObj) {
+        \\        return describeObj.getLocalName();
+        \\    }
+        \\    public static String test() {
+        \\        return label(Schema.Sobjecttype.npe4__Relationship__c);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "DescribeSObjectArgCoercionTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("npe4__Relationship__c", result.value.string);
+}
+
 test "E2E: DescribeSObjectResult fields map includes common User fields" {
     const source =
         \\public class UserDescribeFieldsTest {
@@ -11925,6 +14317,50 @@ test "E2E: DescribeSObjectResult fields map includes common User fields" {
     defer result.deinit();
 
     try std.testing.expectEqualStrings("true:Username", result.value.string);
+}
+
+test "E2E: describe field map includes observed managed custom fields" {
+    const source =
+        \\public class ObservedManagedFieldDescribeTest {
+        \\    public static String test() {
+        \\        insert new npe4__Relationship__c(
+        \\            npe4__Contact__c = '003000000000001',
+        \\            npe4__Description__c = 'notes'
+        \\        );
+        \\        Map<String, Schema.SObjectField> fields =
+        \\            npe4__Relationship__c.SObjectType.getDescribe().fields.getMap();
+        \\        return String.valueOf(fields.containsKey('npe4__Description__c')) +
+        \\            ':' + fields.get('npe4__Description__c').getDescribe().getName();
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "ObservedManagedFieldDescribeTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("true:npe4__Description__c", result.value.string);
+}
+
+test "E2E: packaged relationship describe includes syncable fields" {
+    const source =
+        \\public class PackagedRelationshipDescribeProbe {
+        \\    public static String test() {
+        \\        Map<String, Schema.SObjectField> fields =
+        \\            npe4__Relationship__c.SObjectType.getDescribe().fields.getMap();
+        \\        return String.valueOf(fields.containsKey('npe4__Status__c')) +
+        \\            ':' + String.valueOf(fields.containsKey('npe4__Description__c'));
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "PackagedRelationshipDescribeProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("true:true", result.value.string);
 }
 
 test "E2E: DescribeFieldResult recognizes non-name fallback fields" {
@@ -12603,6 +15039,111 @@ test "E2E: field set members expose lookup labels and relationship describe meta
     );
 }
 
+test "E2E: lookup metadata rejects ids with the wrong object prefix" {
+    const alloc = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try tmp_dir.dir.createDirPath(std.testing.io, "objects/TaskTemplate__c/fields");
+    try tmp_dir.dir.writeFile(std.testing.io, .{
+        .sub_path = "objects/TaskTemplate__c/fields/Parent_Task__c.field-meta.xml",
+        .data =
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+        \\    <fullName>Parent_Task__c</fullName>
+        \\    <label>Parent Task</label>
+        \\    <referenceTo>TaskTemplate__c</referenceTo>
+        \\    <relationshipName>ChildTasks</relationshipName>
+        \\    <type>Lookup</type>
+        \\</CustomField>
+        ,
+    });
+    const tmp_path = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", alloc);
+    defer alloc.free(tmp_path);
+
+    const source =
+        \\public class LookupWrongPrefixProbe {
+        \\    public static String test() {
+        \\        TaskTemplate__c parent = new TaskTemplate__c(Name = 'Parent');
+        \\        insert parent;
+        \\        TaskTemplate__c child = new TaskTemplate__c(Name = 'Child', Parent_Task__c = parent.Id);
+        \\        insert child;
+        \\        child.Parent_Task__c = '001000000000001AAA';
+        \\        try {
+        \\            update child;
+        \\            return 'no exception';
+        \\        } catch (DmlException ex) {
+        \\            return ex.getMessage();
+        \\        }
+        \\    }
+        \\}
+    ;
+    const result = try run(alloc, std.testing.io, source, .{
+        .entry_class = "LookupWrongPrefixProbe",
+        .entry_method = "test",
+        .source_paths = &.{tmp_path},
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings(
+        "FIELD_INTEGRITY_EXCEPTION: Parent_Task__c: id value of incorrect type: 001000000000001AAA",
+        result.value.string,
+    );
+}
+
+test "E2E: lookup metadata rejects missing ids when target records exist" {
+    const alloc = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try tmp_dir.dir.createDirPath(std.testing.io, "objects/Child__c/fields");
+    try tmp_dir.dir.writeFile(std.testing.io, .{
+        .sub_path = "objects/Child__c/fields/Parent__c.field-meta.xml",
+        .data =
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+        \\    <fullName>Parent__c</fullName>
+        \\    <label>Parent</label>
+        \\    <referenceTo>Parent__c</referenceTo>
+        \\    <relationshipName>Children</relationshipName>
+        \\    <type>Lookup</type>
+        \\</CustomField>
+        ,
+    });
+    const tmp_path = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", alloc);
+    defer alloc.free(tmp_path);
+
+    const source =
+        \\public class LookupMissingTargetProbe {
+        \\    public static String test() {
+        \\        Parent__c parent = new Parent__c(Name = 'Parent');
+        \\        insert parent;
+        \\        Child__c child = new Child__c(Name = 'Child', Parent__c = parent.Id);
+        \\        insert child;
+        \\        Child__c invalid = new Child__c(Name = 'Invalid', Parent__c = parent.Id.substring(0, 15) + '999');
+        \\        try {
+        \\            insert invalid;
+        \\            return 'no exception';
+        \\        } catch (DmlException ex) {
+        \\            return ex.getMessage();
+        \\        }
+        \\    }
+        \\}
+    ;
+    const result = try run(alloc, std.testing.io, source, .{
+        .entry_class = "LookupMissingTargetProbe",
+        .entry_method = "test",
+        .source_paths = &.{tmp_path},
+    });
+    defer result.deinit();
+
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        result.value.string,
+        "INVALID_CROSS_REFERENCE_KEY",
+    ) != null);
+}
+
 test "E2E: getPopulatedFieldsAsMap excludes selected null fields" {
     const source =
         \\public class PopulatedNullFieldQueryTest {
@@ -12976,6 +15517,262 @@ test "E2E: JSON deserialize unwraps relationship records for typed child access"
     defer result.deinit();
 
     try std.testing.expectEqualStrings("false:2:003000000000001AAA", result.value.string);
+}
+
+test "E2E: JSON relationship records without attributes infer child SObject type" {
+    const source =
+        \\public class JsonInferredRelationshipRecordTypeTest {
+        \\    public static String test() {
+        \\        String json =
+        \\            '{"Id":"006000000000001AAA","Name":"Gift",' +
+        \\            '"npe01__OppPayment__r":{"totalSize":1,"done":true,"records":[' +
+        \\            '{"Id":"a2f000000000001AAA","npe01__Paid__c":false,' +
+        \\            '"npe01__Opportunity__c":"006000000000001AAA"}]}}';
+        \\        Opportunity opportunity = (Opportunity) JSON.deserialize(json, Opportunity.class);
+        \\        return String.valueOf(opportunity.npe01__OppPayment__r.size()) + ':' +
+        \\            opportunity.npe01__OppPayment__r[0].getSObjectType().getDescribe().getName() + ':' +
+        \\            String.valueOf(opportunity.npe01__OppPayment__r[0].npe01__Paid__c);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "JsonInferredRelationshipRecordTypeTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("1:npe01__OppPayment__c:false", result.value.string);
+}
+
+test "E2E: JSON child relationship injected into serialized SObject is preserved" {
+    const source =
+        \\public class JsonInjectedRelationshipProbe {
+        \\    public static String test() {
+        \\        Opportunity opportunity = new Opportunity(
+        \\            Id = '006000000000001AAA',
+        \\            Name = 'Gift',
+        \\            StageName = 'Open',
+        \\            CloseDate = Date.today()
+        \\        );
+        \\        List<npe01__OppPayment__c> payments = new List<npe01__OppPayment__c>{
+        \\            new npe01__OppPayment__c(
+        \\                npe01__Paid__c = false,
+        \\                npe01__Written_Off__c = false,
+        \\                npe01__Opportunity__c = opportunity.Id
+        \\            )
+        \\        };
+        \\        String parentJSON = JSON.serialize(opportunity);
+        \\        String childJSON = '"npe01__OppPayment__r": {"totalSize": 1, "done": true,' +
+        \\            '"records": ' + JSON.serialize(payments) + '}';
+        \\        parentJSON = parentJSON.substring(0, parentJSON.length() - 1) + ',' + childJSON + '}';
+        \\        Opportunity hydrated = (Opportunity) JSON.deserialize(parentJSON, Opportunity.class);
+        \\        return String.valueOf(hydrated.npe01__OppPayment__r.size()) + ':' +
+        \\            hydrated.npe01__OppPayment__r[0].getSObjectType().getDescribe().getName();
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "JsonInjectedRelationshipProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("1:npe01__OppPayment__c", result.value.string);
+}
+
+test "E2E: SObject list index assignment preserves injected child relationships" {
+    const source =
+        \\public class JsonRelationshipListAssignmentProbe {
+        \\    public static String test() {
+        \\        List<Opportunity> opportunities = new List<Opportunity>{
+        \\            new Opportunity(Id = '006000000000001AAA', Name = 'A'),
+        \\            new Opportunity(Id = '006000000000002AAA', Name = 'B')
+        \\        };
+        \\        List<npe01__OppPayment__c> payments = new List<npe01__OppPayment__c>{
+        \\            new npe01__OppPayment__c(npe01__Paid__c = false)
+        \\        };
+        \\        String parentJSON = JSON.serialize(opportunities[0]);
+        \\        String childJSON = '"npe01__OppPayment__r": {"totalSize": 1, "done": true,' +
+        \\            '"records": ' + JSON.serialize(payments) + '}';
+        \\        parentJSON = parentJSON.substring(0, parentJSON.length() - 1) + ',' + childJSON + '}';
+        \\        opportunities[0] = (Opportunity) JSON.deserialize(parentJSON, Opportunity.class);
+        \\        npe01__OppPayment__c payment = opportunities[0].npe01__OppPayment__r[0];
+        \\        return String.valueOf(opportunities[0].npe01__OppPayment__r.size()) + ':' +
+        \\            String.valueOf(opportunities[1].npe01__OppPayment__r.size()) + ':' +
+        \\            String.valueOf(payment.npe01__Paid__c || payment.npe01__Written_Off__c);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "JsonRelationshipListAssignmentProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("1:0:false", result.value.string);
+}
+
+test "E2E: injected payment child relationship filters unpaid payments" {
+    const source =
+        \\public class JsonRelationshipPaymentFilterProbe {
+        \\    public static String test() {
+        \\        Opportunity opportunity = new Opportunity(
+        \\            Id = '006000000000001AAA',
+        \\            Name = 'Gift'
+        \\        );
+        \\        List<npe01__OppPayment__c> payments = new List<npe01__OppPayment__c>{
+        \\            new npe01__OppPayment__c(
+        \\                npe01__Paid__c = false,
+        \\                npe01__Written_Off__c = false,
+        \\                npe01__Opportunity__c = opportunity.Id
+        \\            ),
+        \\            new npe01__OppPayment__c(
+        \\                npe01__Paid__c = false,
+        \\                npe01__Written_Off__c = false,
+        \\                npe01__Opportunity__c = opportunity.Id
+        \\            )
+        \\        };
+        \\        String parentJSON = JSON.serialize(opportunity);
+        \\        String childJSON = '"npe01__OppPayment__r": {"totalSize": 2, "done": true,' +
+        \\            '"records": ' + JSON.serialize(payments) + '}';
+        \\        parentJSON = parentJSON.substring(0, parentJSON.length() - 1) + ',' + childJSON + '}';
+        \\        Opportunity hydrated = (Opportunity) JSON.deserialize(parentJSON, Opportunity.class);
+        \\        List<npe01__OppPayment__c> unpaid = new List<npe01__OppPayment__c>();
+        \\        for (npe01__OppPayment__c payment : hydrated.npe01__OppPayment__r) {
+        \\            if (payment.npe01__Paid__c || payment.npe01__Written_Off__c) {
+        \\                continue;
+        \\            }
+        \\            unpaid.add(payment);
+        \\        }
+        \\        List<Object> untyped = unpaid;
+        \\        return String.valueOf(hydrated.npe01__OppPayment__r.size()) + ':' +
+        \\            String.valueOf(unpaid.size()) + ':' +
+        \\            String.valueOf(untyped.size());
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "JsonRelationshipPaymentFilterProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("2:2:2", result.value.string);
+}
+
+test "E2E: injected child relationship isEmpty reflects records" {
+    const source =
+        \\public class JsonRelationshipIsEmptyProbe {
+        \\    public static String test() {
+        \\        Opportunity opportunity = new Opportunity(Id = '006000000000001AAA', Name = 'Gift');
+        \\        List<npe01__OppPayment__c> payments = new List<npe01__OppPayment__c>{
+        \\            new npe01__OppPayment__c(npe01__Paid__c = false, npe01__Written_Off__c = false)
+        \\        };
+        \\        String parentJSON = JSON.serialize(opportunity);
+        \\        String childJSON = '"npe01__OppPayment__r": {"totalSize": 1, "done": true,' +
+        \\            '"records": ' + JSON.serialize(payments) + '}';
+        \\        parentJSON = parentJSON.substring(0, parentJSON.length() - 1) + ',' + childJSON + '}';
+        \\        opportunity = (Opportunity) JSON.deserialize(parentJSON, Opportunity.class);
+        \\        return String.valueOf(opportunity.npe01__OppPayment__r.isEmpty()) + ':' +
+        \\            String.valueOf(opportunity.npe01__OppPayment__r.size());
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "JsonRelationshipIsEmptyProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("false:1", result.value.string);
+}
+
+test "E2E: direct child relationship field unwraps records envelope" {
+    const source =
+        \\public class RelationshipEnvelopeFieldProbe {
+        \\    public static String test() {
+        \\        Opportunity opportunity = new Opportunity(Id = '006000000000001AAA', Name = 'Gift');
+        \\        SObject envelope = new SObject();
+        \\        envelope.put('records', new List<npe01__OppPayment__c>{
+        \\            new npe01__OppPayment__c(npe01__Paid__c = false),
+        \\            new npe01__OppPayment__c(npe01__Paid__c = false)
+        \\        });
+        \\        opportunity.put('npe01__OppPayment__r', envelope);
+        \\        return String.valueOf(opportunity.npe01__OppPayment__r.size()) + ':' +
+        \\            String.valueOf(opportunity.npe01__OppPayment__r.isEmpty());
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "RelationshipEnvelopeFieldProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("2:false", result.value.string);
+}
+
+test "E2E: SObject child relationship list survives DTO view conversion" {
+    const source =
+        \\public class RelationshipDonation {
+        \\    private List<npe01__OppPayment__c> unpaidPayments;
+        \\    private Opportunity opportunity;
+        \\    public RelationshipDonation(Opportunity opportunity) {
+        \\        this.opportunity = opportunity;
+        \\        unpaidPayments = new List<npe01__OppPayment__c>();
+        \\        for (npe01__OppPayment__c payment : opportunity.npe01__OppPayment__r) {
+        \\            if (payment.npe01__Paid__c || payment.npe01__Written_Off__c) {
+        \\                continue;
+        \\            }
+        \\            unpaidPayments.add(payment);
+        \\        }
+        \\    }
+        \\    public List<npe01__OppPayment__c> unpaidPayments() {
+        \\        return this.unpaidPayments;
+        \\    }
+        \\}
+        \\public class RelationshipDonationDTO {
+        \\    public List<Object> unpaidPayments;
+        \\    public RelationshipDonationDTO(RelationshipDonation donation) {
+        \\        this.unpaidPayments = donation.unpaidPayments();
+        \\    }
+        \\}
+        \\public class RelationshipDonationView {
+        \\    public List<Map<String, Object>> unpaidPayments;
+        \\    public RelationshipDonationView(RelationshipDonationDTO dto) {
+        \\        this.unpaidPayments = new List<Map<String, Object>>();
+        \\        for (Object payment : dto.unpaidPayments) {
+        \\            Map<String, Object> untyped =
+        \\                (Map<String, Object>) JSON.deserializeUntyped(JSON.serialize(payment));
+        \\            this.unpaidPayments.add(untyped);
+        \\        }
+        \\    }
+        \\}
+        \\public class RelationshipDonationViewProbe {
+        \\    public static String test() {
+        \\        Opportunity opportunity = new Opportunity(Id = '006000000000001AAA', Name = 'Gift');
+        \\        List<npe01__OppPayment__c> payments = new List<npe01__OppPayment__c>{
+        \\            new npe01__OppPayment__c(npe01__Paid__c = false, npe01__Written_Off__c = false),
+        \\            new npe01__OppPayment__c(npe01__Paid__c = false, npe01__Written_Off__c = false)
+        \\        };
+        \\        String parentJSON = JSON.serialize(opportunity);
+        \\        String childJSON = '"npe01__OppPayment__r": {"totalSize": 2, "done": true,' +
+        \\            '"records": ' + JSON.serialize(payments) + '}';
+        \\        parentJSON = parentJSON.substring(0, parentJSON.length() - 1) + ',' + childJSON + '}';
+        \\        opportunity = (Opportunity) JSON.deserialize(parentJSON, Opportunity.class);
+        \\        RelationshipDonationView view =
+        \\            new RelationshipDonationView(new RelationshipDonationDTO(new RelationshipDonation(opportunity)));
+        \\        return String.valueOf(view.unpaidPayments.size());
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "RelationshipDonationViewProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("2", result.value.string);
 }
 
 test "E2E: DataWeave object conversion returns typed records" {
@@ -14056,6 +16853,47 @@ test "E2E: ApexPages.Message preserves summary when added to page state" {
     try std.testing.expectEqualStrings("Denied:ERROR", result.value.string);
 }
 
+test "E2E: ApexPages.Message string conversion exposes message text" {
+    const source =
+        \\public class ApexPagesMessageStringTest {
+        \\    public static String test() {
+        \\        ApexPages.Message msg = new ApexPages.Message(
+        \\            ApexPages.Severity.ERROR,
+        \\            'Denied'
+        \\        );
+        \\        return String.valueOf(msg) + ':' + msg.toString() + ':' + msg.getMessage();
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "ApexPagesMessageStringTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("Denied:Denied:Denied", result.value.string);
+}
+
+test "E2E: SObject field addError outside triggers appears in ApexPages messages" {
+    const source =
+        \\public class FieldAddErrorPageMessageProbe {
+        \\    public static String test() {
+        \\        Account account = new Account(Name = 'Acme');
+        \\        account.Name.addError('Name is required');
+        \\        return String.valueOf(ApexPages.hasMessages(ApexPages.Severity.ERROR)) + ':' +
+        \\            ApexPages.getMessages()[0].getSummary();
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "FieldAddErrorPageMessageProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("true:Name is required", result.value.string);
+}
+
 test "E2E: Id.valueOf expands 15-char ids to 18-char ids" {
     const source =
         \\public class IdValueOfTest {
@@ -14093,6 +16931,49 @@ test "E2E: Id.valueOf throws StringException for invalid ids" {
     defer result.deinit();
 
     try std.testing.expectEqualStrings("string-exception", result.value.string);
+}
+
+test "E2E: Id variable declaration rejects invalid string ids" {
+    const source =
+        \\public class InvalidIdDeclarationTest {
+        \\    public static String test() {
+        \\        try {
+        \\            Id foo = 'foo';
+        \\            return 'no-exception';
+        \\        } catch (System.StringException e) {
+        \\            return 'string-exception';
+        \\        }
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "InvalidIdDeclarationTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("string-exception", result.value.string);
+}
+
+test "E2E: Database.query result assigns to concrete SObject" {
+    const source =
+        \\public class DatabaseQueryAssignmentTest {
+        \\    public static String test() {
+        \\        insert new Account(Name = 'Acme');
+        \\        String soql = 'SELECT Id, Name FROM Account LIMIT 1';
+        \\        Account accountRecord;
+        \\        accountRecord = Database.query(soql);
+        \\        return accountRecord.Name;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "DatabaseQueryAssignmentTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("Acme", result.value.string);
 }
 
 test "E2E: custom equals and hashCode drive map lookup while strict equality stays identity" {
@@ -14219,6 +17100,119 @@ test "E2E: executeBatch uses QueryLocator records produced from SOQL literals" {
     defer result.deinit();
 
     try std.testing.expectEqual(@as(i64, 1), result.value.integer);
+}
+
+test "E2E: executeBatch does not mutate caller batch instance state" {
+    const source =
+        \\global class BatchInstanceIsolationProbe implements Database.Batchable<SObject>, Database.Stateful {
+        \\    public Integer processed = 5;
+        \\    global Database.QueryLocator start(Database.BatchableContext bc) {
+        \\        return Database.getQueryLocator([SELECT Id FROM Account]);
+        \\    }
+        \\    global void execute(Database.BatchableContext bc, List<SObject> scope) {
+        \\        processed += scope.size();
+        \\    }
+        \\    global void finish(Database.BatchableContext bc) {}
+        \\}
+        \\public class BatchInstanceIsolationProbeTest {
+        \\    public static Integer test() {
+        \\        insert new Account(Name = 'A');
+        \\        BatchInstanceIsolationProbe batch = new BatchInstanceIsolationProbe();
+        \\        Database.executeBatch(batch);
+        \\        return batch.processed;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "BatchInstanceIsolationProbeTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqual(@as(i64, 5), result.value.integer);
+}
+
+test "E2E: QueryLocator captures instance field bind records at start time" {
+    const source =
+        \\global class BoundQueryLocatorBatch implements Database.Batchable<SObject> {
+        \\    public static Integer processed = 0;
+        \\    private List<Id> accountIds;
+        \\    public BoundQueryLocatorBatch(List<Id> ids) {
+        \\        accountIds = ids;
+        \\    }
+        \\    global Database.QueryLocator start(Database.BatchableContext bc) {
+        \\        return Database.getQueryLocator(
+        \\            'SELECT Id FROM Account WHERE Id =: accountIds'
+        \\        );
+        \\    }
+        \\    global void execute(Database.BatchableContext bc, List<SObject> scope) {
+        \\        processed = scope.size();
+        \\    }
+        \\    global void finish(Database.BatchableContext bc) {}
+        \\}
+        \\public class BoundQueryLocatorBatchTest {
+        \\    public static Integer test() {
+        \\        List<Account> accounts = new List<Account>{
+        \\            new Account(Name = 'A'),
+        \\            new Account(Name = 'B')
+        \\        };
+        \\        insert accounts;
+        \\        List<Id> ids = new List<Id>(new Map<Id, Account>(accounts).keySet());
+        \\        Database.executeBatch(new BoundQueryLocatorBatch(ids));
+        \\        return BoundQueryLocatorBatch.processed;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "BoundQueryLocatorBatchTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqual(@as(i64, 2), result.value.integer);
+}
+
+test "E2E: executeBatch skips execute for empty QueryLocator scope" {
+    const source =
+        \\global class EmptyQueryLocatorBatch implements Database.Batchable<SObject> {
+        \\    public static Integer processed = 0;
+        \\    public static Boolean finished = false;
+        \\    global Database.QueryLocator start(Database.BatchableContext bc) {
+        \\        return Database.getQueryLocator([
+        \\            SELECT Id FROM Account WHERE Name = 'Missing'
+        \\        ]);
+        \\    }
+        \\    global void execute(Database.BatchableContext bc, List<SObject> scope) {
+        \\        processed++;
+        \\    }
+        \\    global void finish(Database.BatchableContext bc) {
+        \\        finished = true;
+        \\    }
+        \\}
+        \\public class EmptyQueryLocatorBatchTest {
+        \\    public static String test() {
+        \\        insert new Account(Name = 'Keep');
+        \\        String jobId = Database.executeBatch(new EmptyQueryLocatorBatch());
+        \\        AsyncApexJob job = [
+        \\            SELECT JobItemsProcessed, TotalJobItems
+        \\            FROM AsyncApexJob
+        \\            WHERE Id = :jobId
+        \\            LIMIT 1
+        \\        ];
+        \\        return String.valueOf(EmptyQueryLocatorBatch.processed) +
+        \\            ':' + String.valueOf(EmptyQueryLocatorBatch.finished) +
+        \\            ':' + String.valueOf(job.JobItemsProcessed) +
+        \\            ':' + String.valueOf(job.TotalJobItems);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "EmptyQueryLocatorBatchTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("0:true:0:0", result.value.string);
 }
 
 test "E2E: executeBatch queues chained jobs triggered from finish" {
@@ -14552,6 +17546,101 @@ test "E2E: aggregate query groups by multi-hop parent relationship fields" {
     try std.testing.expectEqualStrings("2:1:1", result.value.string);
 }
 
+test "E2E: aggregate query supports GROUP BY ROLLUP subtotals" {
+    const source =
+        \\public class AggregateRollupProbe {
+        \\    public static String test() {
+        \\        Account acct = new Account(Name = 'Acme');
+        \\        insert acct;
+        \\        insert new List<Task>{
+        \\            new Task(Subject = 'Open', WhatId = acct.Id, Status = 'Not Started'),
+        \\            new Task(Subject = 'Done', WhatId = acct.Id, Status = 'Completed')
+        \\        };
+        \\        Integer total = 0;
+        \\        Integer closed = 0;
+        \\        for (AggregateResult row : [
+        \\            SELECT WhatId, IsClosed, COUNT(Id) cnt
+        \\            FROM Task
+        \\            WHERE WhatId = :acct.Id
+        \\            GROUP BY ROLLUP(WhatId, IsClosed)
+        \\        ]) {
+        \\            if ((Id) row.get('WhatId') == acct.Id && row.get('IsClosed') == null) {
+        \\                total = (Integer) row.get('cnt');
+        \\            }
+        \\            if ((Id) row.get('WhatId') == acct.Id && (Boolean) row.get('IsClosed') == true) {
+        \\                closed = (Integer) row.get('cnt');
+        \\            }
+        \\        }
+        \\        return String.valueOf(total) + ':' + String.valueOf(closed);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "AggregateRollupProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("2:1", result.value.string);
+}
+
+test "E2E: SOQL IN bind accepts colon without whitespace" {
+    const source =
+        \\public class InBindNoWhitespaceProbe {
+        \\    public static String test() {
+        \\        Account first = new Account(Name = 'First');
+        \\        Account second = new Account(Name = 'Second');
+        \\        insert new List<Account>{ first, second };
+        \\        insert new List<Contact>{
+        \\            new Contact(LastName = 'One', AccountId = first.Id),
+        \\            new Contact(LastName = 'Two', AccountId = second.Id)
+        \\        };
+        \\        Set<Id> accountIds = new Set<Id>{ first.Id };
+        \\        return String.valueOf([
+        \\            SELECT Id
+        \\            FROM Contact
+        \\            WHERE AccountId IN: accountIds
+        \\        ].size());
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "InBindNoWhitespaceProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("1", result.value.string);
+}
+
+test "E2E: SOQL missing field null inequality is false" {
+    const source =
+        \\public class MissingFieldNullInequalityProbe {
+        \\    public static String test() {
+        \\        insert new Account(Name = 'Acme');
+        \\        Integer nonNullCount = [
+        \\            SELECT Id
+        \\            FROM Account
+        \\            WHERE Custom_Lookup__c != null
+        \\        ].size();
+        \\        Integer nullCount = [
+        \\            SELECT Id
+        \\            FROM Account
+        \\            WHERE Custom_Lookup__c = null
+        \\        ].size();
+        \\        return String.valueOf(nonNullCount) + ':' + String.valueOf(nullCount);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "MissingFieldNullInequalityProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("0:1", result.value.string);
+}
+
 test "E2E: executeBatch creates queryable AsyncApexJob records" {
     const source =
         \\global class AsyncJobProbeBatch implements Database.Batchable<SObject> {
@@ -14573,7 +17662,7 @@ test "E2E: executeBatch creates queryable AsyncApexJob records" {
         \\            : batchClassName;
         \\        String jobId = Database.executeBatch(new AsyncJobProbeBatch());
         \\        List<AsyncApexJob> jobs = [
-        \\            SELECT Id, JobType, Status, CreatedBy.Name
+        \\            SELECT Id, JobType, Status, CreatedBy.Name, JobItemsProcessed, TotalJobItems
         \\            FROM AsyncApexJob
         \\            WHERE
         \\                Id = :jobId
@@ -14584,7 +17673,9 @@ test "E2E: executeBatch creates queryable AsyncApexJob records" {
         \\        return String.valueOf(jobs.size()) +
         \\            ':' + job.JobType +
         \\            ':' + job.Status +
-        \\            ':' + job.CreatedBy.Name;
+        \\            ':' + job.CreatedBy.Name +
+        \\            ':' + String.valueOf(job.JobItemsProcessed) +
+        \\            ':' + String.valueOf(job.TotalJobItems);
         \\    }
         \\}
     ;
@@ -14594,7 +17685,47 @@ test "E2E: executeBatch creates queryable AsyncApexJob records" {
     });
     defer result.deinit();
 
-    try std.testing.expectEqualStrings("1:BatchApex:Completed:Test User", result.value.string);
+    try std.testing.expectEqualStrings("1:BatchApex:Completed:Test User:1:1", result.value.string);
+}
+
+test "E2E: batch finish queueable is not visible before stopTest" {
+    const source =
+        \\global class DeferredQueueable implements Queueable {
+        \\    global void execute(QueueableContext qc) {}
+        \\}
+        \\global class DeferredBatch implements Database.Batchable<SObject> {
+        \\    public static String state = 'initial';
+        \\    global Iterable<SObject> start(Database.BatchableContext bc) {
+        \\        return new List<SObject>{ new Account(Name = 'Acme') };
+        \\    }
+        \\    global void execute(Database.BatchableContext bc, List<SObject> scope) {
+        \\        DeferredBatch.state = 'executed';
+        \\    }
+        \\    global void finish(Database.BatchableContext bc) {
+        \\        System.enqueueJob(new DeferredQueueable());
+        \\    }
+        \\}
+        \\public class DeferredBatchTest {
+        \\    public static String test() {
+        \\        Test.startTest();
+        \\        Id jobId = Database.executeBatch(new DeferredBatch());
+        \\        Integer jobsBeforeStop = [
+        \\            SELECT COUNT()
+        \\            FROM AsyncApexJob
+        \\        ];
+        \\        String beforeStop = DeferredBatch.state + ':' + String.valueOf(jobsBeforeStop);
+        \\        Test.stopTest();
+        \\        return beforeStop + ':' + DeferredBatch.state;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "DeferredBatchTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("executed:1:executed", result.value.string);
 }
 
 test "E2E: AsyncApexJob namespace prefix matches blank namespace filters" {
@@ -14629,7 +17760,7 @@ test "E2E: AsyncApexJob namespace prefix matches blank namespace filters" {
     try std.testing.expectEqual(@as(i64, 1), result.value.integer);
 }
 
-test "E2E: System.schedule creates queryable CronTrigger records" {
+test "E2E: System.schedule creates queryable CronTrigger and AsyncApexJob records" {
     const source =
         \\global class CronProbeJob implements Schedulable {
         \\    global void execute(SchedulableContext sc) {}
@@ -14644,8 +17775,22 @@ test "E2E: System.schedule creates queryable CronTrigger records" {
         \\            WHERE CronJobDetail.Name IN :jobNames
         \\                AND CronJobDetail.JobType = '7'
         \\        ];
+        \\        List<AsyncApexJob> asyncJobs = [
+        \\            SELECT Id, ApexClass.Name, JobType
+        \\            FROM AsyncApexJob
+        \\            WHERE JobType = 'ScheduledApex'
+        \\        ];
+        \\        System.abortJob(jobs[0].Id);
+        \\        Integer remainingJobs = [
+        \\            SELECT Id
+        \\            FROM CronTrigger
+        \\            WHERE CronJobDetail.Name IN :jobNames
+        \\                AND CronJobDetail.JobType = '7'
+        \\        ].size();
         \\        return String.valueOf(jobs.size()) + ':' +
-        \\            jobs[0].CronJobDetail.Name + ':' + jobs[0].CronExpression;
+        \\            jobs[0].CronJobDetail.Name + ':' + jobs[0].CronExpression + ':' +
+        \\            String.valueOf(asyncJobs.size()) + ':' + asyncJobs[0].ApexClass.Name + ':' +
+        \\            String.valueOf(remainingJobs);
         \\    }
         \\}
     ;
@@ -14655,7 +17800,10 @@ test "E2E: System.schedule creates queryable CronTrigger records" {
     });
     defer result.deinit();
 
-    try std.testing.expectEqualStrings("1:Nightly Job:0 0 23 ? * *", result.value.string);
+    try std.testing.expectEqualStrings(
+        "1:Nightly Job:0 0 23 ? * *:1:CronProbeJob:0",
+        result.value.string,
+    );
 }
 
 test "E2E: executeBatch publishes BatchApexErrorEvent for raises-platform-events batches" {
@@ -15442,6 +18590,27 @@ test "E2E: System.Test.setCreatedDate updates persisted CreatedDate" {
     try std.testing.expectEqualStrings("1:true:false", result.value.string);
 }
 
+test "E2E: SOQL LAST_N_DAYS filters CreatedDate" {
+    const source =
+        \\public class LastNDaysCreatedDateFilterTest {
+        \\    public static Integer test() {
+        \\        Account recentRecord = new Account(Name = 'Recent');
+        \\        Account oldRecord = new Account(Name = 'Old');
+        \\        insert new List<Account>{ recentRecord, oldRecord };
+        \\        System.Test.setCreatedDate(oldRecord.Id, Datetime.now().addDays(-60));
+        \\        return [SELECT count() FROM Account WHERE CreatedDate = LAST_N_DAYS:30];
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "LastNDaysCreatedDateFilterTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqual(@as(i64, 1), result.value.integer);
+}
+
 test "E2E: inserted live records do not expose auto-generated CreatedDate before requery" {
     const source =
         \\public class InsertedLiveCreatedDateVisibilityTest {
@@ -15483,6 +18652,30 @@ test "E2E: for-init multiple variable declarations remain in loop scope" {
     defer result.deinit();
 
     try std.testing.expectEqualStrings("6", result.value.string);
+}
+
+test "E2E: local multiple variable declarations define every name" {
+    const source =
+        \\public class LocalMultiDeclRuntimeTest {
+        \\    public static String test() {
+        \\        Id firstId, secondId;
+        \\        Account accountRecord = new Account(Name = 'Acme');
+        \\        insert accountRecord;
+        \\        firstId = accountRecord.Id;
+        \\        secondId = accountRecord.Id;
+        \\        return String.valueOf(firstId != null) + ':' +
+        \\            String.valueOf(secondId != null) + ':' +
+        \\            String.valueOf(firstId == secondId);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "LocalMultiDeclRuntimeTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("true:true:true", result.value.string);
 }
 
 test "E2E: ORDER BY CreatedDate respects System.Test.setCreatedDate changes" {
@@ -15774,6 +18967,28 @@ test "E2E: List<String>.sort keeps digit-prefixed values after alpha strings" {
     try std.testing.expectEqualStrings("another-tag|some-tag|1", result.value.string);
 }
 
+test "E2E: List.sort orders SObjects by regular fields instead of audit Ids" {
+    const source =
+        \\public class SObjectSortTest {
+        \\    public static String test() {
+        \\        List<Thing__c> values = new List<Thing__c>{
+        \\            new Thing__c(Id = 'a000000000000002', Name = 'Beta', Rank__c = 2),
+        \\            new Thing__c(Id = 'a000000000000001', Name = 'Alpha', Rank__c = 1)
+        \\        };
+        \\        values.sort();
+        \\        return values[0].Name + ':' + values[1].Name;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "SObjectSortTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("Alpha:Beta", result.value.string);
+}
+
 test "E2E: method returning Map<Schema.SObjectField,Object> prefers matching overload" {
     const source =
         \\public class FieldMapOverloadTest {
@@ -15948,6 +19163,382 @@ test "E2E: Database DmlOptions allOrNone false returns partial save results" {
     try std.testing.expectEqualStrings("true:false:true:false", result.value.string);
 }
 
+test "E2E: update uses reassigned SObject Id field" {
+    const source =
+        \\public class ReassignedIdUpdateTest {
+        \\    public static String test() {
+        \\        Account a = new Account(Name = 'Existing');
+        \\        insert a;
+        \\        List<Account> updateRows = [SELECT Id, Name FROM Account WHERE Id = :a.Id];
+        \\        updateRows[0].Id = '001000000009999';
+        \\        updateRows[0].Name = 'Missing';
+        \\        Database.SaveResult result = Database.update(updateRows[0], false);
+        \\        Account stored = [SELECT Id, Name FROM Account WHERE Id = :a.Id];
+        \\        return String.valueOf(result.isSuccess()) + ':' +
+        \\            String.valueOf(result.getErrors().size()) + ':' +
+        \\            stored.Name;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "ReassignedIdUpdateTest",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("false:1:Existing", result.value.string);
+}
+
+test "E2E: relaxed fixture mode still reports missing update rows in partial DML" {
+    const source =
+        \\public class RelaxedPartialUpdateProbe {
+        \\    public static String test() {
+        \\        Account a = new Account(Name = 'Existing');
+        \\        insert a;
+        \\        List<Account> rows = new List<Account>{
+        \\            new Account(Id = '001000000009999', Name = 'Missing'),
+        \\            new Account(Id = a.Id, Name = 'Updated')
+        \\        };
+        \\        List<Database.SaveResult> results = Database.update(rows, false);
+        \\        return String.valueOf(results[0].isSuccess()) + ':' +
+        \\            String.valueOf(results[0].getErrors().size()) + ':' +
+        \\            String.valueOf(results[1].isSuccess());
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "RelaxedPartialUpdateProbe",
+        .entry_method = "test",
+        .fixture_relaxed_exceptions = true,
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("false:1:true", result.value.string);
+}
+
+test "E2E: relaxed fixture mode still reports idless partial updates" {
+    const source =
+        \\public class RelaxedPartialIdlessUpdateProbe {
+        \\    public static String test() {
+        \\        Database.SaveResult result = Database.update(new Account(Name = 'Missing'), false);
+        \\        return String.valueOf(result.isSuccess()) + ':' +
+        \\            String.valueOf(result.getErrors().size()) + ':' +
+        \\            result.getErrors()[0].getStatusCode().name();
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "RelaxedPartialIdlessUpdateProbe",
+        .entry_method = "test",
+        .fixture_relaxed_exceptions = true,
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("false:1:FIELD_CUSTOM_VALIDATION_EXCEPTION", result.value.string);
+}
+
+test "E2E: queried SObject update merges stored fields before after trigger" {
+    const source =
+        \\trigger SparseMirrorTrigger on Mirror__c (after update) {
+        \\    for (Mirror__c row : Trigger.new) {
+        \\        if (row.Peer__c != null && row.Name == 'changed') {
+        \\            update new Mirror__c(Id = row.Peer__c, Name = row.Name);
+        \\        }
+        \\    }
+        \\}
+        \\public class SparseMirrorUpdateProbe {
+        \\    public static String test() {
+        \\        Mirror__c peer = new Mirror__c(Name = 'old');
+        \\        insert peer;
+        \\        Mirror__c source = new Mirror__c(Name = 'old', Peer__c = peer.Id);
+        \\        insert source;
+        \\        Mirror__c queried = [SELECT Id, Name FROM Mirror__c WHERE Id = :source.Id];
+        \\        queried.Name = 'changed';
+        \\        update queried;
+        \\        return [SELECT Name FROM Mirror__c WHERE Id = :peer.Id].Name;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "SparseMirrorUpdateProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("changed", result.value.string);
+}
+
+test "E2E: packaged list custom setting active default is applied" {
+    const source =
+        \\public class PackagedListSettingDefaultProbe {
+        \\    public static String test() {
+        \\        insert new npe4__Relationship_Lookup__c(
+        \\            Name = 'Friend',
+        \\            npe4__Male__c = 'Brother'
+        \\        );
+        \\        Map<String, npe4__Relationship_Lookup__c> rows =
+        \\            npe4__Relationship_Lookup__c.getAll();
+        \\        return String.valueOf(rows.get('Friend').npe4__Active__c);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "PackagedListSettingDefaultProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("true", result.value.string);
+}
+
+test "E2E: packaged relationship labels are available when metadata is absent" {
+    const source =
+        \\public class PackagedRelationshipLabelProbe {
+        \\    public static String test() {
+        \\        return 'Buddies-Friends'.split(System.Label.npe4.Relationship_Split)[1] +
+        \\            System.Label.npe4.Relationship_Split +
+        \\            System.Label.npe4.Male.split(',')[0] +
+        \\            ':' +
+        \\            System.Label.npe4.Female.split(',')[1];
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "PackagedRelationshipLabelProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("Friends-Male:Ms.", result.value.string);
+}
+
+test "E2E: relaxed fixture mode still reports missing delete rows in partial DML" {
+    const source =
+        \\public class RelaxedPartialDeleteProbe {
+        \\    public static String test() {
+        \\        Account a = new Account(Name = 'Existing');
+        \\        insert a;
+        \\        List<Account> rows = new List<Account>{
+        \\            new Account(Id = '001000000009999'),
+        \\            new Account(Id = a.Id)
+        \\        };
+        \\        List<Database.DeleteResult> results = Database.delete(rows, false);
+        \\        return String.valueOf(results[0].isSuccess()) + ':' +
+        \\            String.valueOf(results[0].getErrors().size()) + ':' +
+        \\            String.valueOf(results[1].isSuccess()) + ':' +
+        \\            String.valueOf([SELECT COUNT() FROM Account]);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "RelaxedPartialDeleteProbe",
+        .entry_method = "test",
+        .fixture_relaxed_exceptions = true,
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("false:1:true:0", result.value.string);
+}
+
+test "E2E: User query by ProfileId bind synthesizes active user" {
+    const source =
+        \\public class UserProfileIdBindProbe {
+        \\    public static String test() {
+        \\        Set<Id> profileIds = new Set<Id>{ '00e000000000999' };
+        \\        List<User> users = [
+        \\            SELECT Email, ProfileId
+        \\            FROM User
+        \\            WHERE ProfileId IN :profileIds
+        \\            AND IsActive = TRUE
+        \\        ];
+        \\        return String.valueOf(users.size()) + ':' +
+        \\            (users.isEmpty() ? '' : String.valueOf(users[0].ProfileId));
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "UserProfileIdBindProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("1:00e000000000999", result.value.string);
+}
+
+test "E2E: constructed SObject exposes field default values" {
+    const alloc = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try tmp_dir.dir.createDirPath(std.testing.io, "objects/Error__c/fields");
+    try tmp_dir.dir.writeFile(std.testing.io, .{
+        .sub_path = "objects/Error__c/fields/Email_Sent__c.field-meta.xml",
+        .data =
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+        \\    <fullName>Email_Sent__c</fullName>
+        \\    <defaultValue>false</defaultValue>
+        \\    <label>Email Sent</label>
+        \\    <type>Checkbox</type>
+        \\</CustomField>
+        ,
+    });
+    try tmp_dir.dir.writeFile(std.testing.io, .{
+        .sub_path = "objects/Error__c/fields/Posted_in_Chatter__c.field-meta.xml",
+        .data =
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+        \\    <fullName>Posted_in_Chatter__c</fullName>
+        \\    <defaultValue>false</defaultValue>
+        \\    <label>Posted in Chatter</label>
+        \\    <type>Checkbox</type>
+        \\</CustomField>
+        ,
+    });
+    const tmp_path = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", alloc);
+    defer alloc.free(tmp_path);
+
+    const source =
+        \\public class ConstructedFieldDefaultProbe {
+        \\    public static String test() {
+        \\        Error__c err = new Error__c();
+        \\        return String.valueOf(err.Email_Sent__c) + ':' +
+        \\            String.valueOf(err.Posted_in_Chatter__c);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "ConstructedFieldDefaultProbe",
+        .entry_method = "test",
+        .source_paths = &.{tmp_path},
+        .fixture_relaxed_exceptions = true,
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("false:false", result.value.string);
+}
+
+test "E2E: packaged relationship required contact is enforced" {
+    const source =
+        \\public class PackagedRelationshipRequiredProbe {
+        \\    public static String test() {
+        \\        try {
+        \\            insert new npe4__Relationship__c(npe4__Type__c = 'Friend');
+        \\            return 'no-error';
+        \\        } catch (DmlException ex) {
+        \\            Database.SaveResult result = Database.insert(
+        \\                new npe4__Relationship__c(npe4__Type__c = 'Friend'),
+        \\                false
+        \\            );
+        \\            return ex.getDmlFields(0)[0] + ':' +
+        \\                String.valueOf(result.isSuccess()) + ':' +
+        \\                result.getErrors()[0].getStatusCode().name();
+        \\        }
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "PackagedRelationshipRequiredProbe",
+        .entry_method = "test",
+        .fixture_relaxed_exceptions = true,
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("null:false:REQUIRED_FIELD_MISSING", result.value.string);
+}
+
+test "E2E: packaged relationship lookup requires name" {
+    const source =
+        \\public class PackagedRelationshipLookupRequiredProbe {
+        \\    public static String test() {
+        \\        try {
+        \\            insert new npe4__Relationship_Lookup__c(
+        \\                Name = null,
+        \\                npe4__Male__c = null,
+        \\                npe4__Female__c = null,
+        \\                npe4__Neutral__c = null
+        \\            );
+        \\            return 'no-error';
+        \\        } catch (DmlException ex) {
+        \\            Database.SaveResult result = Database.insert(
+        \\                new npe4__Relationship_Lookup__c(Name = 'Valid'),
+        \\                false
+        \\            );
+        \\            return ex.getTypeName() + ':' +
+        \\                String.valueOf(result.isSuccess()) + ':' +
+        \\                result.getErrors().size();
+        \\        }
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "PackagedRelationshipLookupRequiredProbe",
+        .entry_method = "test",
+        .fixture_relaxed_exceptions = true,
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("System.DmlException:true:0", result.value.string);
+}
+
+test "E2E: packaged custom installment setting requires configured fields" {
+    const source =
+        \\public class PackagedCustomInstallmentRequiredProbe {
+        \\    public static String test() {
+        \\        try {
+        \\            insert new npe03__Custom_Installment_Settings__c();
+        \\            return 'inserted';
+        \\        } catch (DmlException e) {
+        \\            insert new npe03__Custom_Installment_Settings__c(
+        \\                Name = 'TenDays',
+        \\                npe03__Value__c = 10,
+        \\                npe03__Increment__c = 'Days'
+        \\            );
+        \\            return 'missing:' + String.valueOf(npe03__Custom_Installment_Settings__c.getAll().size());
+        \\        }
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "PackagedCustomInstallmentRequiredProbe",
+        .entry_method = "test",
+        .fixture_relaxed_exceptions = true,
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("missing:1", result.value.string);
+}
+
+test "E2E: packaged user rollup setting requires configured fields" {
+    const source =
+        \\public class PackagedUserRollupRequiredProbe {
+        \\    public static String test() {
+        \\        try {
+        \\            upsert new npo02__User_Rollup_Field_Settings__c(Name = 'Rollup');
+        \\            return 'upserted';
+        \\        } catch (DmlException e) {
+        \\            upsert new npo02__User_Rollup_Field_Settings__c(
+        \\                Name = 'Rollup',
+        \\                npo02__Object_Name__c = 'Contact',
+        \\                npo02__Target_Field__c = 'Description',
+        \\                npo02__Field_Action__c = 'SUM',
+        \\                npo02__Source_Field__c = 'Amount'
+        \\            );
+        \\            return 'missing:' + String.valueOf(npo02__User_Rollup_Field_Settings__c.getAll().size());
+        \\        }
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "PackagedUserRollupRequiredProbe",
+        .entry_method = "test",
+        .fixture_relaxed_exceptions = true,
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("missing:1", result.value.string);
+}
+
 test "E2E: Database partial DML with null list returns empty results" {
     const source =
         \\public class DatabaseNullListDmlTest {
@@ -15993,6 +19584,343 @@ test "E2E: Database partial DML reports required and delete status codes" {
         "REQUIRED_FIELD_MISSING:UNKNOWN_EXCEPTION",
         result.value.string,
     );
+}
+
+test "E2E: Database partial DML rejects Opportunity missing required fields" {
+    const source =
+        \\public class OpportunityRequiredFieldsProbe {
+        \\    public static String test() {
+        \\        Database.SaveResult result = Database.insert(
+        \\            new Opportunity(Name = 'Bad', StageName = 'Closed Won'),
+        \\            false
+        \\        );
+        \\        return String.valueOf(result.isSuccess()) + ':' +
+        \\            String.valueOf([SELECT COUNT() FROM Opportunity]) + ':' +
+        \\            result.getErrors()[0].getStatusCode().name();
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "OpportunityRequiredFieldsProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("false:0:REQUIRED_FIELD_MISSING", result.value.string);
+}
+
+test "E2E: Database partial DML rejects invalid RecordTypeId" {
+    const source =
+        \\public class InvalidRecordTypeDmlProbe {
+        \\    public static String test() {
+        \\        Database.SaveResult result = Database.insert(
+        \\            new Opportunity(
+        \\                Name = 'Bad',
+        \\                StageName = 'Closed Won',
+        \\                CloseDate = Date.today(),
+        \\                RecordTypeId = '0120x00000QF099999'
+        \\            ),
+        \\            false
+        \\        );
+        \\        return String.valueOf(result.isSuccess()) + ':' +
+        \\            String.valueOf([SELECT COUNT() FROM Opportunity]) + ':' +
+        \\            result.getErrors()[0].getStatusCode().name();
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "InvalidRecordTypeDmlProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("false:0:INVALID_CROSS_REFERENCE_KEY", result.value.string);
+}
+
+test "E2E: Database partial DML keeps row addError failures partial" {
+    const source =
+        \\trigger PartialAccountAddErrorTrigger on Account (before insert) {
+        \\    for (Account row : Trigger.new) {
+        \\        if (row.Name == 'Blocked') {
+        \\            row.addError('blocked row');
+        \\        }
+        \\    }
+        \\}
+        \\public class PartialDmlRowAddErrorProbe {
+        \\    public static String test() {
+        \\        List<Account> rows = new List<Account>{
+        \\            new Account(Name = 'Allowed'),
+        \\            new Account(Name = 'Blocked')
+        \\        };
+        \\        List<Database.SaveResult> results = Database.insert(rows, false);
+        \\        return String.valueOf(results[0].isSuccess()) + ':' +
+        \\            String.valueOf(results[1].isSuccess()) + ':' +
+        \\            String.valueOf([SELECT COUNT() FROM Account]);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "PartialDmlRowAddErrorProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("true:false:1", result.value.string);
+}
+
+test "E2E: DmlException exposes row messages and field names" {
+    const source =
+        \\public class DmlExceptionDetailsProbe {
+        \\    public static String test() {
+        \\        try {
+        \\            insert new Account();
+        \\        } catch (DmlException e) {
+        \\            return String.valueOf(e.getNumDml())
+        \\                + ':' + e.getDmlMessage(0)
+        \\                + ':' + String.join(e.getDmlFieldNames(0), ',');
+        \\        }
+        \\        return 'no exception';
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "DmlExceptionDetailsProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings(
+        "1:Required fields are missing: [Name]:Name",
+        result.value.string,
+    );
+}
+
+test "E2E: after update addError rolls back stored fields" {
+    const source =
+        \\public class AfterUpdateRollbackFlag {
+        \\    public static Boolean block = true;
+        \\}
+        \\trigger AccountRollbackTrigger on Account (after update) {
+        \\    if (AfterUpdateRollbackFlag.block) {
+        \\        for (Account row : Trigger.new) {
+        \\            row.addError('blocked update');
+        \\        }
+        \\    }
+        \\}
+        \\public class AfterUpdateRollbackProbe {
+        \\    public static String test() {
+        \\        Account account = new Account(Name = 'before');
+        \\        insert account;
+        \\        account.Name = 'failed';
+        \\        String caught = 'no';
+        \\        try {
+        \\            update account;
+        \\        } catch (DmlException ex) {
+        \\            caught = ex.getMessage();
+        \\        }
+        \\        String afterFailed = [SELECT Name FROM Account WHERE Id = :account.Id].Name;
+        \\        AfterUpdateRollbackFlag.block = false;
+        \\        account.Name = 'after';
+        \\        update account;
+        \\        String afterSuccess = [SELECT Name FROM Account WHERE Id = :account.Id].Name;
+        \\        return caught + ':' + afterFailed + ':' + afterSuccess;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "AfterUpdateRollbackProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("blocked update:before:after", result.value.string);
+}
+
+test "E2E: Set instanceof respects generic element type" {
+    const source =
+        \\public class SetInstanceOfGenericProbe {
+        \\    public static String test() {
+        \\        Set<SObject> sobs = new Set<SObject>{ new Account() };
+        \\        Set<Object> objs = new Set<Object>{ 'x' };
+        \\        return String.valueOf(sobs instanceof Set<SObject>)
+        \\            + ':' + String.valueOf(sobs instanceof Set<Object>)
+        \\            + ':' + String.valueOf(objs instanceof Set<Object>);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "SetInstanceOfGenericProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("true:false:true", result.value.string);
+}
+
+test "E2E: collection casts reject non-collection values" {
+    const source =
+        \\public class CollectionCastTypeProbe {
+        \\    public static String test() {
+        \\        Object value = '006000000000001';
+        \\        try {
+        \\            Set<Id> ids = (Set<Id>) value;
+        \\            return 'no exception:' + String.valueOf(ids);
+        \\        } catch (System.TypeException ex) {
+        \\            return ex.getMessage();
+        \\        }
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "CollectionCastTypeProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings(
+        "Invalid conversion from runtime type String to Set<Id>",
+        result.value.string,
+    );
+}
+
+test "E2E: List String to List Id cast validates id strings" {
+    const source =
+        \\public class ListIdCastValidationProbe {
+        \\    public static String test() {
+        \\        try {
+        \\            List<Id> ids = (List<Id>) 'blah'.split(',');
+        \\            return 'no exception:' + String.valueOf(ids);
+        \\        } catch (System.StringException ex) {
+        \\            List<Id> ids = (List<Id>) '001000000000001'.split(',');
+        \\            return String.valueOf(ids.size()) + ':' + String.valueOf(ids[0]);
+        \\        }
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "ListIdCastValidationProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("1:001000000000001", result.value.string);
+}
+
+test "E2E: date range checkbox formulas evaluate OR ISBLANK AND TODAY" {
+    const alloc = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try tmp_dir.dir.createDirPath(std.testing.io, "objects/EventWindow__c/fields");
+    try tmp_dir.dir.writeFile(std.testing.io, .{
+        .sub_path = "objects/EventWindow__c/fields/Active__c.field-meta.xml",
+        .data =
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+        \\    <fullName>Active__c</fullName>
+        \\    <formula>OR( ISBLANK( EndDate__c ), AND( EndDate__c &gt;= TODAY(), NOT( StartDate__c &gt; EndDate__c ) ) )</formula>
+        \\    <type>Checkbox</type>
+        \\</CustomField>
+        ,
+    });
+    const tmp_path = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", alloc);
+    defer alloc.free(tmp_path);
+
+    const source =
+        \\public class DateRangeFormulaProbe {
+        \\    public static String test() {
+        \\        Date today = Date.today();
+        \\        EventWindow__c current = new EventWindow__c(StartDate__c = today, EndDate__c = today.addMonths(1));
+        \\        EventWindow__c openEnded = new EventWindow__c(StartDate__c = today, EndDate__c = null);
+        \\        EventWindow__c expired = new EventWindow__c(StartDate__c = today.addMonths(-2), EndDate__c = today.addMonths(-1));
+        \\        insert new List<EventWindow__c>{ current, openEnded, expired };
+        \\        List<EventWindow__c> rows = [SELECT Active__c FROM EventWindow__c ORDER BY Id];
+        \\        return String.valueOf(rows[0].Active__c) + ':' +
+        \\            String.valueOf(rows[1].Active__c) + ':' +
+        \\            String.valueOf(rows[2].Active__c);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "DateRangeFormulaProbe",
+        .entry_method = "test",
+        .source_paths = &.{tmp_path},
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("true:true:false", result.value.string);
+}
+
+test "E2E: collection casts allow concrete SObject lists as SObject lists" {
+    const source =
+        \\public class SObjectCollectionCastProbe {
+        \\    public static String test() {
+        \\        Object value = new List<Account>{ new Account(Name = 'Acme') };
+        \\        List<SObject> rows = (List<SObject>) value;
+        \\        return String.valueOf(rows.size()) + ':' + rows[0].getSObjectType().getDescribe().getName();
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "SObjectCollectionCastProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("1:Account", result.value.string);
+}
+
+test "E2E: instanceof matches inner interface qualified name" {
+    const source =
+        \\public class InnerInterfaceInstanceofProbe implements IA {
+        \\    public interface IA {}
+        \\    public static String test() {
+        \\        Object instance = new InnerInterfaceInstanceofProbe();
+        \\        return String.valueOf(instance instanceof InnerInterfaceInstanceofProbe.IA);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "InnerInterfaceInstanceofProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("true", result.value.string);
+}
+
+test "E2E: standard address field describe exposes spaced label" {
+    const source =
+        \\public class StandardFieldLabelProbe {
+        \\    public static String test() {
+        \\        return Account.BillingCity.getDescribe().getLabel();
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "StandardFieldLabelProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("Billing City", result.value.string);
+}
+
+test "E2E: managed package recurring donation stage label resolves" {
+    const source =
+        \\public class ManagedPackageLabelProbe {
+        \\    public static String test() {
+        \\        return System.Label.npe03.RecurringDonationStageName;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "ManagedPackageLabelProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("Pledged", result.value.string);
 }
 
 test "E2E: JSON-deserialized DML errors expose message status and fields" {
@@ -17273,6 +21201,107 @@ test "E2E: synthetic AppMenuItem query exposes app order entries" {
     try std.testing.expectEqualStrings("1:Apex_Recipes:true", result.value.string);
 }
 
+test "E2E: AppLauncher AppMenu setOrgSortOrder is a supported no-op" {
+    const source =
+        \\public class AppLauncherAppMenuProbe {
+        \\    public static String test() {
+        \\        List<AppMenuItem> items = [SELECT ApplicationId, Name FROM AppMenuItem];
+        \\        List<Id> ordered = new List<Id>{ items[0].ApplicationId };
+        \\        AppLauncher.AppMenu.setOrgSortOrder(ordered);
+        \\        return 'ok';
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "AppLauncherAppMenuProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("ok", result.value.string);
+}
+
+test "E2E: ParentJobResult enum values are available for finalizers" {
+    const source =
+        \\public class ParentJobResultEnumProbe {
+        \\    public static String test() {
+        \\        ParentJobResult result = ParentJobResult.UNHANDLED_EXCEPTION;
+        \\        switch on result {
+        \\            when UNHANDLED_EXCEPTION {
+        \\                return result.name();
+        \\            }
+        \\            when else {
+        \\                return 'other';
+        \\            }
+        \\        }
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "ParentJobResultEnumProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("UNHANDLED_EXCEPTION", result.value.string);
+}
+
+test "E2E: overloaded constructor uses declared local type for custom class arguments" {
+    const source =
+        \\public class ConstructorDeclaredTypeProbe {
+        \\    public class Filter_Group__mdt_Fake {
+        \\        public String MasterLabel;
+        \\        public String DeveloperName;
+        \\        public Filter_Group__mdt_Fake(String name) {
+        \\            this.MasterLabel = name;
+        \\            this.DeveloperName = name;
+        \\        }
+        \\    }
+        \\    public class Wrapper {
+        \\        public String recordName;
+        \\        public String label;
+        \\        public Wrapper(String label) {
+        \\            this.label = label.trim();
+        \\            this.recordName = label;
+        \\        }
+        \\        public Wrapper(Filter_Group__mdt_Fake groupRecord) {
+        \\            this.label = groupRecord.MasterLabel;
+        \\            this.recordName = groupRecord.DeveloperName;
+        \\        }
+        \\    }
+        \\    public class Model {
+        \\        public Wrapper filterGroup;
+        \\        public List<String> rows;
+        \\    }
+        \\    public static String test() {
+        \\        Map<String, Filter_Group__mdt_Fake> byId = new Map<String, Filter_Group__mdt_Fake>{
+        \\            'a' => new Filter_Group__mdt_Fake('expected')
+        \\        };
+        \\        Model model = setup('a', byId);
+        \\        return model.filterGroup.recordName + ':' + model.filterGroup.label;
+        \\    }
+        \\    private static Model setup(String filterGroupId, Map<String, Filter_Group__mdt_Fake> byId) {
+        \\        Model model = createFilterGroupModel(filterGroupId, byId);
+        \\        model.rows = new List<String>{ 'row' };
+        \\        return model;
+        \\    }
+        \\    private static Model createFilterGroupModel(String filterGroupId, Map<String, Filter_Group__mdt_Fake> byId) {
+        \\        Model model = new Model();
+        \\        Filter_Group__mdt_Fake filterGroup = byId.get(filterGroupId);
+        \\        model.filterGroup = new Wrapper(filterGroup);
+        \\        return model;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "ConstructorDeclaredTypeProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("expected:expected", result.value.string);
+}
+
 test "E2E: Type.forName SObject + empty list DML integration" {
     const source =
         \\public class IntegrationTest {
@@ -17768,6 +21797,26 @@ test "E2E: SObject getPopulatedFieldsAsMap hides synthetic errors key" {
     defer result.deinit();
 
     try std.testing.expectEqualStrings("false:true", result.value.string);
+}
+
+test "E2E: SObject addError message escape overload preserves message" {
+    const source =
+        \\public class AddErrorEscapeOverloadProbe {
+        \\    public static String test() {
+        \\        Account account = new Account(Name = 'Probe');
+        \\        account.addError('blocked message', false);
+        \\        Database.Error first = account.getErrors()[0];
+        \\        return first.getMessage() + ':' + String.valueOf(first.getFields().size());
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "AddErrorEscapeOverloadProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("blocked message:0", result.value.string);
 }
 
 test "E2E: Database.setSavepoint counts toward Limits.getDmlStatements" {
@@ -18373,6 +22422,24 @@ test "E2E: URL base URL supports toExternalForm" {
     try std.testing.expectEqualStrings("https://test.salesforce.com", result.value.string);
 }
 
+test "E2E: Url constructor exposes path" {
+    const source =
+        \\public class UrlPathProbe {
+        \\    public static String test() {
+        \\        return new Url('https://salesforce.com/testPath').getPath() + ':' +
+        \\            String.valueOf(new Url('www.salesforce.com').getPath());
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "UrlPathProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("/testPath:null", result.value.string);
+}
+
 test "E2E: Contact update refreshes compound Name" {
     const source =
         \\public class ContactUpdateNameProbe {
@@ -18927,4 +22994,618 @@ test "E2E: non-default NPSP address insert does not sync household billing" {
     defer result.deinit();
 
     try std.testing.expectEqualStrings("true:true", result.value.string);
+}
+
+test "E2E: declared Double values use decimal division" {
+    const source =
+        \\public class DeclaredDoubleDivisionProbe {
+        \\    public Double percent { get; private set; }
+        \\    public DeclaredDoubleDivisionProbe(Double input) {
+        \\        percent = input;
+        \\    }
+        \\    public Double selectedTotal {
+        \\        get {
+        \\            Double total = 0;
+        \\            total += percent / 100 * 200;
+        \\            return total;
+        \\        }
+        \\        private set;
+        \\    }
+        \\    public static String test() {
+        \\        DeclaredDoubleDivisionProbe probe = new DeclaredDoubleDivisionProbe(50);
+        \\        return String.valueOf(probe.selectedTotal);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "DeclaredDoubleDivisionProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("100.0", result.value.string);
+}
+
+test "E2E: NPSP refund JSON remaining balance uses decimal value" {
+    const source =
+        \\public class PMT_RefundController {
+        \\    public class RefundView {
+        \\        public Decimal remainingBalance;
+        \\    }
+        \\    public static String test() {
+        \\        return processPaymentInfoResponse('{"remainingBalance":98421}');
+        \\    }
+        \\    private static String processPaymentInfoResponse(String body) {
+        \\        RefundView refundView = new RefundView();
+        \\        Map<String, Object> paymentInfo = (Map<String, Object>) JSON.deserializeUntyped(body);
+        \\        Decimal remainingBalance = (Decimal) paymentInfo.get('remainingBalance');
+        \\        refundView.remainingBalance = remainingBalance / 100;
+        \\        return String.valueOf(refundView.remainingBalance);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "PMT_RefundController",
+        .entry_method = "test",
+        .fixture_relaxed_exceptions = true,
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("984.21", result.value.string);
+}
+
+test "E2E: NPSP allocation copy converts fixed amount to percentage with decimal division" {
+    const source =
+        \\public class ALLO_Allocations_TDTM {
+        \\    public class Allocation__c {
+        \\        public Decimal Amount__c;
+        \\        public Decimal Percent__c;
+        \\        public Allocation__c(Decimal amount) {
+        \\            Amount__c = amount;
+        \\        }
+        \\    }
+        \\    public static String test() {
+        \\        return copyRecurringDonationCampaignAndPaymentAllocations();
+        \\    }
+        \\    public static String copyRecurringDonationCampaignAndPaymentAllocations() {
+        \\        Decimal sourceAmount = 100;
+        \\        Allocation__c allocation = new Allocation__c(33);
+        \\        Decimal allocationPercent = ((allocation.Amount__c != null) ? allocation.Amount__c : 0) / sourceAmount * 100;
+        \\        allocation.Percent__c = allocationPercent;
+        \\        return String.valueOf(allocation.Percent__c);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "ALLO_Allocations_TDTM",
+        .entry_method = "test",
+        .fixture_relaxed_exceptions = true,
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("33.0", result.value.string);
+}
+
+test "E2E: NPSP manage allocations save fills amount from percent" {
+    const source =
+        \\public class ALLO_ManageAllocations_CTRL {
+        \\    public static String test() {
+        \\        Opportunity opp = new Opportunity(
+        \\            Name = 'Gift',
+        \\            Amount = 8,
+        \\            CloseDate = Date.today(),
+        \\            StageName = 'Closed Won'
+        \\        );
+        \\        insert opp;
+        \\        return saveClose(opp.Id);
+        \\    }
+        \\    public static String saveClose(Id oppId) {
+        \\        Allocation__c allocation = new Allocation__c(
+        \\            Opportunity__c = oppId,
+        \\            Percent__c = 50
+        \\        );
+        \\        insert allocation;
+        \\        Allocation__c stored = [
+        \\            SELECT Amount__c
+        \\            FROM Allocation__c
+        \\            WHERE Id = :allocation.Id
+        \\        ];
+        \\        return String.valueOf(stored.Amount__c);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "ALLO_ManageAllocations_CTRL",
+        .entry_method = "test",
+        .fixture_relaxed_exceptions = true,
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("4", result.value.string);
+}
+
+test "E2E: NPSP parent amount update resizes percentage allocation" {
+    const source =
+        \\public class NpspAllocationParentResizeProbe {
+        \\    public static String test() {
+        \\        Opportunity opp = new Opportunity(
+        \\            Name = 'Gift',
+        \\            Amount = 8,
+        \\            CloseDate = Date.today(),
+        \\            StageName = 'Closed Won'
+        \\        );
+        \\        insert opp;
+        \\        Allocation__c allocation = new Allocation__c(
+        \\            Opportunity__c = opp.Id,
+        \\            Percent__c = 50
+        \\        );
+        \\        insert allocation;
+        \\        opp.Amount = 10;
+        \\        update opp;
+        \\        Allocation__c stored = [
+        \\            SELECT Amount__c
+        \\            FROM Allocation__c
+        \\            WHERE Id = :allocation.Id
+        \\        ];
+        \\        return String.valueOf(stored.Amount__c);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "NpspAllocationParentResizeProbe",
+        .entry_method = "test",
+        .fixture_relaxed_exceptions = true,
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("5", result.value.string);
+}
+
+test "E2E: NPSP default payment allocation fills amount from parent" {
+    const source =
+        \\public class UTIL_CustomSettingsFacade {
+        \\    public static Allocations_Settings__c allocationsSettings;
+        \\}
+        \\public class NpspDefaultPaymentAllocationProbe {
+        \\    public static String test() {
+        \\        General_Accounting_Unit__c defaultGau = new General_Accounting_Unit__c(Name = 'Default');
+        \\        insert defaultGau;
+        \\        UTIL_CustomSettingsFacade.allocationsSettings =
+        \\            new Allocations_Settings__c(Default__c = defaultGau.Id);
+        \\        npe01__OppPayment__c payment = new npe01__OppPayment__c(
+        \\            npe01__Payment_Amount__c = 8
+        \\        );
+        \\        insert payment;
+        \\        Allocation__c allocation = new Allocation__c(
+        \\            Payment__c = payment.Id,
+        \\            General_Accounting_Unit__c = defaultGau.Id
+        \\        );
+        \\        insert allocation;
+        \\        Allocation__c stored = [
+        \\            SELECT Amount__c, Percent__c
+        \\            FROM Allocation__c
+        \\            WHERE Id = :allocation.Id
+        \\        ];
+        \\        return String.valueOf(stored.Amount__c) + ':' + String.valueOf(stored.Percent__c);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "NpspDefaultPaymentAllocationProbe",
+        .entry_method = "test",
+        .fixture_relaxed_exceptions = true,
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("8:null", result.value.string);
+}
+
+test "E2E: NPSP payment allocations sync to opportunity allocations" {
+    const source =
+        \\public class UTIL_CustomSettingsFacade {
+        \\    public static Allocations_Settings__c allocationsSettings;
+        \\}
+        \\public class ALLO_PaymentSync_TEST {
+        \\    public static String syncPaymentToOpportunity() {
+        \\        General_Accounting_Unit__c defaultGau = new General_Accounting_Unit__c(Name = 'Default');
+        \\        General_Accounting_Unit__c gauA = new General_Accounting_Unit__c(Name = 'A');
+        \\        General_Accounting_Unit__c gauB = new General_Accounting_Unit__c(Name = 'B');
+        \\        insert new List<General_Accounting_Unit__c>{ defaultGau, gauA, gauB };
+        \\        UTIL_CustomSettingsFacade.allocationsSettings =
+        \\            new Allocations_Settings__c(
+        \\                Default__c = defaultGau.Id,
+        \\                Payment_Allocations_Enabled__c = true
+        \\            );
+        \\        Opportunity opp = new Opportunity(
+        \\            Name = 'Gift',
+        \\            Amount = 1000,
+        \\            CloseDate = Date.today(),
+        \\            StageName = 'Open'
+        \\        );
+        \\        insert opp;
+        \\        npe01__OppPayment__c payment = new npe01__OppPayment__c(
+        \\            npe01__Opportunity__c = opp.Id,
+        \\            npe01__Payment_Amount__c = 1000
+        \\        );
+        \\        insert payment;
+        \\        insert new List<Allocation__c>{
+        \\            new Allocation__c(Payment__c = payment.Id, Percent__c = 50, General_Accounting_Unit__c = gauA.Id),
+        \\            new Allocation__c(Payment__c = payment.Id, Amount__c = 300, General_Accounting_Unit__c = gauB.Id)
+        \\        };
+        \\        List<Allocation__c> rows = [
+        \\            SELECT Amount__c, General_Accounting_Unit__c, Opportunity__c
+        \\            FROM Allocation__c
+        \\            WHERE Opportunity__c = :opp.Id
+        \\            ORDER BY Amount__c
+        \\        ];
+        \\        return String.valueOf(rows.size()) + ':' +
+        \\            String.valueOf(rows[0].Amount__c) + ':' + String.valueOf(rows[0].General_Accounting_Unit__c == defaultGau.Id) + ':' +
+        \\            String.valueOf(rows[1].Amount__c) + ':' + String.valueOf(rows[1].General_Accounting_Unit__c == gauB.Id) + ':' +
+        \\            String.valueOf(rows[2].Amount__c) + ':' + String.valueOf(rows[2].General_Accounting_Unit__c == gauA.Id);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "ALLO_PaymentSync_TEST",
+        .entry_method = "syncPaymentToOpportunity",
+        .fixture_relaxed_exceptions = true,
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("3:200:true:300:true:500:true", result.value.string);
+}
+
+test "E2E: NPSP opportunity allocations sync to payment allocations" {
+    const source =
+        \\public class UTIL_CustomSettingsFacade {
+        \\    public static Allocations_Settings__c allocationsSettings;
+        \\}
+        \\public class ALLO_PaymentSync_TEST {
+        \\    public static String syncOpportunityToPayment() {
+        \\        General_Accounting_Unit__c defaultGau = new General_Accounting_Unit__c(Name = 'Default');
+        \\        General_Accounting_Unit__c gauA = new General_Accounting_Unit__c(Name = 'A');
+        \\        General_Accounting_Unit__c gauB = new General_Accounting_Unit__c(Name = 'B');
+        \\        insert new List<General_Accounting_Unit__c>{ defaultGau, gauA, gauB };
+        \\        UTIL_CustomSettingsFacade.allocationsSettings =
+        \\            new Allocations_Settings__c(
+        \\                Default__c = defaultGau.Id,
+        \\                Payment_Allocations_Enabled__c = true
+        \\            );
+        \\        Opportunity opp = new Opportunity(
+        \\            Name = 'Gift',
+        \\            Amount = 1000,
+        \\            CloseDate = Date.today(),
+        \\            StageName = 'Open'
+        \\        );
+        \\        insert opp;
+        \\        npe01__OppPayment__c payment = new npe01__OppPayment__c(
+        \\            npe01__Opportunity__c = opp.Id,
+        \\            npe01__Payment_Amount__c = 1000
+        \\        );
+        \\        insert payment;
+        \\        insert new List<Allocation__c>{
+        \\            new Allocation__c(Opportunity__c = opp.Id, Percent__c = 50, General_Accounting_Unit__c = gauA.Id),
+        \\            new Allocation__c(Opportunity__c = opp.Id, Amount__c = 300, General_Accounting_Unit__c = gauB.Id)
+        \\        };
+        \\        List<Allocation__c> rows = [
+        \\            SELECT Amount__c, General_Accounting_Unit__c, Payment__c
+        \\            FROM Allocation__c
+        \\            ORDER BY Opportunity__c NULLS LAST, Amount__c, General_Accounting_Unit__c
+        \\        ];
+        \\        return String.valueOf(rows.size()) + ':' +
+        \\            String.valueOf(rows[0].Amount__c) + ':' + String.valueOf(rows[0].General_Accounting_Unit__c == defaultGau.Id) + ':' +
+        \\            String.valueOf(rows[1].Amount__c) + ':' + String.valueOf(rows[1].General_Accounting_Unit__c == gauB.Id) + ':' +
+        \\            String.valueOf(rows[2].Amount__c) + ':' + String.valueOf(rows[2].General_Accounting_Unit__c == gauA.Id) + ':' +
+        \\            String.valueOf(rows[3].Amount__c) + ':' + String.valueOf(rows[3].General_Accounting_Unit__c == defaultGau.Id) + ':' +
+        \\            String.valueOf(rows[4].Amount__c) + ':' + String.valueOf(rows[4].General_Accounting_Unit__c == gauB.Id) + ':' +
+        \\            String.valueOf(rows[5].Amount__c) + ':' + String.valueOf(rows[5].General_Accounting_Unit__c == gauA.Id) + ':' +
+        \\            String.valueOf(rows[3].Payment__c == payment.Id);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "ALLO_PaymentSync_TEST",
+        .entry_method = "syncOpportunityToPayment",
+        .fixture_relaxed_exceptions = true,
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("6:200:true:300:true:500:true:200:true:300:true:500:true:true", result.value.string);
+}
+
+test "E2E: NPSP parent amount update rejects overallocated records" {
+    const source =
+        \\public class NpspAllocationParentOverallocatedProbe {
+        \\    public static String test() {
+        \\        Opportunity opp = new Opportunity(
+        \\            Name = 'Gift',
+        \\            Amount = 8,
+        \\            CloseDate = Date.today(),
+        \\            StageName = 'Closed Won'
+        \\        );
+        \\        insert opp;
+        \\        insert new List<Allocation__c>{
+        \\            new Allocation__c(Opportunity__c = opp.Id, Percent__c = 50),
+        \\            new Allocation__c(Opportunity__c = opp.Id, Amount__c = 4)
+        \\        };
+        \\        opp.Amount = 1;
+        \\        try {
+        \\            update opp;
+        \\            return 'missing';
+        \\        } catch (DmlException ex) {
+        \\            return 'blocked';
+        \\        }
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "NpspAllocationParentOverallocatedProbe",
+        .entry_method = "test",
+        .fixture_relaxed_exceptions = true,
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("blocked", result.value.string);
+}
+
+test "E2E: NPSP payment parent update ignores stale default allocation remainder" {
+    const source =
+        \\public class UTIL_CustomSettingsFacade {
+        \\    public static Allocations_Settings__c allocationsSettings;
+        \\}
+        \\public class NpspAllocationParentResizeProbe {
+        \\    public static String test() {
+        \\        General_Accounting_Unit__c defaultGau = new General_Accounting_Unit__c(Name = 'Default');
+        \\        insert defaultGau;
+        \\        UTIL_CustomSettingsFacade.allocationsSettings =
+        \\            new Allocations_Settings__c(Default__c = defaultGau.Id);
+        \\        General_Accounting_Unit__c gau = new General_Accounting_Unit__c(Name = 'Specific');
+        \\        insert gau;
+        \\        npe01__OppPayment__c payment = new npe01__OppPayment__c(
+        \\            npe01__Payment_Amount__c = 8
+        \\        );
+        \\        insert payment;
+        \\        insert new List<Allocation__c>{
+        \\            new Allocation__c(Payment__c = payment.Id, Percent__c = 50, General_Accounting_Unit__c = gau.Id),
+        \\            new Allocation__c(Payment__c = payment.Id, Amount__c = 4, General_Accounting_Unit__c = gau.Id),
+        \\            new Allocation__c(Payment__c = payment.Id, Amount__c = 1, General_Accounting_Unit__c = defaultGau.Id)
+        \\        };
+        \\        payment.npe01__Payment_Amount__c = 8;
+        \\        update payment;
+        \\        List<Allocation__c> defaults = [
+        \\            SELECT Id
+        \\            FROM Allocation__c
+        \\            WHERE Payment__c = :payment.Id
+        \\            AND General_Accounting_Unit__c = :defaultGau.Id
+        \\        ];
+        \\        return String.valueOf(defaults.size());
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "NpspAllocationParentResizeProbe",
+        .entry_method = "test",
+        .fixture_relaxed_exceptions = true,
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("0", result.value.string);
+}
+
+test "E2E: Boolean TRUE and FALSE static fields are Boolean values" {
+    const source =
+        \\public class BooleanStaticFieldProbe {
+        \\    public static String test() {
+        \\        return String.valueOf(Boolean.TRUE.equals(true)) + ':' +
+        \\            String.valueOf(Boolean.FALSE.equals(false)) + ':' +
+        \\            String.valueOf(Boolean.TRUE == true) + ':' +
+        \\            String.valueOf(Boolean.FALSE == false);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "BooleanStaticFieldProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("true:true:true:true", result.value.string);
+}
+
+test "E2E: NPSP contact with current address inherits address household account" {
+    const source =
+        \\public class NpspCurrentAddressAccountProbe {
+        \\    public static String test() {
+        \\        Account account = new Account(Name = 'Organization');
+        \\        insert account;
+        \\        Address__c address = new Address__c(
+        \\            Household_Account__c = account.Id,
+        \\            MailingStreet__c = '1 Main',
+        \\            MailingCity__c = 'Seattle',
+        \\            MailingState__c = 'WA',
+        \\            MailingPostalCode__c = '98101',
+        \\            MailingCountry__c = 'United States'
+        \\        );
+        \\        insert address;
+        \\        Contact contact = new Contact(
+        \\            LastName = 'Override',
+        \\            Current_Address__c = address.Id,
+        \\            is_Address_Override__c = true
+        \\        );
+        \\        insert contact;
+        \\        return contact.AccountId == account.Id ? 'linked' : String.valueOf(contact.AccountId);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "NpspCurrentAddressAccountProbe",
+        .entry_method = "test",
+        .fixture_relaxed_exceptions = true,
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("linked", result.value.string);
+}
+
+test "E2E: null SObject Id field keeps Id overload in builder chains" {
+    const source =
+        \\public class NullSObjectIdOverloadProbe {
+        \\    public class Builder {
+        \\        public String chosen = '';
+        \\        public Builder withAccount(String name) {
+        \\            chosen += 'String>';
+        \\            return withAccount(new Account(Name = name));
+        \\        }
+        \\        public Builder withAccount(Account account) {
+        \\            chosen += 'Account>';
+        \\            return withAccount(account.Id);
+        \\        }
+        \\        public Builder withAccount(Id accountId) {
+        \\            chosen += 'Id>';
+        \\            return this;
+        \\        }
+        \\    }
+        \\    public static String test() {
+        \\        Account account = new Account(Name = null);
+        \\        Builder builder = new Builder().withAccount(account);
+        \\        return String.valueOf(builder == null) + ':' + builder.chosen;
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "NullSObjectIdOverloadProbe",
+        .entry_method = "test",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("false:Account>Id>", result.value.string);
+}
+
+test "E2E: NPSP recurring donation defaults planned installments to one" {
+    const source =
+        \\public class NpspRecurringDonationInstallmentsDefaultProbe {
+        \\    public static String test() {
+        \\        npe03__Recurring_Donation__c rd = new npe03__Recurring_Donation__c(
+        \\            Name = 'RD',
+        \\            RecurringType__c = 'Fixed'
+        \\        );
+        \\        insert rd;
+        \\        return String.valueOf(rd.npe03__Installments__c);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "NpspRecurringDonationInstallmentsDefaultProbe",
+        .entry_method = "test",
+        .fixture_relaxed_exceptions = true,
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("1", result.value.string);
+}
+
+test "E2E: NPSP async recurring donation creates open Opportunity at next installment date" {
+    const source =
+        \\public class RD2_OpportunityEvaluationService {}
+        \\public class RD2_ScheduleService {
+        \\    public static Date currentDate;
+        \\}
+        \\public class NpspAsyncRecurringDonationOpportunityProbe {
+        \\    public static String test() {
+        \\        insert new npe03__Recurring_Donations_Settings__c(
+        \\            IsRecurringDonations2Enabled__c = true,
+        \\            InstallmentOppFirstCreateMode__c = 'ASynchronous',
+        \\            InstallmentOppStageName__c = 'Pledged'
+        \\        );
+        \\        RD2_ScheduleService.currentDate = Date.newInstance(2019, 9, 16);
+        \\        Test.startTest();
+        \\        npe03__Recurring_Donation__c rd = new npe03__Recurring_Donation__c(
+        \\            Name = 'RD',
+        \\            npe03__Amount__c = 20,
+        \\            npe03__Date_Established__c = Date.newInstance(2019, 9, 15),
+        \\            StartDate__c = Date.newInstance(2019, 9, 15),
+        \\            Day_Of_Month__c = '17',
+        \\            npe03__Next_Payment_Date__c = null
+        \\        );
+        \\        insert rd;
+        \\        rd.RecurringType__c = 'Open';
+        \\        update rd;
+        \\        Integer jobsBeforeStop = [SELECT COUNT() FROM AsyncApexJob WHERE JobType = 'Queueable'];
+        \\        Test.stopTest();
+        \\        Opportunity opp = [
+        \\            SELECT CloseDate, StageName, npe03__Recurring_Donation__c
+        \\            FROM Opportunity
+        \\            WHERE npe03__Recurring_Donation__c = :rd.Id
+        \\            LIMIT 1
+        \\        ];
+        \\        AsyncApexJob job = [
+        \\            SELECT Status, NumberOfErrors
+        \\            FROM AsyncApexJob
+        \\            WHERE JobType = 'Queueable'
+        \\            LIMIT 1
+        \\        ];
+        \\        return String.valueOf(jobsBeforeStop) + ':' +
+        \\            String.valueOf(opp.CloseDate) + ':' +
+        \\            opp.StageName + ':' +
+        \\            String.valueOf(opp.npe03__Recurring_Donation__c == rd.Id) + ':' +
+        \\            job.Status + ':' +
+        \\            String.valueOf(job.NumberOfErrors);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "NpspAsyncRecurringDonationOpportunityProbe",
+        .entry_method = "test",
+        .fixture_relaxed_exceptions = true,
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("1:2019-09-17:Pledged:true:Completed:0", result.value.string);
+}
+
+test "E2E: NPSP TDTM disabled skips recurring donation rollup side effects" {
+    const source =
+        \\public class TDTM_TriggerHandler {
+        \\    public static Boolean disableTDTM = false;
+        \\}
+        \\public class NpspTdtmDisabledRecurringDonationRollupProbe {
+        \\    public static String test() {
+        \\        npe03__Recurring_Donation__c rd = new npe03__Recurring_Donation__c(
+        \\            Name = 'RD',
+        \\            npe03__Amount__c = 10,
+        \\            npe03__Date_Established__c = Date.newInstance(2020, 1, 1),
+        \\            StartDate__c = Date.newInstance(2020, 1, 1)
+        \\        );
+        \\        insert rd;
+        \\        Opportunity opp = new Opportunity(
+        \\            Name = 'Gift',
+        \\            Amount = 10,
+        \\            CloseDate = Date.newInstance(2020, 1, 1),
+        \\            StageName = 'Open',
+        \\            npe03__Recurring_Donation__c = rd.Id
+        \\        );
+        \\        insert opp;
+        \\        rd.npe03__Paid_Amount__c = null;
+        \\        update rd;
+        \\        TDTM_TriggerHandler.disableTDTM = true;
+        \\        opp.StageName = 'Closed Won';
+        \\        update opp;
+        \\        TDTM_TriggerHandler.disableTDTM = false;
+        \\        rd = [
+        \\            SELECT npe03__Paid_Amount__c
+        \\            FROM npe03__Recurring_Donation__c
+        \\            WHERE Id = :rd.Id
+        \\        ];
+        \\        return String.valueOf(rd.npe03__Paid_Amount__c);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "NpspTdtmDisabledRecurringDonationRollupProbe",
+        .entry_method = "test",
+        .fixture_relaxed_exceptions = true,
+    });
+    defer result.deinit();
+
+    try std.testing.expect(result.value == .null_val);
 }

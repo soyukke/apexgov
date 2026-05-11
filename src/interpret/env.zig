@@ -8,7 +8,9 @@ const Value = types.Value;
 
 pub const Env = struct {
     bindings: std.StringArrayHashMapUnmanaged(Value) = .empty,
+    lower_binding_names: std.StringArrayHashMapUnmanaged([]const u8) = .empty,
     declared_types: std.StringArrayHashMapUnmanaged([]const u8) = .empty,
+    lower_declared_type_names: std.StringArrayHashMapUnmanaged([]const u8) = .empty,
     parent: ?*Env = null,
     arena: std.mem.Allocator,
     this_value: ?Value = null,
@@ -25,6 +27,7 @@ pub const Env = struct {
 
     pub fn define(self: *Env, name: []const u8, value: Value) !void {
         try self.bindings.put(self.arena, name, value);
+        try self.index_lower_name(&self.lower_binding_names, name);
         if (std.mem.eql(u8, name, "this")) self.this_value = value;
     }
 
@@ -35,19 +38,18 @@ pub const Env = struct {
         declared_type: ?[]const u8,
     ) !void {
         try self.bindings.put(self.arena, name, value);
+        try self.index_lower_name(&self.lower_binding_names, name);
         if (std.mem.eql(u8, name, "this")) self.this_value = value;
         if (declared_type) |type_name| {
             try self.declared_types.put(self.arena, name, type_name);
+            try self.index_lower_name(&self.lower_declared_type_names, name);
         }
     }
 
     pub fn get(self: *const Env, name: []const u8) ?Value {
         // Exact match first (fast path)
         if (self.bindings.get(name)) |v| return v;
-        // Case-insensitive fallback (Apex identifiers are case-insensitive)
-        for (self.bindings.keys(), self.bindings.values()) |k, v| {
-            if (std.ascii.eqlIgnoreCase(k, name)) return v;
-        }
+        if (self.get_binding_case_insensitive(name)) |v| return v;
         if (self.parent) |p| return p.get(name);
         return null;
     }
@@ -64,8 +66,8 @@ pub const Env = struct {
 
     pub fn has(self: *const Env, name: []const u8) bool {
         if (self.bindings.contains(name)) return true;
-        for (self.bindings.keys()) |k| {
-            if (std.ascii.eqlIgnoreCase(k, name)) return true;
+        if (self.get_lower_index_name(&self.lower_binding_names, name)) |canonical| {
+            if (self.bindings.contains(canonical)) return true;
         }
         if (self.parent) |p| return p.has(name);
         return false;
@@ -73,11 +75,18 @@ pub const Env = struct {
 
     pub fn get_declared_type(self: *const Env, name: []const u8) ?[]const u8 {
         if (self.declared_types.get(name)) |t| return t;
-        for (self.declared_types.keys(), self.declared_types.values()) |k, v| {
-            if (std.ascii.eqlIgnoreCase(k, name)) return v;
-        }
+        if (self.get_declared_type_case_insensitive(name)) |t| return t;
         if (self.parent) |p| return p.get_declared_type(name);
         return null;
+    }
+
+    pub fn has_local_declared_type(self: *const Env, name: []const u8) bool {
+        if (self.declared_types.contains(name)) return true;
+        const canonical = self.get_lower_index_name(
+            &self.lower_declared_type_names,
+            name,
+        ) orelse return false;
+        return self.declared_types.contains(canonical);
     }
 
     pub fn set(self: *Env, name: []const u8, value: Value) !void {
@@ -86,9 +95,8 @@ pub const Env = struct {
             if (std.mem.eql(u8, name, "this")) self.this_value = value;
             return;
         }
-        // Case-insensitive fallback
-        for (self.bindings.keys(), 0..) |k, idx| {
-            if (std.ascii.eqlIgnoreCase(k, name)) {
+        if (self.get_lower_index_name(&self.lower_binding_names, name)) |canonical| {
+            if (self.bindings.getIndex(canonical)) |idx| {
                 self.bindings.values()[idx] = value;
                 if (std.ascii.eqlIgnoreCase(name, "this")) self.this_value = value;
                 return;
@@ -96,6 +104,61 @@ pub const Env = struct {
         }
         if (self.parent) |p| return p.set(name, value);
         return error.UndefinedVariable;
+    }
+
+    fn index_lower_name(
+        self: *Env,
+        index: *std.StringArrayHashMapUnmanaged([]const u8),
+        name: []const u8,
+    ) !void {
+        const allocate_lower = has_ascii_upper(name);
+        const lower = if (allocate_lower)
+            try std.ascii.allocLowerString(self.arena, name)
+        else
+            name;
+        const gop = try index.getOrPut(self.arena, lower);
+        if (gop.found_existing) {
+            if (allocate_lower) self.arena.free(lower);
+            return;
+        }
+        gop.value_ptr.* = name;
+    }
+
+    fn get_lower_index_name(
+        self: *const Env,
+        index: *const std.StringArrayHashMapUnmanaged([]const u8),
+        name: []const u8,
+    ) ?[]const u8 {
+        if (!has_ascii_upper(name)) return index.get(name);
+
+        var stack_buf: [128]u8 = undefined;
+        const lower = if (name.len <= stack_buf.len)
+            std.ascii.lowerString(stack_buf[0..name.len], name)
+        else
+            std.ascii.allocLowerString(self.arena, name) catch return null;
+        defer if (name.len > stack_buf.len) self.arena.free(lower);
+
+        return index.get(lower);
+    }
+
+    fn has_ascii_upper(name: []const u8) bool {
+        for (name) |ch| {
+            if (ch >= 'A' and ch <= 'Z') return true;
+        }
+        return false;
+    }
+
+    fn get_binding_case_insensitive(self: *const Env, name: []const u8) ?Value {
+        const canonical = self.get_lower_index_name(&self.lower_binding_names, name) orelse return null;
+        return self.bindings.get(canonical);
+    }
+
+    fn get_declared_type_case_insensitive(self: *const Env, name: []const u8) ?[]const u8 {
+        const canonical = self.get_lower_index_name(
+            &self.lower_declared_type_names,
+            name,
+        ) orelse return null;
+        return self.declared_types.get(canonical);
     }
 };
 

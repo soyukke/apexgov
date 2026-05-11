@@ -33,3 +33,6 @@ result
 .claude/*
 !.claude/skills/
 .claude/skills/local-fixtures/
+
+# Codex local configuration and skills
+.codex/
