@@ -4378,6 +4378,11 @@ pub fn create_field_set_collection_value(
             field_set.* = .{ .class_name = "Schema.FieldSet" };
             try field_set.fields.put(arena, "name", Value{ .string = field_set_meta.name });
             try field_set.fields.put(arena, "label", Value{ .string = field_set_meta.label });
+            try field_set.fields.put(
+                arena,
+                "sObjectType",
+                try make_schema_s_object_type(arena, obj_name),
+            );
             try field_set.fields.put(arena, "nameSpace", Value{
                 .string = field_set_meta.namespace,
             });
@@ -4422,6 +4427,13 @@ pub fn create_field_set_collection_value(
 
     try collection.fields.put(arena, "map", Value{ .map = map });
     return Value{ .object = collection };
+}
+
+fn make_schema_s_object_type(arena: std.mem.Allocator, obj_name: []const u8) !Value {
+    const sot = try arena.create(types.ObjectInstance);
+    sot.* = .{ .class_name = "Schema.SObjectType" };
+    try sot.fields.put(arena, "name", Value{ .string = obj_name });
+    return Value{ .object = sot };
 }
 
 fn field_set_member_display_type(
@@ -4967,6 +4979,20 @@ const known_describe_field_sets = [_]struct { object: []const u8, fields: []cons
     .{ .object = "OpportunityContactRole", .fields = &.{
         "OpportunityId", "ContactId", "Role", "IsPrimary",
     } },
+    .{ .object = "OpportunityLineItem", .fields = &.{
+        "OpportunityId", "PricebookEntryId", "Quantity",  "TotalPrice",
+        "UnitPrice",     "Description",      "SortOrder",
+    } },
+    .{ .object = "PricebookEntry", .fields = &.{
+        "Product2Id", "Pricebook2Id", "UnitPrice", "IsActive",
+        "Name",       "ProductCode",
+    } },
+    .{ .object = "Product2", .fields = &.{
+        "Name", "ProductCode", "Description", "IsActive",
+    } },
+    .{ .object = "Pricebook2", .fields = &.{
+        "Name", "Description", "IsActive", "IsStandard",
+    } },
     .{ .object = "OpportunityStage", .fields = &.{
         "MasterLabel",        "ApiName",          "SortOrder",
         "IsActive",           "IsClosed",         "IsWon",
@@ -5070,6 +5096,20 @@ const canonical_describe_field_sets = [_]struct { object: []const u8, fields: []
     } },
     .{ .object = "OpportunityContactRole", .fields = &.{
         "Id", "OpportunityId", "ContactId", "Role", "IsPrimary",
+    } },
+    .{ .object = "OpportunityLineItem", .fields = &.{
+        "Id",         "OpportunityId", "PricebookEntryId", "Quantity",
+        "TotalPrice", "UnitPrice",     "Description",      "SortOrder",
+    } },
+    .{ .object = "PricebookEntry", .fields = &.{
+        "Id",       "Product2Id", "Pricebook2Id", "UnitPrice",
+        "IsActive", "Name",       "ProductCode",
+    } },
+    .{ .object = "Product2", .fields = &.{
+        "Id", "Name", "ProductCode", "Description", "IsActive",
+    } },
+    .{ .object = "Pricebook2", .fields = &.{
+        "Id", "Name", "Description", "IsActive", "IsStandard",
     } },
     .{ .object = "OpportunityStage", .fields = &.{
         "Id",                   "MasterLabel",        "ApiName",
@@ -6494,6 +6534,17 @@ fn dispatch_obj_field_sets(
     if (std.ascii.eqlIgnoreCase(cn, "Schema.FieldSet") or std.ascii.eqlIgnoreCase(cn, "FieldSet")) {
         if (std.ascii.eqlIgnoreCase(method_name, "getFields")) {
             return obj.fields.get("fields") orelse Value{ .list = try empty_list(ctx) };
+        }
+        if (std.ascii.eqlIgnoreCase(method_name, "getName")) {
+            return obj.fields.get("name") orelse Value{ .string = "" };
+        }
+        if (std.ascii.eqlIgnoreCase(method_name, "getLabel")) {
+            return obj.fields.get("label") orelse
+                obj.fields.get("name") orelse
+                Value{ .string = "" };
+        }
+        if (std.ascii.eqlIgnoreCase(method_name, "getSObjectType")) {
+            return obj.fields.get("sObjectType") orelse Value.null_val;
         }
     }
     if (std.ascii.eqlIgnoreCase(cn, "Schema.FieldSetMember") or

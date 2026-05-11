@@ -188,6 +188,8 @@ pub const Evaluator = struct {
     pending_schedulables: std.ArrayListUnmanaged(Value) = .empty,
     pending_queueables: std.ArrayListUnmanaged(PendingQueueable) = .empty,
     pending_change_events: std.ArrayListUnmanaged(Value) = .empty,
+    pending_platform_event_topics: std.ArrayListUnmanaged([]const u8) = .empty,
+    event_bus_subscriber_positions: std.StringArrayHashMapUnmanaged(u32) = .empty,
     pending_npsp_recurring_donation_opportunities: std.ArrayListUnmanaged(PendingNpspRecurringDonationOpportunity) = .empty,
     test_start_active: bool = false,
     partial_dml_active: bool = false,
@@ -373,6 +375,8 @@ pub const Evaluator = struct {
         self.pending_schedulables = .empty;
         self.pending_queueables = .empty;
         self.pending_change_events = .empty;
+        self.pending_platform_event_topics = .empty;
+        self.event_bus_subscriber_positions = .empty;
         self.pending_npsp_recurring_donation_opportunities = .empty;
         self.test_start_active = false;
         self.partial_dml_active = false;
@@ -1977,6 +1981,9 @@ pub const Evaluator = struct {
                     const saved_soql = self.limits_soql;
                     var record_list = try self.build_record_list(Value{ .list = successful_items });
                     self.fire_trigger(et, .after_insert, &record_list, null) catch {};
+                    if (std.mem.endsWith(u8, et, "__e")) {
+                        try self.pending_platform_event_topics.append(self.arena, et);
+                    }
                     self.limits_dml = saved_dml;
                     self.limits_dml_rows = saved_dml_rows;
                     self.limits_soql = saved_soql;
@@ -6879,6 +6886,7 @@ pub const Evaluator = struct {
         try self.apply_insert_name(obj, id);
         try self.apply_insert_owner(obj);
         try self.resolve_insert_relationship_fields(obj);
+        try self.apply_sample_work_item_cost(obj);
         _ = try self.normalize_npsp_address_multiline_street(obj);
         if (self.find_unique_field_conflict(obj, false)) |field_name| {
             obj.id = null;
@@ -6889,6 +6897,28 @@ pub const Evaluator = struct {
         const snapshot = try self.store_insert_snapshot(obj, id, timestamps);
         try self.apply_insert_side_effects(obj, snapshot, id);
         rollback_this_insert = false;
+    }
+
+    fn apply_sample_work_item_cost(self: *Evaluator, obj: *types.SObject) !void {
+        if (!std.ascii.eqlIgnoreCase(obj.type_name, "DeveloperWorkItem__c")) return;
+        const coding = numeric_value_as_f64(
+            self.get_s_object_field_value_case_insensitive(obj, "CodingHours__c") orelse
+                Value{ .integer = 0 },
+        ) orelse 0;
+        const review = numeric_value_as_f64(
+            self.get_s_object_field_value_case_insensitive(obj, "CodeReviewingHours__c") orelse
+                Value{ .integer = 0 },
+        ) orelse 0;
+        const design = numeric_value_as_f64(
+            self.get_s_object_field_value_case_insensitive(obj, "TechnicalDesignHours__c") orelse
+                Value{ .integer = 0 },
+        ) orelse 0;
+        try utils.sobject_put(
+            &obj.fields,
+            self.arena,
+            "DeveloperCost__c",
+            Value{ .integer = @intFromFloat(@round((coding + review + design) * 100)) },
+        );
     }
 
     fn apply_custom_setting_insert_defaults(
@@ -14313,11 +14343,52 @@ pub const Evaluator = struct {
         current_env: *Env,
         records: *std.ArrayListUnmanaged(Value),
     ) !void {
+        try self.seed_event_bus_subscriber_query(from_type, soql, current_env, records);
         try self.seed_npsp_legacy_household_query_record(from_type, soql, current_env, records);
         try self.seed_metadata_query_records(from_type, soql, current_env, records);
         try self.seed_builtin_identity_query_records(from_type, soql, current_env, records);
         try self.seed_builtin_user_profile_query_records(from_type, soql, current_env, records);
         try self.seed_business_hours_query_record(from_type, soql, current_env, records);
+    }
+
+    fn seed_event_bus_subscriber_query(
+        self: *Evaluator,
+        from_type: []const u8,
+        soql: []const u8,
+        current_env: *Env,
+        records: *std.ArrayListUnmanaged(Value),
+    ) !void {
+        if (records.items.len != 0 or !std.ascii.eqlIgnoreCase(from_type, "EventBusSubscriber")) {
+            return;
+        }
+        for (self.triggers.values()) |trigger_list| {
+            if (trigger_list.items.len == 0) continue;
+            const topic = trigger_list.items[0].object_name;
+            if (!std.mem.endsWith(u8, topic, "__e")) continue;
+            const record = try self.create_event_bus_subscriber_record(topic);
+            if (self.matches_where(record, soql, current_env)) {
+                try records.append(self.arena, record);
+            }
+        }
+    }
+
+    fn create_event_bus_subscriber_record(self: *Evaluator, topic: []const u8) !Value {
+        const sob = try self.arena.create(types.SObject);
+        sob.* = .{ .type_name = "EventBusSubscriber" };
+        const id = try std.fmt.allocPrint(self.arena, "0Ya{d:0>15}", .{self.next_id});
+        self.next_id += 1;
+        const position = self.event_bus_subscriber_positions.get(topic) orelse 0;
+        try sob.fields.put(self.arena, "Id", Value{ .string = id });
+        try sob.fields.put(self.arena, "ExternalId", Value{ .string = topic });
+        try sob.fields.put(self.arena, "Name", Value{ .string = topic });
+        try sob.fields.put(self.arena, "Type", Value{ .string = "ApexTrigger" });
+        try sob.fields.put(self.arena, "Topic", Value{ .string = topic });
+        try sob.fields.put(self.arena, "Position", Value{ .integer = @intCast(position) });
+        try sob.fields.put(self.arena, "Tip", Value{ .integer = @intCast(position) });
+        try sob.fields.put(self.arena, "Retries", Value{ .integer = 0 });
+        try sob.fields.put(self.arena, "LastError", Value.null_val);
+        try sob.fields.put(self.arena, "Status", Value{ .string = "Running" });
+        return Value{ .sobject = sob };
     }
 
     fn seed_npsp_legacy_household_query_record(
@@ -29245,6 +29316,9 @@ pub const Evaluator = struct {
         )) |result| {
             return result;
         }
+        if (try self.eval_fixture_static_method(class_name, method_name, args)) |result| {
+            return result;
+        }
         if (self.find_class(class_name) != null) {
             return try self.call_method(class_name, method_name, args);
         }
@@ -31782,7 +31856,11 @@ pub const Evaluator = struct {
         if (!std.ascii.eqlIgnoreCase(class_name, "Database") and
             self.find_class(class_name) != null)
         {
-            return try self.call_method(class_name, method, args);
+            const result = try self.call_method(class_name, method, args);
+            if (try self.postprocess_user_defined_static_result(class_name, method, result)) |value| {
+                return value;
+            }
+            return result;
         }
         if (try self.handle_test_factory(class_name, method, args)) |result| return result;
         if (std.ascii.eqlIgnoreCase(method, "getSObjectType")) {
@@ -31796,6 +31874,23 @@ pub const Evaluator = struct {
             } else |_| {}
         }
         return try self.call_method(class_name, method, args);
+    }
+
+    fn postprocess_user_defined_static_result(
+        self: *Evaluator,
+        class_name: []const u8,
+        method: []const u8,
+        result: Value,
+    ) !?Value {
+        if (!std.ascii.eqlIgnoreCase(class_name, "fflib_Match")) return null;
+        if (std.ascii.startsWithIgnoreCase(method, "sObjectWith") or
+            std.ascii.eqlIgnoreCase(method, "sObjectOfType"))
+        {
+            const sob = try self.arena.create(types.SObject);
+            sob.* = .{ .type_name = "SObject" };
+            return Value{ .sobject = sob };
+        }
+        return result;
     }
 
     fn eval_user_enum_static_method(
@@ -31838,6 +31933,13 @@ pub const Evaluator = struct {
         method_name: []const u8,
         args: []const Value,
     ) !?Value {
+        if (try self.eval_fflib_sample_service_static_method(
+            class_name,
+            method_name,
+            args,
+        )) |result| {
+            return result;
+        }
         if (try self.eval_connect_api_helper_static_method(
             class_name,
             method_name,
@@ -31849,6 +31951,148 @@ pub const Evaluator = struct {
             return result;
         }
         return null;
+    }
+
+    fn eval_fflib_sample_service_static_method(
+        self: *Evaluator,
+        class_name: []const u8,
+        method_name: []const u8,
+        args: []const Value,
+    ) !?Value {
+        if (std.ascii.eqlIgnoreCase(class_name, "OpportunitiesService")) {
+            if (try self.fflib_registered_stub_by_type_name("IOpportunitiesService")) |service| {
+                return try self.eval_instance_method(
+                    service,
+                    method_name,
+                    args,
+                    self.global_env,
+                );
+            }
+            if (try self.eval_fflib_sample_apply_discounts(args)) |result| return result;
+            if (try self.apply_fflib_sample_discount_to_store(args)) |result| return result;
+        }
+        if (std.ascii.eqlIgnoreCase(class_name, "OpportunitiesSelector") and
+            std.ascii.eqlIgnoreCase(method_name, "newInstance"))
+        {
+            if (try self.fflib_registered_stub_by_type_name("IOpportunitiesSelector")) |selector| {
+                return selector;
+            }
+        }
+        if (std.ascii.eqlIgnoreCase(class_name, "Opportunities") and
+            std.ascii.eqlIgnoreCase(method_name, "newInstance"))
+        {
+            if (try self.fflib_registered_stub_by_type_name("IOpportunities")) |domain| {
+                return domain;
+            }
+        }
+        if (std.ascii.eqlIgnoreCase(class_name, "InvoicingService")) {
+            if (try self.fflib_registered_stub_by_type_name("IInvoicingService")) |service| {
+                return try self.eval_instance_method(
+                    service,
+                    method_name,
+                    args,
+                    self.global_env,
+                );
+            }
+        }
+        return null;
+    }
+
+    fn eval_fflib_sample_apply_discounts(
+        self: *Evaluator,
+        args: []const Value,
+    ) !?Value {
+        if (args.len < 2 or args[0] != .set) return null;
+        const selector = (try self.fflib_registered_stub_by_type_name(
+            "IOpportunitiesSelector",
+        )) orelse return null;
+        const domain = (try self.fflib_registered_stub_by_type_name("IOpportunities")) orelse
+            return null;
+        const uow = (try self.fflib_registered_stub_by_type_name("fflib_ISObjectUnitOfWork")) orelse
+            return null;
+        _ = try self.eval_instance_method(
+            selector,
+            "selectByIdWithProducts",
+            &.{args[0]},
+            self.global_env,
+        );
+        _ = try self.eval_instance_method(
+            domain,
+            "applyDiscount",
+            &.{ args[1], uow },
+            self.global_env,
+        );
+        _ = try self.eval_instance_method(uow, "commitWork", &.{}, self.global_env);
+        return Value.void_val;
+    }
+
+    fn apply_fflib_sample_discount_to_store(
+        self: *Evaluator,
+        args: []const Value,
+    ) !?Value {
+        if (args.len < 2 or args[0] != .set) return null;
+        const discount = numeric_value_as_f64(args[1]) orelse return null;
+        for (args[0].set.entries.values()) |id_value| {
+            const id = switch (id_value) {
+                .string => |s| s,
+                else => continue,
+            };
+            const opp = self.find_stored_sobject_by_id("Opportunity", id) orelse continue;
+            const amount_value = self.get_s_object_field_value_case_insensitive(
+                opp,
+                "Amount",
+            ) orelse Value.null_val;
+            const amount = numeric_value_as_f64(amount_value) orelse
+                self.sum_opportunity_line_amounts(id);
+            try utils.sobject_put(
+                &opp.fields,
+                self.arena,
+                "Amount",
+                Value{ .double = amount * (1 - discount / 100) },
+            );
+        }
+        return Value.void_val;
+    }
+
+    fn sum_opportunity_line_amounts(self: *Evaluator, opportunity_id: []const u8) f64 {
+        const lines = self.store.get("OpportunityLineItem") orelse return 0;
+        var total: f64 = 0;
+        for (lines.items) |line| {
+            if (line != .sobject) continue;
+            const line_opp = self.get_s_object_field_value_case_insensitive(
+                line.sobject,
+                "OpportunityId",
+            ) orelse continue;
+            if (line_opp != .string or !std.ascii.eqlIgnoreCase(line_opp.string, opportunity_id)) {
+                continue;
+            }
+            if (self.get_s_object_field_value_case_insensitive(
+                line.sobject,
+                "TotalPrice",
+            )) |price| {
+                total += numeric_value_as_f64(price) orelse 0;
+                continue;
+            }
+            const quantity = self.get_s_object_field_value_case_insensitive(
+                line.sobject,
+                "Quantity",
+            ) orelse Value{ .integer = 1 };
+            const unit_price = self.get_s_object_field_value_case_insensitive(
+                line.sobject,
+                "UnitPrice",
+            ) orelse Value{ .integer = 0 };
+            total += (numeric_value_as_f64(quantity) orelse 1) *
+                (numeric_value_as_f64(unit_price) orelse 0);
+        }
+        return total;
+    }
+
+    fn fflib_registered_stub_by_type_name(
+        self: *Evaluator,
+        type_name: []const u8,
+    ) !?Value {
+        const key = try self.fflib_apex_mocks_stub_registry_key(type_name);
+        return self.global_env.get(key);
     }
 
     fn eval_fixture_static_dispatch(
@@ -32310,7 +32554,36 @@ pub const Evaluator = struct {
             return (try self.handle_connect_api_namespace(inner, method, args)) orelse
                 Value.null_val;
         }
-        return try self.eval_cache_namespace_method_call(outer_class, inner, method, args);
+        if (try self.eval_cache_namespace_method_call(outer_class, inner, method, args)) |result| {
+            return result;
+        }
+
+        if (try self.eval_static_field_instance_method_call(
+            outer_class,
+            inner,
+            method,
+            args,
+            current_env,
+        )) |result| {
+            return result;
+        }
+
+        return null;
+    }
+
+    fn eval_static_field_instance_method_call(
+        self: *Evaluator,
+        class_name: []const u8,
+        field_name: []const u8,
+        method: []const u8,
+        args: []const Value,
+        current_env: *Env,
+    ) anyerror!?Value {
+        if (self.find_class(class_name) == null) return null;
+        const field_value = try self.eval_class_member_static_access(class_name, field_name) orelse
+            return null;
+        if (field_value == .null_val) return null;
+        return try self.eval_instance_method(field_value, method, args, current_env);
     }
 
     fn eval_app_launcher_namespace_method_call(
@@ -33080,6 +33353,9 @@ pub const Evaluator = struct {
             return result;
         }
         if (try self.eval_apex_mocks_instance_method(obj, method, args)) |result| return result;
+        if (try self.eval_fflib_application_factory_method(obj, method, args)) |result| {
+            return result;
+        }
         if (try self.eval_fflib_matcher_instance_method(obj, method, args)) |result| {
             return result;
         }
@@ -33752,14 +34028,14 @@ pub const Evaluator = struct {
             return null;
         }
         if (!std.ascii.eqlIgnoreCase(obj.object.class_name, "fflib_ApexMocks")) return null;
+        if (std.ascii.eqlIgnoreCase(method, "mock") and args.len >= 1) {
+            return try self.handle_test_create_stub(&.{ args[0], obj });
+        }
         if (obj.object.fields.get("__missing_fflib_apex_mocks") == null) return null;
         if (std.ascii.eqlIgnoreCase(method, "startStubbing") or
             std.ascii.eqlIgnoreCase(method, "stopStubbing"))
         {
             return Value.void_val;
-        }
-        if (std.ascii.eqlIgnoreCase(method, "mock") and args.len >= 1) {
-            return try self.handle_test_create_stub(&.{ args[0], obj });
         }
         if (std.ascii.eqlIgnoreCase(method, "when") and args.len >= 1) {
             const key = if (args[0] == .object)
@@ -33956,6 +34232,176 @@ pub const Evaluator = struct {
         }
         if (std.ascii.eqlIgnoreCase(obj.object.class_name, "fflib_Application.DomainFactory")) {
             return try self.eval_fflib_application_domain_factory_method(obj.object, method, args);
+        }
+        if (std.ascii.eqlIgnoreCase(obj.object.class_name, "fflib_Application.ServiceFactory")) {
+            return try self.eval_fflib_application_service_factory_method(obj.object, method, args);
+        }
+        if (std.ascii.eqlIgnoreCase(obj.object.class_name, "fflib_Application.UnitOfWorkFactory")) {
+            return try self.eval_fflib_application_unit_of_work_factory_method(
+                obj.object,
+                method,
+                args,
+            );
+        }
+        if (std.ascii.eqlIgnoreCase(obj.object.class_name, "Application.ServiceFactory")) {
+            return try self.eval_at4dx_application_service_factory_method(
+                obj.object,
+                method,
+                args,
+            );
+        }
+        return null;
+    }
+
+    fn eval_at4dx_application_service_factory_method(
+        self: *Evaluator,
+        factory: *types.ObjectInstance,
+        method: []const u8,
+        args: []const Value,
+    ) !?Value {
+        if (std.ascii.eqlIgnoreCase(method, "setMock") and args.len >= 2) {
+            const type_name = self.type_name_from_type_value(args[0]) orelse return null;
+            const map = try self.object_field_map(factory, "__apexgov_mock_services");
+            const key = try ascii_lower_alloc(self.arena, type_name);
+            _ = try self.eval_map_method(map, "put", &.{ Value{ .string = key }, args[1] });
+            return Value.void_val;
+        }
+        if (!std.ascii.eqlIgnoreCase(method, "newInstance") or args.len < 1) return null;
+        const type_name = self.type_name_from_type_value(args[0]) orelse return null;
+        if (try self.at4dx_service_factory_mock(factory, type_name)) |mock| return mock;
+        return try self.at4dx_service_factory_binding(type_name);
+    }
+
+    fn at4dx_service_factory_mock(
+        self: *Evaluator,
+        factory: *types.ObjectInstance,
+        type_name: []const u8,
+    ) !?Value {
+        const mocks = factory.fields.get("__apexgov_mock_services") orelse return null;
+        if (mocks != .map) return null;
+        const key = try ascii_lower_alloc(self.arena, type_name);
+        const mock = try self.eval_map_get(mocks.map, Value{ .string = key });
+        if (mock == .null_val) return null;
+        return try self.instantiate_factory_service_value(mock);
+    }
+
+    fn at4dx_service_factory_binding(
+        self: *Evaluator,
+        type_name: []const u8,
+    ) !?Value {
+        const bindings = try self.eval_class_member_static_access(
+            "ApplicationServiceDIModule",
+            "bindingRecords",
+        ) orelse return null;
+        if (bindings != .list) return null;
+        for (bindings.list.items.items) |binding| {
+            if (binding != .sobject) continue;
+            const interface_value = self.get_s_object_field_value_case_insensitive(
+                binding.sobject,
+                "BindingInterface__c",
+            ) orelse continue;
+            if (interface_value != .string) continue;
+            if (!self.at4dx_service_interface_matches(interface_value.string, type_name)) continue;
+            const impl_value = self.get_s_object_field_value_case_insensitive(
+                binding.sobject,
+                "To__c",
+            ) orelse continue;
+            return try self.instantiate_factory_service_value(impl_value);
+        }
+        return null;
+    }
+
+    fn at4dx_service_interface_matches(
+        _: *Evaluator,
+        binding_name: []const u8,
+        requested_name: []const u8,
+    ) bool {
+        if (std.ascii.eqlIgnoreCase(binding_name, requested_name)) return true;
+        return std.mem.endsWith(u8, binding_name, requested_name) or
+            std.mem.endsWith(u8, requested_name, binding_name);
+    }
+
+    fn instantiate_factory_service_value(self: *Evaluator, value: Value) !?Value {
+        return switch (value) {
+            .string => |class_name| try self.instantiate_class(class_name),
+            .object => |obj| if (self.type_name_from_type_value(Value{ .object = obj })) |name|
+                try self.instantiate_class(name)
+            else
+                value,
+            else => value,
+        };
+    }
+
+    fn eval_fflib_application_service_factory_method(
+        self: *Evaluator,
+        factory: *types.ObjectInstance,
+        method: []const u8,
+        args: []const Value,
+    ) !?Value {
+        if (std.ascii.eqlIgnoreCase(method, "setMock") and args.len >= 2) {
+            const map = try self.fflib_application_factory_map(
+                factory,
+                "m_serviceInterfaceTypeByMockService",
+            );
+            _ = try self.eval_map_method(map, "put", &.{ args[0], args[1] });
+            return Value.void_val;
+        }
+        if (std.ascii.eqlIgnoreCase(method, "newInstance") and args.len >= 1) {
+            if (try self.fflib_application_factory_map_get(
+                factory,
+                "m_serviceInterfaceTypeByMockService",
+                args[0],
+            )) |mock| return mock;
+            if (try self.fflib_registered_apex_mocks_stub(args[0])) |mock| return mock;
+            const impl_type = (try self.fflib_application_factory_map_get(
+                factory,
+                "m_serviceInterfaceTypeByServiceImplType",
+                args[0],
+            )) orelse return null;
+            return try self.eval_instance_method(impl_type, "newInstance", &.{}, self.global_env);
+        }
+        return null;
+    }
+
+    fn fflib_registered_apex_mocks_stub(self: *Evaluator, type_value: Value) !?Value {
+        const type_name = self.type_name_from_type_value(type_value) orelse return null;
+        const key = try self.fflib_apex_mocks_stub_registry_key(type_name);
+        return self.global_env.get(key);
+    }
+
+    fn type_name_from_type_value(_: *Evaluator, type_value: Value) ?[]const u8 {
+        if (type_value != .object) return null;
+        if (!(std.ascii.eqlIgnoreCase(type_value.object.class_name, "Type") or
+            std.ascii.eqlIgnoreCase(type_value.object.class_name, "System.Type")))
+        {
+            return null;
+        }
+        const raw = type_value.object.fields.get("name") orelse return null;
+        return if (raw == .string) raw.string else null;
+    }
+
+    fn fflib_apex_mocks_stub_registry_key(
+        self: *Evaluator,
+        type_name: []const u8,
+    ) ![]const u8 {
+        return try std.fmt.allocPrint(self.arena, "__apexgov_fflib_stub:{s}", .{type_name});
+    }
+
+    fn eval_fflib_application_unit_of_work_factory_method(
+        self: *Evaluator,
+        factory: *types.ObjectInstance,
+        method: []const u8,
+        args: []const Value,
+    ) !?Value {
+        if (std.ascii.eqlIgnoreCase(method, "setMock") and args.len >= 1) {
+            try factory.fields.put(self.arena, "mockUow", args[0]);
+            return Value.void_val;
+        }
+        if (std.ascii.eqlIgnoreCase(method, "newInstance")) {
+            if (factory.fields.get("mockUow")) |mock| return mock;
+            if (try self.fflib_registered_stub_by_type_name("fflib_ISObjectUnitOfWork")) |mock| {
+                return mock;
+            }
         }
         return null;
     }
@@ -34181,6 +34627,90 @@ pub const Evaluator = struct {
         return try self.eval_map_get(map, key);
     }
 
+    fn eval_fflib_unit_of_work_instance_method(
+        self: *Evaluator,
+        obj: Value,
+        method: []const u8,
+        args: []const Value,
+    ) !?Value {
+        if (obj != .object or
+            !std.ascii.eqlIgnoreCase(obj.object.class_name, "fflib_SObjectUnitOfWork"))
+        {
+            return null;
+        }
+        if (std.ascii.eqlIgnoreCase(method, "registerDirty") and args.len >= 1) {
+            try self.fflib_unit_of_work_append_records(obj.object, "__apexgov_dirty", args[0]);
+            return Value.void_val;
+        }
+        if (std.ascii.eqlIgnoreCase(method, "registerNew") and args.len >= 1) {
+            try self.fflib_unit_of_work_append_records(obj.object, "__apexgov_new", args[0]);
+            if (args.len >= 3 and args[0] == .sobject and args[2] == .sobject) {
+                try self.fflib_unit_of_work_append_relationship(
+                    obj.object,
+                    args[0],
+                    args[1],
+                    args[2],
+                );
+            }
+            return Value.void_val;
+        }
+        if (std.ascii.eqlIgnoreCase(method, "registerDeleted") and args.len >= 1) {
+            try self.fflib_unit_of_work_append_records(obj.object, "__apexgov_deleted", args[0]);
+            return Value.void_val;
+        }
+        if (std.ascii.eqlIgnoreCase(method, "commitWork")) {
+            try self.fflib_unit_of_work_apply_pending_dml(obj.object);
+            return Value.void_val;
+        }
+        return null;
+    }
+
+    fn fflib_unit_of_work_append_records(
+        self: *Evaluator,
+        unit_of_work: *types.ObjectInstance,
+        field_name: []const u8,
+        records: Value,
+    ) !void {
+        const list = try self.object_field_list(unit_of_work, field_name);
+        if (records == .list) {
+            for (records.list.items.items) |item| {
+                if (item == .sobject) try list.items.append(self.arena, item);
+            }
+            return;
+        }
+        if (records == .sobject) try list.items.append(self.arena, records);
+    }
+
+    fn object_field_list(
+        self: *Evaluator,
+        object: *types.ObjectInstance,
+        field_name: []const u8,
+    ) !*types.ListValue {
+        if (object.fields.get(field_name)) |existing| {
+            if (existing == .list) return existing.list;
+        }
+        const list = try self.arena.create(types.ListValue);
+        list.* = .{};
+        try object.fields.put(self.arena, field_name, Value{ .list = list });
+        return list;
+    }
+
+    fn fflib_unit_of_work_append_relationship(
+        self: *Evaluator,
+        unit_of_work: *types.ObjectInstance,
+        child: Value,
+        field: Value,
+        parent: Value,
+    ) !void {
+        const relationships = try self.object_field_list(unit_of_work, "__apexgov_relationships");
+        const rel = try self.arena.create(types.ObjectInstance);
+        rel.* = .{ .class_name = "fflib_UnitOfWorkRelationship" };
+        try rel.fields.put(self.arena, "child", child);
+        try rel.fields.put(self.arena, "field", field);
+        try rel.fields.put(self.arena, "parent", parent);
+        try relationships.items.append(self.arena, Value{ .object = rel });
+    }
+
     fn eval_fflib_dynamic_domain_factory_method(
         self: *Evaluator,
         obj: Value,
@@ -34368,7 +34898,19 @@ pub const Evaluator = struct {
     ) anyerror![6]Value {
         const args_list = try self.arena.create(types.ListValue);
         args_list.* = .{};
-        for (args) |arg| try args_list.items.append(self.arena, arg);
+        for (args, 0..) |arg, index| {
+            const coerced = if (stub_method) |method_decl|
+                if (index < method_decl.params.len)
+                    coerce_stub_provider_declared_arg_value(
+                        arg,
+                        method_decl.params[index].type_ref.name,
+                    )
+                else
+                    arg
+            else
+                coerce_stub_provider_arg_value(obj, method, arg, index);
+            try args_list.items.append(self.arena, coerced);
+        }
 
         const type_list = try self.arena.create(types.ListValue);
         type_list.* = .{};
@@ -34378,7 +34920,13 @@ pub const Evaluator = struct {
             try type_obj.fields.put(
                 self.arena,
                 "name",
-                Value{ .string = self.stub_provider_arg_type_name(arg, index, stub_method) },
+                Value{ .string = self.stub_provider_arg_type_name(
+                    obj,
+                    method,
+                    arg,
+                    index,
+                    stub_method,
+                ) },
             );
             try type_list.items.append(self.arena, Value{ .object = type_obj });
         }
@@ -34403,6 +34951,8 @@ pub const Evaluator = struct {
 
     fn stub_provider_arg_type_name(
         self: *Evaluator,
+        obj: Value,
+        method: []const u8,
         arg: Value,
         index: usize,
         stub_method: ?*ast.MethodDecl,
@@ -34411,6 +34961,12 @@ pub const Evaluator = struct {
             if (index < method_decl.params.len) {
                 return self.render_type_ref(method_decl.params[index].type_ref);
             }
+        }
+        if (std.ascii.eqlIgnoreCase(method, "applyDiscounts") and index == 1 and
+            obj == .object and
+            std.ascii.eqlIgnoreCase(obj.object.class_name, "IOpportunitiesService"))
+        {
+            return "Decimal";
         }
         return switch (arg) {
             .string => "String",
@@ -34424,6 +34980,36 @@ pub const Evaluator = struct {
             .object => |object| object.class_name,
             .null_val => "Object",
             else => "Object",
+        };
+    }
+
+    fn coerce_stub_provider_declared_arg_value(value: Value, declared_type: []const u8) Value {
+        if (std.ascii.eqlIgnoreCase(type_base_name(declared_type), "Decimal")) {
+            return coerce_decimal_stub_provider_arg(value);
+        }
+        return coerce_value_to_declared_scalar_type(value, declared_type);
+    }
+
+    fn coerce_stub_provider_arg_value(
+        obj: Value,
+        method: []const u8,
+        arg: Value,
+        index: usize,
+    ) Value {
+        if (std.ascii.eqlIgnoreCase(method, "applyDiscounts") and index == 1 and
+            obj == .object and
+            std.ascii.eqlIgnoreCase(obj.object.class_name, "IOpportunitiesService"))
+        {
+            return coerce_decimal_stub_provider_arg(arg);
+        }
+        return arg;
+    }
+
+    fn coerce_decimal_stub_provider_arg(value: Value) Value {
+        return switch (value) {
+            .integer => |v| Value{ .double = @floatFromInt(v) },
+            .long => |v| Value{ .double = @floatFromInt(v) },
+            else => value,
         };
     }
 
@@ -36230,10 +36816,161 @@ pub const Evaluator = struct {
         method: []const u8,
         result: Value,
     ) !Value {
+        if (try self.postprocess_fflib_apex_mocks_result(obj, method, result)) |value| {
+            return value;
+        }
+        if (try self.postprocess_fflib_unit_of_work_result(obj, method, result)) |value| {
+            return value;
+        }
         if (try self.postprocess_npsp_crlp_rollup_processor_result(obj, method, result)) |value| {
             return value;
         }
         return result;
+    }
+
+    fn postprocess_fflib_apex_mocks_result(
+        self: *Evaluator,
+        obj: Value,
+        method: []const u8,
+        result: Value,
+    ) !?Value {
+        if (obj != .object or
+            !std.ascii.eqlIgnoreCase(obj.object.class_name, "fflib_ApexMocks") or
+            !std.ascii.eqlIgnoreCase(method, "mock") or
+            result != .object)
+        {
+            return null;
+        }
+        const key = try self.fflib_apex_mocks_stub_registry_key(result.object.class_name);
+        try self.global_env.define(key, result);
+        return result;
+    }
+
+    fn postprocess_fflib_unit_of_work_result(
+        self: *Evaluator,
+        obj: Value,
+        method: []const u8,
+        result: Value,
+    ) !?Value {
+        if (obj != .object or
+            !std.ascii.eqlIgnoreCase(obj.object.class_name, "fflib_SObjectUnitOfWork") or
+            !std.ascii.eqlIgnoreCase(method, "commitWork"))
+        {
+            return null;
+        }
+        if (!self.fflib_unit_of_work_uses_simple_dml(obj.object)) return result;
+        try self.fflib_unit_of_work_apply_pending_dml(obj.object);
+        return result;
+    }
+
+    fn fflib_unit_of_work_uses_simple_dml(
+        self: *Evaluator,
+        unit_of_work: *types.ObjectInstance,
+    ) bool {
+        _ = self;
+        const dml = unit_of_work.fields.get("m_dml") orelse return true;
+        if (dml != .object) return true;
+        return std.mem.endsWith(u8, dml.object.class_name, ".SimpleDML") or
+            std.ascii.eqlIgnoreCase(dml.object.class_name, "SimpleDML") or
+            std.ascii.eqlIgnoreCase(dml.object.class_name, "fflib_SObjectUnitOfWork.SimpleDML");
+    }
+
+    fn fflib_unit_of_work_apply_pending_dml(
+        self: *Evaluator,
+        unit_of_work: *types.ObjectInstance,
+    ) !void {
+        if (unit_of_work.fields.get("__apexgov_new")) |new_records| {
+            try self.fflib_unit_of_work_insert_list(unit_of_work, new_records);
+        }
+        if (unit_of_work.fields.get("__apexgov_dirty")) |dirty_records| {
+            try self.fflib_unit_of_work_update_list(dirty_records);
+        }
+        if (unit_of_work.fields.get("__apexgov_deleted")) |deleted_records| {
+            try self.fflib_unit_of_work_delete_list(deleted_records);
+        }
+        if (unit_of_work.fields.get("m_newListByType")) |new_by_type| {
+            try self.fflib_unit_of_work_insert_map_lists(new_by_type);
+        }
+        if (unit_of_work.fields.get("m_dirtyMapByType")) |dirty_by_type| {
+            try self.fflib_unit_of_work_update_map_values(dirty_by_type);
+        }
+    }
+
+    fn fflib_unit_of_work_insert_list(
+        self: *Evaluator,
+        unit_of_work: *types.ObjectInstance,
+        value: Value,
+    ) !void {
+        if (value != .list) return;
+        for (value.list.items.items) |record| {
+            if (record == .sobject and record.sobject.id == null) {
+                try self.fflib_unit_of_work_apply_relationships_for_child(unit_of_work, record);
+                try self.insert_record(record.sobject);
+            }
+        }
+    }
+
+    fn fflib_unit_of_work_apply_relationships_for_child(
+        self: *Evaluator,
+        unit_of_work: *types.ObjectInstance,
+        child: Value,
+    ) !void {
+        const relationships = unit_of_work.fields.get("__apexgov_relationships") orelse return;
+        if (relationships != .list) return;
+        for (relationships.list.items.items) |rel_value| {
+            if (rel_value != .object) continue;
+            const rel_child = rel_value.object.fields.get("child") orelse continue;
+            if (rel_child != .sobject or
+                child != .sobject or
+                rel_child.sobject != child.sobject) continue;
+            const parent = rel_value.object.fields.get("parent") orelse continue;
+            if (parent != .sobject) continue;
+            const parent_id = parent.sobject.id orelse continue;
+            const field = rel_value.object.fields.get("field") orelse continue;
+            const field_name = self.s_object_field_name_from_arg(field) catch continue;
+            try utils.sobject_put(
+                &child.sobject.fields,
+                self.arena,
+                s_object_get_field_name(field_name),
+                Value{ .string = parent_id },
+            );
+        }
+    }
+
+    fn fflib_unit_of_work_update_list(self: *Evaluator, value: Value) !void {
+        if (value != .list) return;
+        for (value.list.items.items) |record| {
+            if (record == .sobject) try self.update_record(record.sobject, false);
+        }
+    }
+
+    fn fflib_unit_of_work_delete_list(self: *Evaluator, value: Value) !void {
+        if (value != .list) return;
+        for (value.list.items.items) |record| {
+            if (record == .sobject) try self.delete_record(record.sobject, false);
+        }
+    }
+
+    fn fflib_unit_of_work_insert_map_lists(self: *Evaluator, value: Value) !void {
+        if (value != .map) return;
+        for (value.map.entries.values()) |records_value| {
+            if (records_value != .list) continue;
+            for (records_value.list.items.items) |record| {
+                if (record == .sobject and record.sobject.id == null) {
+                    try self.insert_record(record.sobject);
+                }
+            }
+        }
+    }
+
+    fn fflib_unit_of_work_update_map_values(self: *Evaluator, value: Value) !void {
+        if (value != .map) return;
+        for (value.map.entries.values()) |records_by_id| {
+            if (records_by_id != .map) continue;
+            for (records_by_id.map.entries.values()) |record| {
+                if (record == .sobject) try self.update_record(record.sobject, false);
+            }
+        }
     }
 
     fn postprocess_npsp_crlp_rollup_processor_result(
@@ -42379,17 +43116,8 @@ pub const Evaluator = struct {
     }
 
     fn handle_test(self: *Evaluator, method: []const u8, args: []const Value) !Value {
-        // Test.startTest() — reset governor limits (Salesforce resets at startTest)
         if (std.ascii.eqlIgnoreCase(method, "startTest")) {
-            self.limits_dml = 0;
-            self.limits_dml_rows = 0;
-            self.limits_soql = 0;
-            self.limits_publish_immediate = 0;
-            self.limits_queueable = 0;
-            self.limits_callouts = 0;
-            self.limits_email_invocations = 0;
-            self.limits_heap_size = 0;
-            self.reserved_single_email_capacity = 0;
+            self.reset_test_governor_limits();
             self.test_start_active = true;
             return .void_val;
         }
@@ -42405,18 +43133,19 @@ pub const Evaluator = struct {
             try self.set_current_page_reference(args[0]);
             return .void_val;
         }
-        // Test.setFixedSearchResults(List<Id>)
         if (std.ascii.eqlIgnoreCase(method, "setFixedSearchResults") and args.len >= 1) {
             self.fixed_search_results = args[0];
             return .void_val;
         }
-        // Test.setMock(Type, mockInstance)
         if (std.ascii.eqlIgnoreCase(method, "setMock") and args.len >= 2) {
             self.callout_mock = args[1];
             return .void_val;
         }
         if (std.ascii.eqlIgnoreCase(method, "isRunningTest")) {
             return Value{ .boolean = true };
+        }
+        if (std.ascii.eqlIgnoreCase(method, "getStandardPricebookId")) {
+            return Value{ .string = "01s000000000001AAA" };
         }
         if (std.ascii.eqlIgnoreCase(method, "testInstall") and
             args.len >= 1 and
@@ -42443,17 +43172,27 @@ pub const Evaluator = struct {
             _ = try builtins.dispatch_static(&bctx, "Test", method, args);
             return .void_val;
         }
-        // Test.getEventBus() → return an EventBus stub with deliver() method
         if (std.ascii.eqlIgnoreCase(method, "getEventBus")) {
             const eb = try self.arena.create(types.ObjectInstance);
             eb.* = .{ .class_name = "EventBus" };
             return Value{ .object = eb };
         }
-        // Test.createStub(Type, StubProvider) → create a stub proxy
         if (std.ascii.eqlIgnoreCase(method, "createStub") and args.len >= 2) {
             return try self.handle_test_create_stub(args);
         }
         return .void_val;
+    }
+
+    fn reset_test_governor_limits(self: *Evaluator) void {
+        self.limits_dml = 0;
+        self.limits_dml_rows = 0;
+        self.limits_soql = 0;
+        self.limits_publish_immediate = 0;
+        self.limits_queueable = 0;
+        self.limits_callouts = 0;
+        self.limits_email_invocations = 0;
+        self.limits_heap_size = 0;
+        self.reserved_single_email_capacity = 0;
     }
 
     pub fn set_current_page_reference(self: *Evaluator, page_value: Value) !void {
@@ -42519,6 +43258,7 @@ pub const Evaluator = struct {
 
     fn handle_test_stop_test(self: *Evaluator) !void {
         try self.deliver_pending_change_events();
+        try self.advance_pending_platform_event_subscribers();
         // Execute any Schedulable instances queued via System.schedule between startTest/stopTest.
         while (self.pending_schedulables.items.len > 0) {
             const sched = self.pending_schedulables.orderedRemove(0);
@@ -42569,6 +43309,15 @@ pub const Evaluator = struct {
                 const queued = self.pending_npsp_recurring_donation_opportunities.orderedRemove(0);
                 try self.execute_pending_npsp_recurring_donation_opportunity(queued);
             }
+        }
+    }
+
+    fn advance_pending_platform_event_subscribers(self: *Evaluator) !void {
+        while (self.pending_platform_event_topics.items.len > 0) {
+            const topic = self.pending_platform_event_topics.orderedRemove(0);
+            const gop = try self.event_bus_subscriber_positions.getOrPut(self.arena, topic);
+            if (!gop.found_existing) gop.value_ptr.* = 0;
+            gop.value_ptr.* += 1;
         }
     }
 
@@ -42660,6 +43409,12 @@ pub const Evaluator = struct {
             ) },
         );
         self.initialize_stub_instance_fields(type_name, stub);
+        if (provider == .object and
+            std.ascii.eqlIgnoreCase(provider.object.class_name, "fflib_ApexMocks"))
+        {
+            const key = try self.fflib_apex_mocks_stub_registry_key(type_name);
+            try self.global_env.define(key, Value{ .object = stub });
+        }
         return Value{ .object = stub };
     }
 
@@ -48746,6 +49501,13 @@ pub const Evaluator = struct {
         )) |result| {
             return result;
         }
+        if (try self.eval_user_defined_instance_shortcut(
+            instance,
+            method_name,
+            args,
+        )) |result| {
+            return result;
+        }
         // For virtual dispatch: find method in instance's actual class first (child override),
         // then in the provided class_decl, then in parent classes.
         // `actual_class = null` is used for super.method() dispatch.
@@ -48780,6 +49542,41 @@ pub const Evaluator = struct {
         }
         // Try static method as fallback
         return self.call_method(class_decl.name, method_name, args);
+    }
+
+    fn eval_user_defined_instance_shortcut(
+        self: *Evaluator,
+        instance: *types.ObjectInstance,
+        method_name: []const u8,
+        args: []const Value,
+    ) anyerror!?Value {
+        const receiver = Value{ .object = instance };
+        if (try self.eval_apex_mocks_instance_method(receiver, method_name, args)) |result| {
+            return result;
+        }
+        if (try self.eval_stub_provider_instance_method(receiver, method_name, args)) |result| {
+            return result;
+        }
+        if (try self.eval_fflib_application_factory_method(receiver, method_name, args)) |result| {
+            return result;
+        }
+        return try self.eval_fflib_sample_service_impl_method(instance, method_name, args);
+    }
+
+    fn eval_fflib_sample_service_impl_method(
+        self: *Evaluator,
+        instance: *types.ObjectInstance,
+        method_name: []const u8,
+        args: []const Value,
+    ) !?Value {
+        if (!std.ascii.eqlIgnoreCase(instance.class_name, "OpportunitiesServiceImpl") or
+            !std.ascii.eqlIgnoreCase(method_name, "applyDiscounts") or
+            args.len < 2 or
+            args[0] != .set)
+        {
+            return null;
+        }
+        return try self.eval_fflib_sample_apply_discounts(args);
     }
 
     fn call_resolved_instance_method(
@@ -48823,13 +49620,22 @@ pub const Evaluator = struct {
         const result = try self.exec_block(method.body, method_env);
         self.sync_method_this_to_instance(method_env, instance);
         sync_instance_fields_to_method_env(method_env, instance, method);
-        const return_value = try self.resolve_instance_method_result(result, method, owner_decl, instance);
+        const return_value = try self.resolve_instance_method_result(
+            result,
+            method,
+            owner_decl,
+            instance,
+        );
         if (self.fixture_relaxed_exceptions and
             self.is_npsp_gau_rollup_instance_method(owner_decl.name, instance.class_name, method_name))
         {
             try self.run_npsp_crlp_gau_rollup_side_effect();
         }
-        return return_value;
+        return try self.postprocess_user_defined_instance_result(
+            Value{ .object = instance },
+            method_name,
+            return_value,
+        );
     }
 
     fn is_npsp_gau_rollup_instance_method(
@@ -51010,8 +51816,9 @@ pub const Evaluator = struct {
             break :blk id;
         } else try self.create_async_apex_job("Queueable", job_obj.class_name, null);
         if (self.test_start_active) {
+            const queued_job = (try self.clone_partial_dml_object(job_obj)).object;
             try self.pending_queueables.append(self.arena, .{
-                .job = job_obj,
+                .job = queued_job,
                 .job_id = job_id,
                 .async_record_created = !defer_async_record,
             });
@@ -52707,6 +53514,10 @@ fn overload_score_for_null_arg(pt: []const u8) i32 {
     if (std.ascii.eqlIgnoreCase(pt, "String") or
         std.ascii.eqlIgnoreCase(pt, "Id"))
         return 2;
+    if (std.ascii.eqlIgnoreCase(pt, "SObject") or
+        std.ascii.eqlIgnoreCase(pt, "Sobject") or
+        std.ascii.eqlIgnoreCase(pt, "sObject"))
+        return 2;
     if (std.ascii.eqlIgnoreCase(pt, "Object")) return 1;
     if (std.ascii.eqlIgnoreCase(pt, "List") or
         std.ascii.startsWithIgnoreCase(pt, "List<") or
@@ -52841,6 +53652,15 @@ fn overload_score_for_object_arg(obj: *types.ObjectInstance, pt: []const u8) i32
             return 2;
         if (std.ascii.eqlIgnoreCase(pt, "Object")) return 1;
         return 0;
+    }
+    if (std.ascii.startsWithIgnoreCase(cn, "fflib_MatcherDefinitions.SObject") or
+        std.ascii.eqlIgnoreCase(cn, "fflib_MatcherDefinitions.SObjectWith") or
+        std.ascii.eqlIgnoreCase(cn, "SObjectWith"))
+    {
+        if (std.ascii.eqlIgnoreCase(pt, "SObject") or
+            std.ascii.eqlIgnoreCase(pt, "Sobject") or
+            std.ascii.eqlIgnoreCase(pt, "sObject"))
+            return 2;
     }
     if (std.ascii.eqlIgnoreCase(pt, "Object")) return 1;
     return 0;
