@@ -669,6 +669,7 @@ fn dispatch_static_string(
             if (args[0] == .null_val) return Value.null_val;
             if (args[0] == .double and
                 (ctx.eval.call_stack_contains_class_suffix("MathFunctions.FormatNumberFn") or
+                    ctx.eval.call_stack_contains_class_name_fragment("di_BindingParam") or
                     ctx.eval.call_stack_contains_class_name_fragment("OPP_OpportunityNaming")) and
                 double_fits_exact_integer(args[0].double))
             {
