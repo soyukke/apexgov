@@ -667,12 +667,7 @@ fn dispatch_static_string(
     if (std.ascii.eqlIgnoreCase(method_name, "valueOf")) {
         if (args.len > 0) {
             if (args[0] == .null_val) return Value.null_val;
-            if (args[0] == .double and
-                (ctx.eval.call_stack_contains_class_suffix("MathFunctions.FormatNumberFn") or
-                    ctx.eval.call_stack_contains_class_name_fragment("di_BindingParam") or
-                    ctx.eval.call_stack_contains_class_name_fragment("OPP_OpportunityNaming")) and
-                double_fits_exact_integer(args[0].double))
-            {
+            if (string_value_of_should_render_integral_decimal(ctx, 0, args[0])) {
                 return Value{
                     .string = try std.fmt.allocPrint(ctx.arena, "{d}", .{
                         @as(i64, @intFromFloat(args[0].double)),
@@ -725,6 +720,29 @@ fn dispatch_static_string(
         return Value{ .boolean = false };
     }
     return null;
+}
+
+fn string_value_of_should_render_integral_decimal(
+    ctx: *BuiltinContext,
+    arg_index: usize,
+    value: Value,
+) bool {
+    if (value != .double or !double_fits_exact_integer(value.double)) return false;
+    const hints = ctx.eval.cast_type_hints orelse return false;
+    if (arg_index >= hints.len) return false;
+    const hint = hints[arg_index] orelse return false;
+    const base = local_type_base_name(hint);
+    return std.ascii.eqlIgnoreCase(base, "Object") or
+        std.ascii.eqlIgnoreCase(base, "System.Object");
+}
+
+fn local_type_base_name(name: []const u8) []const u8 {
+    const no_ns = if (std.mem.lastIndexOfScalar(u8, name, '.')) |idx|
+        name[idx + 1 ..]
+    else
+        name;
+    if (std.mem.indexOfScalar(u8, no_ns, '<')) |idx| return no_ns[0..idx];
+    return no_ns;
 }
 
 fn escape_single_quotes(arena: std.mem.Allocator, input: []const u8) ![]const u8 {
@@ -1558,7 +1576,7 @@ fn parse_json_object_value(
         '"' => parse_json_string_value(ctx, json_str, value_start),
         '[' => try parse_json_array_value(ctx, json_str, value_start),
         '{' => try parse_json_nested_object_value(ctx, json_str, value_start),
-        else => try parse_json_primitive_value(ctx, json_str, value_start),
+        else => try parse_json_primitive_value(json_str, value_start),
     };
 }
 
@@ -1646,11 +1664,7 @@ fn parse_json_nested_object_value(
     return .{ .value = value, .end = obj_pos };
 }
 
-fn parse_json_primitive_value(
-    ctx: *BuiltinContext,
-    json_str: []const u8,
-    value_start: usize,
-) !JsonParsedValue {
+fn parse_json_primitive_value(json_str: []const u8, value_start: usize) !JsonParsedValue {
     var value_end = value_start;
     while (value_end < json_str.len and
         json_str[value_end] != ',' and
@@ -1665,16 +1679,6 @@ fn parse_json_primitive_value(
     }
     if (std.ascii.eqlIgnoreCase(value_str, "null")) {
         return .{ .value = Value.null_val, .end = value_end };
-    }
-    if (ctx.eval.fixture_relaxed_exceptions and
-        ctx.eval.call_stack_contains_apex_frame(
-            "PMT_RefundController",
-            "processPaymentInfoResponse",
-        ))
-    {
-        if (std.fmt.parseFloat(f64, value_str)) |num| {
-            return .{ .value = Value{ .double = num }, .end = value_end };
-        } else |_| {}
     }
     if (std.fmt.parseInt(i64, value_str, 10)) |num| {
         return .{ .value = Value{ .integer = num }, .end = value_end };
@@ -2401,6 +2405,7 @@ const schema_describe_s_objects_known_types = [_][]const u8{
 fn dispatch_schema_global_describe(ctx: *BuiltinContext) !Value {
     const map = try ctx.arena.create(types.MapValue);
     map.* = .{};
+    map.case_insensitive_keys = true;
     for (schema_global_describe_known_types) |obj_name| {
         try put_schema_s_object_type(ctx, map, obj_name);
     }
@@ -4532,6 +4537,7 @@ pub fn create_field_describe_map_value(ctx: *BuiltinContext, obj_name: []const u
     const fields_kv = try ctx.arena.create(types.MapValue);
     fields_kv.* = .{};
     fields_kv.schema_field_owner = obj_name;
+    fields_kv.case_insensitive_keys = true;
     for ([_][]const u8{
         "Id",               "Name",      "RecordTypeId",   "CreatedDate",
         "LastModifiedDate", "OwnerId",   "IsDeleted",      "CreatedById",
@@ -4572,6 +4578,7 @@ pub fn create_field_describe_map_value(ctx: *BuiltinContext, obj_name: []const u
     }
     try add_known_describe_fields(ctx, fields_kv, obj_name);
     try add_describe_fields_from_store(ctx, fields_kv, obj_name);
+    dedupe_describe_fields_case_insensitive(fields_kv);
     for (fields_kv.entries.keys()) |field_name| {
         if (fields_kv.key_values.get(field_name) == null) {
             try fields_kv.key_values.put(ctx.arena, field_name, Value{ .string = field_name });
@@ -4579,6 +4586,23 @@ pub fn create_field_describe_map_value(ctx: *BuiltinContext, obj_name: []const u
     }
     try fields_map_obj.fields.put(ctx.arena, "map", Value{ .map = fields_kv });
     return Value{ .object = fields_map_obj };
+}
+
+fn dedupe_describe_fields_case_insensitive(fields_kv: *types.MapValue) void {
+    var idx: usize = 0;
+    while (idx < fields_kv.entries.keys().len) {
+        const field_name = fields_kv.entries.keys()[idx];
+        var earlier: usize = 0;
+        while (earlier < idx) : (earlier += 1) {
+            if (std.ascii.eqlIgnoreCase(fields_kv.entries.keys()[earlier], field_name)) {
+                _ = fields_kv.entries.orderedRemove(field_name);
+                _ = fields_kv.key_values.orderedRemove(field_name);
+                idx -= 1;
+                break;
+            }
+        }
+        idx += 1;
+    }
 }
 
 fn object_has_master_detail_parent(ctx: *BuiltinContext, obj_name: []const u8) bool {
@@ -5213,37 +5237,6 @@ fn add_describe_fields_from_record(
     }
 }
 
-fn is_unmetadata_backed_namespaced_field(
-    ctx: *BuiltinContext,
-    object_type: []const u8,
-    field_name: []const u8,
-) bool {
-    if (!is_namespaced_custom_field(field_name)) return false;
-    var field_type_map = ctx.eval.field_types.get(object_type);
-    if (field_type_map == null) {
-        var type_iter = ctx.eval.field_types.iterator();
-        while (type_iter.next()) |entry| {
-            if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, object_type)) {
-                field_type_map = entry.value_ptr.*;
-                break;
-            }
-        }
-    }
-    if (field_type_map) |type_map| {
-        for (type_map.keys()) |known| {
-            if (std.ascii.eqlIgnoreCase(known, field_name)) return false;
-        }
-    }
-    return true;
-}
-
-fn is_namespaced_custom_field(field_name: []const u8) bool {
-    if (!std.ascii.endsWithIgnoreCase(field_name, "__c")) return false;
-    const first_sep = std.mem.indexOf(u8, field_name, "__") orelse return false;
-    return first_sep > 0 and first_sep + 2 < field_name.len and
-        std.mem.indexOf(u8, field_name[first_sep + 2 ..], "__") != null;
-}
-
 fn describe_field_value_is_scalar(field_value: Value) bool {
     return switch (field_value) {
         .sobject, .list, .map, .set => false,
@@ -5356,12 +5349,12 @@ fn create_field_describe_result_with_type(
             Value.null_val,
     );
     try fdr.fields.put(ctx.arena, "objectType", Value{ .string = object_type });
-    try add_field_describe_permissions(ctx, fdr, object_type, field_name);
-    const length = describe_field_length(metadata, field_name);
+    try add_field_describe_permissions(ctx, fdr, object_type, canonical_name);
+    const length = describe_field_length(metadata, canonical_name);
     try fdr.fields.put(ctx.arena, "length", Value{ .integer = length });
-    const is_nillable = describe_field_is_nillable(metadata, object_type, field_name);
+    const is_nillable = describe_field_is_nillable(metadata, object_type, canonical_name);
     try fdr.fields.put(ctx.arena, "isNillable", Value{ .boolean = is_nillable });
-    const raw_ft = describe_raw_field_type(ctx, object_type, field_name, field_type);
+    const raw_ft = describe_raw_field_type(ctx, object_type, canonical_name, field_type);
     const ft: []const u8 = map_xml_type_to_display_type(raw_ft);
     try fdr.fields.put(ctx.arena, "type", Value{ .string = ft });
     const is_sortable = !std.ascii.eqlIgnoreCase(ft, "TEXTAREA");
@@ -7580,27 +7573,11 @@ fn describe_field_boolean_accessor(
         };
     }
     if (std.ascii.eqlIgnoreCase(method_name, "isUpdateable")) {
-        if (object_type) |obj_name| {
-            if (ctx.eval.call_stack_contains_apex_frame(
-                "BDI_ManageAdvancedMappingCtrl",
-                "getObjectFieldDescribes",
-            ) and is_unmetadata_backed_namespaced_field(ctx, obj_name, field_name)) {
-                return Value{ .boolean = false };
-            }
-        }
         return Value{
             .boolean = resolve_field_write_permission(ctx.eval, object_type, field_name, "edit"),
         };
     }
     if (std.ascii.eqlIgnoreCase(method_name, "isCreateable")) {
-        if (object_type) |obj_name| {
-            if (ctx.eval.call_stack_contains_apex_frame(
-                "BDI_ManageAdvancedMappingCtrl",
-                "getObjectFieldDescribes",
-            ) and is_unmetadata_backed_namespaced_field(ctx, obj_name, field_name)) {
-                return Value{ .boolean = false };
-            }
-        }
         return Value{
             .boolean = resolve_field_write_permission(ctx.eval, object_type, field_name, "create"),
         };

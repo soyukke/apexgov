@@ -1848,6 +1848,86 @@ test "isTestMethod detects testMethod modifier" {
 // E2E テスト
 // ---------------------------------------------------------------------------
 
+fn run_entry(source: []const u8, entry_class: []const u8, entry_method: []const u8) !Result {
+    return run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = entry_class,
+        .entry_method = entry_method,
+    });
+}
+
+fn run_entry_with_options(
+    source: []const u8,
+    entry_class: []const u8,
+    entry_method: []const u8,
+    opts: Options,
+) !Result {
+    var run_opts = opts;
+    run_opts.entry_class = entry_class;
+    run_opts.entry_method = entry_method;
+    return run(std.testing.allocator, std.testing.io, source, run_opts);
+}
+
+fn expect_entry_string(
+    source: []const u8,
+    entry_class: []const u8,
+    entry_method: []const u8,
+    expected: []const u8,
+) !void {
+    const result = try run_entry(source, entry_class, entry_method);
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings(expected, result.value.string);
+}
+
+fn expect_entry_string_with_options(
+    source: []const u8,
+    entry_class: []const u8,
+    entry_method: []const u8,
+    expected: []const u8,
+    opts: Options,
+) !void {
+    const result = try run_entry_with_options(source, entry_class, entry_method, opts);
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings(expected, result.value.string);
+}
+
+fn expect_entry_integer(
+    source: []const u8,
+    entry_class: []const u8,
+    entry_method: []const u8,
+    expected: i64,
+) !void {
+    const result = try run_entry(source, entry_class, entry_method);
+    defer result.deinit();
+
+    try std.testing.expectEqual(expected, result.value.integer);
+}
+
+fn expect_entry_boolean(
+    source: []const u8,
+    entry_class: []const u8,
+    entry_method: []const u8,
+    expected: bool,
+) !void {
+    const result = try run_entry(source, entry_class, entry_method);
+    defer result.deinit();
+
+    try std.testing.expectEqual(expected, result.value.boolean);
+}
+
+fn expect_entry_stdout(
+    source: []const u8,
+    entry_class: []const u8,
+    entry_method: []const u8,
+    expected: []const u8,
+) !void {
+    const result = try run_entry(source, entry_class, entry_method);
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings(expected, result.stdout);
+}
+
 test "E2E: simple static method returns string" {
     const source =
         \\public class Hello {
@@ -1856,13 +1936,7 @@ test "E2E: simple static method returns string" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "Hello",
-        .entry_method = "greet",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("world", result.value.string);
+    try expect_entry_string(source, "Hello", "greet", "world");
 }
 
 test "E2E: arithmetic and variable" {
@@ -1875,13 +1949,7 @@ test "E2E: arithmetic and variable" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "Calc",
-        .entry_method = "compute",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqual(@as(i64, 13), result.value.integer);
+    try expect_entry_integer(source, "Calc", "compute", 13);
 }
 
 test "E2E: System.debug captures output" {
@@ -1916,13 +1984,7 @@ test "E2E: if-else control flow" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "Branch",
-        .entry_method = "max",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqual(@as(i64, 10), result.value.integer);
+    try expect_entry_integer(source, "Branch", "max", 10);
 }
 
 test "E2E: for loop with accumulator" {
@@ -1937,13 +1999,7 @@ test "E2E: for loop with accumulator" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "Loops",
-        .entry_method = "factorial",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqual(@as(i64, 120), result.value.integer);
+    try expect_entry_integer(source, "Loops", "factorial", 120);
 }
 
 test "E2E: string concatenation with integer" {
@@ -1955,13 +2011,7 @@ test "E2E: string concatenation with integer" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "Str",
-        .entry_method = "build",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("count=42", result.value.string);
+    try expect_entry_string(source, "Str", "build", "count=42");
 }
 
 test "E2E: method calling another method in same class" {
@@ -1976,13 +2026,7 @@ test "E2E: method calling another method in same class" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "Multi",
-        .entry_method = "main",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqual(@as(i64, 14), result.value.integer);
+    try expect_entry_integer(source, "Multi", "main", 14);
 }
 
 test "E2E: static Map with Set values are independent" {
@@ -2030,13 +2074,7 @@ test "E2E: instanceof checks superclass hierarchy" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "InstanceofTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqual(@as(i64, 111), result.value.integer);
+    try expect_entry_integer(source, "InstanceofTest", "test", 111);
 }
 
 test "E2E: Pattern.compile with digit and word patterns" {
@@ -2058,13 +2096,7 @@ test "E2E: Pattern.compile with digit and word patterns" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "RegexTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("2:123:456:user:host", result.value.string);
+    try expect_entry_string(source, "RegexTest", "test", "2:123:456:user:host");
 }
 
 test "E2E: Matcher.matches requires a full-string regex match" {
@@ -2078,13 +2110,7 @@ test "E2E: Matcher.matches requires a full-string regex match" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "MatcherFullMatchProbe",
-        .entry_method = "run",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("true|false", result.value.string);
+    try expect_entry_string(source, "MatcherFullMatchProbe", "run", "true|false");
 }
 
 test "E2E: Matcher exposes start/end/groupCount for static string inputs" {
@@ -2107,13 +2133,7 @@ test "E2E: Matcher exposes start/end/groupCount for static string inputs" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "MatcherSpanProbe",
-        .entry_method = "run",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("2:4:1:aa:aa", result.value.string);
+    try expect_entry_string(source, "MatcherSpanProbe", "run", "2:4:1:aa:aa");
 }
 
 test "E2E: standard child relationships preserve field token equality" {
@@ -2130,13 +2150,7 @@ test "E2E: standard child relationships preserve field token equality" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "ChildRelationshipProbe",
-        .entry_method = "run",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("Contacts", result.value.string);
+    try expect_entry_string(source, "ChildRelationshipProbe", "run", "Contacts");
 }
 
 test "E2E: fields map tokens compare equal to standard child relationship fields" {
@@ -2155,13 +2169,7 @@ test "E2E: fields map tokens compare equal to standard child relationship fields
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "ChildRelationshipFieldMapProbe",
-        .entry_method = "run",
-    });
-    defer result.deinit();
-
-    try std.testing.expect(result.value.boolean);
+    try expect_entry_boolean(source, "ChildRelationshipFieldMapProbe", "run", true);
 }
 
 test "E2E: Contact describe fields expose LastName token at runtime" {
@@ -2178,13 +2186,7 @@ test "E2E: Contact describe fields expose LastName token at runtime" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "ContactDescribeFieldsProbe",
-        .entry_method = "run",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("true:LastName:LastName", result.value.string);
+    try expect_entry_string(source, "ContactDescribeFieldsProbe", "run", "true:LastName:LastName");
 }
 
 test "E2E: Contact other address fields are valid SObject fields" {
@@ -2203,13 +2205,7 @@ test "E2E: Contact other address fields are valid SObject fields" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "ContactOtherAddressFieldsProbe",
-        .entry_method = "run",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("1 Main:true", result.value.string);
+    try expect_entry_string(source, "ContactOtherAddressFieldsProbe", "run", "1 Main:true");
 }
 
 test "E2E: list-derived describe resolves standard child relationship fields" {
@@ -2228,13 +2224,7 @@ test "E2E: list-derived describe resolves standard child relationship fields" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "ChildRelationshipListProbe",
-        .entry_method = "run",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("Contacts", result.value.string);
+    try expect_entry_string(source, "ChildRelationshipListProbe", "run", "Contacts");
 }
 
 test "E2E: JSON parser tokens can be streamed into a generator" {
@@ -2386,13 +2376,12 @@ test "E2E: streamed JSON child relationship injection round-trips for typed and 
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "JsonInjectedRelationshipProbe",
-        .entry_method = "run",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("2:2:003000000000001AAA", result.value.string);
+    try expect_entry_string(
+        source,
+        "JsonInjectedRelationshipProbe",
+        "run",
+        "2:2:003000000000001AAA",
+    );
 }
 
 test "E2E: streamed JSON child relationship injection emits relationship wrapper" {
@@ -2531,13 +2520,7 @@ test "E2E: custom property setters can delegate writes" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "DelegatingSetterProbe",
-        .entry_method = "run",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("delegated", result.value.string);
+    try expect_entry_string(source, "DelegatingSetterProbe", "run", "delegated");
 }
 
 test "E2E: Date.today returns current date, Date.newInstance builds from args" {
@@ -2552,13 +2535,7 @@ test "E2E: Date.today returns current date, Date.newInstance builds from args" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "DateTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("true:true", result.value.string);
+    try expect_entry_string(source, "DateTest", "test", "true:true");
 }
 
 test "E2E: System.now date matches System.today" {
@@ -2569,13 +2546,7 @@ test "E2E: System.now date matches System.today" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "SystemNowTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("true", result.value.string);
+    try expect_entry_string(source, "SystemNowTest", "test", "true");
 }
 
 test "E2E: Database.query on unknown object throws QueryException" {
@@ -2591,13 +2562,7 @@ test "E2E: Database.query on unknown object throws QueryException" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "UnknownObjTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("caught", result.value.string);
+    try expect_entry_string(source, "UnknownObjTest", "test", "caught");
 }
 
 test "E2E: beforeUpdate trigger addError causes DmlException" {
@@ -2647,13 +2612,7 @@ test "E2E: Cache.Partition get with CacheBuilder stores key and getKeys contains
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "CacheTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("1:true", result.value.string);
+    try expect_entry_string(source, "CacheTest", "test", "1:true");
 }
 
 test "E2E: Cache.Partition get resolves inner CacheBuilder classes" {
@@ -2673,13 +2632,7 @@ test "E2E: Cache.Partition get resolves inner CacheBuilder classes" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "InnerCacheBuilderTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("loaded:demo:true:true", result.value.string);
+    try expect_entry_string(source, "InnerCacheBuilderTest", "test", "loaded:demo:true:true");
 }
 
 test "E2E: Cache.Partition get resolves bare inner CacheBuilder literals inside the outer class" {
@@ -2696,13 +2649,7 @@ test "E2E: Cache.Partition get resolves bare inner CacheBuilder literals inside 
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "CacheBuilderOwner",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("loaded:demo:true", result.value.string);
+    try expect_entry_string(source, "CacheBuilderOwner", "test", "loaded:demo:true");
 }
 
 test "E2E: cached Organization accessor works through an inner CacheBuilder" {
@@ -2753,13 +2700,7 @@ test "E2E: cached Organization accessor works through an inner CacheBuilder" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "CachedOrgAccessor",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("true:1", result.value.string);
+    try expect_entry_string(source, "CachedOrgAccessor", "test", "true:1");
 }
 
 test "E2E: Cache.Partition isAvailable returns true for existing org partition" {
@@ -2772,13 +2713,7 @@ test "E2E: Cache.Partition isAvailable returns true for existing org partition" 
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "CacheAvailabilityTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("true:true", result.value.string);
+    try expect_entry_string(source, "CacheAvailabilityTest", "test", "true:true");
 }
 
 test "E2E: Flow metadata stubs support IN bind variables" {
@@ -2803,13 +2738,12 @@ test "E2E: Flow metadata stubs support IN bind variables" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "FlowMetadataQueryTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("MockLogBatchPurgerPlugin:true:true", result.value.string);
+    try expect_entry_string(
+        source,
+        "FlowMetadataQueryTest",
+        "test",
+        "MockLogBatchPurgerPlugin:true:true",
+    );
 }
 
 test "E2E: metadata stubs resolve static bind variables" {
@@ -2826,13 +2760,7 @@ test "E2E: metadata stubs resolve static bind variables" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "StaticFlowBindTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("LogEntryHandler_Tests_Flow", result.value.string);
+    try expect_entry_string(source, "StaticFlowBindTest", "test", "LogEntryHandler_Tests_Flow");
 }
 
 test "E2E: FlowDefinitionView stub query works through helper method reuse" {
@@ -2860,13 +2788,7 @@ test "E2E: FlowDefinitionView stub query works through helper method reuse" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "FlowSelectorTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("1:1", result.value.string);
+    try expect_entry_string(source, "FlowSelectorTest", "test", "1:1");
 }
 
 test "E2E: FlowDefinitionView stub does not synthesize inactive-free queries" {
@@ -2882,13 +2804,7 @@ test "E2E: FlowDefinitionView stub does not synthesize inactive-free queries" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "FlowDefinitionViewMissingTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("0", result.value.string);
+    try expect_entry_string(source, "FlowDefinitionViewMissingTest", "test", "0");
 }
 
 test "E2E: fixture Flow.Interview plugin mock exposes input and output variables" {
@@ -2999,13 +2915,7 @@ test "E2E: PermissionSet dynamic permission fields are queryable" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "PermissionSetDynamicFieldsTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqual(@as(i64, 1), result.value.integer);
+    try expect_entry_integer(source, "PermissionSetDynamicFieldsTest", "test", 1);
 }
 
 test "E2E: PermissionSetAssignment matches admin permission subquery" {
@@ -3045,13 +2955,7 @@ test "E2E: PermissionSetAssignment matches admin permission subquery" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "PermissionSetAssignmentAdminSubqueryTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqual(@as(i64, 1), result.value.integer);
+    try expect_entry_integer(source, "PermissionSetAssignmentAdminSubqueryTest", "test", 1);
 }
 
 test "E2E: runAs assigns an id to an uninserted user for later setup DML" {
@@ -3148,13 +3052,7 @@ test "E2E: instance field assignment updates existing field case-insensitively" 
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "CaseInsensitiveInstanceFieldAssignmentTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("new", result.value.string);
+    try expect_entry_string(source, "CaseInsensitiveInstanceFieldAssignmentTest", "test", "new");
 }
 
 test "E2E: local variables do not update same-named instance fields case-insensitively" {
@@ -3171,13 +3069,7 @@ test "E2E: local variables do not update same-named instance fields case-insensi
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "LocalVariableFieldShadowTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqual(@as(i64, 5), result.value.integer);
+    try expect_entry_integer(source, "LocalVariableFieldShadowTest", "test", 5);
 }
 
 test "E2E: missing FormulaFilter class passes records through when no entry criteria exists" {
@@ -3191,13 +3083,7 @@ test "E2E: missing FormulaFilter class passes records through when no entry crit
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "MissingFormulaFilterFallbackTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqual(@as(i64, 1), result.value.integer);
+    try expect_entry_integer(source, "MissingFormulaFilterFallbackTest", "test", 1);
 }
 
 test "E2E: CaseComment describe does not expose implicit Name field" {
@@ -3330,13 +3216,7 @@ test "E2E: uninserted standard runAs user remains standard when queried" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "RunAsUninsertedStandardQueryTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("Standard User", result.value.string);
+    try expect_entry_string(source, "RunAsUninsertedStandardQueryTest", "test", "Standard User");
 }
 
 test "E2E: standard user custom object describe is not updateable by default" {
@@ -3396,13 +3276,7 @@ test "E2E: schema-qualified standard user custom object describe is not updateab
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "SchemaQualifiedCrudTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("false:false", result.value.string);
+    try expect_entry_string(source, "SchemaQualifiedCrudTest", "test", "false:false");
 }
 
 test "E2E: Profile Name IN query preserves standard-user CRUD restrictions in runAs" {
@@ -3433,13 +3307,7 @@ test "E2E: Profile Name IN query preserves standard-user CRUD restrictions in ru
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "ProfileInCrudTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("false:false", result.value.string);
+    try expect_entry_string(source, "ProfileInCrudTest", "test", "false:false");
 }
 
 test "E2E: Profile Name bind query preserves read-only delete restrictions in runAs" {
@@ -3464,13 +3332,7 @@ test "E2E: Profile Name bind query preserves read-only delete restrictions in ru
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "ProfileBindReadOnlyCrudTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("false", result.value.string);
+    try expect_entry_string(source, "ProfileBindReadOnlyCrudTest", "test", "false");
 }
 
 test "E2E: synthetic Profile LIKE filters no-match and collapses repeated wildcards" {
@@ -3493,13 +3355,12 @@ test "E2E: synthetic Profile LIKE filters no-match and collapses repeated wildca
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "ProfileLikeSearchTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("0:System Administrator:Salesforce", result.value.string);
+    try expect_entry_string(
+        source,
+        "ProfileLikeSearchTest",
+        "test",
+        "0:System Administrator:Salesforce",
+    );
 }
 
 test "E2E: synthetic Profile query honors permission flag predicates" {
@@ -3528,13 +3389,12 @@ test "E2E: synthetic Profile query honors permission flag predicates" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "ProfilePermissionPredicateTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("System Administrator:false:true:true", result.value.string);
+    try expect_entry_string(
+        source,
+        "ProfilePermissionPredicateTest",
+        "test",
+        "System Administrator:false:true:true",
+    );
 }
 
 test "E2E: inserted users are queryable by CommunityNickname" {
@@ -3566,13 +3426,7 @@ test "E2E: inserted users are queryable by CommunityNickname" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "UserCommunityNicknameTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("1:fixture-nick:true", result.value.string);
+    try expect_entry_string(source, "UserCommunityNicknameTest", "test", "1:fixture-nick:true");
 }
 
 test "E2E: static final test-dependent bind variables resolve in SOQL" {
@@ -3592,13 +3446,7 @@ test "E2E: static final test-dependent bind variables resolve in SOQL" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "StaticBindProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("missing-user@example.com:0:none", result.value.string);
+    try expect_entry_string(source, "StaticBindProbe", "test", "missing-user@example.com:0:none");
 }
 
 test "E2E: static final test-dependent constants evaluate before use" {
@@ -3612,13 +3460,7 @@ test "E2E: static final test-dependent constants evaluate before use" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "StaticConstantProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("missing-user@example.com", result.value.string);
+    try expect_entry_string(source, "StaticConstantProbe", "test", "missing-user@example.com");
 }
 
 test "E2E: synthetic User LIKE collapses repeated wildcards" {
@@ -3638,13 +3480,7 @@ test "E2E: synthetic User LIKE collapses repeated wildcards" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "UserLikeSearchTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("Test User:testuser@example.com", result.value.string);
+    try expect_entry_string(source, "UserLikeSearchTest", "test", "Test User:testuser@example.com");
 }
 
 test "E2E: stripInaccessible keeps Id on update records" {
@@ -3664,13 +3500,12 @@ test "E2E: stripInaccessible keeps Id on update records" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "StripInaccessibleIdTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("1:001000000000001AAA:updated", result.value.string);
+    try expect_entry_string(
+        source,
+        "StripInaccessibleIdTest",
+        "test",
+        "1:001000000000001AAA:updated",
+    );
 }
 
 test "E2E: user-defined classes shadow builtin static helpers" {
@@ -3686,13 +3521,7 @@ test "E2E: user-defined classes shadow builtin static helpers" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "SecurityShadowTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("shadow:ok", result.value.string);
+    try expect_entry_string(source, "SecurityShadowTest", "test", "shadow:ok");
 }
 
 test "E2E: stripInaccessible READABLE removes selected null fields without access" {
@@ -3736,13 +3565,7 @@ test "E2E: stripInaccessible READABLE removes selected null fields without acces
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "ReadableNullFieldStripTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expect(result.value.boolean);
+    try expect_entry_boolean(source, "ReadableNullFieldStripTest", "test", true);
 }
 
 test "E2E: stripInaccessible READABLE skips root CRUD enforcement when disabled" {
@@ -3953,13 +3776,7 @@ test "E2E: permission set groups expand assigned permission sets" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "PermissionSetGroupExpansionTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expect(result.value.boolean);
+    try expect_entry_boolean(source, "PermissionSetGroupExpansionTest", "test", true);
 }
 
 test "E2E: permission set metadata expands composite address field permissions" {
@@ -4050,13 +3867,7 @@ test "E2E: describeSObjects exposes updatable standard address fields" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "DescribeSObjectsUpdatableFieldsTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expect(result.value.boolean);
+    try expect_entry_boolean(source, "DescribeSObjectsUpdatableFieldsTest", "test", true);
 }
 
 test "E2E: stripInaccessible update records remain usable after JSON round-trip" {
@@ -4227,13 +4038,12 @@ test "E2E: User query by UserInfo username resolves the current user when other 
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "CurrentUserUsernameQueryTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("005000000000001:testuser@example.com", result.value.string);
+    try expect_entry_string(
+        source,
+        "CurrentUserUsernameQueryTest",
+        "test",
+        "005000000000001:testuser@example.com",
+    );
 }
 
 test "E2E: User query by UserInfo username resolves seeded current user" {
@@ -4249,13 +4059,12 @@ test "E2E: User query by UserInfo username resolves seeded current user" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "SeededCurrentUserUsernameQueryTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("005000000000001:testuser@example.com", result.value.string);
+    try expect_entry_string(
+        source,
+        "SeededCurrentUserUsernameQueryTest",
+        "test",
+        "005000000000001:testuser@example.com",
+    );
 }
 
 test "E2E: runAs can query the original current user by username" {
@@ -4277,13 +4086,12 @@ test "E2E: runAs can query the original current user by username" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "RunAsCurrentUserQueryTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("005000000000001:testuser@example.com", result.value.string);
+    try expect_entry_string(
+        source,
+        "RunAsCurrentUserQueryTest",
+        "test",
+        "005000000000001:testuser@example.com",
+    );
 }
 
 test "E2E: standard user cannot access AccountBrand describe fields" {
@@ -4316,13 +4124,7 @@ test "E2E: standard user cannot access AccountBrand describe fields" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "AccountBrandAccessTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("false:false:false", result.value.string);
+    try expect_entry_string(source, "AccountBrandAccessTest", "test", "false:false:false");
 }
 
 test "E2E: standard user cannot access custom fields without permission sets" {
@@ -4355,17 +4157,16 @@ test "E2E: standard user cannot access custom fields without permission sets" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "StandardUserCustomFieldDescribeProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("false:false:true", result.value.string);
+    try expect_entry_string(
+        source,
+        "StandardUserCustomFieldDescribeProbe",
+        "test",
+        "false:false:true",
+    );
 }
 
 test "E2E: StaticResource IN clause returns multiple stubs" {
-    // Multi-line SOQL like in apex-recipes
+    // Multi-line SOQL like in sample fixture
     const source =
         \\public class SRTest {
         \\    public static String test() {
@@ -4378,13 +4179,7 @@ test "E2E: StaticResource IN clause returns multiple stubs" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "SRTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("3", result.value.string);
+    try expect_entry_string(source, "SRTest", "test", "3");
 }
 
 test "E2E: static field set before enqueueJob is visible in execute" {
@@ -4406,13 +4201,7 @@ test "E2E: static field set before enqueueJob is visible in execute" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "QTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("true", result.value.string);
+    try expect_entry_string(source, "QTest", "test", "true");
 }
 
 test "E2E: Datetime.time returns a Time object and built-in value classes compare by value" {
@@ -4428,13 +4217,7 @@ test "E2E: Datetime.time returns a Time object and built-in value classes compar
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "TimeValueClassProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("true|3", result.value.string);
+    try expect_entry_string(source, "TimeValueClassProbe", "test", "true|3");
 }
 
 test "E2E: Decimal.setScale honours RoundingMode.DOWN" {
@@ -4448,13 +4231,7 @@ test "E2E: Decimal.setScale honours RoundingMode.DOWN" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "SetScaleRoundingProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("1.234|1.235", result.value.string);
+    try expect_entry_string(source, "SetScaleRoundingProbe", "test", "1.234|1.235");
 }
 
 test "E2E: Datetime.format supports ISO week/year/day-of-week/day-of-year patterns" {
@@ -4469,13 +4246,7 @@ test "E2E: Datetime.format supports ISO week/year/day-of-week/day-of-year patter
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "IsoDateFormatProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("1,2020,29,3,197", result.value.string);
+    try expect_entry_string(source, "IsoDateFormatProbe", "test", "1,2020,29,3,197");
 }
 
 test "E2E: Date/Time helpers for daysBetween pow urlEncode Datetime from Date and Time" {
@@ -4496,13 +4267,12 @@ test "E2E: Date/Time helpers for daysBetween pow urlEncode Datetime from Date an
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "DateMathAndEncodingProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("2|8|Hello+World|2020-01-01T00:00:00Z", result.value.string);
+    try expect_entry_string(
+        source,
+        "DateMathAndEncodingProbe",
+        "test",
+        "2|8|Hello+World|2020-01-01T00:00:00Z",
+    );
 }
 
 test "E2E: Date.toStartOfMonth returns a Date value" {
@@ -4514,13 +4284,7 @@ test "E2E: Date.toStartOfMonth returns a Date value" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "DateStartOfMonthProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("2021-03-01", result.value.string);
+    try expect_entry_string(source, "DateStartOfMonthProbe", "test", "2021-03-01");
 }
 
 test "E2E: Date addMonths clamps invalid month-end days" {
@@ -4533,13 +4297,7 @@ test "E2E: Date addMonths clamps invalid month-end days" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "DateAddMonthsClampProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("2000-09-30|2021-02-28", result.value.string);
+    try expect_entry_string(source, "DateAddMonthsClampProbe", "test", "2000-09-30|2021-02-28");
 }
 
 test "E2E: Date.daysInMonth accounts for leap years" {
@@ -4551,13 +4309,7 @@ test "E2E: Date.daysInMonth accounts for leap years" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "DateDaysInMonthProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("29|28", result.value.string);
+    try expect_entry_string(source, "DateDaysInMonthProbe", "test", "29|28");
 }
 
 test "E2E: Type literals from distinct classes are not collapsed as map keys" {
@@ -4575,13 +4327,7 @@ test "E2E: Type literals from distinct classes are not collapsed as map keys" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "TypeKeyedMapTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("alpha,beta,2", result.value.string);
+    try expect_entry_string(source, "TypeKeyedMapTest", "test", "alpha,beta,2");
 }
 
 test "E2E: Trigger.operationType is null outside of a trigger context" {
@@ -4593,13 +4339,7 @@ test "E2E: Trigger.operationType is null outside of a trigger context" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "TriggerOperationTypeProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("null", result.value.string);
+    try expect_entry_string(source, "TriggerOperationTypeProbe", "test", "null");
 }
 
 test "E2E: String indexOf honours the optional fromIndex argument" {
@@ -4618,13 +4358,7 @@ test "E2E: String indexOf honours the optional fromIndex argument" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "IndexOfFromIndexTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("0:4:-1:4", result.value.string);
+    try expect_entry_string(source, "IndexOfFromIndexTest", "test", "0:4:-1:4");
 }
 
 test "E2E: List and Set values satisfy instanceof Iterable" {
@@ -4640,13 +4374,7 @@ test "E2E: List and Set values satisfy instanceof Iterable" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "IterableInstanceofTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("true:true:false", result.value.string);
+    try expect_entry_string(source, "IterableInstanceofTest", "test", "true:true:false");
 }
 
 test "E2E: nested for-each iterates elements of inner list rather than chunking" {
@@ -4667,13 +4395,7 @@ test "E2E: nested for-each iterates elements of inner list rather than chunking"
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "NestedForEachTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("a,b,c,d", result.value.string);
+    try expect_entry_string(source, "NestedForEachTest", "test", "a,b,c,d");
 }
 
 test "E2E: addError on a detached SObject records the error without throwing" {
@@ -4689,13 +4411,7 @@ test "E2E: addError on a detached SObject records the error without throwing" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "AddErrorAttachTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("attached:1:shouldnt throw", result.value.string);
+    try expect_entry_string(source, "AddErrorAttachTest", "test", "attached:1:shouldnt throw");
 }
 
 test "E2E: field assignment on static variable whose name collides with a class" {
@@ -4714,13 +4430,7 @@ test "E2E: field assignment on static variable whose name collides with a class"
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "ShadowedStaticTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("set-via-static", result.value.string);
+    try expect_entry_string(source, "ShadowedStaticTest", "test", "set-via-static");
 }
 
 test "E2E: inherited method reaches intermediate override via virtual dispatch" {
@@ -4745,13 +4455,7 @@ test "E2E: inherited method reaches intermediate override via virtual dispatch" 
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "VirtualDispatchTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("a,b", result.value.string);
+    try expect_entry_string(source, "VirtualDispatchTest", "test", "a,b");
 }
 
 test "E2E: grandparent field initializers run when grandchild is constructed" {
@@ -4770,13 +4474,7 @@ test "E2E: grandparent field initializers run when grandchild is constructed" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "AncestorFieldTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("1", result.value.string);
+    try expect_entry_string(source, "AncestorFieldTest", "test", "1");
 }
 
 test "E2E: explicit super constructor forwards args without extra implicit call" {
@@ -4800,13 +4498,7 @@ test "E2E: explicit super constructor forwards args without extra implicit call"
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "ExplicitSuperCtorTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("3", result.value.string);
+    try expect_entry_string(source, "ExplicitSuperCtorTest", "test", "3");
 }
 
 test "E2E: super method dispatch uses parent implementation" {
@@ -4831,13 +4523,7 @@ test "E2E: super method dispatch uses parent implementation" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "SuperDispatchTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("2", result.value.string);
+    try expect_entry_string(source, "SuperDispatchTest", "test", "2");
 }
 
 test "E2E: enqueueJob executes instance queueable method" {
@@ -4859,13 +4545,7 @@ test "E2E: enqueueJob executes instance queueable method" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "InstanceQueueableTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("queued", result.value.string);
+    try expect_entry_string(source, "InstanceQueueableTest", "test", "queued");
 }
 
 test "E2E: queueable enqueued after startTest runs at stopTest" {
@@ -4886,13 +4566,7 @@ test "E2E: queueable enqueued after startTest runs at stopTest" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "DeferredQueueableTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("initial:executed", result.value.string);
+    try expect_entry_string(source, "DeferredQueueableTest", "test", "initial:executed");
 }
 
 test "E2E: Limits.getAsyncCalls tracks enqueued queueables" {
@@ -4908,13 +4582,7 @@ test "E2E: Limits.getAsyncCalls tracks enqueued queueables" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "AsyncLimitQueueableTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("0:1", result.value.string);
+    try expect_entry_string(source, "AsyncLimitQueueableTest", "test", "0:1");
 }
 
 test "E2E: queueable finalizer sees unhandled exception result" {
@@ -4948,13 +4616,12 @@ test "E2E: queueable finalizer sees unhandled exception result" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "QueueableFinalizerTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("UNHANDLED_EXCEPTION:boom:boom", result.value.string);
+    try expect_entry_string(
+        source,
+        "QueueableFinalizerTest",
+        "test",
+        "UNHANDLED_EXCEPTION:boom:boom",
+    );
 }
 
 test "E2E: Database.upsert with Schema.SObjectField matches existing records" {
@@ -4985,13 +4652,12 @@ test "E2E: Database.upsert with Schema.SObjectField matches existing records" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "UpsertExternalIdTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("false:true:Updated:2:UniqueId__c", result.value.string);
+    try expect_entry_string(
+        source,
+        "UpsertExternalIdTest",
+        "test",
+        "false:true:Updated:2:UniqueId__c",
+    );
 }
 
 test "E2E: Database.upsert with Schema.Id inserts unsaved records" {
@@ -5006,13 +4672,7 @@ test "E2E: Database.upsert with Schema.Id inserts unsaved records" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "UpsertByIdFieldTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("true:true:true", result.value.string);
+    try expect_entry_string(source, "UpsertByIdFieldTest", "test", "true:true:true");
 }
 
 test "E2E: Database.convertLead updates existing contact from lead fields" {
@@ -5045,13 +4705,12 @@ test "E2E: Database.convertLead updates existing contact from lead fields" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "ConvertLeadExistingContactTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("true:123 Native Ld:Bellevue:98005", result.value.string);
+    try expect_entry_string(
+        source,
+        "ConvertLeadExistingContactTest",
+        "test",
+        "true:123 Native Ld:Bellevue:98005",
+    );
 }
 
 test "E2E: custom share objects are queryable" {
@@ -5078,13 +4737,7 @@ test "E2E: custom share objects are queryable" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "CustomShareQueryTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("1:true:true", result.value.string);
+    try expect_entry_string(source, "CustomShareQueryTest", "test", "1:true:true");
 }
 
 test "E2E: custom Iterator with HTTP mock and JSON deserialize in for-each" {
@@ -5145,13 +4798,7 @@ test "E2E: custom Iterator with HTTP mock and JSON deserialize in for-each" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "IterTest2",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("3", result.value.string);
+    try expect_entry_string(source, "IterTest2", "test", "3");
 }
 
 test "E2E: HttpRequest.getHeader returns null for missing header" {
@@ -5163,13 +4810,7 @@ test "E2E: HttpRequest.getHeader returns null for missing header" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "HttpMissingHeaderProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("null", result.value.string);
+    try expect_entry_string(source, "HttpMissingHeaderProbe", "test", "null");
 }
 
 test "E2E: HttpRequest.getBody returns empty string when unset" {
@@ -5181,13 +4822,7 @@ test "E2E: HttpRequest.getBody returns empty string when unset" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "HttpUnsetBodyProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("", result.value.string);
+    try expect_entry_string(source, "HttpUnsetBodyProbe", "test", "");
 }
 
 test "E2E: SOQL parent relationship resolves namespaced custom lookup" {
@@ -5207,18 +4842,12 @@ test "E2E: SOQL parent relationship resolves namespaced custom lookup" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "NamespacedParentLookupProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("Parent Name", result.value.string);
+    try expect_entry_string(source, "NamespacedParentLookupProbe", "test", "Parent Name");
 }
 
-test "E2E: SOQL parent relationship resolves namespaced NPSP-style lookup" {
+test "E2E: SOQL parent relationship resolves namespaced managed package-style lookup" {
     const source =
-        \\public class NamespacedNpspLookupProbe {
+        \\public class NamespacedPackageLookupProbe {
         \\    public static String test() {
         \\        Form_Template__c template = new Form_Template__c(Template_JSON__c = 'json');
         \\        insert template;
@@ -5233,13 +4862,7 @@ test "E2E: SOQL parent relationship resolves namespaced NPSP-style lookup" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "NamespacedNpspLookupProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("json", result.value.string);
+    try expect_entry_string(source, "NamespacedPackageLookupProbe", "test", "json");
 }
 
 test "E2E: Type object equality survives getter and interface-style filtering" {
@@ -5271,13 +4894,7 @@ test "E2E: Type object equality survives getter and interface-style filtering" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "TypeBindingFilterProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("1", result.value.string);
+    try expect_entry_string(source, "TypeBindingFilterProbe", "test", "1");
 }
 
 test "E2E: Static resolver retains module bindings before service lookup" {
@@ -5340,13 +4957,7 @@ test "E2E: Static resolver retains module bindings before service lookup" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "StaticResolverProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("1", result.value.string);
+    try expect_entry_string(source, "StaticResolverProbe", "test", "1");
 }
 
 test "E2E: fflib-style binding resolver chain filters Type and enums" {
@@ -5513,13 +5124,7 @@ test "E2E: fflib-style binding resolver chain filters Type and enums" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "FflibStyleBindingProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("1", result.value.string);
+    try expect_entry_string(source, "FflibStyleBindingProbe", "test", "1");
 }
 
 test "E2E: interface-typed static factory retains fluent resolver state" {
@@ -5598,13 +5203,7 @@ test "E2E: interface-typed static factory retains fluent resolver state" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "InterfaceFactoryStateProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("true", result.value.string);
+    try expect_entry_string(source, "InterfaceFactoryStateProbe", "test", "true");
 }
 
 test "E2E: interface list dispatch preserves app binding module data" {
@@ -5657,13 +5256,7 @@ test "E2E: interface list dispatch preserves app binding module data" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "InterfaceModuleBindingProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("1", result.value.string);
+    try expect_entry_string(source, "InterfaceModuleBindingProbe", "test", "1");
 }
 
 test "E2E: SObject clone without args clears Id before reinserting" {
@@ -5681,13 +5274,7 @@ test "E2E: SObject clone without args clears Id before reinserting" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "SObjectCloneClearsIdProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("true:true:false", result.value.string);
+    try expect_entry_string(source, "SObjectCloneClearsIdProbe", "test", "true:true:false");
 }
 
 test "E2E: failed after-insert addError clears inserted Id" {
@@ -5711,13 +5298,7 @@ test "E2E: failed after-insert addError clears inserted Id" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "FailedInsertClearsIdProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("true:true", result.value.string);
+    try expect_entry_string(source, "FailedInsertClearsIdProbe", "test", "true:true");
 }
 
 test "E2E: failed before-insert addError allows reinserting same SObject" {
@@ -5741,13 +5322,7 @@ test "E2E: failed before-insert addError allows reinserting same SObject" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "FailedBeforeInsertAllowsReinsertProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("true:true", result.value.string);
+    try expect_entry_string(source, "FailedBeforeInsertAllowsReinsertProbe", "test", "true:true");
 }
 
 test "E2E: failed after-insert exception clears inserted Id" {
@@ -5772,13 +5347,7 @@ test "E2E: failed after-insert exception clears inserted Id" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "FailedInsertExceptionClearsIdProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("true:true", result.value.string);
+    try expect_entry_string(source, "FailedInsertExceptionClearsIdProbe", "test", "true:true");
 }
 
 test "E2E: after-update trigger sees fields assigned on sparse queried SObject" {
@@ -5837,13 +5406,7 @@ test "E2E: single-row Database.query result casts to SObject" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "DatabaseQuerySingleSObjectCastProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("Updated", result.value.string);
+    try expect_entry_string(source, "DatabaseQuerySingleSObjectCastProbe", "test", "Updated");
 }
 
 test "E2E: method returning SObject unwraps Database.query result" {
@@ -5864,18 +5427,12 @@ test "E2E: method returning SObject unwraps Database.query result" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "DatabaseQueryMethodReturnProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("Acme", result.value.string);
+    try expect_entry_string(source, "DatabaseQueryMethodReturnProbe", "test", "Acme");
 }
 
-test "E2E: NPSP payment paid total auto-closes opportunity" {
+test "E2E: managed package payment paid total auto-closes opportunity" {
     const source =
-        \\public class NpspPaymentAutoCloseProbe {
+        \\public class PackagePaymentAutoCloseProbe {
         \\    public static String test() {
         \\        insert new npe01__Contacts_And_Orgs_Settings__c(
         \\            Payments_Auto_Close_Stage_Name__c = 'Closed Won'
@@ -5903,18 +5460,12 @@ test "E2E: NPSP payment paid total auto-closes opportunity" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "NpspPaymentAutoCloseProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("Closed Won:true:true", result.value.string);
+    try expect_entry_string(source, "PackagePaymentAutoCloseProbe", "test", "Closed Won:true:true");
 }
 
-test "E2E: NPSP payment boolean strings normalize on assignment" {
+test "E2E: managed package payment boolean strings normalize on assignment" {
     const source =
-        \\public class NpspPaymentBooleanStringProbe {
+        \\public class PackagePaymentBooleanStringProbe {
         \\    public static String test() {
         \\        npe01__OppPayment__c payment = new npe01__OppPayment__c(
         \\            npe01__Paid__c = 'True',
@@ -5931,13 +5482,7 @@ test "E2E: NPSP payment boolean strings normalize on assignment" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "NpspPaymentBooleanStringProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("true:false", result.value.string);
+    try expect_entry_string(source, "PackagePaymentBooleanStringProbe", "test", "true:false");
 }
 
 test "E2E: getFilteredAttachments full flow" {
@@ -5981,13 +5526,7 @@ test "E2E: getFilteredAttachments full flow" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "FTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("3:3:3", result.value.string);
+    try expect_entry_string(source, "FTest", "test", "3:3:3");
 }
 
 test "E2E: ContentVersion insert creates ContentDocumentLink for each file" {
@@ -6022,13 +5561,7 @@ test "E2E: ContentVersion insert creates ContentDocumentLink for each file" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "CVTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("3:3", result.value.string);
+    try expect_entry_string(source, "CVTest", "test", "3:3");
 }
 
 test "E2E: SOQL IN subquery matches parent record ids" {
@@ -6047,13 +5580,7 @@ test "E2E: SOQL IN subquery matches parent record ids" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "InSubqueryTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("1", result.value.string);
+    try expect_entry_string(source, "InSubqueryTest", "test", "1");
 }
 
 test "E2E: ContentVersion infers uppercase file extensions for ContentDocument filters" {
@@ -6078,13 +5605,7 @@ test "E2E: ContentVersion infers uppercase file extensions for ContentDocument f
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "ContentVersionFileTypeCaseTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("1", result.value.string);
+    try expect_entry_string(source, "ContentVersionFileTypeCaseTest", "test", "1");
 }
 
 test "E2E: StaticResource Body → ContentVersion insert via method" {
@@ -6130,13 +5651,7 @@ test "E2E: StaticResource Body → ContentVersion insert via method" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "FSTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("3", result.value.string);
+    try expect_entry_string(source, "FSTest", "test", "3");
 }
 
 test "E2E: custom Iterable/Iterator with HTTP mock in for-each" {
@@ -6181,13 +5696,7 @@ test "E2E: custom Iterable/Iterator with HTTP mock in for-each" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "IterTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("3", result.value.string);
+    try expect_entry_string(source, "IterTest", "test", "3");
 }
 
 test "E2E: virtual class with overloaded methods and auto property" {
@@ -6247,13 +5756,7 @@ test "E2E: virtual class with overloaded methods and auto property" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "VTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("200", result.value.string);
+    try expect_entry_string(source, "VTest", "test", "200");
 }
 
 test "E2E: enqueueJob execute catches DmlException and sets circuit breaker" {
@@ -6285,13 +5788,7 @@ test "E2E: enqueueJob execute catches DmlException and sets circuit breaker" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "QTest2",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("true", result.value.string);
+    try expect_entry_string(source, "QTest2", "test", "true");
 }
 
 test "E2E: Decimal.valueOf().setScale().doubleValue() chain" {
@@ -6305,13 +5802,7 @@ test "E2E: Decimal.valueOf().setScale().doubleValue() chain" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "DecimalTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("50.0", result.value.string);
+    try expect_entry_string(source, "DecimalTest", "test", "50.0");
 }
 
 test "E2E: Double string concatenation format" {
@@ -6323,13 +5814,7 @@ test "E2E: Double string concatenation format" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "DoubleStrTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("10.0°C", result.value.string);
+    try expect_entry_string(source, "DoubleStrTest", "test", "10.0°C");
 }
 
 test "areEqual with custom message includes expected and actual" {
@@ -6441,13 +5926,7 @@ test "E2E: Datetime.format('MMMM d') returns month name and day" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "DtFmtTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("July 14", result.value.string);
+    try expect_entry_string(source, "DtFmtTest", "test", "July 14");
 }
 
 test "E2E: Datetime.format('yyyy-MM-dd') returns ISO date" {
@@ -6459,13 +5938,7 @@ test "E2E: Datetime.format('yyyy-MM-dd') returns ISO date" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "DtFmtIso",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("2024-07-14", result.value.string);
+    try expect_entry_string(source, "DtFmtIso", "test", "2024-07-14");
 }
 
 test "E2E: Date.today().year() returns current year" {
@@ -6477,13 +5950,7 @@ test "E2E: Date.today().year() returns current year" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "DtYearTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("2026", result.value.string);
+    try expect_entry_string(source, "DtYearTest", "test", "2026");
 }
 
 test "E2E: Datetime.format supports quoted literals and milliseconds pattern" {
@@ -6496,13 +5963,12 @@ test "E2E: Datetime.format supports quoted literals and milliseconds pattern" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "DatetimeFormatPatternProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("2026-02-01T00:00:00.000", result.value.string);
+    try expect_entry_string(
+        source,
+        "DatetimeFormatPatternProbe",
+        "test",
+        "2026-02-01T00:00:00.000",
+    );
 }
 
 test "E2E: JSON deserialize SObject CreatedDate supports dateGmt" {
@@ -6519,13 +5985,7 @@ test "E2E: JSON deserialize SObject CreatedDate supports dateGmt" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "JsonCreatedDateDateGmtProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("2026-02-01", result.value.string);
+    try expect_entry_string(source, "JsonCreatedDateDateGmtProbe", "test", "2026-02-01");
 }
 
 test "E2E: static final Date initialized from System.today supports addMonths" {
@@ -6538,13 +5998,7 @@ test "E2E: static final Date initialized from System.today supports addMonths" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "StaticFinalDateAddMonthsProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("2026-02-01", result.value.string);
+    try expect_entry_string(source, "StaticFinalDateAddMonthsProbe", "test", "2026-02-01");
 }
 
 test "E2E: map parameter shadows same-named instance field for values iteration" {
@@ -6581,13 +6035,7 @@ test "E2E: map parameter shadows same-named instance field for values iteration"
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "MapParameterShadowProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("2020-01-09", result.value.string);
+    try expect_entry_string(source, "MapParameterShadowProbe", "test", "2020-01-09");
 }
 
 test "E2E: Datetime.addYears changes year" {
@@ -6600,13 +6048,7 @@ test "E2E: Datetime.addYears changes year" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "DtAddYears",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("2026-07-14", result.value.string);
+    try expect_entry_string(source, "DtAddYears", "test", "2026-07-14");
 }
 
 test "E2E: Datetime.date() returns date portion" {
@@ -6619,13 +6061,7 @@ test "E2E: Datetime.date() returns date portion" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "DtDateTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("7/19/2024", result.value.string);
+    try expect_entry_string(source, "DtDateTest", "test", "7/19/2024");
 }
 
 test "E2E: Date/Datetime no-arg format uses locale short pattern" {
@@ -6638,13 +6074,7 @@ test "E2E: Date/Datetime no-arg format uses locale short pattern" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "DefaultFormatProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("1/1/2015|1/1/2015, 2:30 PM", result.value.string);
+    try expect_entry_string(source, "DefaultFormatProbe", "test", "1/1/2015|1/1/2015, 2:30 PM");
 }
 
 test "E2E: inline new-Set literal drives generic overload resolution" {
@@ -6658,13 +6088,7 @@ test "E2E: inline new-Set literal drives generic overload resolution" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "InlineSetOverloadProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("Contact", result.value.string);
+    try expect_entry_string(source, "InlineSetOverloadProbe", "test", "Contact");
 }
 
 test "E2E: Schema.SObjectType.fields.FieldName resolves a field token" {
@@ -6676,13 +6100,7 @@ test "E2E: Schema.SObjectType.fields.FieldName resolves a field token" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "SchemaFieldsProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("LastName", result.value.string);
+    try expect_entry_string(source, "SchemaFieldsProbe", "test", "LastName");
 }
 
 test "E2E: constructor overloads prefer declared-variable hint over name-only scoring" {
@@ -6755,13 +6173,7 @@ test "E2E: ternary with enum literals carries hint into overload resolution" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "TernaryEnumHintProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("B", result.value.string);
+    try expect_entry_string(source, "TernaryEnumHintProbe", "test", "B");
 }
 
 test "E2E: TriggerOperation-typed parameter dispatches through enum overload" {
@@ -6813,13 +6225,7 @@ test "E2E: LoggingLevel enum hint does not force enum overload for string litera
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "EnumHintGuardProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("str:hello", result.value.string);
+    try expect_entry_string(source, "EnumHintGuardProbe", "test", "str:hello");
 }
 
 test "E2E: enum-valued string argument disambiguates overloads" {
@@ -6851,13 +6257,7 @@ test "E2E: enum-valued string argument disambiguates overloads" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "EnumOverloadProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("Name", result.value.string);
+    try expect_entry_string(source, "EnumOverloadProbe", "test", "Name");
 }
 
 test "E2E: Type.forName with Schema prefix instantiates a known standard SObject" {
@@ -6875,13 +6275,7 @@ test "E2E: Type.forName with Schema prefix instantiates a known standard SObject
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "SchemaTypeProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("Account", result.value.string);
+    try expect_entry_string(source, "SchemaTypeProbe", "test", "Account");
 }
 
 test "E2E: Type.forName('Schema.Network') remains null for Experience-Cloud gating" {
@@ -6897,13 +6291,7 @@ test "E2E: Type.forName('Schema.Network') remains null for Experience-Cloud gati
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "NetworkGateProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("gated-off", result.value.string);
+    try expect_entry_string(source, "NetworkGateProbe", "test", "gated-off");
 }
 
 test "E2E: Account.Rating describe reports Picklist instead of String" {
@@ -6919,18 +6307,12 @@ test "E2E: Account.Rating describe reports Picklist instead of String" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "PicklistDescribeProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("PICKLIST", result.value.string);
+    try expect_entry_string(source, "PicklistDescribeProbe", "test", "PICKLIST");
 }
 
-test "E2E: NPSP recurring donation amount describe reports currency" {
+test "E2E: managed package recurring donation amount describe reports currency" {
     const source =
-        \\public class NpspRecurringDonationAmountDescribeProbe {
+        \\public class PackageRecurringDonationAmountDescribeProbe {
         \\    public static String test() {
         \\        Schema.DescribeFieldResult dfr =
         \\            npe03__Recurring_Donation__c.npe03__Amount__c.getDescribe();
@@ -6938,18 +6320,17 @@ test "E2E: NPSP recurring donation amount describe reports currency" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "NpspRecurringDonationAmountDescribeProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("CURRENCY", result.value.string);
+    try expect_entry_string(
+        source,
+        "PackageRecurringDonationAmountDescribeProbe",
+        "test",
+        "CURRENCY",
+    );
 }
 
-test "E2E: NPSP contact closed opp count describe reports numeric" {
+test "E2E: managed package contact closed opp count describe reports numeric" {
     const source =
-        \\public class NpspContactClosedOppCountDescribeProbe {
+        \\public class PackageContactClosedOppCountDescribeProbe {
         \\    public static String test() {
         \\        Schema.DescribeFieldResult dfr =
         \\            Contact.SObjectType.getDescribe()
@@ -6960,13 +6341,7 @@ test "E2E: NPSP contact closed opp count describe reports numeric" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "NpspContactClosedOppCountDescribeProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("DOUBLE", result.value.string);
+    try expect_entry_string(source, "PackageContactClosedOppCountDescribeProbe", "test", "DOUBLE");
 }
 
 test "E2E: schema field map rejects invalid custom field api names" {
@@ -6979,13 +6354,7 @@ test "E2E: schema field map rejects invalid custom field api names" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "SchemaFieldMapInvalidApiNameProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("false", result.value.string);
+    try expect_entry_string(source, "SchemaFieldMapInvalidApiNameProbe", "test", "false");
 }
 
 test "E2E: SObjectField constructor argument coerces to DescribeFieldResult" {
@@ -7005,13 +6374,7 @@ test "E2E: SObjectField constructor argument coerces to DescribeFieldResult" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "SObjectFieldDescribeConstructorArgProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("CURRENCY", result.value.string);
+    try expect_entry_string(source, "SObjectFieldDescribeConstructorArgProbe", "test", "CURRENCY");
 }
 
 test "E2E: Datetime.valueOf accepts loose single-digit components" {
@@ -7030,13 +6393,7 @@ test "E2E: Datetime.valueOf accepts loose single-digit components" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "DtLooseProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("2006-5-4 3:2:1", result.value.string);
+    try expect_entry_string(source, "DtLooseProbe", "test", "2006-5-4 3:2:1");
 }
 
 test "E2E: bitwise operators on integers return integer results" {
@@ -7057,13 +6414,7 @@ test "E2E: bitwise operators on integers return integer results" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "BitwiseIntProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("14,94,17", result.value.string);
+    try expect_entry_string(source, "BitwiseIntProbe", "test", "14,94,17");
 }
 
 test "E2E: qualified enum hint matches unqualified enum parameter" {
@@ -7084,13 +6435,7 @@ test "E2E: qualified enum hint matches unqualified enum parameter" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "EnumHintTailProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("mode:SYSTEM_MODE", result.value.string);
+    try expect_entry_string(source, "EnumHintTailProbe", "test", "mode:SYSTEM_MODE");
 }
 
 test "E2E: Map.equals delegates pairwise value comparison" {
@@ -7117,13 +6462,7 @@ test "E2E: Map.equals delegates pairwise value comparison" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "MapEqualsProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("true,false", result.value.string);
+    try expect_entry_string(source, "MapEqualsProbe", "test", "true,false");
 }
 
 test "E2E: Map null key does not collide with empty string key" {
@@ -7142,13 +6481,7 @@ test "E2E: Map null key does not collide with empty string key" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "MapNullKeyProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("null,empty,null,true,true", result.value.string);
+    try expect_entry_string(source, "MapNullKeyProbe", "test", "null,empty,null,true,true");
 }
 
 test "E2E: null overload resolution prefers String over Object" {
@@ -7161,13 +6494,7 @@ test "E2E: null overload resolution prefers String over Object" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "NullOverloadProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("string:null", result.value.string);
+    try expect_entry_string(source, "NullOverloadProbe", "test", "string:null");
 }
 
 test "E2E: non-id string overload prefers String over Id" {
@@ -7180,13 +6507,7 @@ test "E2E: non-id string overload prefers String over Id" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "StringIdOverloadProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("string:GAU 2", result.value.string);
+    try expect_entry_string(source, "StringIdOverloadProbe", "test", "string:GAU 2");
 }
 
 test "E2E: System.runAs exposes the target user's fields to UserInfo" {
@@ -7215,13 +6536,12 @@ test "E2E: System.runAs exposes the target user's fields to UserInfo" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "RunAsUserOverrideProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("Bob|Smith|bob@example.com|en_US", result.value.string);
+    try expect_entry_string(
+        source,
+        "RunAsUserOverrideProbe",
+        "test",
+        "Bob|Smith|bob@example.com|en_US",
+    );
 }
 
 test "E2E: UserInfo.getUiThemeDisplayed defaults to Classic" {
@@ -7232,13 +6552,7 @@ test "E2E: UserInfo.getUiThemeDisplayed defaults to Classic" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "UiThemeDisplayedProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("Theme3", result.value.string);
+    try expect_entry_string(source, "UiThemeDisplayedProbe", "test", "Theme3");
 }
 
 test "E2E: bare method call inside a subclass resolves to inherited builtin" {
@@ -7261,13 +6575,7 @@ test "E2E: bare method call inside a subclass resolves to inherited builtin" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "BareCallFallbackProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("payload", result.value.string);
+    try expect_entry_string(source, "BareCallFallbackProbe", "test", "payload");
 }
 
 test "E2E: static field initializer can forward-reference a later static field" {
@@ -7289,13 +6597,7 @@ test "E2E: static field initializer can forward-reference a later static field" 
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "StaticForwardRefProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("16:0123456789abcdef", result.value.string);
+    try expect_entry_string(source, "StaticForwardRefProbe", "test", "16:0123456789abcdef");
 }
 
 test "E2E: bitwise operators on booleans return boolean results" {
@@ -7312,13 +6614,7 @@ test "E2E: bitwise operators on booleans return boolean results" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "BitwiseBoolProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("true", result.value.string);
+    try expect_entry_string(source, "BitwiseBoolProbe", "test", "true");
 }
 
 test "E2E: method call on property-backed identifier invokes the getter" {
@@ -7353,13 +6649,7 @@ test "E2E: method call on property-backed identifier invokes the getter" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "PropertyMethodCallProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("1", result.value.string);
+    try expect_entry_string(source, "PropertyMethodCallProbe", "test", "1");
 }
 
 test "E2E: overload resolution matches Type arg against System.Type param" {
@@ -7379,13 +6669,7 @@ test "E2E: overload resolution matches Type arg against System.Type param" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "OverloadTypeProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("type:OverloadTypeProbe.Inner", result.value.string);
+    try expect_entry_string(source, "OverloadTypeProbe", "test", "type:OverloadTypeProbe.Inner");
 }
 
 test "E2E: incompatible interface cast raises System.TypeException" {
@@ -7409,13 +6693,7 @@ test "E2E: incompatible interface cast raises System.TypeException" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "InterfaceCastProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("ok", result.value.string);
+    try expect_entry_string(source, "InterfaceCastProbe", "test", "ok");
 }
 
 test "E2E: Type.forName returns null for names that don't resolve" {
@@ -7445,13 +6723,7 @@ test "E2E: Type.forName returns null for names that don't resolve" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "TypeForNameNullProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("ok", result.value.string);
+    try expect_entry_string(source, "TypeForNameNullProbe", "test", "ok");
 }
 
 test "E2E: fflib_IDGenerator.generate provides a fake id when class source is absent" {
@@ -7471,13 +6743,7 @@ test "E2E: fflib_IDGenerator.generate provides a fake id when class source is ab
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "FflibIdGeneratorStubProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("ok", result.value.string);
+    try expect_entry_string(source, "FflibIdGeneratorStubProbe", "test", "ok");
 }
 
 test "E2E: Contact exposes Tasks and Account exposes Cases as child relationships" {
@@ -7502,13 +6768,7 @@ test "E2E: Contact exposes Tasks and Account exposes Cases as child relationship
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "ChildRelationshipProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("true|true", result.value.string);
+    try expect_entry_string(source, "ChildRelationshipProbe", "test", "true|true");
 }
 
 test "E2E: relationship-style field names describe as REFERENCE" {
@@ -7533,13 +6793,12 @@ test "E2E: relationship-style field names describe as REFERENCE" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "RelationshipDescribeProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("REFERENCE|CreatedBy|User", result.value.string);
+    try expect_entry_string(
+        source,
+        "RelationshipDescribeProbe",
+        "test",
+        "REFERENCE|CreatedBy|User",
+    );
 }
 
 test "E2E: Matcher.groupCount reflects the pattern and matches() populates currentMatch" {
@@ -7558,13 +6817,7 @@ test "E2E: Matcher.groupCount reflects the pattern and matches() populates curre
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "MatcherStateProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("Id, Name|Account", result.value.string);
+    try expect_entry_string(source, "MatcherStateProbe", "test", "Id, Name|Account");
 }
 
 test "E2E: greedy capture groups backtrack when the tail needs characters" {
@@ -7579,13 +6832,7 @@ test "E2E: greedy capture groups backtrack when the tail needs characters" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "GreedyBacktrackProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("bbb", result.value.string);
+    try expect_entry_string(source, "GreedyBacktrackProbe", "test", "bbb");
 }
 
 test "E2E: Schema.SObjectType.<X>.fields.getMap() matches getDescribe().fields.getMap()" {
@@ -7612,13 +6859,7 @@ test "E2E: Schema.SObjectType.<X>.fields.getMap() matches getDescribe().fields.g
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "FieldMapParityProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("ok", result.value.string);
+    try expect_entry_string(source, "FieldMapParityProbe", "test", "ok");
 }
 
 test "E2E: String.split with regex metacharacters routes through the regex engine" {
@@ -7636,13 +6877,7 @@ test "E2E: String.split with regex metacharacters routes through the regex engin
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "SplitRegexProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("_D0D_|+|_D1D_", result.value.string);
+    try expect_entry_string(source, "SplitRegexProbe", "test", "_D0D_|+|_D1D_");
 }
 
 test "E2E: Pattern.matches static and nested capture groups round-trip" {
@@ -7661,13 +6896,7 @@ test "E2E: Pattern.matches static and nested capture groups round-trip" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "RegexCaptureProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("true|foo bar|foo|bar", result.value.string);
+    try expect_entry_string(source, "RegexCaptureProbe", "test", "true|foo bar|foo|bar");
 }
 
 test "E2E: Datetime.newInstance(milliseconds) single arg" {
@@ -7680,13 +6909,7 @@ test "E2E: Datetime.newInstance(milliseconds) single arg" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "DtMillisTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("2024-07-19", result.value.string);
+    try expect_entry_string(source, "DtMillisTest", "test", "2024-07-19");
 }
 
 test "E2E: Datetime.getTime() returns epoch millis" {
@@ -7700,13 +6923,7 @@ test "E2E: Datetime.getTime() returns epoch millis" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "DtGetTimeTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("2024-07-19", result.value.string);
+    try expect_entry_string(source, "DtGetTimeTest", "test", "2024-07-19");
 }
 
 test "E2E: Datetime.valueOf accepts epoch milliseconds" {
@@ -7718,13 +6935,7 @@ test "E2E: Datetime.valueOf accepts epoch milliseconds" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "DtValueOfMillisTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("2025-01-01:1735689600000", result.value.string);
+    try expect_entry_string(source, "DtValueOfMillisTest", "test", "2025-01-01:1735689600000");
 }
 
 test "E2E: Datetime.valueOf normalizes formatted strings with trailing timezone offsets" {
@@ -7740,13 +6951,12 @@ test "E2E: Datetime.valueOf normalizes formatted strings with trailing timezone 
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "DtValueOfOffsetStringTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("true:true:2018-08-08T08:08:08Z", result.value.string);
+    try expect_entry_string(
+        source,
+        "DtValueOfOffsetStringTest",
+        "test",
+        "true:true:2018-08-08T08:08:08Z",
+    );
 }
 
 test "E2E: TimeZone.getTimeZone returns an object-like value with id and display name" {
@@ -7758,13 +6968,7 @@ test "E2E: TimeZone.getTimeZone returns an object-like value with id and display
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "TimeZoneLookupTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("Asia/Tokyo:Asia/Tokyo", result.value.string);
+    try expect_entry_string(source, "TimeZoneLookupTest", "test", "Asia/Tokyo:Asia/Tokyo");
 }
 
 test "E2E: String.toLowerCase and trim" {
@@ -7776,13 +6980,7 @@ test "E2E: String.toLowerCase and trim" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "StrLowerTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("%adventure%", result.value.string);
+    try expect_entry_string(source, "StrLowerTest", "test", "%adventure%");
 }
 
 test "E2E: Database.query resolves local bind variables" {
@@ -7799,13 +6997,7 @@ test "E2E: Database.query resolves local bind variables" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "DbQueryBindTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("1", result.value.string);
+    try expect_entry_string(source, "DbQueryBindTest", "test", "1");
 }
 
 test "E2E: SOQL equality bind with Id set matches stored record ids" {
@@ -7824,13 +7016,7 @@ test "E2E: SOQL equality bind with Id set matches stored record ids" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "SoqlIdSetEqualityBindProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("1:Acme", result.value.string);
+    try expect_entry_string(source, "SoqlIdSetEqualityBindProbe", "test", "1:Acme");
 }
 
 test "E2E: queried SObject Id field reads internal record id" {
@@ -7846,13 +7032,7 @@ test "E2E: queried SObject Id field reads internal record id" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "QueriedSObjectIdFieldProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("true", result.value.string);
+    try expect_entry_string(source, "QueriedSObjectIdFieldProbe", "test", "true");
 }
 
 test "E2E: lowercase database.query resolves as Database.query" {
@@ -7867,13 +7047,7 @@ test "E2E: lowercase database.query resolves as Database.query" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "LowercaseDatabaseQueryTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("1", result.value.string);
+    try expect_entry_string(source, "LowercaseDatabaseQueryTest", "test", "1");
 }
 
 test "E2E: Opportunity IsClosed WHERE derives from StageName" {
@@ -7901,13 +7075,7 @@ test "E2E: Opportunity IsClosed WHERE derives from StageName" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "OpportunityIsClosedWhereTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("1:1", result.value.string);
+    try expect_entry_string(source, "OpportunityIsClosedWhereTest", "test", "1:1");
 }
 
 test "E2E: Opportunity IsClosed SELECT derives from StageName" {
@@ -7929,13 +7097,7 @@ test "E2E: Opportunity IsClosed SELECT derives from StageName" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "OpportunityIsClosedSelectTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("true:true", result.value.string);
+    try expect_entry_string(source, "OpportunityIsClosedSelectTest", "test", "true:true");
 }
 
 test "E2E: Opportunity IsClosed field access derives from StageName" {
@@ -7951,13 +7113,7 @@ test "E2E: Opportunity IsClosed field access derives from StageName" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "OpportunityIsClosedAccessTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("true:true", result.value.string);
+    try expect_entry_string(source, "OpportunityIsClosedAccessTest", "test", "true:true");
 }
 
 test "E2E: Opportunity IsClosed field access ignores stale stored flag" {
@@ -7981,13 +7137,7 @@ test "E2E: Opportunity IsClosed field access ignores stale stored flag" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "OpportunityStaleStageFlagAccessTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("true:false", result.value.string);
+    try expect_entry_string(source, "OpportunityStaleStageFlagAccessTest", "test", "true:false");
 }
 
 test "E2E: CampaignMember HasResponded SELECT derives from member status" {
@@ -8019,13 +7169,7 @@ test "E2E: CampaignMember HasResponded SELECT derives from member status" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "CampaignMemberHasRespondedSelectTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("true", result.value.string);
+    try expect_entry_string(source, "CampaignMemberHasRespondedSelectTest", "test", "true");
 }
 
 test "E2E: CampaignMemberStatus insert ignores duplicate campaign labels" {
@@ -8053,13 +7197,7 @@ test "E2E: CampaignMemberStatus insert ignores duplicate campaign labels" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "CampaignMemberStatusDuplicateTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqual(@as(i64, 1), result.value.integer);
+    try expect_entry_integer(source, "CampaignMemberStatusDuplicateTest", "test", 1);
 }
 
 test "E2E: DescribeFieldResult returns its SObjectField token" {
@@ -8072,13 +7210,7 @@ test "E2E: DescribeFieldResult returns its SObjectField token" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "DescribeFieldTokenRoundTripTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("Name", result.value.string);
+    try expect_entry_string(source, "DescribeFieldTokenRoundTripTest", "test", "Name");
 }
 
 test "E2E: Set of SObjectField tokens stringifies without null entries" {
@@ -8098,13 +7230,12 @@ test "E2E: Set of SObjectField tokens stringifies without null entries" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "SObjectFieldSetStringifyTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("Id,FirstName,LastName,Title", result.value.string);
+    try expect_entry_string(
+        source,
+        "SObjectFieldSetStringifyTest",
+        "test",
+        "Id,FirstName,LastName,Title",
+    );
 }
 
 test "E2E: new Type size creates Apex array list" {
@@ -8118,13 +7249,7 @@ test "E2E: new Type size creates Apex array list" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "NewArraySizeListTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("Id,Name:2:null", result.value.string);
+    try expect_entry_string(source, "NewArraySizeListTest", "test", "Id,Name:2:null");
 }
 
 test "E2E: Database rollback restores inserted and updated records" {
@@ -8143,13 +7268,7 @@ test "E2E: Database rollback restores inserted and updated records" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "DatabaseRollbackRestoreTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("1:before", result.value.string);
+    try expect_entry_string(source, "DatabaseRollbackRestoreTest", "test", "1:before");
 }
 
 test "E2E: SOQL ORDER BY ascending places nulls first" {
@@ -8165,13 +7284,7 @@ test "E2E: SOQL ORDER BY ascending places nulls first" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "OrderByNullsFirstTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("null:Filled", result.value.string);
+    try expect_entry_string(source, "OrderByNullsFirstTest", "test", "null:Filled");
 }
 
 test "E2E: Map copy constructor preserves entries" {
@@ -8186,13 +7299,7 @@ test "E2E: Map copy constructor preserves entries" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "MapCopyConstructorTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("1:copy", result.value.string);
+    try expect_entry_string(source, "MapCopyConstructorTest", "test", "1:copy");
 }
 
 test "E2E: Contact update rejects missing AccountId lookup" {
@@ -8236,13 +7343,7 @@ test "E2E: DML merge removes secondary records" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "DmlMergeRemovesSecondaryTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqual(@as(i64, 0), result.value.integer);
+    try expect_entry_integer(source, "DmlMergeRemovesSecondaryTest", "test", 0);
 }
 
 test "E2E: user class clone copies instance fields" {
@@ -8260,13 +7361,7 @@ test "E2E: user class clone copies instance fields" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "UserClassCloneTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("value:copy", result.value.string);
+    try expect_entry_string(source, "UserClassCloneTest", "test", "value:copy");
 }
 
 test "E2E: List deepClone drops SObject ids by default" {
@@ -8302,21 +7397,20 @@ test "E2E: describe field maps resolve lowercase RecordTypeId" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "LowercaseRecordTypeIdDescribeTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("true:RecordTypeId", result.value.string);
+    try expect_entry_string(
+        source,
+        "LowercaseRecordTypeIdDescribeTest",
+        "test",
+        "true:RecordTypeId",
+    );
 }
 
-test "E2E: NPSP contact insert fallback creates household account" {
+test "E2E: managed package contact insert fallback creates household account" {
     const source =
         \\public class CAO_Constants {
         \\    public static final String HH_ACCOUNT_TYPE = 'Household Account';
         \\}
-        \\public class NpspContactHouseholdFallbackTest {
+        \\public class PackageContactHouseholdFallbackTest {
         \\    public static String test() {
         \\        Contact con = new Contact(FirstName = 'c1', LastName = 'C1');
         \\        insert con;
@@ -8330,13 +7424,12 @@ test "E2E: NPSP contact insert fallback creates household account" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "NpspContactHouseholdFallbackTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("true:Household Account", result.value.string);
+    try expect_entry_string(
+        source,
+        "PackageContactHouseholdFallbackTest",
+        "test",
+        "true:Household Account",
+    );
 }
 
 test "E2E: Integer and Long valueOf preserve null inputs" {
@@ -8350,13 +7443,7 @@ test "E2E: Integer and Long valueOf preserve null inputs" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "NullNumericValueOfTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("true:true", result.value.string);
+    try expect_entry_string(source, "NullNumericValueOfTest", "test", "true:true");
 }
 
 test "E2E: long literals remain distinct from Integer in instanceof checks" {
@@ -8371,13 +7458,7 @@ test "E2E: long literals remain distinct from Integer in instanceof checks" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "LongInstanceofProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("true:true:false:false:true", result.value.string);
+    try expect_entry_string(source, "LongInstanceofProbe", "test", "true:true:false:false:true");
 }
 
 test "E2E: SOQL formula field Experience_Name__c resolved from parent" {
@@ -8398,13 +7479,7 @@ test "E2E: SOQL formula field Experience_Name__c resolved from parent" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "FormulaFieldTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("Hiking", result.value.string);
+    try expect_entry_string(source, "FormulaFieldTest", "test", "Hiking");
 }
 
 test "E2E: rollup summary fields resolve in WHERE clauses and selected records" {
@@ -8448,9 +7523,9 @@ test "E2E: rollup summary fields resolve in WHERE clauses and selected records" 
     try std.testing.expectEqualStrings("1:2:3", result.value.string);
 }
 
-test "E2E: NPSP recurring donation rollups follow Opportunity updates" {
+test "E2E: managed package recurring donation rollups follow Opportunity updates" {
     const source =
-        \\public class NpspRecurringDonationRollupProbe {
+        \\public class PackageRecurringDonationRollupProbe {
         \\    public static String test() {
         \\        npe03__Recurring_Donation__c rd = new npe03__Recurring_Donation__c(
         \\            Name = 'RD',
@@ -8491,7 +7566,7 @@ test "E2E: NPSP recurring donation rollups follow Opportunity updates" {
         \\}
     ;
     const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "NpspRecurringDonationRollupProbe",
+        .entry_class = "PackageRecurringDonationRollupProbe",
         .entry_method = "test",
     });
     defer result.deinit();
@@ -8502,9 +7577,9 @@ test "E2E: NPSP recurring donation rollups follow Opportunity updates" {
     );
 }
 
-test "E2E: NPSP recurring donation Amount aliases npe03 amount" {
+test "E2E: managed package recurring donation Amount aliases npe03 amount" {
     const source =
-        \\public class NpspRecurringDonationAmountAliasProbe {
+        \\public class PackageRecurringDonationAmountAliasProbe {
         \\    public static String test() {
         \\        npe03__Recurring_Donation__c rd = new npe03__Recurring_Donation__c(
         \\            npe03__Amount__c = 125
@@ -8513,18 +7588,12 @@ test "E2E: NPSP recurring donation Amount aliases npe03 amount" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "NpspRecurringDonationAmountAliasProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("125", result.value.string);
+    try expect_entry_string(source, "PackageRecurringDonationAmountAliasProbe", "test", "125");
 }
 
-test "E2E: NPSP recurring donation update refreshes open Opportunities" {
+test "E2E: managed package recurring donation update refreshes open Opportunities" {
     const source =
-        \\public class NpspRecurringDonationOpenOppUpdateProbe {
+        \\public class PackageRecurringDonationOpenOppUpdateProbe {
         \\    public static String test() {
         \\        npe03__Recurring_Donation__c rd = new npe03__Recurring_Donation__c(
         \\            Name = 'Before',
@@ -8570,13 +7639,12 @@ test "E2E: NPSP recurring donation update refreshes open Opportunities" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "NpspRecurringDonationOpenOppUpdateProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("25:2024-02-01:After:0", result.value.string);
+    try expect_entry_string(
+        source,
+        "PackageRecurringDonationOpenOppUpdateProbe",
+        "test",
+        "25:2024-02-01:After:0",
+    );
 }
 
 test "E2E: child insert recomputes rollup summaries and fires parent update triggers" {
@@ -9484,13 +8552,7 @@ test "E2E: static initializer preserves static method side effects on fields" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "StaticInitSideEffectTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("ready", result.value.string);
+    try expect_entry_string(source, "StaticInitSideEffectTest", "test", "ready");
 }
 
 test "E2E: static initializer resolves bare helper calls against the declaring class" {
@@ -9514,13 +8576,7 @@ test "E2E: static initializer resolves bare helper calls against the declaring c
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "StaticInitCollisionTarget",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("right", result.value.string);
+    try expect_entry_string(source, "StaticInitCollisionTarget", "test", "right");
 }
 
 test "E2E: test runner sees hierarchy custom settings before later class static init" {
@@ -9598,13 +8654,7 @@ test "E2E: safe navigation preserves chained fluent instance calls" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "SafeNavFluentChainTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("1", result.value.string);
+    try expect_entry_string(source, "SafeNavFluentChainTest", "test", "1");
 }
 
 test "E2E: safe navigation short-circuits remaining method chain on null" {
@@ -9617,13 +8667,7 @@ test "E2E: safe navigation short-circuits remaining method chain on null" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "SafeNavNullChainTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("null", result.value.string);
+    try expect_entry_string(source, "SafeNavNullChainTest", "test", "null");
 }
 
 test "E2E: safe navigation short-circuits remaining field chain on null" {
@@ -9639,13 +8683,7 @@ test "E2E: safe navigation short-circuits remaining field chain on null" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "SafeNavNullFieldChainTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("null", result.value.string);
+    try expect_entry_string(source, "SafeNavNullFieldChainTest", "test", "null");
 }
 
 test "E2E: logical OR short-circuits null receiver checks" {
@@ -9657,13 +8695,7 @@ test "E2E: logical OR short-circuits null receiver checks" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "LogicalOrShortCircuitTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("ok", result.value.string);
+    try expect_entry_string(source, "LogicalOrShortCircuitTest", "test", "ok");
 }
 
 test "E2E: logical AND short-circuits null receiver checks" {
@@ -9675,13 +8707,7 @@ test "E2E: logical AND short-circuits null receiver checks" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "LogicalAndShortCircuitTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("ok", result.value.string);
+    try expect_entry_string(source, "LogicalAndShortCircuitTest", "test", "ok");
 }
 
 test "E2E: Type.forName inner handler retains SObjectType map keys after execute" {
@@ -9721,13 +8747,7 @@ test "E2E: Type.forName inner handler retains SObjectType map keys after execute
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "InnerHandlerFactoryTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("1", result.value.string);
+    try expect_entry_string(source, "InnerHandlerFactoryTest", "test", "1");
 }
 
 test "E2E: Type.forName event handler retains platform event SObjectType map keys after execute" {
@@ -9769,13 +8789,7 @@ test "E2E: Type.forName event handler retains platform event SObjectType map key
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "EventHandlerFactoryTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("1", result.value.string);
+    try expect_entry_string(source, "EventHandlerFactoryTest", "test", "1");
 }
 
 test "E2E: JSON round-trip into SObject preserves setup object fields when adding read-only field" {
@@ -9872,13 +8886,12 @@ test "E2E: typed JSON deserialize coerces quoted primitive fields" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "JsonQuotedPrimitiveCoercionTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("true:true:true:true", result.value.string);
+    try expect_entry_string(
+        source,
+        "JsonQuotedPrimitiveCoercionTest",
+        "test",
+        "true:true:true:true",
+    );
 }
 
 test "E2E: Map<Schema.SObjectField, Object> preserves setup field tokens through keySet/get" {
@@ -10115,13 +9128,7 @@ test "E2E: standard SObject construction ignores unrelated inner class with same
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "StandardSObjectCtorProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("Campaign:cmp1", result.value.string);
+    try expect_entry_string(source, "StandardSObjectCtorProbe", "test", "Campaign:cmp1");
 }
 
 test "E2E: Opportunity CampaignId is a known standard field" {
@@ -10136,13 +9143,7 @@ test "E2E: Opportunity CampaignId is a known standard field" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "OpportunityCampaignFieldProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("true:true", result.value.string);
+    try expect_entry_string(source, "OpportunityCampaignFieldProbe", "test", "true:true");
 }
 
 test "E2E: Account and Contact address geocode fields are known standard fields" {
@@ -10170,13 +9171,12 @@ test "E2E: Account and Contact address geocode fields are known standard fields"
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "StandardAddressGeocodeFieldsProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("37.1:Dr.:true:true:true", result.value.string);
+    try expect_entry_string(
+        source,
+        "StandardAddressGeocodeFieldsProbe",
+        "test",
+        "37.1:Dr.:true:true:true",
+    );
 }
 
 test "E2E: custom object fields shortcut returns SObjectField tokens" {
@@ -10191,13 +9191,7 @@ test "E2E: custom object fields shortcut returns SObjectField tokens" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "CustomObjectFieldsShortcutProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("Id:Amount__c:42", result.value.string);
+    try expect_entry_string(source, "CustomObjectFieldsShortcutProbe", "test", "Id:Amount__c:42");
 }
 
 test "E2E: AsyncApexJob describe key prefix matches generated job ids" {
@@ -10210,13 +9204,7 @@ test "E2E: AsyncApexJob describe key prefix matches generated job ids" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "AsyncApexJobKeyPrefixProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("707:AsyncApexJob", result.value.string);
+    try expect_entry_string(source, "AsyncApexJobKeyPrefixProbe", "test", "707:AsyncApexJob");
 }
 
 test "E2E: EncodingUtil base64 and Crypto.generateMac use raw blob bytes" {
@@ -10293,9 +9281,9 @@ test "E2E: JSON serialization escapes embedded quotes in strings" {
     );
 }
 
-test "E2E: NPSP data import address mapping falls back when metadata value is null" {
+test "E2E: managed package data import address mapping falls back when metadata value is null" {
     const source =
-        \\public class NpspAddressMappingFallbackProbe {
+        \\public class PackageAddressMappingFallbackProbe {
         \\    public static String test() {
         \\        Map<String, String> fields = new Map<String, String>();
         \\        fields.put('npsp__Home_City__c', null);
@@ -10304,18 +9292,17 @@ test "E2E: NPSP data import address mapping falls back when metadata value is nu
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "NpspAddressMappingFallbackProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("MailingCity__c:MailingCity__c", result.value.string);
+    try expect_entry_string(
+        source,
+        "PackageAddressMappingFallbackProbe",
+        "test",
+        "MailingCity__c:MailingCity__c",
+    );
 }
 
-test "E2E: NPSP Address validates household lookup and city length" {
+test "E2E: managed package Address validates household lookup and city length" {
     const source =
-        \\public class NpspAddressValidationProbe {
+        \\public class PackageAddressValidationProbe {
         \\    public static String test() {
         \\        List<Address__c> rows = new List<Address__c>{
         \\            new Address__c(Household_Account__c = '001000000000001', MailingCity__c = 'Seattle'),
@@ -10332,7 +9319,7 @@ test "E2E: NPSP Address validates household lookup and city length" {
         \\}
     ;
     const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "NpspAddressValidationProbe",
+        .entry_class = "PackageAddressValidationProbe",
         .entry_method = "test",
     });
     defer result.deinit();
@@ -10343,9 +9330,9 @@ test "E2E: NPSP Address validates household lookup and city length" {
     );
 }
 
-test "E2E: NPSP Address insert updates household and contact mailing fields" {
+test "E2E: managed package Address insert updates household and contact mailing fields" {
     const source =
-        \\public class NpspAddressInsertSideEffectProbe {
+        \\public class PackageAddressInsertSideEffectProbe {
         \\    public static String test() {
         \\        Account household = new Account(Name = 'Household');
         \\        insert household;
@@ -10362,13 +9349,12 @@ test "E2E: NPSP Address insert updates household and contact mailing fields" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "NpspAddressInsertSideEffectProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("Seattle:Seattle", result.value.string);
+    try expect_entry_string(
+        source,
+        "PackageAddressInsertSideEffectProbe",
+        "test",
+        "Seattle:Seattle",
+    );
 }
 
 test "E2E: Data Import settings getInstance keeps unset fields null" {
@@ -10585,13 +9571,7 @@ test "E2E: nested queue partition object initialized from Set constructor argume
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "NestedQueuePartitionTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("120:3:true:50", result.value.string);
+    try expect_entry_string(source, "NestedQueuePartitionTest", "test", "120:3:true:50");
 }
 
 test "E2E: qualified inner class literals preserve outer class names" {
@@ -10654,13 +9634,7 @@ test "E2E: Type.forName(newInstance) preserves qualified inner class identity ac
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "QualifiedInnerInstanceTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("AA", result.value.string);
+    try expect_entry_string(source, "QualifiedInnerInstanceTest", "test", "AA");
 }
 
 test "E2E: nested inner constructors resolve sibling inner classes in outer scope" {
@@ -10690,13 +9664,7 @@ test "E2E: nested inner constructors resolve sibling inner classes in outer scop
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "ScopedInnerCtorHostA",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("A:x", result.value.string);
+    try expect_entry_string(source, "ScopedInnerCtorHostA", "test", "A:x");
 }
 
 test "E2E: inner classes prefer enclosing static helper methods over unrelated top-level methods" {
@@ -10720,13 +9688,7 @@ test "E2E: inner classes prefer enclosing static helper methods over unrelated t
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "Container",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("outer:ok", result.value.string);
+    try expect_entry_string(source, "Container", "test", "outer:ok");
 }
 
 test "E2E: postfix increment updates static field through bare identifier" {
@@ -10743,13 +9705,7 @@ test "E2E: postfix increment updates static field through bare identifier" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "StaticCounterProbe",
-        .entry_method = "run",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("1:2:3", result.value.string);
+    try expect_entry_string(source, "StaticCounterProbe", "run", "1:2:3");
 }
 
 test "E2E: Type.forName null-safe fluent execute preserves constructor-initialized fields" {
@@ -10793,13 +9749,7 @@ test "E2E: Type.forName null-safe fluent execute preserves constructor-initializ
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "TriggerableFactoryTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("1", result.value.string);
+    try expect_entry_string(source, "TriggerableFactoryTest", "test", "1");
 }
 
 test "E2E: parent constructors can read overridden type getters" {
@@ -10835,13 +9785,7 @@ test "E2E: parent constructors can read overridden type getters" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "ParentCtorTypeFactoryTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("null|LogEntryEvent__e", result.value.string);
+    try expect_entry_string(source, "ParentCtorTypeFactoryTest", "test", "null|LogEntryEvent__e");
 }
 
 test "E2E: static method returned map supports chained get size and index access" {
@@ -10866,13 +9810,7 @@ test "E2E: static method returned map supports chained get size and index access
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "StaticMapChainTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("2|a", result.value.string);
+    try expect_entry_string(source, "StaticMapChainTest", "test", "2|a");
 }
 
 test "E2E: SObjectType keySet preserves keys in loop bodies" {
@@ -10902,13 +9840,12 @@ test "E2E: SObjectType keySet preserves keys in loop bodies" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "SObjectTypeKeySetLoopTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("User:testuser@example.com", result.value.string);
+    try expect_entry_string(
+        source,
+        "SObjectTypeKeySetLoopTest",
+        "test",
+        "User:testuser@example.com",
+    );
 }
 
 test "E2E: StandardController normalizes queried SObject records" {
@@ -10924,13 +9861,7 @@ test "E2E: StandardController normalizes queried SObject records" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "StandardControllerQueriedRecordTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("Contact", result.value.string);
+    try expect_entry_string(source, "StandardControllerQueriedRecordTest", "test", "Contact");
 }
 
 test "E2E: StandardController save persists the wrapped record" {
@@ -10949,13 +9880,12 @@ test "E2E: StandardController save persists the wrapped record" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "StandardControllerSaveTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("1:Saved:/003000000000000:true", result.value.string);
+    try expect_entry_string(
+        source,
+        "StandardControllerSaveTest",
+        "test",
+        "1:Saved:/003000000000000:true",
+    );
 }
 
 test "E2E: StandardController view returns canonical 15 character record URL" {
@@ -10971,13 +9901,12 @@ test "E2E: StandardController view returns canonical 15 character record URL" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "StandardControllerViewUrlTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("003000000000000001:/003000000000000", result.value.string);
+    try expect_entry_string(
+        source,
+        "StandardControllerViewUrlTest",
+        "test",
+        "003000000000000001:/003000000000000",
+    );
 }
 
 test "E2E: update of missing standard record id throws DmlException" {
@@ -11017,13 +9946,7 @@ test "E2E: SOQL WHERE supports row aliases for direct fields" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "AliasedWhereDirectFieldTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("1:A", result.value.string);
+    try expect_entry_string(source, "AliasedWhereDirectFieldTest", "test", "1:A");
 }
 
 test "E2E: enhanced recurring donation start date defaults before insert triggers" {
@@ -11049,18 +9972,12 @@ test "E2E: enhanced recurring donation start date defaults before insert trigger
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "RDDefaultProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("true:true", result.value.string);
+    try expect_entry_string(source, "RDDefaultProbe", "test", "true:true");
 }
 
-test "E2E: missing NPSP payment child relationship defaults to empty list" {
+test "E2E: missing managed package payment child relationship defaults to empty list" {
     const source =
-        \\public class NpspPaymentChildRelationshipTest {
+        \\public class PackagePaymentChildRelationshipTest {
         \\    public static String test() {
         \\        Opportunity opp = new Opportunity(
         \\            Name = 'Gift',
@@ -11073,18 +9990,12 @@ test "E2E: missing NPSP payment child relationship defaults to empty list" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "NpspPaymentChildRelationshipTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("true", result.value.string);
+    try expect_entry_string(source, "PackagePaymentChildRelationshipTest", "test", "true");
 }
 
-test "E2E: NPSP payment relationship appears in Opportunity describe" {
+test "E2E: managed package payment relationship appears in Opportunity describe" {
     const source =
-        \\public class NpspPaymentDescribeRelationshipTest {
+        \\public class PackagePaymentDescribeRelationshipTest {
         \\    public static String test() {
         \\        Boolean found = false;
         \\        List<Schema.ChildRelationship> rels =
@@ -11102,13 +10013,7 @@ test "E2E: NPSP payment relationship appears in Opportunity describe" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "NpspPaymentDescribeRelationshipTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("true", result.value.string);
+    try expect_entry_string(source, "PackagePaymentDescribeRelationshipTest", "test", "true");
 }
 
 test "E2E: missing standard Opportunity child relationships default to empty lists" {
@@ -11121,13 +10026,12 @@ test "E2E: missing standard Opportunity child relationships default to empty lis
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "StandardOpportunityChildRelationshipTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("true:true", result.value.string);
+    try expect_entry_string(
+        source,
+        "StandardOpportunityChildRelationshipTest",
+        "test",
+        "true:true",
+    );
 }
 
 test "E2E: SObjectType directly exposes child relationships" {
@@ -11146,13 +10050,7 @@ test "E2E: SObjectType directly exposes child relationships" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "DirectChildRelTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("true", result.value.string);
+    try expect_entry_string(source, "DirectChildRelTest", "test", "true");
 }
 
 test "E2E: user methods can hash distinct SObject field combinations" {
@@ -11192,13 +10090,7 @@ test "E2E: user methods can hash distinct SObject field combinations" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "SoftCreditHashProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("3", result.value.string);
+    try expect_entry_string(source, "SoftCreditHashProbe", "test", "3");
 }
 
 test "E2E: static property getter can update its backing value repeatedly" {
@@ -11223,13 +10115,7 @@ test "E2E: static property getter can update its backing value repeatedly" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "StaticPropertyIncrementProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("1:2:3", result.value.string);
+    try expect_entry_string(source, "StaticPropertyIncrementProbe", "test", "1:2:3");
 }
 
 test "E2E: instance property setter can assign through same property name" {
@@ -11251,13 +10137,7 @@ test "E2E: instance property setter can assign through same property name" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "SelfAssigningPropertySetterProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("stored", result.value.string);
+    try expect_entry_string(source, "SelfAssigningPropertySetterProbe", "test", "stored");
 }
 
 test "E2E: stub stored in inherited property is invoked from child method" {
@@ -11318,13 +10198,7 @@ test "E2E: stub stored in inherited property is invoked from child method" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "InheritedStubPropertyProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expect(result.value.boolean);
+    try expect_entry_boolean(source, "InheritedStubPropertyProbe", "test", true);
 }
 
 test "E2E: overloaded constructor with Id invokes stubbed selector" {
@@ -11385,13 +10259,7 @@ test "E2E: overloaded constructor with Id invokes stubbed selector" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "StubbedIdConstructorProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("2", result.value.string);
+    try expect_entry_string(source, "StubbedIdConstructorProbe", "test", "2");
 }
 
 test "E2E: inner StubProvider can back Test.createStub" {
@@ -11426,13 +10294,7 @@ test "E2E: inner StubProvider can back Test.createStub" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "InnerStubProviderProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("2", result.value.string);
+    try expect_entry_string(source, "InnerStubProviderProbe", "test", "2");
 }
 
 test "E2E: Test.createStub intercepts non-virtual selector method" {
@@ -11467,13 +10329,7 @@ test "E2E: Test.createStub intercepts non-virtual selector method" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "NonVirtualStubProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("2", result.value.string);
+    try expect_entry_string(source, "NonVirtualStubProbe", "test", "2");
 }
 
 test "E2E: DTO list field initialized and copied through view constructor" {
@@ -11534,13 +10390,7 @@ test "E2E: DTO list field initialized and copied through view constructor" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "DtoViewListProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("2", result.value.string);
+    try expect_entry_string(source, "DtoViewListProbe", "test", "2");
 }
 
 test "E2E: constructor private helper updates unqualified instance field" {
@@ -11565,13 +10415,7 @@ test "E2E: constructor private helper updates unqualified instance field" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "ConstructorHelperFieldProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("1", result.value.string);
+    try expect_entry_string(source, "ConstructorHelperFieldProbe", "test", "1");
 }
 
 test "E2E: constructor stores parameter in field with same-named accessor method" {
@@ -11591,13 +10435,7 @@ test "E2E: constructor stores parameter in field with same-named accessor method
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "SameNamedAccessorProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("006000000000001AAA", result.value.string);
+    try expect_entry_string(source, "SameNamedAccessorProbe", "test", "006000000000001AAA");
 }
 
 test "E2E: constructor preserves SObject child relationship on stored field" {
@@ -11625,13 +10463,7 @@ test "E2E: constructor preserves SObject child relationship on stored field" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "StoredRelationshipProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("1", result.value.string);
+    try expect_entry_string(source, "StoredRelationshipProbe", "test", "1");
 }
 
 test "E2E: typed for loop preserves SObject child relationship" {
@@ -11654,13 +10486,7 @@ test "E2E: typed for loop preserves SObject child relationship" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "ForLoopRelationshipProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("2", result.value.string);
+    try expect_entry_string(source, "ForLoopRelationshipProbe", "test", "2");
 }
 
 test "E2E: constructor called from typed for loop preserves child relationship" {
@@ -11692,13 +10518,7 @@ test "E2E: constructor called from typed for loop preserves child relationship" 
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "LoopConstructorRelationshipProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("2", result.value.string);
+    try expect_entry_string(source, "LoopConstructorRelationshipProbe", "test", "2");
 }
 
 test "E2E: stubbed selector returns child relationship through aggregate" {
@@ -11759,13 +10579,7 @@ test "E2E: stubbed selector returns child relationship through aggregate" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "StubRelationshipAggregateProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("3", result.value.string);
+    try expect_entry_string(source, "StubRelationshipAggregateProbe", "test", "3");
 }
 
 test "E2E: nested constructor overload ignores outer constructor hints" {
@@ -11805,13 +10619,7 @@ test "E2E: nested constructor overload ignores outer constructor hints" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "ConstructorHintLeakProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("7", result.value.string);
+    try expect_entry_string(source, "ConstructorHintLeakProbe", "test", "7");
 }
 
 test "E2E: runtime override beats higher-scored ancestor method candidate" {
@@ -11849,13 +10657,7 @@ test "E2E: runtime override beats higher-scored ancestor method candidate" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "OverrideDispatchProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("child:1:BeforeDelete", result.value.string);
+    try expect_entry_string(source, "OverrideDispatchProbe", "test", "child:1:BeforeDelete");
 }
 
 test "E2E: JSON deserialize resolves qualified inner class fields" {
@@ -11877,13 +10679,7 @@ test "E2E: JSON deserialize resolves qualified inner class fields" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "QualifiedJsonOuter",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("nested", result.value.string);
+    try expect_entry_string(source, "QualifiedJsonOuter", "test", "nested");
 }
 
 test "E2E: list addAll preserves SObject fields through dedupe map" {
@@ -11941,13 +10737,7 @@ test "E2E: list addAll preserves SObject fields through dedupe map" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "SoftCreditsAddAllProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("3", result.value.string);
+    try expect_entry_string(source, "SoftCreditsAddAllProbe", "test", "3");
 }
 
 test "E2E: unsaved SObject map keys compare by populated fields" {
@@ -11968,13 +10758,7 @@ test "E2E: unsaved SObject map keys compare by populated fields" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "UnsavedSObjectMapKeyProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("matched:null", result.value.string);
+    try expect_entry_string(source, "UnsavedSObjectMapKeyProbe", "test", "matched:null");
 }
 
 test "E2E: top-level class name wins over colliding inner class name" {
@@ -11997,13 +10781,7 @@ test "E2E: top-level class name wins over colliding inner class name" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "TopLevelNameCollisionProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("top", result.value.string);
+    try expect_entry_string(source, "TopLevelNameCollisionProbe", "test", "top");
 }
 
 test "E2E: Type values compare by class name" {
@@ -12017,13 +10795,7 @@ test "E2E: Type values compare by class name" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "TypeEqualityProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("true:false", result.value.string);
+    try expect_entry_string(source, "TypeEqualityProbe", "test", "true:false");
 }
 
 test "E2E: String.format unescapes doubled single quotes" {
@@ -12103,13 +10875,7 @@ test "E2E: EmailMessage display field selection prefers Subject when Name is abs
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "EmailMessageDisplayFieldTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("Subject:Some subject", result.value.string);
+    try expect_entry_string(source, "EmailMessageDisplayFieldTest", "test", "Subject:Some subject");
 }
 
 test "E2E: static method returned map preserves list values keyed by Schema SObjectType" {
@@ -12149,13 +10915,7 @@ test "E2E: static method returned map preserves list values keyed by Schema SObj
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "ChainedHandlerStoreTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("2|second", result.value.string);
+    try expect_entry_string(source, "ChainedHandlerStoreTest", "test", "2|second");
 }
 
 test "E2E: overridden methods persist List<SObject> fields on handler instances" {
@@ -12196,13 +10956,7 @@ test "E2E: overridden methods persist List<SObject> fields on handler instances"
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "HandlerExecutionChildTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("before|2|first", result.value.string);
+    try expect_entry_string(source, "HandlerExecutionChildTest", "test", "before|2|first");
 }
 
 test "E2E: nested field access preserves null overload selection" {
@@ -12249,13 +11003,7 @@ test "E2E: nested field access preserves null overload selection" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "NestedOverloadChildTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("2|true", result.value.string);
+    try expect_entry_string(source, "NestedOverloadChildTest", "test", "2|true");
 }
 
 test "E2E: base overload dispatch skips incompatible child override" {
@@ -12292,13 +11040,7 @@ test "E2E: base overload dispatch skips incompatible child override" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "OverloadDispatchChildTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("child-list|base-map", result.value.string);
+    try expect_entry_string(source, "OverloadDispatchChildTest", "test", "child-list|base-map");
 }
 
 test "E2E: Object-wrapped primitive values support null-safe toString" {
@@ -12314,13 +11056,7 @@ test "E2E: Object-wrapped primitive values support null-safe toString" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "PrimitiveObjectToStringTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("true|1|1.5", result.value.string);
+    try expect_entry_string(source, "PrimitiveObjectToStringTest", "test", "true|1|1.5");
 }
 
 test "E2E: System.Test.testInstall invokes install handlers" {
@@ -12337,13 +11073,7 @@ test "E2E: System.Test.testInstall invokes install handlers" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "InstallHandlerTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("1", result.value.string);
+    try expect_entry_string(source, "InstallHandlerTest", "test", "1");
 }
 
 test "E2E: System.Test.testUninstall invokes uninstall handlers" {
@@ -12361,13 +11091,7 @@ test "E2E: System.Test.testUninstall invokes uninstall handlers" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "UninstallHandlerTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("0", result.value.string);
+    try expect_entry_string(source, "UninstallHandlerTest", "test", "0");
 }
 
 test "E2E: SObject.getSObject resolves parent records from a reference field token" {
@@ -12388,13 +11112,7 @@ test "E2E: SObject.getSObject resolves parent records from a reference field tok
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "GetSObjectParentTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("Acme", result.value.string);
+    try expect_entry_string(source, "GetSObjectParentTest", "test", "Acme");
 }
 
 test "E2E: Map keyed by equivalent unsaved SObject resolves value" {
@@ -12417,13 +11135,7 @@ test "E2E: Map keyed by equivalent unsaved SObject resolves value" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "EquivalentSObjectMapKeyProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("matched", result.value.string);
+    try expect_entry_string(source, "EquivalentSObjectMapKeyProbe", "test", "matched");
 }
 
 test "E2E: Map literal preserves distinct unsaved SObject keys" {
@@ -12443,13 +11155,7 @@ test "E2E: Map literal preserves distinct unsaved SObject keys" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "SObjectMapLiteralKeyProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("2:first:second", result.value.string);
+    try expect_entry_string(source, "SObjectMapLiteralKeyProbe", "test", "2:first:second");
 }
 
 test "E2E: SObject.getSObject string rejects foreign key field names" {
@@ -12466,13 +11172,12 @@ test "E2E: SObject.getSObject string rejects foreign key field names" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "GetSObjectForeignKeyStringTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("Invalid relationship AccountId for Contact", result.value.string);
+    try expect_entry_string(
+        source,
+        "GetSObjectForeignKeyStringTest",
+        "test",
+        "Invalid relationship AccountId for Contact",
+    );
 }
 
 test "E2E: update clearing lookup field invalidates queried parent relationship" {
@@ -12504,13 +11209,7 @@ test "E2E: update clearing lookup field invalidates queried parent relationship"
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "UpdateClearsLookupRelationshipTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("", result.value.string);
+    try expect_entry_string(source, "UpdateClearsLookupRelationshipTest", "test", "");
 }
 
 test "E2E: SObject.getSObject resolves unsaved relationship records assigned via __r" {
@@ -12525,13 +11224,7 @@ test "E2E: SObject.getSObject resolves unsaved relationship records assigned via
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "GetUnsavedParentTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("Hiking", result.value.string);
+    try expect_entry_string(source, "GetUnsavedParentTest", "test", "Hiking");
 }
 
 test "E2E: direct property access resolves unsaved relationship records assigned via __r" {
@@ -12545,13 +11238,7 @@ test "E2E: direct property access resolves unsaved relationship records assigned
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "DirectUnsavedParentTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("Hiking", result.value.string);
+    try expect_entry_string(source, "DirectUnsavedParentTest", "test", "Hiking");
 }
 
 test "E2E: member-held property access resolves unsaved relationships" {
@@ -12572,13 +11259,7 @@ test "E2E: member-held property access resolves unsaved relationships" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "MemberHeldUnsavedParentTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("Hiking", result.value.string);
+    try expect_entry_string(source, "MemberHeldUnsavedParentTest", "test", "Hiking");
 }
 
 test "E2E: member-held property access resolves unsaved custom fields" {
@@ -12602,13 +11283,7 @@ test "E2E: member-held property access resolves unsaved custom fields" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "MemberHeldUnsavedCustomFieldTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("Adventure", result.value.string);
+    try expect_entry_string(source, "MemberHeldUnsavedCustomFieldTest", "test", "Adventure");
 }
 
 test "E2E: SObject initializer can read custom fields from member-held relationship records" {
@@ -12632,13 +11307,7 @@ test "E2E: SObject initializer can read custom fields from member-held relations
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "RelatedInitializerReadTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("Adventure", result.value.string);
+    try expect_entry_string(source, "RelatedInitializerReadTest", "test", "Adventure");
 }
 
 test "E2E: subquery child records preserve parent relationship fields" {
@@ -12657,13 +11326,7 @@ test "E2E: subquery child records preserve parent relationship fields" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "ChildParentSubqueryTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("Acme", result.value.string);
+    try expect_entry_string(source, "ChildParentSubqueryTest", "test", "Acme");
 }
 
 test "E2E: child relationship subquery applies literal where filters" {
@@ -12683,13 +11346,7 @@ test "E2E: child relationship subquery applies literal where filters" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "ChildSubqueryWhereFilterTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("1:Open", result.value.string);
+    try expect_entry_string(source, "ChildSubqueryWhereFilterTest", "test", "1:Open");
 }
 
 test "E2E: child relationship subquery ignores From inside field names" {
@@ -12752,13 +11409,7 @@ test "E2E: Case and Contract inserts populate auto-number fields" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "AutoNumberInsertProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("true:true", result.value.string);
+    try expect_entry_string(source, "AutoNumberInsertProbe", "test", "true:true");
 }
 
 test "E2E: Date plus integer shifts by days" {
@@ -12773,13 +11424,7 @@ test "E2E: Date plus integer shifts by days" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "DateIntegerArithmeticTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("-1:2", result.value.string);
+    try expect_entry_string(source, "DateIntegerArithmeticTest", "test", "-1:2");
 }
 
 test "E2E: SOQL ORDER BY Id uses stored SObject ids" {
@@ -12887,13 +11532,7 @@ test "E2E: top-level custom child queries preserve custom parent relationship fi
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "TopLevelCustomChildParentQueryTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("Acme", result.value.string);
+    try expect_entry_string(source, "TopLevelCustomChildParentQueryTest", "test", "Acme");
 }
 
 test "E2E: SOQL parent relationship field in WHERE" {
@@ -12913,13 +11552,7 @@ test "E2E: SOQL parent relationship field in WHERE" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "SoqlParentRefTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("1", result.value.string);
+    try expect_entry_string(source, "SoqlParentRefTest", "test", "1");
 }
 
 test "E2E: null != empty string is true" {
@@ -12960,13 +11593,7 @@ test "E2E: SOQL empty string comparison matches missing text fields" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "SoqlEmptyStringNullProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("1:1", result.value.string);
+    try expect_entry_string(source, "SoqlEmptyStringNullProbe", "test", "1:1");
 }
 
 test "E2E: SOQL WHERE with null bind variable matches null values only" {
@@ -12987,13 +11614,7 @@ test "E2E: SOQL WHERE with null bind variable matches null values only" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "DbNullBindTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("1", result.value.string);
+    try expect_entry_string(source, "DbNullBindTest", "test", "1");
 }
 
 test "E2E: SOQL WHERE Id equals null bind returns no rows" {
@@ -13008,13 +11629,7 @@ test "E2E: SOQL WHERE Id equals null bind returns no rows" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "IdNullBindTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("0", result.value.string);
+    try expect_entry_string(source, "IdNullBindTest", "test", "0");
 }
 
 test "E2E: empty SOQL assigned to typed List stays an empty list" {
@@ -13026,13 +11641,7 @@ test "E2E: empty SOQL assigned to typed List stays an empty list" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "EmptyTypedListSoqlTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("0", result.value.string);
+    try expect_entry_string(source, "EmptyTypedListSoqlTest", "test", "0");
 }
 
 test "E2E: SOQL IN bind evaluates instance property getter" {
@@ -13056,13 +11665,7 @@ test "E2E: SOQL IN bind evaluates instance property getter" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "GetterBindQueryTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("1", result.value.string);
+    try expect_entry_string(source, "GetterBindQueryTest", "test", "1");
 }
 
 test "E2E: Task IsClosed is computed from Status" {
@@ -13077,13 +11680,7 @@ test "E2E: Task IsClosed is computed from Status" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "TaskIsClosedTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("true:true", result.value.string);
+    try expect_entry_string(source, "TaskIsClosedTest", "test", "true:true");
 }
 
 test "E2E: TaskStatus queries return default and closed statuses" {
@@ -13096,13 +11693,7 @@ test "E2E: TaskStatus queries return default and closed statuses" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "TaskStatusQueryTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("Not Started:Completed", result.value.string);
+    try expect_entry_string(source, "TaskStatusQueryTest", "test", "Not Started:Completed");
 }
 
 test "E2E: Database.countQuery resolves local bind variables" {
@@ -13121,13 +11712,7 @@ test "E2E: Database.countQuery resolves local bind variables" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "DbCountBindTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("2", result.value.string);
+    try expect_entry_string(source, "DbCountBindTest", "test", "2");
 }
 
 test "E2E: SOQL NOT IN empty bind collection matches records" {
@@ -13143,18 +11728,12 @@ test "E2E: SOQL NOT IN empty bind collection matches records" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "NotInEmptyBindTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("1", result.value.string);
+    try expect_entry_string(source, "NotInEmptyBindTest", "test", "1");
 }
 
-test "E2E: NPSP opportunity payment suppression defaults false in SOQL" {
+test "E2E: managed package opportunity payment suppression defaults false in SOQL" {
     const source =
-        \\public class NpspOppPaymentSuppressionDefaultTest {
+        \\public class PackageOppPaymentSuppressionDefaultTest {
         \\    public static String test() {
         \\        insert new Opportunity(
         \\            Name = 'Gift',
@@ -13169,16 +11748,10 @@ test "E2E: NPSP opportunity payment suppression defaults false in SOQL" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "NpspOppPaymentSuppressionDefaultTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("1", result.value.string);
+    try expect_entry_string(source, "PackageOppPaymentSuppressionDefaultTest", "test", "1");
 }
 
-test "E2E: NPSP RD2 status mapper mock fields bypass compatibility shortcut" {
+test "E2E: managed package RD2 status mapper mock fields bypass compatibility shortcut" {
     const source =
         \\public class RD2_StatusMapper {
         \\    public interface Gateway {
@@ -13251,13 +11824,7 @@ test "E2E: NPSP RD2 status mapper mock fields bypass compatibility shortcut" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "RD2_StatusMapper",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("Closed", result.value.string);
+    try expect_entry_string(source, "RD2_StatusMapper", "test", "Closed");
 }
 
 test "E2E: static field accessed from another class" {
@@ -13273,13 +11840,7 @@ test "E2E: static field accessed from another class" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "Caller",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("9", result.value.string);
+    try expect_entry_string(source, "Caller", "test", "9");
 }
 
 test "E2E: static sobject Id field access passes concrete id to parameter" {
@@ -13297,13 +11858,7 @@ test "E2E: static sobject Id field access passes concrete id to parameter" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "StaticSObjectIdProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("001|001", result.value.string);
+    try expect_entry_string(source, "StaticSObjectIdProbe", "test", "001|001");
 }
 
 test "E2E: SObjectType fields token exposes field name" {
@@ -13342,13 +11897,12 @@ test "E2E: assigning relationship sobject preserves relationship and foreign key
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "RelationshipAssignmentProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("Household:001000000000001AAA", result.value.string);
+    try expect_entry_string(
+        source,
+        "RelationshipAssignmentProbe",
+        "test",
+        "Household:001000000000001AAA",
+    );
 }
 
 test "E2E: Schema.DescribeFieldResult.getPicklistValues() returns entries" {
@@ -13367,13 +11921,7 @@ test "E2E: Schema.DescribeFieldResult.getPicklistValues() returns entries" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "SchemaPicklistTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("2", result.value.string);
+    try expect_entry_string(source, "SchemaPicklistTest", "test", "2");
 }
 
 test "E2E: ObjectInstance field access is case-insensitive" {
@@ -13389,13 +11937,7 @@ test "E2E: ObjectInstance field access is case-insensitive" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "CaseFieldTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("hello", result.value.string);
+    try expect_entry_string(source, "CaseFieldTest", "test", "hello");
 }
 
 test "E2E: Database.countQuery with null bind in method parameter" {
@@ -13420,13 +11962,7 @@ test "E2E: Database.countQuery with null bind in method parameter" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "NullBindMethodTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("0", result.value.string);
+    try expect_entry_string(source, "NullBindMethodTest", "test", "0");
 }
 
 // TODO: Database.query/countQuery でメソッドのローカル変数へのバインド変数解決が
@@ -13462,13 +11998,7 @@ test "E2E: PagedResult pattern — known limitation with dynamic SOQL bind in ne
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "ControllerTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("10", result.value.string);
+    try expect_entry_string(source, "ControllerTest", "test", "10");
 }
 
 test "parser: class with inner class preserves parent methods" {
@@ -13624,13 +12154,7 @@ test "E2E: cross-class Database.countQuery with dynamic WHERE and null bind" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "Caller3",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("0", result.value.string);
+    try expect_entry_string(source, "Caller3", "test", "0");
 }
 
 test "E2E: cross-class Database.countQuery with bind variable" {
@@ -13649,13 +12173,7 @@ test "E2E: cross-class Database.countQuery with bind variable" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "Caller2",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("1", result.value.string);
+    try expect_entry_string(source, "Caller2", "test", "1");
 }
 
 test "E2E: Network.communitiesLanding() returns PageReference" {
@@ -13667,13 +12185,7 @@ test "E2E: Network.communitiesLanding() returns PageReference" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "NetTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("ok", result.value.string);
+    try expect_entry_string(source, "NetTest", "test", "ok");
 }
 
 test "E2E: System.assertEquals detects Integer mismatch (issue #7)" {
@@ -14012,13 +12524,12 @@ test "PageReference.getUrl appends parameters in insertion order" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "PageReferenceParamProbe",
-        .entry_method = "run",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("/flow/ns/testFlow?a=1&b=2%2C0&c=3", result.value.string);
+    try expect_entry_string(
+        source,
+        "PageReferenceParamProbe",
+        "run",
+        "/flow/ns/testFlow?a=1&b=2%2C0&c=3",
+    );
 }
 
 test "E2E: Page namespace member returns PageReference" {
@@ -14031,13 +12542,12 @@ test "E2E: Page namespace member returns PageReference" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "PageNamespaceProbe",
-        .entry_method = "run",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("/apex/ContactMerge?srch=test:test", result.value.string);
+    try expect_entry_string(
+        source,
+        "PageNamespaceProbe",
+        "run",
+        "/apex/ContactMerge?srch=test:test",
+    );
 }
 
 test "SOQL LIKE with bind variable matches correctly" {
@@ -14170,13 +12680,7 @@ test "typed catch does not catch unrelated exception" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "TypedCatchUnrelatedExceptionProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("custom", result.value.string);
+    try expect_entry_string(source, "TypedCatchUnrelatedExceptionProbe", "test", "custom");
 }
 
 test "Type.forName returns null for non-existent class" {
@@ -14272,13 +12776,7 @@ test "E2E: replaceAll can collapse ignored constructed stack trace frames to emp
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "StackTraceCleanupProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("", result.value.string);
+    try expect_entry_string(source, "StackTraceCleanupProbe", "test", "");
 }
 
 test "E2E: replaceAll stack trace cleanup fast path preserves remaining frames" {
@@ -14442,13 +12940,7 @@ test "E2E: ContentDocumentLink insert with invalid LinkedEntityId throws DmlExce
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "CDLTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("CAUGHT", result.value.string);
+    try expect_entry_string(source, "CDLTest", "test", "CAUGHT");
 }
 
 test "E2E: ContentDocumentLink auto-resolves ContentDocument reference" {
@@ -14491,13 +12983,7 @@ test "E2E: ContentDocumentLink auto-resolves ContentDocument reference" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "CDLRefTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("1", result.value.string);
+    try expect_entry_string(source, "CDLRefTest", "test", "1");
 }
 
 test "E2E: StaticResource loads body from actual JSON file on disk" {
@@ -14610,13 +13096,7 @@ test "E2E: DescribeFieldResult.getLocalName keeps schema field keys distinct" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "DescribeFieldLocalNameTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("true:Name:true", result.value.string);
+    try expect_entry_string(source, "DescribeFieldLocalNameTest", "test", "true:Name:true");
 }
 
 test "E2E: DescribeSObjectResult.getLocalName keeps namespaced API name" {
@@ -14629,13 +13109,7 @@ test "E2E: DescribeSObjectResult.getLocalName keeps namespaced API name" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "DescribeSObjectLocalNameTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("npe01__OppPayment__c", result.value.string);
+    try expect_entry_string(source, "DescribeSObjectLocalNameTest", "test", "npe01__OppPayment__c");
 }
 
 test "E2E: SObjectType token supports lowercase member and value equality" {
@@ -14650,13 +13124,12 @@ test "E2E: SObjectType token supports lowercase member and value equality" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "SObjectTypeLowercaseMemberTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("true:true:npe01__OppPayment__c", result.value.string);
+    try expect_entry_string(
+        source,
+        "SObjectTypeLowercaseMemberTest",
+        "test",
+        "true:true:npe01__OppPayment__c",
+    );
 }
 
 test "E2E: SObjectType argument coerces to DescribeSObjectResult parameter" {
@@ -14670,13 +13143,12 @@ test "E2E: SObjectType argument coerces to DescribeSObjectResult parameter" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "DescribeSObjectArgCoercionTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("npe4__Relationship__c", result.value.string);
+    try expect_entry_string(
+        source,
+        "DescribeSObjectArgCoercionTest",
+        "test",
+        "npe4__Relationship__c",
+    );
 }
 
 test "E2E: DescribeSObjectResult fields map includes common User fields" {
@@ -14690,13 +13162,7 @@ test "E2E: DescribeSObjectResult fields map includes common User fields" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "UserDescribeFieldsTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("true:Username", result.value.string);
+    try expect_entry_string(source, "UserDescribeFieldsTest", "test", "true:Username");
 }
 
 test "E2E: describe field map includes observed managed custom fields" {
@@ -14714,13 +13180,12 @@ test "E2E: describe field map includes observed managed custom fields" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "ObservedManagedFieldDescribeTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("true:npe4__Description__c", result.value.string);
+    try expect_entry_string(
+        source,
+        "ObservedManagedFieldDescribeTest",
+        "test",
+        "true:npe4__Description__c",
+    );
 }
 
 test "E2E: packaged relationship describe includes syncable fields" {
@@ -14734,13 +13199,7 @@ test "E2E: packaged relationship describe includes syncable fields" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "PackagedRelationshipDescribeProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("true:true", result.value.string);
+    try expect_entry_string(source, "PackagedRelationshipDescribeProbe", "test", "true:true");
 }
 
 test "E2E: DescribeFieldResult recognizes non-name fallback fields" {
@@ -14756,13 +13215,7 @@ test "E2E: DescribeFieldResult recognizes non-name fallback fields" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "EmailMessageDescribeFieldTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("true:false", result.value.string);
+    try expect_entry_string(source, "EmailMessageDescribeFieldTest", "test", "true:false");
 }
 
 test "E2E: implicit standard Name fields are treated as required" {
@@ -15045,13 +13498,7 @@ test "E2E: Search.query always returns an outer result list" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "SearchQueryOuterListTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("1:0", result.value.string);
+    try expect_entry_string(source, "SearchQueryOuterListTest", "test", "1:0");
 }
 
 test "E2E: inner class resolves outer enum values" {
@@ -15073,13 +13520,7 @@ test "E2E: inner class resolves outer enum values" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "OuterEnumAccessTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("Two", result.value.string);
+    try expect_entry_string(source, "OuterEnumAccessTest", "test", "Two");
 }
 
 test "E2E: inner class assigns and compares outer enum values" {
@@ -15101,13 +13542,7 @@ test "E2E: inner class assigns and compares outer enum values" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "OuterEnumCompareTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("true", result.value.string);
+    try expect_entry_string(source, "OuterEnumCompareTest", "test", "true");
 }
 
 test "E2E: inner instance method does not shadow outer static overload with different arity" {
@@ -15126,13 +13561,7 @@ test "E2E: inner instance method does not shadow outer static overload with diff
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "OuterStaticArityDispatchTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("true", result.value.string);
+    try expect_entry_string(source, "OuterStaticArityDispatchTest", "test", "true");
 }
 
 test "E2E: same-named inner class constructor chaining stays in qualified class" {
@@ -15162,13 +13591,7 @@ test "E2E: same-named inner class constructor chaining stays in qualified class"
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "QualifiedInnerConstructorChainTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("right:ok", result.value.string);
+    try expect_entry_string(source, "QualifiedInnerConstructorChainTest", "test", "right:ok");
 }
 
 test "E2E: SObjectField.getDescribe uses metadata-backed field lengths" {
@@ -15556,13 +13979,7 @@ test "E2E: getPopulatedFieldsAsMap excludes selected null fields" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "PopulatedNullFieldQueryTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("false:true", result.value.string);
+    try expect_entry_string(source, "PopulatedNullFieldQueryTest", "test", "false:true");
 }
 
 test "E2E: field set queries do not mark null summary fields as populated" {
@@ -15734,13 +14151,12 @@ test "E2E: List<SObject> preserves token-based field access for Apex metadata re
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "ApexMetadataListAccessTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("public class ExampleClass {}:true", result.value.string);
+    try expect_entry_string(
+        source,
+        "ApexMetadataListAccessTest",
+        "test",
+        "public class ExampleClass {}:true",
+    );
 }
 
 test "E2E: Apex metadata describe is accessible by default" {
@@ -15755,13 +14171,7 @@ test "E2E: Apex metadata describe is accessible by default" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "ApexMetadataDescribeAccessTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("true:true", result.value.string);
+    try expect_entry_string(source, "ApexMetadataDescribeAccessTest", "test", "true:true");
 }
 
 test "E2E: JSON round-trip through SObject.class preserves Apex metadata fields" {
@@ -15845,13 +14255,7 @@ test "E2E: JSON serialize on field tokens throws and callers can fall back to to
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "JsonFieldTokenFallbackTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("Description", result.value.string);
+    try expect_entry_string(source, "JsonFieldTokenFallbackTest", "test", "Description");
 }
 
 test "E2E: JSON deserialize unwraps relationship records and normalizes standard field types" {
@@ -15876,13 +14280,12 @@ test "E2E: JSON deserialize unwraps relationship records and normalizes standard
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "JsonRelationshipRoundTripTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("7:2:003000000000001AAA:true", result.value.string);
+    try expect_entry_string(
+        source,
+        "JsonRelationshipRoundTripTest",
+        "test",
+        "7:2:003000000000001AAA:true",
+    );
 }
 
 test "E2E: JSON deserialize unwraps relationship records for typed child access" {
@@ -15909,13 +14312,12 @@ test "E2E: JSON deserialize unwraps relationship records for typed child access"
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "JsonTypedRelationshipRoundTripTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("false:2:003000000000001AAA", result.value.string);
+    try expect_entry_string(
+        source,
+        "JsonTypedRelationshipRoundTripTest",
+        "test",
+        "false:2:003000000000001AAA",
+    );
 }
 
 test "E2E: JSON relationship records without attributes infer child SObject type" {
@@ -15934,13 +14336,12 @@ test "E2E: JSON relationship records without attributes infer child SObject type
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "JsonInferredRelationshipRecordTypeTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("1:npe01__OppPayment__c:false", result.value.string);
+    try expect_entry_string(
+        source,
+        "JsonInferredRelationshipRecordTypeTest",
+        "test",
+        "1:npe01__OppPayment__c:false",
+    );
 }
 
 test "E2E: JSON child relationship injected into serialized SObject is preserved" {
@@ -15970,13 +14371,12 @@ test "E2E: JSON child relationship injected into serialized SObject is preserved
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "JsonInjectedRelationshipProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("1:npe01__OppPayment__c", result.value.string);
+    try expect_entry_string(
+        source,
+        "JsonInjectedRelationshipProbe",
+        "test",
+        "1:npe01__OppPayment__c",
+    );
 }
 
 test "E2E: SObject list index assignment preserves injected child relationships" {
@@ -16002,13 +14402,7 @@ test "E2E: SObject list index assignment preserves injected child relationships"
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "JsonRelationshipListAssignmentProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("1:0:false", result.value.string);
+    try expect_entry_string(source, "JsonRelationshipListAssignmentProbe", "test", "1:0:false");
 }
 
 test "E2E: injected payment child relationship filters unpaid payments" {
@@ -16050,13 +14444,7 @@ test "E2E: injected payment child relationship filters unpaid payments" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "JsonRelationshipPaymentFilterProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("2:2:2", result.value.string);
+    try expect_entry_string(source, "JsonRelationshipPaymentFilterProbe", "test", "2:2:2");
 }
 
 test "E2E: injected child relationship isEmpty reflects records" {
@@ -16077,13 +14465,7 @@ test "E2E: injected child relationship isEmpty reflects records" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "JsonRelationshipIsEmptyProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("false:1", result.value.string);
+    try expect_entry_string(source, "JsonRelationshipIsEmptyProbe", "test", "false:1");
 }
 
 test "E2E: direct child relationship field unwraps records envelope" {
@@ -16102,13 +14484,7 @@ test "E2E: direct child relationship field unwraps records envelope" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "RelationshipEnvelopeFieldProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("2:false", result.value.string);
+    try expect_entry_string(source, "RelationshipEnvelopeFieldProbe", "test", "2:false");
 }
 
 test "E2E: SObject child relationship list survives DTO view conversion" {
@@ -16165,13 +14541,7 @@ test "E2E: SObject child relationship list survives DTO view conversion" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "RelationshipDonationViewProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("2", result.value.string);
+    try expect_entry_string(source, "RelationshipDonationViewProbe", "test", "2");
 }
 
 test "E2E: DataWeave object conversion returns typed records" {
@@ -16203,13 +14573,12 @@ test "E2E: DataWeave object conversion returns typed records" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "DataWeaveObjectConversionTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("1:Abel:a.m@demo.org:Maclead", result.value.string);
+    try expect_entry_string(
+        source,
+        "DataWeaveObjectConversionTest",
+        "test",
+        "1:Abel:a.m@demo.org:Maclead",
+    );
 }
 
 test "E2E: DataWeave json date format uses Datetime field values" {
@@ -16242,13 +14611,7 @@ test "E2E: DataWeave json date format uses Datetime field values" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "DataWeaveDateFormatTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("true", result.value.string);
+    try expect_entry_string(source, "DataWeaveDateFormatTest", "test", "true");
 }
 
 test "E2E: JSON deserialize normalizes standard read-only datetime fields" {
@@ -16265,13 +14628,12 @@ test "E2E: JSON deserialize normalizes standard read-only datetime fields" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "JsonReadonlyDatetimeProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("true:2020-01-07T23:30:00Z", result.value.string);
+    try expect_entry_string(
+        source,
+        "JsonReadonlyDatetimeProbe",
+        "test",
+        "true:2020-01-07T23:30:00Z",
+    );
 }
 
 test "E2E: JSON serialize preserves Id on generic newSObject records" {
@@ -16342,13 +14704,7 @@ test "E2E: token-keyed sobject match works across list-of-maps comparisons" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "TokenKeyedSObjectMatchProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("true:true", result.value.string);
+    try expect_entry_string(source, "TokenKeyedSObjectMatchProbe", "test", "true:true");
 }
 
 test "E2E: token-keyed sobject match works for inserted Group records" {
@@ -16396,13 +14752,7 @@ test "E2E: token-keyed sobject match works for inserted Group records" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "TokenKeyedGroupMatchProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("true:true", result.value.string);
+    try expect_entry_string(source, "TokenKeyedGroupMatchProbe", "test", "true:true");
 }
 
 test "E2E: self-referential Boolean getter preserves backing field value" {
@@ -16425,13 +14775,7 @@ test "E2E: self-referential Boolean getter preserves backing field value" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "BooleanGetterBackingFieldProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("true", result.value.string);
+    try expect_entry_string(source, "BooleanGetterBackingFieldProbe", "test", "true");
 }
 
 test "E2E: instance property getter can call helper methods that read this-backed fields" {
@@ -16457,13 +14801,7 @@ test "E2E: instance property getter can call helper methods that read this-backe
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "GetterMethodDispatchProbeCaller",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("ok", result.value.string);
+    try expect_entry_string(source, "GetterMethodDispatchProbeCaller", "test", "ok");
 }
 
 test "E2E: ordered token-keyed sobject list matcher works through Object entrypoint" {
@@ -16549,13 +14887,7 @@ test "E2E: ordered token-keyed sobject list matcher works through Object entrypo
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "OrderedTokenKeyedSObjectListMatcherProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("true", result.value.string);
+    try expect_entry_string(source, "OrderedTokenKeyedSObjectListMatcherProbe", "test", "true");
 }
 
 test "E2E: global describe exposes Group sobject type" {
@@ -16569,13 +14901,7 @@ test "E2E: global describe exposes Group sobject type" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "GlobalDescribeGroupProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("Group", result.value.string);
+    try expect_entry_string(source, "GlobalDescribeGroupProbe", "test", "Group");
 }
 
 test "E2E: JSON serialize Datetime keeps Salesforce millisecond suffix" {
@@ -16697,13 +15023,7 @@ test "E2E: singleton mocks preserve virtual override dispatch" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "SelectorDispatchTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("mock", result.value.string);
+    try expect_entry_string(source, "SelectorDispatchTest", "test", "mock");
 }
 
 test "E2E: inner enum valueOf resolves declared enum members" {
@@ -16721,13 +15041,7 @@ test "E2E: inner enum valueOf resolves declared enum members" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "InnerEnumValueOfTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("Alpha:2", result.value.string);
+    try expect_entry_string(source, "InnerEnumValueOfTest", "test", "Alpha:2");
 }
 
 test "E2E: switch on inner enum values matches valueOf results" {
@@ -16757,13 +15071,7 @@ test "E2E: switch on inner enum values matches valueOf results" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "InnerEnumSwitchTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("A:B", result.value.string);
+    try expect_entry_string(source, "InnerEnumSwitchTest", "test", "A:B");
 }
 
 test "E2E: Http headers round-trip through setHeader and getHeaderKeys" {
@@ -16781,13 +15089,7 @@ test "E2E: Http headers round-trip through setHeader and getHeaderKeys" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "HttpHeaderRoundTripTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("1:2:false", result.value.string);
+    try expect_entry_string(source, "HttpHeaderRoundTripTest", "test", "1:2:false");
 }
 
 test "E2E: Rest headers default to empty maps and accept addHeader" {
@@ -16804,13 +15106,7 @@ test "E2E: Rest headers default to empty maps and accept addHeader" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "RestHeaderRoundTripTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("1:2:0", result.value.string);
+    try expect_entry_string(source, "RestHeaderRoundTripTest", "test", "1:2:0");
 }
 
 test "E2E: JSON.deserialize on default RestRequest body reports null-argument error" {
@@ -16827,13 +15123,7 @@ test "E2E: JSON.deserialize on default RestRequest body reports null-argument er
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "RestRequestBodyNullTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("Argument cannot be null.", result.value.string);
+    try expect_entry_string(source, "RestRequestBodyNullTest", "test", "Argument cannot be null.");
 }
 
 test "E2E: RestContext request and response share assigned objects" {
@@ -16849,13 +15139,12 @@ test "E2E: RestContext request and response share assigned objects" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "RestContextSharedStateTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("/services/apexrest/demo:204", result.value.string);
+    try expect_entry_string(
+        source,
+        "RestContextSharedStateTest",
+        "test",
+        "/services/apexrest/demo:204",
+    );
 }
 
 test "E2E: instance getter can write through RestContext response" {
@@ -16882,13 +15171,7 @@ test "E2E: instance getter can write through RestContext response" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "RestResponseWrapperTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("202", result.value.string);
+    try expect_entry_string(source, "RestResponseWrapperTest", "test", "202");
 }
 
 test "E2E: inherited getter can write through RestContext response" {
@@ -16916,13 +15199,7 @@ test "E2E: inherited getter can write through RestContext response" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "RestResponseChildTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("206", result.value.string);
+    try expect_entry_string(source, "RestResponseChildTest", "test", "206");
 }
 
 test "E2E: static helper can assign RestContext response" {
@@ -16940,13 +15217,7 @@ test "E2E: static helper can assign RestContext response" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "RestContextSetupHelperTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("207", result.value.string);
+    try expect_entry_string(source, "RestContextSetupHelperTest", "test", "207");
 }
 
 test "E2E: inner subclasses inherit route-style RestContext response writes" {
@@ -16979,13 +15250,7 @@ test "E2E: inner subclasses inherit route-style RestContext response writes" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "RouteStyleResponderTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("200:200:application/json", result.value.string);
+    try expect_entry_string(source, "RouteStyleResponderTest", "test", "200:200:application/json");
 }
 
 test "E2E: System.currentPageReference reuses ApexPages current page parameters" {
@@ -16997,13 +15262,7 @@ test "E2E: System.currentPageReference reuses ApexPages current page parameters"
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "CurrentPageReferenceTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("/home", result.value.string);
+    try expect_entry_string(source, "CurrentPageReferenceTest", "test", "/home");
 }
 
 test "E2E: Test.setCurrentPage installs ApexPages current page" {
@@ -17017,13 +15276,12 @@ test "E2E: Test.setCurrentPage installs ApexPages current page" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "SetCurrentPageReferenceTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("/apex/MyPanel?panel=idPanel:idPanel", result.value.string);
+    try expect_entry_string(
+        source,
+        "SetCurrentPageReferenceTest",
+        "test",
+        "/apex/MyPanel?panel=idPanel:idPanel",
+    );
 }
 
 test "E2E: Test.setCurrentPageReference installs ApexPages current page" {
@@ -17118,13 +15376,7 @@ test "E2E: empty list DML does not increment getDmlStatements" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "EmptyDmlTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqual(@as(i64, 0), result.value.integer);
+    try expect_entry_integer(source, "EmptyDmlTest", "test", 0);
 }
 
 test "E2E: non-empty list DML still increments getDmlStatements" {
@@ -17137,13 +15389,7 @@ test "E2E: non-empty list DML still increments getDmlStatements" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "NonEmptyDmlTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqual(@as(i64, 1), result.value.integer);
+    try expect_entry_integer(source, "NonEmptyDmlTest", "test", 1);
 }
 
 test "E2E: Database.insert empty list does not increment getDmlStatements" {
@@ -17157,13 +15403,7 @@ test "E2E: Database.insert empty list does not increment getDmlStatements" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "EmptyDbDmlTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqual(@as(i64, 0), result.value.integer);
+    try expect_entry_integer(source, "EmptyDbDmlTest", "test", 0);
 }
 
 test "E2E: Database.insert single record increments getDmlStatements" {
@@ -17178,13 +15418,7 @@ test "E2E: Database.insert single record increments getDmlStatements" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "SingleDbDmlTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("true:1:1", result.value.string);
+    try expect_entry_string(source, "SingleDbDmlTest", "test", "true:1:1");
 }
 
 test "E2E: Salesforce-style id strings satisfy instanceof Id" {
@@ -17198,13 +15432,7 @@ test "E2E: Salesforce-style id strings satisfy instanceof Id" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "IdInstanceofTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("true:true", result.value.string);
+    try expect_entry_string(source, "IdInstanceofTest", "test", "true:true");
 }
 
 test "E2E: StandardSetController preserves selected records" {
@@ -17222,13 +15450,7 @@ test "E2E: StandardSetController preserves selected records" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "StandardSetControllerSelectionTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("1:B", result.value.string);
+    try expect_entry_string(source, "StandardSetControllerSelectionTest", "test", "1:B");
 }
 
 test "E2E: ApexPages.Message preserves summary when added to page state" {
@@ -17243,13 +15465,7 @@ test "E2E: ApexPages.Message preserves summary when added to page state" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "ApexPagesMessageSummaryTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("Denied:ERROR", result.value.string);
+    try expect_entry_string(source, "ApexPagesMessageSummaryTest", "test", "Denied:ERROR");
 }
 
 test "E2E: ApexPages.Message string conversion exposes message text" {
@@ -17264,13 +15480,7 @@ test "E2E: ApexPages.Message string conversion exposes message text" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "ApexPagesMessageStringTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("Denied:Denied:Denied", result.value.string);
+    try expect_entry_string(source, "ApexPagesMessageStringTest", "test", "Denied:Denied:Denied");
 }
 
 test "E2E: SObject field addError outside triggers appears in ApexPages messages" {
@@ -17284,13 +15494,12 @@ test "E2E: SObject field addError outside triggers appears in ApexPages messages
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "FieldAddErrorPageMessageProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("true:Name is required", result.value.string);
+    try expect_entry_string(
+        source,
+        "FieldAddErrorPageMessageProbe",
+        "test",
+        "true:Name is required",
+    );
 }
 
 test "E2E: Id.valueOf expands 15-char ids to 18-char ids" {
@@ -17301,13 +15510,7 @@ test "E2E: Id.valueOf expands 15-char ids to 18-char ids" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "IdValueOfTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("005000000000000AAA", result.value.string);
+    try expect_entry_string(source, "IdValueOfTest", "test", "005000000000000AAA");
 }
 
 test "E2E: Id.valueOf throws StringException for invalid ids" {
@@ -17323,13 +15526,7 @@ test "E2E: Id.valueOf throws StringException for invalid ids" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "InvalidIdValueOfTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("string-exception", result.value.string);
+    try expect_entry_string(source, "InvalidIdValueOfTest", "test", "string-exception");
 }
 
 test "E2E: Id variable declaration rejects invalid string ids" {
@@ -17345,13 +15542,7 @@ test "E2E: Id variable declaration rejects invalid string ids" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "InvalidIdDeclarationTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("string-exception", result.value.string);
+    try expect_entry_string(source, "InvalidIdDeclarationTest", "test", "string-exception");
 }
 
 test "E2E: Database.query result assigns to concrete SObject" {
@@ -17366,13 +15557,7 @@ test "E2E: Database.query result assigns to concrete SObject" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "DatabaseQueryAssignmentTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("Acme", result.value.string);
+    try expect_entry_string(source, "DatabaseQueryAssignmentTest", "test", "Acme");
 }
 
 test "E2E: custom equals and hashCode drive map lookup while strict equality stays identity" {
@@ -17405,13 +15590,7 @@ test "E2E: custom equals and hashCode drive map lookup while strict equality sta
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "EqualityKeyProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("true:false:ok:true", result.value.string);
+    try expect_entry_string(source, "EqualityKeyProbe", "test", "true:false:ok:true");
 }
 
 test "E2E: Map.clear removes both entries and key metadata before reinsertion" {
@@ -17434,13 +15613,7 @@ test "E2E: Map.clear removes both entries and key metadata before reinsertion" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "MapClearProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("true:false:1:true", result.value.string);
+    try expect_entry_string(source, "MapClearProbe", "test", "true:false:1:true");
 }
 
 test "E2E: String.valueOf respects override toString and List<Type>.toString" {
@@ -17458,13 +15631,7 @@ test "E2E: String.valueOf respects override toString and List<Type>.toString" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "ValuePrinterProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("printer:(Integer, String)", result.value.string);
+    try expect_entry_string(source, "ValuePrinterProbe", "test", "printer:(Integer, String)");
 }
 
 test "E2E: executeBatch uses QueryLocator records produced from SOQL literals" {
@@ -17492,13 +15659,7 @@ test "E2E: executeBatch uses QueryLocator records produced from SOQL literals" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "QueryLocatorScopeBatchTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqual(@as(i64, 1), result.value.integer);
+    try expect_entry_integer(source, "QueryLocatorScopeBatchTest", "test", 1);
 }
 
 test "E2E: executeBatch does not mutate caller batch instance state" {
@@ -17522,13 +15683,7 @@ test "E2E: executeBatch does not mutate caller batch instance state" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "BatchInstanceIsolationProbeTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqual(@as(i64, 5), result.value.integer);
+    try expect_entry_integer(source, "BatchInstanceIsolationProbeTest", "test", 5);
 }
 
 test "E2E: QueryLocator captures instance field bind records at start time" {
@@ -17562,13 +15717,7 @@ test "E2E: QueryLocator captures instance field bind records at start time" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "BoundQueryLocatorBatchTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqual(@as(i64, 2), result.value.integer);
+    try expect_entry_integer(source, "BoundQueryLocatorBatchTest", "test", 2);
 }
 
 test "E2E: executeBatch skips execute for empty QueryLocator scope" {
@@ -17605,13 +15754,7 @@ test "E2E: executeBatch skips execute for empty QueryLocator scope" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "EmptyQueryLocatorBatchTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("0:true:0:0", result.value.string);
+    try expect_entry_string(source, "EmptyQueryLocatorBatchTest", "test", "0:true:0:0");
 }
 
 test "E2E: executeBatch queues chained jobs triggered from finish" {
@@ -17693,13 +15836,7 @@ test "E2E: direct batch finish does not synchronously run chained executeBatch" 
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "DeferredFinishBatchTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("queued:0", result.value.string);
+    try expect_entry_string(source, "DeferredFinishBatchTest", "test", "queued:0");
 }
 
 test "E2E: executeBatch chained hard-delete works through a wrapper database class" {
@@ -17801,13 +15938,7 @@ test "E2E: wrapper database instance can delete queried rows" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "WrapperDeleteProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("0", result.value.string);
+    try expect_entry_string(source, "WrapperDeleteProbe", "test", "0");
 }
 
 test "E2E: wrapper database instance can hard-delete queried rows" {
@@ -17838,13 +15969,7 @@ test "E2E: wrapper database instance can hard-delete queried rows" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "WrapperHardDeleteProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("0", result.value.string);
+    try expect_entry_string(source, "WrapperHardDeleteProbe", "test", "0");
 }
 
 test "E2E: executeBatch can hard-delete rows through a wrapper database class" {
@@ -17883,13 +16008,7 @@ test "E2E: executeBatch can hard-delete rows through a wrapper database class" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "WrappedDeleteBatchTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("0", result.value.string);
+    try expect_entry_string(source, "WrappedDeleteBatchTest", "test", "0");
 }
 
 test "E2E: aggregate query groups by multi-hop parent relationship fields" {
@@ -17974,13 +16093,7 @@ test "E2E: aggregate query supports GROUP BY ROLLUP subtotals" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "AggregateRollupProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("2:1", result.value.string);
+    try expect_entry_string(source, "AggregateRollupProbe", "test", "2:1");
 }
 
 test "E2E: SOQL IN bind accepts colon without whitespace" {
@@ -18003,13 +16116,7 @@ test "E2E: SOQL IN bind accepts colon without whitespace" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "InBindNoWhitespaceProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("1", result.value.string);
+    try expect_entry_string(source, "InBindNoWhitespaceProbe", "test", "1");
 }
 
 test "E2E: SOQL missing field null inequality is false" {
@@ -18031,13 +16138,7 @@ test "E2E: SOQL missing field null inequality is false" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "MissingFieldNullInequalityProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("0:1", result.value.string);
+    try expect_entry_string(source, "MissingFieldNullInequalityProbe", "test", "0:1");
 }
 
 test "E2E: executeBatch creates queryable AsyncApexJob records" {
@@ -18078,13 +16179,12 @@ test "E2E: executeBatch creates queryable AsyncApexJob records" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "AsyncJobProbeTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("1:BatchApex:Completed:Test User:1:1", result.value.string);
+    try expect_entry_string(
+        source,
+        "AsyncJobProbeTest",
+        "test",
+        "1:BatchApex:Completed:Test User:1:1",
+    );
 }
 
 test "E2E: batch finish queueable is not visible before stopTest" {
@@ -18118,13 +16218,7 @@ test "E2E: batch finish queueable is not visible before stopTest" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "DeferredBatchTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("executed:1:executed", result.value.string);
+    try expect_entry_string(source, "DeferredBatchTest", "test", "executed:1:executed");
 }
 
 test "E2E: AsyncApexJob namespace prefix matches blank namespace filters" {
@@ -18150,13 +16244,7 @@ test "E2E: AsyncApexJob namespace prefix matches blank namespace filters" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "AsyncJobNamespaceProbeTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqual(@as(i64, 1), result.value.integer);
+    try expect_entry_integer(source, "AsyncJobNamespaceProbeTest", "test", 1);
 }
 
 test "E2E: System.schedule creates queryable CronTrigger and AsyncApexJob records" {
@@ -18420,13 +16508,7 @@ test "E2E: singleton database getter can hard-delete queried rows outside batch"
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "SingletonCleanupStoreProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("0", result.value.string);
+    try expect_entry_string(source, "SingletonCleanupStoreProbe", "test", "0");
 }
 
 test "E2E: chained batch with direct hard-delete removes parent records after child cleanup" {
@@ -18535,13 +16617,7 @@ test "E2E: Database.insert null list throws by default without allOrNone false" 
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "DefaultDatabaseAllOrNothingTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("threw", result.value.string);
+    try expect_entry_string(source, "DefaultDatabaseAllOrNothingTest", "test", "threw");
 }
 
 test "E2E: instance method on null receiver throws NullPointerException" {
@@ -18612,13 +16688,12 @@ test "E2E: list index access throws ListException when out of bounds" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "ListIndexOutOfBoundsTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("List index out of bounds: 0", result.value.string);
+    try expect_entry_string(
+        source,
+        "ListIndexOutOfBoundsTest",
+        "test",
+        "List index out of bounds: 0",
+    );
 }
 
 test "E2E: JSON.deserialize preserves user-defined field initializers for omitted fields" {
@@ -18637,13 +16712,7 @@ test "E2E: JSON.deserialize preserves user-defined field initializers for omitte
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "JsonFieldInitializerTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("ok", result.value.string);
+    try expect_entry_string(source, "JsonFieldInitializerTest", "test", "ok");
 }
 
 test "E2E: JSON.deserialize restores typed map values" {
@@ -18666,13 +16735,7 @@ test "E2E: JSON.deserialize restores typed map values" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "JsonTypedMapValueTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("1:707000000000001:2", result.value.string);
+    try expect_entry_string(source, "JsonTypedMapValueTest", "test", "1:707000000000001:2");
 }
 
 test "E2E: static singleton field initializer constructs the instance" {
@@ -18699,13 +16762,7 @@ test "E2E: static singleton field initializer constructs the instance" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "StaticSingletonFieldTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("ready", result.value.string);
+    try expect_entry_string(source, "StaticSingletonFieldTest", "test", "ready");
 }
 
 test "E2E: cross-class static initializer can read singleton instance" {
@@ -18741,13 +16798,7 @@ test "E2E: cross-class static initializer can read singleton instance" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "StaticInitCrossClassSingletonTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("ready", result.value.string);
+    try expect_entry_string(source, "StaticInitCrossClassSingletonTest", "test", "ready");
 }
 
 test "E2E: schema-qualified SObjectType ignores local shadowing after nested static overloads" {
@@ -18784,13 +16835,7 @@ test "E2E: schema-qualified SObjectType ignores local shadowing after nested sta
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "SchemaQualifiedSObjectTypeShadowTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("true", result.value.string);
+    try expect_entry_string(source, "SchemaQualifiedSObjectTypeShadowTest", "test", "true");
 }
 
 test "E2E: schema-qualified SObjectType standalone assignment ignores local shadowing" {
@@ -18822,13 +16867,12 @@ test "E2E: schema-qualified SObjectType standalone assignment ignores local shad
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "SchemaQualifiedSObjectTypeStandaloneAssignmentTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("User", result.value.string);
+    try expect_entry_string(
+        source,
+        "SchemaQualifiedSObjectTypeStandaloneAssignmentTest",
+        "test",
+        "User",
+    );
 }
 
 test "E2E: switch when else executes for unmatched string subjects" {
@@ -18856,13 +16900,7 @@ test "E2E: switch when else executes for unmatched string subjects" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "SwitchElseRuntimeTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("bad:Z", result.value.string);
+    try expect_entry_string(source, "SwitchElseRuntimeTest", "test", "bad:Z");
 }
 
 test "E2E: qualified system exception constructors are catchable" {
@@ -18881,13 +16919,12 @@ test "E2E: qualified system exception constructors are catchable" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "QualifiedExceptionCtorTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("System.IllegalArgumentException:bad", result.value.string);
+    try expect_entry_string(
+        source,
+        "QualifiedExceptionCtorTest",
+        "test",
+        "System.IllegalArgumentException:bad",
+    );
 }
 
 test "E2E: inner class switch else throws qualified system exceptions" {
@@ -18917,13 +16954,12 @@ test "E2E: inner class switch else throws qualified system exceptions" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "InnerQualifiedExceptionSwitchTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("bad:THIS_IS_AN_INVALID_OPERATOR", result.value.string);
+    try expect_entry_string(
+        source,
+        "InnerQualifiedExceptionSwitchTest",
+        "test",
+        "bad:THIS_IS_AN_INVALID_OPERATOR",
+    );
 }
 
 test "E2E: constructor exceptions propagate to callers" {
@@ -18951,13 +16987,12 @@ test "E2E: constructor exceptions propagate to callers" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "ConstructorExceptionPropagationTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("bad:THIS_IS_AN_INVALID_OPERATOR", result.value.string);
+    try expect_entry_string(
+        source,
+        "ConstructorExceptionPropagationTest",
+        "test",
+        "bad:THIS_IS_AN_INVALID_OPERATOR",
+    );
 }
 
 test "E2E: System.Test.setCreatedDate updates persisted CreatedDate" {
@@ -18980,13 +17015,7 @@ test "E2E: System.Test.setCreatedDate updates persisted CreatedDate" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "TestSetCreatedDateRuntimeTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("1:true:false", result.value.string);
+    try expect_entry_string(source, "TestSetCreatedDateRuntimeTest", "test", "1:true:false");
 }
 
 test "E2E: SOQL LAST_N_DAYS filters CreatedDate" {
@@ -19001,13 +17030,7 @@ test "E2E: SOQL LAST_N_DAYS filters CreatedDate" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "LastNDaysCreatedDateFilterTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqual(@as(i64, 1), result.value.integer);
+    try expect_entry_integer(source, "LastNDaysCreatedDateFilterTest", "test", 1);
 }
 
 test "E2E: inserted live records do not expose auto-generated CreatedDate before requery" {
@@ -19022,13 +17045,7 @@ test "E2E: inserted live records do not expose auto-generated CreatedDate before
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "InsertedLiveCreatedDateVisibilityTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("true:true", result.value.string);
+    try expect_entry_string(source, "InsertedLiveCreatedDateVisibilityTest", "test", "true:true");
 }
 
 test "E2E: for-init multiple variable declarations remain in loop scope" {
@@ -19044,13 +17061,7 @@ test "E2E: for-init multiple variable declarations remain in loop scope" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "ForMultiInitRuntimeTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("6", result.value.string);
+    try expect_entry_string(source, "ForMultiInitRuntimeTest", "test", "6");
 }
 
 test "E2E: local multiple variable declarations define every name" {
@@ -19068,13 +17079,7 @@ test "E2E: local multiple variable declarations define every name" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "LocalMultiDeclRuntimeTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("true:true:true", result.value.string);
+    try expect_entry_string(source, "LocalMultiDeclRuntimeTest", "test", "true:true:true");
 }
 
 test "E2E: ORDER BY CreatedDate respects System.Test.setCreatedDate changes" {
@@ -19095,13 +17100,12 @@ test "E2E: ORDER BY CreatedDate respects System.Test.setCreatedDate changes" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "TestSetCreatedDateOrderByTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("001000000000000002:Newer", result.value.string);
+    try expect_entry_string(
+        source,
+        "TestSetCreatedDateOrderByTest",
+        "test",
+        "001000000000000002:Newer",
+    );
 }
 
 test "E2E: String.split supports escaped pipe delimiters with limit" {
@@ -19113,13 +17117,7 @@ test "E2E: String.split supports escaped pipe delimiters with limit" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "SplitEscapedPipeTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("2:true:false", result.value.string);
+    try expect_entry_string(source, "SplitEscapedPipeTest", "test", "2:true:false");
 }
 
 test "E2E: String.unescapeJava decodes escaped control sequences" {
@@ -19160,13 +17158,7 @@ test "E2E: parent CreatedDate fields are materialized as Datetime values" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "ParentCreatedDateMaterializationTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("true", result.value.string);
+    try expect_entry_string(source, "ParentCreatedDateMaterializationTest", "test", "true");
 }
 
 test "E2E: synthetic Organization query exposes CreatedBy and CreatedDate details" {
@@ -19192,13 +17184,12 @@ test "E2E: synthetic Organization query exposes CreatedBy and CreatedDate detail
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "OrganizationMetadataAccessTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("true:true:true:true:true", result.value.string);
+    try expect_entry_string(
+        source,
+        "OrganizationMetadataAccessTest",
+        "test",
+        "true:true:true:true:true",
+    );
 }
 
 test "E2E: instance overload resolves cast List<SObject> target" {
@@ -19216,13 +17207,7 @@ test "E2E: instance overload resolves cast List<SObject> target" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "ListOverloadForwarder",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("sobject:1", result.value.string);
+    try expect_entry_string(source, "ListOverloadForwarder", "test", "sobject:1");
 }
 
 test "E2E: constructor overload prefers exact SObject type" {
@@ -19245,13 +17230,7 @@ test "E2E: constructor overload prefers exact SObject type" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "SObjectConstructorOverloadTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("record:event", result.value.string);
+    try expect_entry_string(source, "SObjectConstructorOverloadTest", "test", "record:event");
 }
 
 test "E2E: null collection variables preserve declared overload targets" {
@@ -19270,13 +17249,7 @@ test "E2E: null collection variables preserve declared overload targets" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "NullCollectionOverloadTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("List:Map:Iterable", result.value.string);
+    try expect_entry_string(source, "NullCollectionOverloadTest", "test", "List:Map:Iterable");
 }
 
 test "E2E: List<Id> overload prefers Iterable<Id> over List<SObject>" {
@@ -19291,13 +17264,7 @@ test "E2E: List<Id> overload prefers Iterable<Id> over List<SObject>" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "IterableIdOverloadTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("Iterable", result.value.string);
+    try expect_entry_string(source, "IterableIdOverloadTest", "test", "Iterable");
 }
 
 test "E2E: unsaved standard-object lists prefer List<SObject> overloads" {
@@ -19317,13 +17284,7 @@ test "E2E: unsaved standard-object lists prefer List<SObject> overloads" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "StandardObjectListOverloadTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("List:2", result.value.string);
+    try expect_entry_string(source, "StandardObjectListOverloadTest", "test", "List:2");
 }
 
 test "E2E: List.sort keeps strings before numbers for mixed Object values" {
@@ -19338,13 +17299,7 @@ test "E2E: List.sort keeps strings before numbers for mixed Object values" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "MixedObjectSortTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("another-tag|some-tag|1", result.value.string);
+    try expect_entry_string(source, "MixedObjectSortTest", "test", "another-tag|some-tag|1");
 }
 
 test "E2E: List<String>.sort keeps digit-prefixed values after alpha strings" {
@@ -19357,13 +17312,7 @@ test "E2E: List<String>.sort keeps digit-prefixed values after alpha strings" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "StringSortTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("another-tag|some-tag|1", result.value.string);
+    try expect_entry_string(source, "StringSortTest", "test", "another-tag|some-tag|1");
 }
 
 test "E2E: List.sort orders SObjects by regular fields instead of audit Ids" {
@@ -19379,13 +17328,7 @@ test "E2E: List.sort orders SObjects by regular fields instead of audit Ids" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "SObjectSortTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("Alpha:Beta", result.value.string);
+    try expect_entry_string(source, "SObjectSortTest", "test", "Alpha:Beta");
 }
 
 test "E2E: method returning Map<Schema.SObjectField,Object> prefers matching overload" {
@@ -19408,13 +17351,7 @@ test "E2E: method returning Map<Schema.SObjectField,Object> prefers matching ove
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "FieldMapOverloadTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("matched", result.value.string);
+    try expect_entry_string(source, "FieldMapOverloadTest", "test", "matched");
 }
 
 test "E2E: Schema field token strings resolve describe map entries for put" {
@@ -19441,13 +17378,7 @@ test "E2E: Schema field token strings resolve describe map entries for put" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "FieldStringLookupTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("Acme", result.value.string);
+    try expect_entry_string(source, "FieldStringLookupTest", "test", "Acme");
 }
 
 test "E2E: describe-derived SObject field map keys stay distinct across multiple fields" {
@@ -19465,13 +17396,7 @@ test "E2E: describe-derived SObject field map keys stay distinct across multiple
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "DescribeDerivedFieldKeyTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("2:name:owner", result.value.string);
+    try expect_entry_string(source, "DescribeDerivedFieldKeyTest", "test", "2:name:owner");
 }
 
 test "E2E: UserRecordAccess delete query returns only deletable records" {
@@ -19493,13 +17418,7 @@ test "E2E: UserRecordAccess delete query returns only deletable records" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "UserRecordAccessDeleteQueryTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("1:true", result.value.string);
+    try expect_entry_string(source, "UserRecordAccessDeleteQueryTest", "test", "1:true");
 }
 
 test "E2E: SOQL WHERE resolves multi-hop parent relationship fields" {
@@ -19514,13 +17433,7 @@ test "E2E: SOQL WHERE resolves multi-hop parent relationship fields" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "MultiHopParentWhereTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqual(@as(i64, 1), result.value.integer);
+    try expect_entry_integer(source, "MultiHopParentWhereTest", "test", 1);
 }
 
 test "E2E: Database DmlOptions allOrNone false returns partial save results" {
@@ -19553,13 +17466,7 @@ test "E2E: Database DmlOptions allOrNone false returns partial save results" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "DatabaseDmlOptionsTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("true:false:true:false", result.value.string);
+    try expect_entry_string(source, "DatabaseDmlOptionsTest", "test", "true:false:true:false");
 }
 
 test "E2E: update uses reassigned SObject Id field" {
@@ -19579,13 +17486,7 @@ test "E2E: update uses reassigned SObject Id field" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "ReassignedIdUpdateTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("false:1:Existing", result.value.string);
+    try expect_entry_string(source, "ReassignedIdUpdateTest", "test", "false:1:Existing");
 }
 
 test "E2E: relaxed fixture mode still reports missing update rows in partial DML" {
@@ -19658,13 +17559,7 @@ test "E2E: queried SObject update merges stored fields before after trigger" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "SparseMirrorUpdateProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("changed", result.value.string);
+    try expect_entry_string(source, "SparseMirrorUpdateProbe", "test", "changed");
 }
 
 test "E2E: packaged list custom setting active default is applied" {
@@ -19681,13 +17576,7 @@ test "E2E: packaged list custom setting active default is applied" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "PackagedListSettingDefaultProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("true", result.value.string);
+    try expect_entry_string(source, "PackagedListSettingDefaultProbe", "test", "true");
 }
 
 test "E2E: packaged relationship labels are available when metadata is absent" {
@@ -19702,13 +17591,7 @@ test "E2E: packaged relationship labels are available when metadata is absent" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "PackagedRelationshipLabelProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("Friends-Male:Ms.", result.value.string);
+    try expect_entry_string(source, "PackagedRelationshipLabelProbe", "test", "Friends-Male:Ms.");
 }
 
 test "E2E: relaxed fixture mode still reports missing delete rows in partial DML" {
@@ -19755,13 +17638,7 @@ test "E2E: User query by ProfileId bind synthesizes active user" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "UserProfileIdBindProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("1:00e000000000999", result.value.string);
+    try expect_entry_string(source, "UserProfileIdBindProbe", "test", "1:00e000000000999");
 }
 
 test "E2E: constructed SObject exposes field default values" {
@@ -19950,13 +17827,7 @@ test "E2E: Database partial DML with null list returns empty results" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "DatabaseNullListDmlTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("0:0", result.value.string);
+    try expect_entry_string(source, "DatabaseNullListDmlTest", "test", "0:0");
 }
 
 test "E2E: Database partial DML reports required and delete status codes" {
@@ -19999,13 +17870,12 @@ test "E2E: Database partial DML rejects Opportunity missing required fields" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "OpportunityRequiredFieldsProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("false:0:REQUIRED_FIELD_MISSING", result.value.string);
+    try expect_entry_string(
+        source,
+        "OpportunityRequiredFieldsProbe",
+        "test",
+        "false:0:REQUIRED_FIELD_MISSING",
+    );
 }
 
 test "E2E: Database partial DML rejects invalid RecordTypeId" {
@@ -20027,13 +17897,12 @@ test "E2E: Database partial DML rejects invalid RecordTypeId" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "InvalidRecordTypeDmlProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("false:0:INVALID_CROSS_REFERENCE_KEY", result.value.string);
+    try expect_entry_string(
+        source,
+        "InvalidRecordTypeDmlProbe",
+        "test",
+        "false:0:INVALID_CROSS_REFERENCE_KEY",
+    );
 }
 
 test "E2E: Database partial DML keeps row addError failures partial" {
@@ -20058,13 +17927,7 @@ test "E2E: Database partial DML keeps row addError failures partial" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "PartialDmlRowAddErrorProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("true:false:1", result.value.string);
+    try expect_entry_string(source, "PartialDmlRowAddErrorProbe", "test", "true:false:1");
 }
 
 test "E2E: DmlException exposes row messages and field names" {
@@ -20126,13 +17989,12 @@ test "E2E: after update addError rolls back stored fields" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "AfterUpdateRollbackProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("blocked update:before:after", result.value.string);
+    try expect_entry_string(
+        source,
+        "AfterUpdateRollbackProbe",
+        "test",
+        "blocked update:before:after",
+    );
 }
 
 test "E2E: Set instanceof respects generic element type" {
@@ -20147,13 +18009,7 @@ test "E2E: Set instanceof respects generic element type" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "SetInstanceOfGenericProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("true:false:true", result.value.string);
+    try expect_entry_string(source, "SetInstanceOfGenericProbe", "test", "true:false:true");
 }
 
 test "E2E: collection casts reject non-collection values" {
@@ -20196,13 +18052,7 @@ test "E2E: List String to List Id cast validates id strings" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "ListIdCastValidationProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("1:001000000000001", result.value.string);
+    try expect_entry_string(source, "ListIdCastValidationProbe", "test", "1:001000000000001");
 }
 
 test "E2E: date range checkbox formulas evaluate OR ISBLANK AND TODAY" {
@@ -20260,13 +18110,7 @@ test "E2E: collection casts allow concrete SObject lists as SObject lists" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "SObjectCollectionCastProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("1:Account", result.value.string);
+    try expect_entry_string(source, "SObjectCollectionCastProbe", "test", "1:Account");
 }
 
 test "E2E: instanceof matches inner interface qualified name" {
@@ -20279,13 +18123,7 @@ test "E2E: instanceof matches inner interface qualified name" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "InnerInterfaceInstanceofProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("true", result.value.string);
+    try expect_entry_string(source, "InnerInterfaceInstanceofProbe", "test", "true");
 }
 
 test "E2E: standard address field describe exposes spaced label" {
@@ -20296,13 +18134,7 @@ test "E2E: standard address field describe exposes spaced label" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "StandardFieldLabelProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("Billing City", result.value.string);
+    try expect_entry_string(source, "StandardFieldLabelProbe", "test", "Billing City");
 }
 
 test "E2E: managed package recurring donation stage label resolves" {
@@ -20313,13 +18145,7 @@ test "E2E: managed package recurring donation stage label resolves" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "ManagedPackageLabelProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("Pledged", result.value.string);
+    try expect_entry_string(source, "ManagedPackageLabelProbe", "test", "Pledged");
 }
 
 test "E2E: JSON-deserialized DML errors expose message status and fields" {
@@ -20370,13 +18196,12 @@ test "E2E: direct chained access on JSON-deserialized DML errors keeps getter se
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "JsonDmlErrorDirectAccessTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("Could not save...:Name", result.value.string);
+    try expect_entry_string(
+        source,
+        "JsonDmlErrorDirectAccessTest",
+        "test",
+        "Could not save...:Name",
+    );
 }
 
 test "E2E: partial undelete preserves bind-list order for ALL ROWS queries" {
@@ -20423,13 +18248,7 @@ test "E2E: partial undelete preserves bind-list order for ALL ROWS queries" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "PartialUndeleteOrderTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("2|true|false|false|false", result.value.string);
+    try expect_entry_string(source, "PartialUndeleteOrderTest", "test", "2|true|false|false|false");
 }
 
 test "E2E: Messaging reserveSingleEmailCapacity updates org limits and throws when exhausted" {
@@ -20454,13 +18273,7 @@ test "E2E: Messaging reserveSingleEmailCapacity updates org limits and throws wh
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "MessagingSingleEmailCapacityTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("true:hello:1", result.value.string);
+    try expect_entry_string(source, "MessagingSingleEmailCapacityTest", "test", "true:hello:1");
 }
 
 test "E2E: Type.forName SObject type returns sobject with getSObjectType" {
@@ -20473,13 +18286,7 @@ test "E2E: Type.forName SObject type returns sobject with getSObjectType" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "TypeForNameSObjectTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("Account", result.value.string);
+    try expect_entry_string(source, "TypeForNameSObjectTest", "test", "Account");
 }
 
 test "E2E: fixture flow definition view selector test passes" {
@@ -20668,13 +18475,7 @@ test "E2E: custom object query by Name IN set finds existing record" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "NameInSetQueryProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("1:Some tag!", result.value.string);
+    try expect_entry_string(source, "NameInSetQueryProbe", "test", "1:Some tag!");
 }
 
 test "E2E: custom object upsert by external id updates existing record" {
@@ -20696,13 +18497,7 @@ test "E2E: custom object upsert by external id updates existing record" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "ExternalIdUpsertProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("1:updated", result.value.string);
+    try expect_entry_string(source, "ExternalIdUpsertProbe", "test", "1:updated");
 }
 
 test "E2E: SOQL IN bind resolves map values expression" {
@@ -20752,13 +18547,7 @@ test "E2E: SOQL equality bind treats collection binds as membership" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "EqualityBindCollectionProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("1:alpha", result.value.string);
+    try expect_entry_string(source, "EqualityBindCollectionProbe", "test", "1:alpha");
 }
 
 test "E2E: synthetic User query respects Alias filters" {
@@ -20770,13 +18559,7 @@ test "E2E: synthetic User query respects Alias filters" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "UserAliasQueryProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("autoproc:AutomatedProcess", result.value.string);
+    try expect_entry_string(source, "UserAliasQueryProbe", "test", "autoproc:AutomatedProcess");
 }
 
 test "E2E: fixture duplicate scenario guard test passes" {
@@ -20882,13 +18665,7 @@ test "E2E: custom object upsert by external id inserts queryable row" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "ExternalIdInsertProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("1:true:Created", result.value.string);
+    try expect_entry_string(source, "ExternalIdInsertProbe", "test", "1:true:Created");
 }
 
 test "E2E: switch on newSObject matches custom object type-binding clause" {
@@ -20906,13 +18683,7 @@ test "E2E: switch on newSObject matches custom object type-binding clause" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "SwitchOnNewSObjectProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("custom", result.value.string);
+    try expect_entry_string(source, "SwitchOnNewSObjectProbe", "test", "custom");
 }
 
 test "E2E: List constructor preserves SObjects from Set" {
@@ -20927,13 +18698,7 @@ test "E2E: List constructor preserves SObjects from Set" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "SetToListProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("1:Account", result.value.string);
+    try expect_entry_string(source, "SetToListProbe", "test", "1:Account");
 }
 
 test "E2E: Formula.builder chain returns a FormulaInstance that evaluates simple formulas" {
@@ -21004,13 +18769,7 @@ test "E2E: FormulaEval enum namespace supports field access and values" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "FormulaEvalEnumProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("Boolean:4:8.0", result.value.string);
+    try expect_entry_string(source, "FormulaEvalEnumProbe", "test", "Boolean:4:8.0");
 }
 
 test "E2E: QueryException.getInaccessibleFields lists fields blocked in user mode" {
@@ -21053,13 +18812,12 @@ test "E2E: QueryException.getInaccessibleFields lists fields blocked in user mod
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "InaccessibleFieldsProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("present|Name=true|Amount=true", result.value.string);
+    try expect_entry_string(
+        source,
+        "InaccessibleFieldsProbe",
+        "test",
+        "present|Name=true|Amount=true",
+    );
 }
 
 test "E2E: DescribeFieldResult.getSObjectType and isIdLookup report the owning object" {
@@ -21086,13 +18844,7 @@ test "E2E: DescribeFieldResult.getSObjectType and isIdLookup report the owning o
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "DescribeFieldOwnerProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("Opportunity|true|true", result.value.string);
+    try expect_entry_string(source, "DescribeFieldOwnerProbe", "test", "Opportunity|true|true");
 }
 
 test "E2E: explicit new List<SObject>() stays null on getSObjectType regardless of contents" {
@@ -21120,13 +18872,7 @@ test "E2E: explicit new List<SObject>() stays null on getSObjectType regardless 
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "GenericListTypeProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("true:true:true", result.value.string);
+    try expect_entry_string(source, "GenericListTypeProbe", "test", "true:true:true");
 }
 
 test "E2E: Map<Id, SObject>.values() preserves homogeneous SObjectType for generic callers" {
@@ -21151,13 +18897,7 @@ test "E2E: Map<Id, SObject>.values() preserves homogeneous SObjectType for gener
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "MapValuesSObjectTypeProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("Account", result.value.string);
+    try expect_entry_string(source, "MapValuesSObjectTypeProbe", "test", "Account");
 }
 
 test "E2E: concrete typed list reports its SObjectType" {
@@ -21170,13 +18910,7 @@ test "E2E: concrete typed list reports its SObjectType" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "ConcreteListTypeProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("Account:true", result.value.string);
+    try expect_entry_string(source, "ConcreteListTypeProbe", "test", "Account:true");
 }
 
 test "E2E: Set<SObject> keeps distinct unsaved records by field values" {
@@ -21191,13 +18925,7 @@ test "E2E: Set<SObject> keeps distinct unsaved records by field values" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "DistinctUnsavedSetProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("2:2", result.value.string);
+    try expect_entry_string(source, "DistinctUnsavedSetProbe", "test", "2:2");
 }
 
 test "E2E: inner database gateway upsert writes Ids back to original rows" {
@@ -21518,13 +19246,7 @@ test "E2E: Type.forName custom object __e returns sobject with put/get" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "TypeForNameEventTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("hello", result.value.string);
+    try expect_entry_string(source, "TypeForNameEventTest", "test", "hello");
 }
 
 test "E2E: EventBus.publish returns failed SaveResult when required event fields are missing" {
@@ -21590,13 +19312,7 @@ test "E2E: EventBus.publish keeps live platform event Id field unset" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "PublishedPlatformEventIdTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("true:true", result.value.string);
+    try expect_entry_string(source, "PublishedPlatformEventIdTest", "test", "true:true");
 }
 
 test "E2E: Test event bus deliver fires change event triggers" {
@@ -21619,13 +19335,7 @@ test "E2E: Test event bus deliver fires change event triggers" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "AccountChangeProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqual(@as(i64, 1), result.value.integer);
+    try expect_entry_integer(source, "AccountChangeProbe", "test", 1);
 }
 
 test "E2E: synthetic AppMenuItem query exposes app order entries" {
@@ -21639,13 +19349,7 @@ test "E2E: synthetic AppMenuItem query exposes app order entries" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "AppMenuItemQueryTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("1:Apex_Recipes:true", result.value.string);
+    try expect_entry_string(source, "AppMenuItemQueryTest", "test", "1:Sample_App:true");
 }
 
 test "E2E: AppLauncher AppMenu setOrgSortOrder is a supported no-op" {
@@ -21659,13 +19363,7 @@ test "E2E: AppLauncher AppMenu setOrgSortOrder is a supported no-op" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "AppLauncherAppMenuProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("ok", result.value.string);
+    try expect_entry_string(source, "AppLauncherAppMenuProbe", "test", "ok");
 }
 
 test "E2E: ParentJobResult enum values are available for finalizers" {
@@ -21684,13 +19382,7 @@ test "E2E: ParentJobResult enum values are available for finalizers" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "ParentJobResultEnumProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("UNHANDLED_EXCEPTION", result.value.string);
+    try expect_entry_string(source, "ParentJobResultEnumProbe", "test", "UNHANDLED_EXCEPTION");
 }
 
 test "E2E: overloaded constructor uses declared local type for custom class arguments" {
@@ -21740,13 +19432,7 @@ test "E2E: overloaded constructor uses declared local type for custom class argu
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "ConstructorDeclaredTypeProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("expected:expected", result.value.string);
+    try expect_entry_string(source, "ConstructorDeclaredTypeProbe", "test", "expected:expected");
 }
 
 test "E2E: Type.forName SObject + empty list DML integration" {
@@ -21767,13 +19453,7 @@ test "E2E: Type.forName SObject + empty list DML integration" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "IntegrationTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqual(@as(i64, 1), result.value.integer);
+    try expect_entry_integer(source, "IntegrationTest", "test", 1);
 }
 
 test "E2E: SObject.get throws for unknown field names" {
@@ -21789,13 +19469,7 @@ test "E2E: SObject.get throws for unknown field names" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "UnknownFieldGetTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("ok", result.value.string);
+    try expect_entry_string(source, "UnknownFieldGetTest", "test", "ok");
 }
 
 test "E2E: SObject.get returns null for unmanaged metadata extension fields" {
@@ -21811,13 +19485,7 @@ test "E2E: SObject.get returns null for unmanaged metadata extension fields" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "CustomExtensionFieldGetTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("true:true", result.value.string);
+    try expect_entry_string(source, "CustomExtensionFieldGetTest", "test", "true:true");
 }
 
 test "E2E: global describe includes source-path custom objects" {
@@ -21889,13 +19557,7 @@ test "E2E: managed open ended status picklist has known values" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "ManagedPicklistProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("Open:Closed:None", result.value.string);
+    try expect_entry_string(source, "ManagedPicklistProbe", "test", "Open:Closed:None");
 }
 
 test "E2E: JSON.deserializeUntyped throws on malformed root input" {
@@ -21911,13 +19573,7 @@ test "E2E: JSON.deserializeUntyped throws on malformed root input" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "InvalidJsonParseTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("ok", result.value.string);
+    try expect_entry_string(source, "InvalidJsonParseTest", "test", "ok");
 }
 
 test "E2E: Decimal.valueOf throws on invalid numeric strings" {
@@ -21933,13 +19589,7 @@ test "E2E: Decimal.valueOf throws on invalid numeric strings" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "InvalidDecimalValueTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("ok", result.value.string);
+    try expect_entry_string(source, "InvalidDecimalValueTest", "test", "ok");
 }
 
 test "E2E: compound assignment preserves numeric accumulation across mixed numeric types" {
@@ -21955,13 +19605,7 @@ test "E2E: compound assignment preserves numeric accumulation across mixed numer
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "MixedNumericCompoundAssignTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("15", result.value.string);
+    try expect_entry_string(source, "MixedNumericCompoundAssignTest", "test", "15");
 }
 
 test "E2E: inner enum valueOf throws for unknown values" {
@@ -21981,13 +19625,7 @@ test "E2E: inner enum valueOf throws for unknown values" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "InvalidInnerEnumValueTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("ok", result.value.string);
+    try expect_entry_string(source, "InvalidInnerEnumValueTest", "test", "ok");
 }
 
 test "E2E: describe maps include common Task date and picklist fields" {
@@ -22006,13 +19644,7 @@ test "E2E: describe maps include common Task date and picklist fields" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "TaskDescribeFieldCoverageTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("DATE:PICKLIST", result.value.string);
+    try expect_entry_string(source, "TaskDescribeFieldCoverageTest", "test", "DATE:PICKLIST");
 }
 
 test "E2E: Approval lock APIs toggle record lock state" {
@@ -22032,13 +19664,7 @@ test "E2E: Approval lock APIs toggle record lock state" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "ApprovalLockStateTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("true:true:true:false", result.value.string);
+    try expect_entry_string(source, "ApprovalLockStateTest", "test", "true:true:true:false");
 }
 
 test "E2E: BusinessHours query and diff return default day duration" {
@@ -22053,13 +19679,7 @@ test "E2E: BusinessHours query and diff return default day duration" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "BusinessHoursDiffTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("Default:86400000", result.value.string);
+    try expect_entry_string(source, "BusinessHoursDiffTest", "test", "Default:86400000");
 }
 
 test "E2E: BusinessHours default predicate query returns synthetic default" {
@@ -22076,13 +19696,12 @@ test "E2E: BusinessHours default predicate query returns synthetic default" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "BusinessHoursDefaultPredicateTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("true:01m000000000001AAA", result.value.string);
+    try expect_entry_string(
+        source,
+        "BusinessHoursDefaultPredicateTest",
+        "test",
+        "true:01m000000000001AAA",
+    );
 }
 
 test "E2E: TaskPriority queries return default and high priorities" {
@@ -22105,13 +19724,7 @@ test "E2E: TaskPriority queries return default and high priorities" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "TaskPriorityQueryTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("High:Normal", result.value.string);
+    try expect_entry_string(source, "TaskPriorityQueryTest", "test", "High:Normal");
 }
 
 test "E2E: SObjectType newSObject two-arg overload treats first arg as RecordTypeId" {
@@ -22124,13 +19737,12 @@ test "E2E: SObjectType newSObject two-arg overload treats first arg as RecordTyp
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "NewSObjectRecordTypeIdProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("null:012000000000003AAA:Not Started", result.value.string);
+    try expect_entry_string(
+        source,
+        "NewSObjectRecordTypeIdProbe",
+        "test",
+        "null:012000000000003AAA:Not Started",
+    );
 }
 
 test "E2E: Report SOQL is a known standard object" {
@@ -22141,13 +19753,7 @@ test "E2E: Report SOQL is a known standard object" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "ReportQueryKnownTypeTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqual(@as(i64, 0), result.value.integer);
+    try expect_entry_integer(source, "ReportQueryKnownTypeTest", "test", 0);
 }
 
 test "E2E: FiscalYearSettings SOQL is a known standard object" {
@@ -22162,13 +19768,7 @@ test "E2E: FiscalYearSettings SOQL is a known standard object" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "FiscalYearSettingsQueryKnownTypeTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqual(@as(i64, 0), result.value.integer);
+    try expect_entry_integer(source, "FiscalYearSettingsQueryKnownTypeTest", "test", 0);
 }
 
 test "E2E: Metadata CustomMetadata initializes values list" {
@@ -22186,13 +19786,7 @@ test "E2E: Metadata CustomMetadata initializes values list" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "MetadataCustomMetadataProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("1:Succeeded", result.value.string);
+    try expect_entry_string(source, "MetadataCustomMetadataProbe", "test", "1:Succeeded");
 }
 
 test "E2E: List.sort propagates Comparable exceptions" {
@@ -22217,13 +19811,12 @@ test "E2E: List.sort propagates Comparable exceptions" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "SortExceptionPropagationTest",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("unsupported sort type", result.value.string);
+    try expect_entry_string(
+        source,
+        "SortExceptionPropagationTest",
+        "test",
+        "unsupported sort type",
+    );
 }
 
 test "E2E: multi-level dotted class literal returns non-null Type" {
@@ -22282,13 +19875,7 @@ test "E2E: Invocable.Action.Result JSON round-trip exposes getters" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "InvocableResultRoundTripProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("true:1", result.value.string);
+    try expect_entry_string(source, "InvocableResultRoundTripProbe", "test", "true:1");
 }
 
 test "E2E: SObject getPopulatedFieldsAsMap hides synthetic errors key" {
@@ -22308,13 +19895,7 @@ test "E2E: SObject getPopulatedFieldsAsMap hides synthetic errors key" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "PopulatedFieldsErrorsHidingProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("false:true", result.value.string);
+    try expect_entry_string(source, "PopulatedFieldsErrorsHidingProbe", "test", "false:true");
 }
 
 test "E2E: SObject addError message escape overload preserves message" {
@@ -22328,13 +19909,7 @@ test "E2E: SObject addError message escape overload preserves message" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "AddErrorEscapeOverloadProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("blocked message:0", result.value.string);
+    try expect_entry_string(source, "AddErrorEscapeOverloadProbe", "test", "blocked message:0");
 }
 
 test "E2E: Database.setSavepoint counts toward Limits.getDmlStatements" {
@@ -22356,13 +19931,7 @@ test "E2E: Database.setSavepoint counts toward Limits.getDmlStatements" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "SavepointDmlCounterProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("0:1:2", result.value.string);
+    try expect_entry_string(source, "SavepointDmlCounterProbe", "test", "0:1:2");
 }
 
 test "E2E: standard-field describe exposes known default values" {
@@ -22414,13 +19983,7 @@ test "E2E: Invocable.Action.createCustomAction reports missing flow failures" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "InvocableActionFlowFailureProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("2:false:1", result.value.string);
+    try expect_entry_string(source, "InvocableActionFlowFailureProbe", "test", "2:false:1");
 }
 
 test "E2E: String.substring clamps negative bounds instead of panicking" {
@@ -22478,13 +20041,7 @@ test "E2E: multi-level Account.Parent.Parent.Name SOQL chain hydrates" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "MultiLevelParentChainProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("GreatGrandParent", result.value.string);
+    try expect_entry_string(source, "MultiLevelParentChainProbe", "test", "GreatGrandParent");
 }
 
 test "E2E: Account.ChildAccounts self-reference subquery populates children" {
@@ -22509,13 +20066,7 @@ test "E2E: Account.ChildAccounts self-reference subquery populates children" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "SelfRefChildSubqueryProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqual(@as(i64, 2), result.value.integer);
+    try expect_entry_integer(source, "SelfRefChildSubqueryProbe", "test", 2);
 }
 
 test "E2E: Database.QueryLocator exposes iterator over query rows" {
@@ -22546,13 +20097,7 @@ test "E2E: Database.QueryLocator exposes iterator over query rows" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "QueryLocatorIteratorProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("Acme:2", result.value.string);
+    try expect_entry_string(source, "QueryLocatorIteratorProbe", "test", "Acme:2");
 }
 
 test "E2E: sobject.Field.addError(msg) attaches error to the field" {
@@ -22605,13 +20150,7 @@ test "E2E: System.Location.newInstance + getDistance match real-platform values"
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "LocationBuiltinsProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("28.635308,77.22496|inRange", result.value.string);
+    try expect_entry_string(source, "LocationBuiltinsProbe", "test", "28.635308,77.22496|inRange");
 }
 
 test "E2E: Schema describe stubs cover tabs and common standards" {
@@ -22640,13 +20179,7 @@ test "E2E: Schema describe stubs cover tabs and common standards" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "SchemaStubProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("tabs=0|cc=Y|co=Y|as=Y", result.value.string);
+    try expect_entry_string(source, "SchemaStubProbe", "test", "tabs=0|cc=Y|co=Y|as=Y");
 }
 
 test "E2E: User insert defaults IsActive to true and WHERE PermissionsX = TRUE matches" {
@@ -22695,13 +20228,7 @@ test "E2E: User insert defaults IsActive to true and WHERE PermissionsX = TRUE m
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "UserDefaultsWhereProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("profiles=1|activeUsers=1", result.value.string);
+    try expect_entry_string(source, "UserDefaultsWhereProbe", "test", "profiles=1|activeUsers=1");
 }
 
 test "E2E: SUM aggregate SOQL with ALL ROWS sums active store + recycle bin" {
@@ -22757,13 +20284,7 @@ test "E2E: COUNT() ALL ROWS includes trashed records, not just the active store"
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "CountAllRowsProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("active=0|trashed=1|total=1", result.value.string);
+    try expect_entry_string(source, "CountAllRowsProbe", "test", "active=0|trashed=1|total=1");
 }
 
 test "E2E: AFTER_UNDELETE addError rolls back undelete and raises DmlException" {
@@ -22794,13 +20315,7 @@ test "E2E: AFTER_UNDELETE addError rolls back undelete and raises DmlException" 
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "AfterUndeleteAddErrorProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("blocked-by-trigger", result.value.string);
+    try expect_entry_string(source, "AfterUndeleteAddErrorProbe", "test", "blocked-by-trigger");
 }
 
 test "E2E: subclass constructor sees field initialised by super() via identifier read" {
@@ -22838,13 +20353,7 @@ test "E2E: subclass constructor sees field initialised by super() via identifier
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "SuperFieldVisibilityProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("E|parent-set:child", result.value.string);
+    try expect_entry_string(source, "SuperFieldVisibilityProbe", "test", "E|parent-set:child");
 }
 
 test "E2E: try/finally runs after catch rethrows and when no catch matches" {
@@ -22914,13 +20423,7 @@ test "E2E: String.replaceFirst replaces only the first regex match" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "StringReplaceFirstProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("Field__c:X123abc", result.value.string);
+    try expect_entry_string(source, "StringReplaceFirstProbe", "test", "Field__c:X123abc");
 }
 
 test "E2E: URL base URL supports toExternalForm" {
@@ -22931,13 +20434,7 @@ test "E2E: URL base URL supports toExternalForm" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "UrlExternalFormProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("https://test.salesforce.com", result.value.string);
+    try expect_entry_string(source, "UrlExternalFormProbe", "test", "https://test.salesforce.com");
 }
 
 test "E2E: Url constructor exposes path" {
@@ -22949,13 +20446,7 @@ test "E2E: Url constructor exposes path" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "UrlPathProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("/testPath:null", result.value.string);
+    try expect_entry_string(source, "UrlPathProbe", "test", "/testPath:null");
 }
 
 test "E2E: Contact update refreshes compound Name" {
@@ -22982,13 +20473,7 @@ test "E2E: Contact update refreshes compound Name" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "ContactUpdateNameProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("C1:c2 C1", result.value.string);
+    try expect_entry_string(source, "ContactUpdateNameProbe", "test", "C1:c2 C1");
 }
 
 test "E2E: where-like build uses SOQL branch when groups are filterable" {
@@ -23189,13 +20674,12 @@ test "E2E: where-like IN_SET operator renders through outer helper" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "WhereLikeInSetOperatorProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("Name IN ('foo', 'bar')", result.value.string);
+    try expect_entry_string(
+        source,
+        "WhereLikeInSetOperatorProbe",
+        "test",
+        "Name IN ('foo', 'bar')",
+    );
 }
 
 test "E2E: static foreign inner object preserves enum field mutation" {
@@ -23243,13 +20727,7 @@ test "E2E: static foreign inner object preserves enum field mutation" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "ForeignFieldHolderProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("Name IN (foo)", result.value.string);
+    try expect_entry_string(source, "ForeignFieldHolderProbe", "test", "Name IN (foo)");
 }
 
 test "E2E: typed null local does not resolve to same-named inner class" {
@@ -23304,13 +20782,7 @@ test "E2E: Matcher replaceAll and String escapeHtml4 sanitize html" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "HtmlEscapeProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("&lt;img src=x &gt;", result.value.string);
+    try expect_entry_string(source, "HtmlEscapeProbe", "test", "&lt;img src=x &gt;");
 }
 
 test "E2E: unqualified instance calls do not overwrite same-named typed locals" {
@@ -23333,13 +20805,7 @@ test "E2E: unqualified instance calls do not overwrite same-named typed locals" 
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "InstanceCallLocalShadowProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("1:local", result.value.string);
+    try expect_entry_string(source, "InstanceCallLocalShadowProbe", "test", "1:local");
 }
 
 test "E2E: user enum static values returns declared values" {
@@ -23355,13 +20821,7 @@ test "E2E: user enum static values returns declared values" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "UserEnumValuesProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("2:ALPHA:BETA", result.value.string);
+    try expect_entry_string(source, "UserEnumValuesProbe", "test", "2:ALPHA:BETA");
 }
 
 test "E2E: recurring donation insert defaults legacy date established" {
@@ -23378,16 +20838,10 @@ test "E2E: recurring donation insert defaults legacy date established" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "RecurringDonationLegacyDateDefaultProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("true", result.value.string);
+    try expect_entry_string(source, "RecurringDonationLegacyDateDefaultProbe", "test", "true");
 }
 
-test "E2E: contact insert creates default NPSP address from mailing fields" {
+test "E2E: contact insert creates default managed package address from mailing fields" {
     const source =
         \\public class ContactAddressInsertProbe {
         \\    public static String test() {
@@ -23425,16 +20879,10 @@ test "E2E: contact insert creates default NPSP address from mailing fields" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "ContactAddressInsertProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("true:true:true", result.value.string);
+    try expect_entry_string(source, "ContactAddressInsertProbe", "test", "true:true:true");
 }
 
-test "E2E: contact update creates NPSP address from mailing fields" {
+test "E2E: contact update creates managed package address from mailing fields" {
     const source =
         \\public class ContactAddressUpdateProbe {
         \\    public static String test() {
@@ -23473,16 +20921,10 @@ test "E2E: contact update creates NPSP address from mailing fields" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "ContactAddressUpdateProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("true:true:true", result.value.string);
+    try expect_entry_string(source, "ContactAddressUpdateProbe", "test", "true:true:true");
 }
 
-test "E2E: non-default NPSP address insert does not sync household billing" {
+test "E2E: non-default managed package address insert does not sync household billing" {
     const source =
         \\public class NonDefaultAddressInsertProbe {
         \\    public static String test() {
@@ -23505,13 +20947,7 @@ test "E2E: non-default NPSP address insert does not sync household billing" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "NonDefaultAddressInsertProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("true:true", result.value.string);
+    try expect_entry_string(source, "NonDefaultAddressInsertProbe", "test", "true:true");
 }
 
 test "E2E: declared Double values use decimal division" {
@@ -23535,18 +20971,12 @@ test "E2E: declared Double values use decimal division" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "DeclaredDoubleDivisionProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("100.0", result.value.string);
+    try expect_entry_string(source, "DeclaredDoubleDivisionProbe", "test", "100.0");
 }
 
-test "E2E: NPSP refund JSON remaining balance uses decimal value" {
+test "E2E: managed package refund JSON remaining balance uses decimal value" {
     const source =
-        \\public class PMT_RefundController {
+        \\public class PackageRefundProbe {
         \\    public class RefundView {
         \\        public Decimal remainingBalance;
         \\    }
@@ -23562,19 +20992,18 @@ test "E2E: NPSP refund JSON remaining balance uses decimal value" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "PMT_RefundController",
-        .entry_method = "test",
-        .fixture_relaxed_exceptions = true,
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("984.21", result.value.string);
+    try expect_entry_string_with_options(
+        source,
+        "PackageRefundProbe",
+        "test",
+        "984.21",
+        .{ .fixture_relaxed_exceptions = true },
+    );
 }
 
-test "E2E: NPSP allocation copy converts fixed amount to percentage with decimal division" {
+test "E2E: package allocation fixed amount percent conversion" {
     const source =
-        \\public class ALLO_Allocations_TDTM {
+        \\public class ManagedAllocationPercentProbe {
         \\    public class Allocation__c {
         \\        public Decimal Amount__c;
         \\        public Decimal Percent__c;
@@ -23583,9 +21012,9 @@ test "E2E: NPSP allocation copy converts fixed amount to percentage with decimal
         \\        }
         \\    }
         \\    public static String test() {
-        \\        return copyRecurringDonationCampaignAndPaymentAllocations();
+        \\        return copyFixedAmountAsPercent();
         \\    }
-        \\    public static String copyRecurringDonationCampaignAndPaymentAllocations() {
+        \\    public static String copyFixedAmountAsPercent() {
         \\        Decimal sourceAmount = 100;
         \\        Allocation__c allocation = new Allocation__c(33);
         \\        Decimal allocationPercent = ((allocation.Amount__c != null) ? allocation.Amount__c : 0) / sourceAmount * 100;
@@ -23594,19 +21023,18 @@ test "E2E: NPSP allocation copy converts fixed amount to percentage with decimal
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "ALLO_Allocations_TDTM",
-        .entry_method = "test",
-        .fixture_relaxed_exceptions = true,
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("33.0", result.value.string);
+    try expect_entry_string_with_options(
+        source,
+        "ManagedAllocationPercentProbe",
+        "test",
+        "33.0",
+        .{ .fixture_relaxed_exceptions = true },
+    );
 }
 
-test "E2E: NPSP manage allocations save fills amount from percent" {
+test "E2E: managed package manage allocations save fills amount from percent" {
     const source =
-        \\public class ALLO_ManageAllocations_CTRL {
+        \\public class PackageManageAllocationsProbe {
         \\    public static String test() {
         \\        Opportunity opp = new Opportunity(
         \\            Name = 'Gift',
@@ -23632,19 +21060,18 @@ test "E2E: NPSP manage allocations save fills amount from percent" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "ALLO_ManageAllocations_CTRL",
-        .entry_method = "test",
-        .fixture_relaxed_exceptions = true,
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("4", result.value.string);
+    try expect_entry_string_with_options(
+        source,
+        "PackageManageAllocationsProbe",
+        "test",
+        "4",
+        .{ .fixture_relaxed_exceptions = true },
+    );
 }
 
-test "E2E: NPSP parent amount update resizes percentage allocation" {
+test "E2E: managed package parent amount update resizes percentage allocation" {
     const source =
-        \\public class NpspAllocationParentResizeProbe {
+        \\public class PackageAllocationParentResizeProbe {
         \\    public static String test() {
         \\        Opportunity opp = new Opportunity(
         \\            Name = 'Gift',
@@ -23669,22 +21096,21 @@ test "E2E: NPSP parent amount update resizes percentage allocation" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "NpspAllocationParentResizeProbe",
-        .entry_method = "test",
-        .fixture_relaxed_exceptions = true,
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("5", result.value.string);
+    try expect_entry_string_with_options(
+        source,
+        "PackageAllocationParentResizeProbe",
+        "test",
+        "5",
+        .{ .fixture_relaxed_exceptions = true },
+    );
 }
 
-test "E2E: NPSP default payment allocation fills amount from parent" {
+test "E2E: managed package default payment allocation fills amount from parent" {
     const source =
         \\public class UTIL_CustomSettingsFacade {
         \\    public static Allocations_Settings__c allocationsSettings;
         \\}
-        \\public class NpspDefaultPaymentAllocationProbe {
+        \\public class PackageDefaultPaymentAllocationProbe {
         \\    public static String test() {
         \\        General_Accounting_Unit__c defaultGau = new General_Accounting_Unit__c(Name = 'Default');
         \\        insert defaultGau;
@@ -23708,23 +21134,22 @@ test "E2E: NPSP default payment allocation fills amount from parent" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "NpspDefaultPaymentAllocationProbe",
-        .entry_method = "test",
-        .fixture_relaxed_exceptions = true,
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("8:null", result.value.string);
+    try expect_entry_string_with_options(
+        source,
+        "PackageDefaultPaymentAllocationProbe",
+        "test",
+        "8:null",
+        .{ .fixture_relaxed_exceptions = true },
+    );
 }
 
-test "E2E: NPSP payment allocations sync to opportunity allocations" {
+test "E2E: managed package payment allocations sync to opportunity allocations" {
     const source =
         \\public class UTIL_CustomSettingsFacade {
         \\    public static Allocations_Settings__c allocationsSettings;
         \\}
-        \\public class ALLO_PaymentSync_TEST {
-        \\    public static String syncPaymentToOpportunity() {
+        \\public class PackagePaymentAllocationSyncProbe {
+        \\    public static String test() {
         \\        General_Accounting_Unit__c defaultGau = new General_Accounting_Unit__c(Name = 'Default');
         \\        General_Accounting_Unit__c gauA = new General_Accounting_Unit__c(Name = 'A');
         \\        General_Accounting_Unit__c gauB = new General_Accounting_Unit__c(Name = 'B');
@@ -23763,23 +21188,22 @@ test "E2E: NPSP payment allocations sync to opportunity allocations" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "ALLO_PaymentSync_TEST",
-        .entry_method = "syncPaymentToOpportunity",
-        .fixture_relaxed_exceptions = true,
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("3:200:true:300:true:500:true", result.value.string);
+    try expect_entry_string_with_options(
+        source,
+        "PackagePaymentAllocationSyncProbe",
+        "test",
+        "3:200:true:300:true:500:true",
+        .{ .fixture_relaxed_exceptions = true },
+    );
 }
 
-test "E2E: NPSP opportunity allocations sync to payment allocations" {
+test "E2E: managed package opportunity allocations sync to payment allocations" {
     const source =
         \\public class UTIL_CustomSettingsFacade {
         \\    public static Allocations_Settings__c allocationsSettings;
         \\}
-        \\public class ALLO_PaymentSync_TEST {
-        \\    public static String syncOpportunityToPayment() {
+        \\public class PackageOpportunityAllocationSyncProbe {
+        \\    public static String test() {
         \\        General_Accounting_Unit__c defaultGau = new General_Accounting_Unit__c(Name = 'Default');
         \\        General_Accounting_Unit__c gauA = new General_Accounting_Unit__c(Name = 'A');
         \\        General_Accounting_Unit__c gauB = new General_Accounting_Unit__c(Name = 'B');
@@ -23821,19 +21245,18 @@ test "E2E: NPSP opportunity allocations sync to payment allocations" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "ALLO_PaymentSync_TEST",
-        .entry_method = "syncOpportunityToPayment",
-        .fixture_relaxed_exceptions = true,
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("6:200:true:300:true:500:true:200:true:300:true:500:true:true", result.value.string);
+    try expect_entry_string_with_options(
+        source,
+        "PackageOpportunityAllocationSyncProbe",
+        "test",
+        "6:200:true:300:true:500:true:200:true:300:true:500:true:true",
+        .{ .fixture_relaxed_exceptions = true },
+    );
 }
 
-test "E2E: NPSP parent amount update rejects overallocated records" {
+test "E2E: managed package parent amount update rejects overallocated records" {
     const source =
-        \\public class NpspAllocationParentOverallocatedProbe {
+        \\public class PackageAllocationParentOverallocatedProbe {
         \\    public static String test() {
         \\        Opportunity opp = new Opportunity(
         \\            Name = 'Gift',
@@ -23856,22 +21279,21 @@ test "E2E: NPSP parent amount update rejects overallocated records" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "NpspAllocationParentOverallocatedProbe",
-        .entry_method = "test",
-        .fixture_relaxed_exceptions = true,
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("blocked", result.value.string);
+    try expect_entry_string_with_options(
+        source,
+        "PackageAllocationParentOverallocatedProbe",
+        "test",
+        "blocked",
+        .{ .fixture_relaxed_exceptions = true },
+    );
 }
 
-test "E2E: NPSP payment parent update ignores stale default allocation remainder" {
+test "E2E: managed package payment parent update ignores stale default allocation remainder" {
     const source =
         \\public class UTIL_CustomSettingsFacade {
         \\    public static Allocations_Settings__c allocationsSettings;
         \\}
-        \\public class NpspAllocationParentResizeProbe {
+        \\public class PackagePaymentParentResizeProbe {
         \\    public static String test() {
         \\        General_Accounting_Unit__c defaultGau = new General_Accounting_Unit__c(Name = 'Default');
         \\        insert defaultGau;
@@ -23900,14 +21322,13 @@ test "E2E: NPSP payment parent update ignores stale default allocation remainder
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "NpspAllocationParentResizeProbe",
-        .entry_method = "test",
-        .fixture_relaxed_exceptions = true,
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("0", result.value.string);
+    try expect_entry_string_with_options(
+        source,
+        "PackagePaymentParentResizeProbe",
+        "test",
+        "0",
+        .{ .fixture_relaxed_exceptions = true },
+    );
 }
 
 test "E2E: Boolean TRUE and FALSE static fields are Boolean values" {
@@ -23921,18 +21342,12 @@ test "E2E: Boolean TRUE and FALSE static fields are Boolean values" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "BooleanStaticFieldProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("true:true:true:true", result.value.string);
+    try expect_entry_string(source, "BooleanStaticFieldProbe", "test", "true:true:true:true");
 }
 
-test "E2E: NPSP contact with current address inherits address household account" {
+test "E2E: managed package contact with current address inherits address household account" {
     const source =
-        \\public class NpspCurrentAddressAccountProbe {
+        \\public class PackageCurrentAddressAccountProbe {
         \\    public static String test() {
         \\        Account account = new Account(Name = 'Organization');
         \\        insert account;
@@ -23956,7 +21371,7 @@ test "E2E: NPSP contact with current address inherits address household account"
         \\}
     ;
     const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "NpspCurrentAddressAccountProbe",
+        .entry_class = "PackageCurrentAddressAccountProbe",
         .entry_method = "test",
         .fixture_relaxed_exceptions = true,
     });
@@ -23990,18 +21405,12 @@ test "E2E: null SObject Id field keeps Id overload in builder chains" {
         \\    }
         \\}
     ;
-    const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "NullSObjectIdOverloadProbe",
-        .entry_method = "test",
-    });
-    defer result.deinit();
-
-    try std.testing.expectEqualStrings("false:Account>Id>", result.value.string);
+    try expect_entry_string(source, "NullSObjectIdOverloadProbe", "test", "false:Account>Id>");
 }
 
-test "E2E: NPSP recurring donation defaults planned installments to one" {
+test "E2E: managed package recurring donation defaults planned installments to one" {
     const source =
-        \\public class NpspRecurringDonationInstallmentsDefaultProbe {
+        \\public class PackageRecurringDonationInstallmentsDefaultProbe {
         \\    public static String test() {
         \\        npe03__Recurring_Donation__c rd = new npe03__Recurring_Donation__c(
         \\            Name = 'RD',
@@ -24013,7 +21422,7 @@ test "E2E: NPSP recurring donation defaults planned installments to one" {
         \\}
     ;
     const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "NpspRecurringDonationInstallmentsDefaultProbe",
+        .entry_class = "PackageRecurringDonationInstallmentsDefaultProbe",
         .entry_method = "test",
         .fixture_relaxed_exceptions = true,
     });
@@ -24022,13 +21431,13 @@ test "E2E: NPSP recurring donation defaults planned installments to one" {
     try std.testing.expectEqualStrings("1", result.value.string);
 }
 
-test "E2E: NPSP async recurring donation creates open Opportunity at next installment date" {
+test "E2E: package async recurring donation creates next Opportunity" {
     const source =
         \\public class RD2_OpportunityEvaluationService {}
         \\public class RD2_ScheduleService {
         \\    public static Date currentDate;
         \\}
-        \\public class NpspAsyncRecurringDonationOpportunityProbe {
+        \\public class PackageAsyncRecurringDonationOpportunityProbe {
         \\    public static String test() {
         \\        insert new npe03__Recurring_Donations_Settings__c(
         \\            IsRecurringDonations2Enabled__c = true,
@@ -24072,7 +21481,7 @@ test "E2E: NPSP async recurring donation creates open Opportunity at next instal
         \\}
     ;
     const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "NpspAsyncRecurringDonationOpportunityProbe",
+        .entry_class = "PackageAsyncRecurringDonationOpportunityProbe",
         .entry_method = "test",
         .fixture_relaxed_exceptions = true,
     });
@@ -24081,12 +21490,12 @@ test "E2E: NPSP async recurring donation creates open Opportunity at next instal
     try std.testing.expectEqualStrings("1:2019-09-17:Pledged:true:Completed:0", result.value.string);
 }
 
-test "E2E: NPSP TDTM disabled skips recurring donation rollup side effects" {
+test "E2E: managed package TDTM disabled skips recurring donation rollup side effects" {
     const source =
         \\public class TDTM_TriggerHandler {
         \\    public static Boolean disableTDTM = false;
         \\}
-        \\public class NpspTdtmDisabledRecurringDonationRollupProbe {
+        \\public class PackageTdtmDisabledRecurringDonationRollupProbe {
         \\    public static String test() {
         \\        npe03__Recurring_Donation__c rd = new npe03__Recurring_Donation__c(
         \\            Name = 'RD',
@@ -24119,7 +21528,7 @@ test "E2E: NPSP TDTM disabled skips recurring donation rollup side effects" {
         \\}
     ;
     const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "NpspTdtmDisabledRecurringDonationRollupProbe",
+        .entry_class = "PackageTdtmDisabledRecurringDonationRollupProbe",
         .entry_method = "test",
         .fixture_relaxed_exceptions = true,
     });
