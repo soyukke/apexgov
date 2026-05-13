@@ -81,6 +81,7 @@ pub const MapValue = struct {
     entries: std.StringArrayHashMapUnmanaged(Value) = .empty,
     key_values: std.StringArrayHashMapUnmanaged(Value) = .empty,
     schema_field_owner: ?[]const u8 = null,
+    case_insensitive_keys: bool = false,
 };
 
 pub const SetValue = struct {
