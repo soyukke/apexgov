@@ -926,14 +926,35 @@ const TestHarness = struct {
     client_reader: Io.File,
 
     fn init() !TestHarness {
-        // TODO(zig-0.16 migration): `std.posix.pipe` was removed from the
-        // public API. Until an Io-based equivalent is wired up, LSP
-        // integration tests that require pipes are skipped at runtime.
-        return error.SkipZigTest;
+        const in_pipe = try Io.Threaded.pipe2(.{});
+        errdefer close_fd(in_pipe[0]);
+        errdefer close_fd(in_pipe[1]);
+
+        const out_pipe = try Io.Threaded.pipe2(.{});
+        errdefer close_fd(out_pipe[0]);
+        errdefer close_fd(out_pipe[1]);
+
+        const server_reader = pipe_file(in_pipe[0]);
+        const client_writer = pipe_file(in_pipe[1]);
+        const client_reader = pipe_file(out_pipe[0]);
+        const server_writer = pipe_file(out_pipe[1]);
+
+        return .{
+            .server = Server.init(
+                std.testing.allocator,
+                std.testing.io,
+                server_reader,
+                server_writer,
+            ),
+            .client_writer = client_writer,
+            .client_reader = client_reader,
+        };
     }
 
     fn deinit(self: *TestHarness) void {
         self.server.deinit();
+        self.server.transport.in_file.close(std.testing.io);
+        self.server.transport.out_file.close(std.testing.io);
         self.client_writer.close(std.testing.io);
         self.client_reader.close(std.testing.io);
     }
@@ -995,6 +1016,17 @@ const TestHarness = struct {
         return body;
     }
 };
+
+fn pipe_file(fd: std.posix.fd_t) Io.File {
+    return .{
+        .handle = fd,
+        .flags = .{ .nonblocking = false },
+    };
+}
+
+fn close_fd(fd: std.posix.fd_t) void {
+    pipe_file(fd).close(std.testing.io);
+}
 
 test "integration: initialize returns capabilities" {
     var h = try TestHarness.init();

@@ -3,6 +3,7 @@
 //! System.debug, String メソッド, Integer.valueOf, TestFactory, Database 等。
 
 const std = @import("std");
+const builtin = @import("builtin");
 const types = @import("types.zig");
 const utils = @import("utils.zig");
 const Value = types.Value;
@@ -11,14 +12,10 @@ const ast = @import("ast.zig");
 const evaluator_mod = @import("evaluator.zig");
 pub const regex = @import("regex.zig");
 
-/// Wall-clock time in POSIX seconds. Obtained via the io abstraction in 0.16.
-/// TODO(zig-0.16 migration): replace fallback 0 with `Io.Clock.wall.now(io)`.
+/// Deterministic fixture clock in POSIX seconds.
 fn current_epoch_seconds() i64 {
-    // 0.16 で `std.time.timestamp()` が削除された。本来は `std.Io.Clock.wall`
-    // 経由で現在時刻を取得すべきだが、Apex System.now/today のテスト用途では
-    // 決定的な値の方が扱いやすい。ここでは 2026-04-23T00:00:00Z 相当の
-    // 固定値を返すスタブにしておき、必要になったら io を引数に取る
-    // 実装に切り替える。
+    // Apex System.now/today のテスト用途では決定的な値の方が扱いやすい。
+    // 2026-04-23T00:00:00Z 相当の固定値を返す。
     return 1_777_593_600;
 }
 
@@ -56,6 +53,7 @@ pub const BuiltinContext = struct {
     pending_exception: ?*?Value = null,
     see_all_data: bool = false,
     eval: *evaluator_mod.Evaluator = undefined,
+    io: ?std.Io = null,
 
     fn throw_exception(
         self: *BuiltinContext,
@@ -71,6 +69,39 @@ pub const BuiltinContext = struct {
         return error.ApexException;
     }
 };
+
+fn getenv_posix(key: []const u8) ?[]const u8 {
+    if (comptime builtin.os.tag == .linux and !builtin.link_libc) return null;
+    if (comptime builtin.os.tag == .windows or builtin.os.tag == .wasi) return null;
+
+    const process_env = struct {
+        extern var environ: [*:null]const ?[*:0]const u8;
+    };
+    var i: usize = 0;
+    while (process_env.environ[i]) |entry| : (i += 1) {
+        const e = std.mem.span(entry);
+        const eq = std.mem.indexOfScalar(u8, e, '=') orelse continue;
+        if (std.mem.eql(u8, e[0..eq], key)) return e[eq + 1 ..];
+    }
+    return null;
+}
+
+fn apex_debug_enabled() bool {
+    const raw = getenv_posix("APEXGOV_DEBUG") orelse return false;
+    return raw.len > 0 and
+        !std.mem.eql(u8, raw, "0") and
+        !std.ascii.eqlIgnoreCase(raw, "false") and
+        !std.ascii.eqlIgnoreCase(raw, "no");
+}
+
+fn echo_debug_to_stderr(ctx: *BuiltinContext, msg: []const u8) void {
+    const io = ctx.io orelse return;
+    var buf: [4096]u8 = undefined;
+    var writer_state = std.Io.File.stderr().writer(io, &buf);
+    const writer = &writer_state.interface;
+    writer.print("{s}\n", .{msg}) catch return;
+    writer.flush() catch return;
+}
 
 fn next_logical_millis(ctx: *BuiltinContext) i64 {
     const current = ctx.eval.logical_clock_millis;
@@ -579,8 +610,7 @@ fn dispatch_static_system(
             "";
         try ctx.stdout.appendSlice(ctx.arena, msg);
         try ctx.stdout.append(ctx.arena, '\n');
-        // APEXGOV_DEBUG による stderr echo は 0.16 の Environ 移行に合わせて
-        // 要再実装。一旦スキップ（機能回帰はテストで検知される）。
+        if (apex_debug_enabled()) echo_debug_to_stderr(ctx, msg);
         return .void_val;
     }
     if (std.ascii.eqlIgnoreCase(method_name, "currentTimeMillis")) {

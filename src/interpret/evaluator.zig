@@ -2221,6 +2221,7 @@ pub const Evaluator = struct {
                 .pending_exception = &self.pending_exception,
                 .see_all_data = self.see_all_data,
                 .eval = self,
+                .io = self.io,
             };
             if (try builtins.dispatch_static(&bctx, class_name, method_name, args)) |result| {
                 return result;
@@ -21112,6 +21113,7 @@ pub const Evaluator = struct {
             .pending_exception = &self.pending_exception,
             .see_all_data = self.see_all_data,
             .eval = self,
+            .io = self.io,
         };
         return builtins.normalize_s_object_field_assignment(
             &bctx,
@@ -21293,6 +21295,7 @@ pub const Evaluator = struct {
                         .pending_exception = &self.pending_exception,
                         .see_all_data = self.see_all_data,
                         .eval = self,
+                        .io = self.io,
                     };
                     const display_type =
                         builtins.get_s_object_field_display_type(&bctx, sob, field_name);
@@ -43795,6 +43798,7 @@ pub const Evaluator = struct {
                 .pending_exception = &self.pending_exception,
                 .see_all_data = self.see_all_data,
                 .eval = self,
+                .io = self.io,
             };
             const fields = try builtins.create_field_describe_map_value(
                 &ctx,
@@ -45311,6 +45315,7 @@ pub const Evaluator = struct {
                 .pending_exception = &self.pending_exception,
                 .see_all_data = self.see_all_data,
                 .eval = self,
+                .io = self.io,
             };
             _ = try builtins.dispatch_static(&bctx, "Test", method, args);
             return .void_val;
@@ -50891,6 +50896,7 @@ pub const Evaluator = struct {
             .pending_exception = &self.pending_exception,
             .see_all_data = self.see_all_data,
             .eval = self,
+            .io = self.io,
         };
     }
 
