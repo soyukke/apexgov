@@ -18006,59 +18006,22 @@ pub const Evaluator = struct {
         if (std.mem.endsWith(u8, field_name, "__c") and field_name.len > 3) {
             const base = field_name[0 .. field_name.len - 3];
             const rel_name = try std.fmt.allocPrint(self.arena, "{s}__r", .{base});
-            const fd = try self.arena.create(types.SObject);
-            fd.* = .{ .type_name = "FieldDefinition" };
-            try fd.fields.put(
-                self.arena,
-                "DeveloperName",
-                Value{ .string = field_value },
-            );
-            try fd.fields.put(
-                self.arena,
-                "QualifiedAPIName",
-                Value{ .string = field_value },
-            );
-            try self.apply_known_mdt_relationship_fields(fd, field_name, field_value);
-            try sob.fields.put(self.arena, rel_name, Value{ .sobject = fd });
+            if (self.custom_metadata_parent_type_for_ref(sob.type_name, rel_name) == null) {
+                const fd = try self.arena.create(types.SObject);
+                fd.* = .{ .type_name = "FieldDefinition" };
+                try fd.fields.put(
+                    self.arena,
+                    "DeveloperName",
+                    Value{ .string = field_value },
+                );
+                try fd.fields.put(
+                    self.arena,
+                    "QualifiedAPIName",
+                    Value{ .string = field_value },
+                );
+                try sob.fields.put(self.arena, rel_name, Value{ .sobject = fd });
+            }
         }
-    }
-
-    fn apply_known_mdt_relationship_fields(
-        self: *Evaluator,
-        rel: *types.SObject,
-        field_name: []const u8,
-        field_value: []const u8,
-    ) !void {
-        if (!std.ascii.eqlIgnoreCase(field_name, "Target_Object_Mapping__c")) return;
-        const object_api = npsp_data_import_target_object_api(field_value) orelse return;
-        try rel.fields.put(self.arena, "Object_API_Name__c", Value{ .string = object_api });
-        try rel.fields.put(
-            self.arena,
-            "Legacy_Data_Import_Object_Name__c",
-            Value{ .string = field_value },
-        );
-    }
-
-    fn npsp_data_import_target_object_api(mapping_name: []const u8) ?[]const u8 {
-        const mappings = [_]struct { name: []const u8, object_api: []const u8 }{
-            .{ .name = "Account1", .object_api = "Account" },
-            .{ .name = "Account2", .object_api = "Account" },
-            .{ .name = "Address", .object_api = "Address__c" },
-            .{ .name = "Contact1", .object_api = "Contact" },
-            .{ .name = "Contact2", .object_api = "Contact" },
-            .{ .name = "Household", .object_api = "Account" },
-            .{ .name = "Opportunity", .object_api = "Opportunity" },
-            .{ .name = "Payment", .object_api = "npe01__OppPayment__c" },
-            .{ .name = "Recurring_Donation", .object_api = "npe03__Recurring_Donation__c" },
-            .{ .name = "GAU_Allocation_1", .object_api = "npsp__Allocation__c" },
-            .{ .name = "GAU_Allocation_2", .object_api = "npsp__Allocation__c" },
-            .{ .name = "Opportunity_Contact_Role_1", .object_api = "OpportunityContactRole" },
-            .{ .name = "Opportunity_Contact_Role_2", .object_api = "OpportunityContactRole" },
-        };
-        for (mappings) |mapping| {
-            if (std.ascii.eqlIgnoreCase(mapping_name, mapping.name)) return mapping.object_api;
-        }
-        return null;
     }
 
     fn xml_tag_value(self: *Evaluator, xml: []const u8, tag_name: []const u8) ?[]const u8 {
@@ -19491,7 +19454,7 @@ pub const Evaluator = struct {
                 "{s}__r",
                 .{field_name[0 .. field_name.len - 3]},
             ) catch return false;
-            break :blk self.known_custom_metadata_parent_type(object_type, rel_name) orelse
+            break :blk self.custom_metadata_parent_type_for_ref(object_type, rel_name) orelse
                 return false;
         };
         return self.custom_metadata_record_id_has_developer_name(
@@ -20395,11 +20358,6 @@ pub const Evaluator = struct {
         if (self.resolve_custom_child_relationship(parent_type, relationship)) |custom| {
             return custom.child_type;
         }
-        if (std.ascii.eqlIgnoreCase(parent_type, "Data_Import_Object_Mapping__mdt") and
-            std.ascii.eqlIgnoreCase(relationship, "Data_Import_Field_Mappings__r"))
-        {
-            return "Data_Import_Field_Mapping__mdt";
-        }
         if (std.ascii.eqlIgnoreCase(parent_type, "npe03__Recurring_Donation__c") and
             std.ascii.eqlIgnoreCase(relationship, "npe03__Donations__r"))
         {
@@ -20474,12 +20432,6 @@ pub const Evaluator = struct {
     ) []const u8 {
         if (self.resolve_custom_child_relationship(parent_type, relationship)) |custom| {
             if (std.ascii.eqlIgnoreCase(custom.child_type, child_type)) return custom.fk_field;
-        }
-        if (std.ascii.eqlIgnoreCase(parent_type, "Data_Import_Object_Mapping__mdt") and
-            std.ascii.eqlIgnoreCase(child_type, "Data_Import_Field_Mapping__mdt") and
-            std.ascii.eqlIgnoreCase(relationship, "Data_Import_Field_Mappings__r"))
-        {
-            return "Target_Object_Mapping__c";
         }
         if (std.ascii.eqlIgnoreCase(parent_type, "npe03__Recurring_Donation__c") and
             std.ascii.eqlIgnoreCase(child_type, "Opportunity") and
@@ -20599,7 +20551,6 @@ pub const Evaluator = struct {
             const parent_type = parent_type_opt.?;
             const parent_rec = self.find_parent_relationship_record(
                 current_type,
-                parent_ref,
                 parent_type,
                 fk_val_opt.?.string,
             ) orelse return;
@@ -20671,7 +20622,6 @@ pub const Evaluator = struct {
     fn find_parent_relationship_record(
         self: *Evaluator,
         current_type: []const u8,
-        parent_ref: []const u8,
         parent_type: []const u8,
         fk_value: []const u8,
     ) ?Value {
@@ -20681,12 +20631,6 @@ pub const Evaluator = struct {
                 parent_type,
                 fk_value,
             )) |record| return record;
-            if (self.known_custom_metadata_parent_type(current_type, parent_ref)) |known_type| {
-                if (self.find_custom_metadata_record_by_developer_name(
-                    known_type,
-                    fk_value,
-                )) |record| return record;
-            }
         }
         return null;
     }
@@ -20906,7 +20850,7 @@ pub const Evaluator = struct {
         {
             return "npo02__Household__c";
         }
-        if (self.known_custom_metadata_parent_type(object_type, ref)) |target| return target;
+        if (self.custom_metadata_parent_type_for_ref(object_type, ref)) |target| return target;
         const fk_field = self.parent_ref_to_fk(ref);
         if (self.get_field_metadata(object_type, fk_field)) |meta| {
             if (meta.reference_to) |target_type| return target_type;
@@ -20926,43 +20870,31 @@ pub const Evaluator = struct {
         return self.parent_ref_to_type(ref);
     }
 
-    fn known_custom_metadata_parent_type(
+    fn custom_metadata_parent_type_for_ref(
         self: *Evaluator,
         object_type: []const u8,
         ref: []const u8,
     ) ?[]const u8 {
-        _ = self;
         if (!std.mem.endsWith(u8, object_type, "__mdt")) return null;
-        const mappings = .{
-            .{
-                "Data_Import_Field_Mapping_Set__mdt",
-                "Data_Import_Object_Mapping_Set__r",
-                "Data_Import_Object_Mapping_Set__mdt",
-            },
-            .{
-                "Data_Import_Object_Mapping__mdt",
-                "Data_Import_Object_Mapping_Set__r",
-                "Data_Import_Object_Mapping_Set__mdt",
-            },
-            .{
-                "Data_Import_Field_Mapping__mdt",
-                "Data_Import_Field_Mapping_Set__r",
-                "Data_Import_Field_Mapping_Set__mdt",
-            },
-            .{
-                "Data_Import_Field_Mapping__mdt",
-                "Target_Object_Mapping__r",
-                "Data_Import_Object_Mapping__mdt",
-            },
-        };
-        inline for (mappings) |mapping| {
-            if (std.ascii.eqlIgnoreCase(object_type, mapping[0]) and
-                std.ascii.eqlIgnoreCase(ref, mapping[1]))
-            {
-                return mapping[2];
-            }
-        }
-        return null;
+        if (ref.len <= 3 or !std.ascii.eqlIgnoreCase(ref[ref.len - 3 ..], "__r")) return null;
+        const fk_field = std.fmt.allocPrint(
+            self.arena,
+            "{s}__c",
+            .{ref[0 .. ref.len - 3]},
+        ) catch return null;
+        return self.custom_metadata_parent_type_for_fk(object_type, fk_field);
+    }
+
+    fn custom_metadata_parent_type_for_fk(
+        self: *Evaluator,
+        object_type: []const u8,
+        fk_field: []const u8,
+    ) ?[]const u8 {
+        if (!std.mem.endsWith(u8, object_type, "__mdt")) return null;
+        const metadata = self.get_field_metadata(object_type, fk_field) orelse return null;
+        const reference_to = metadata.reference_to orelse return null;
+        if (!std.mem.endsWith(u8, reference_to, "__mdt")) return null;
+        return reference_to;
     }
 
     /// Find a record by Id in the store.
@@ -21972,6 +21904,16 @@ pub const Evaluator = struct {
             fk_field,
             fk_value.string,
         ) orelse return null;
+        if (std.mem.endsWith(u8, sob.type_name, "__mdt") and
+            std.mem.endsWith(u8, target_type, "__mdt"))
+        {
+            if (self.find_custom_metadata_record_by_developer_name(
+                target_type,
+                fk_value.string,
+            )) |record| {
+                if (record == .sobject) return record;
+            }
+        }
         if (self.find_record_by_id(target_type, fk_value.string)) |record| {
             if (record == .sobject) return record;
         }
