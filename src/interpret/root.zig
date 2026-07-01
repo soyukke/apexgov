@@ -9424,22 +9424,22 @@ test "E2E: JSON serialization escapes embedded quotes in strings" {
     );
 }
 
-test "E2E: managed package data import address mapping falls back when metadata value is null" {
+test "E2E: managed package map get preserves explicit null values" {
     const source =
-        \\public class PackageAddressMappingFallbackProbe {
+        \\public class PackageMapNullProbe {
         \\    public static String test() {
         \\        Map<String, String> fields = new Map<String, String>();
-        \\        fields.put('npsp__Home_City__c', null);
-        \\        return fields.get('Home_City__c') + ':' +
-        \\            fields.get('npsp__Home_City__c');
+        \\        fields.put('pkg__Custom_Field__c', null);
+        \\        return String.valueOf(fields.get('Custom_Field__c')) + ':' +
+        \\            String.valueOf(fields.get('pkg__Custom_Field__c'));
         \\    }
         \\}
     ;
     try expect_entry_string(
         source,
-        "PackageAddressMappingFallbackProbe",
+        "PackageMapNullProbe",
         "test",
-        "MailingCity__c:MailingCity__c",
+        "null:null",
     );
 }
 
@@ -14469,13 +14469,13 @@ test "E2E: JSON relationship records without attributes infer child SObject type
         \\    public static String test() {
         \\        String json =
         \\            '{"Id":"006000000000001AAA","Name":"Gift",' +
-        \\            '"npe01__OppPayment__r":{"totalSize":1,"done":true,"records":[' +
-        \\            '{"Id":"a2f000000000001AAA","npe01__Paid__c":false,' +
-        \\            '"npe01__Opportunity__c":"006000000000001AAA"}]}}';
+        \\            '"pkg__Payment__r":{"totalSize":1,"done":true,"records":[' +
+        \\            '{"Id":"a2f000000000001AAA","pkg__Paid__c":false,' +
+        \\            '"pkg__Opportunity__c":"006000000000001AAA"}]}}';
         \\        Opportunity opportunity = (Opportunity) JSON.deserialize(json, Opportunity.class);
-        \\        return String.valueOf(opportunity.npe01__OppPayment__r.size()) + ':' +
-        \\            opportunity.npe01__OppPayment__r[0].getSObjectType().getDescribe().getName() + ':' +
-        \\            String.valueOf(opportunity.npe01__OppPayment__r[0].npe01__Paid__c);
+        \\        return String.valueOf(opportunity.pkg__Payment__r.size()) + ':' +
+        \\            opportunity.pkg__Payment__r[0].getSObjectType().getDescribe().getName() + ':' +
+        \\            String.valueOf(opportunity.pkg__Payment__r[0].pkg__Paid__c);
         \\    }
         \\}
     ;
@@ -14483,7 +14483,7 @@ test "E2E: JSON relationship records without attributes infer child SObject type
         source,
         "JsonInferredRelationshipRecordTypeTest",
         "test",
-        "1:npe01__OppPayment__c:false",
+        "1:pkg__Payment__c:false",
     );
 }
 

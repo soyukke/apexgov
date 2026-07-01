@@ -20410,10 +20410,11 @@ pub const Evaluator = struct {
         {
             return "RecurringDonationSchedule__c";
         }
-        if (std.ascii.eqlIgnoreCase(parent_type, "Opportunity") and
-            std.ascii.eqlIgnoreCase(relationship, "npe01__OppPayment__r"))
-        {
-            return "npe01__OppPayment__c";
+        const parent_base = type_base_name(strip_type_namespace(parent_type));
+        if (!std.mem.endsWith(u8, parent_base, "__c")) {
+            if (custom_child_type_from_relationship_name(self.arena, relationship)) |child_type| {
+                return child_type;
+            }
         }
         // Common Salesforce relationship mappings
         const mappings = .{
@@ -20492,11 +20493,13 @@ pub const Evaluator = struct {
         {
             return "RecurringDonation__c";
         }
-        if (std.ascii.eqlIgnoreCase(parent_type, "Opportunity") and
-            std.ascii.eqlIgnoreCase(child_type, "npe01__OppPayment__c") and
-            std.ascii.eqlIgnoreCase(relationship, "npe01__OppPayment__r"))
-        {
-            return "npe01__Opportunity__c";
+        if (custom_foreign_key_from_relationship_name(
+            self.arena,
+            child_type,
+            parent_type,
+            relationship,
+        )) |fk| {
+            return fk;
         }
         // Self-referencing hierarchy relationships use ParentId regardless of
         // the logical parent type name.
@@ -21943,10 +21946,14 @@ pub const Evaluator = struct {
         parent_type: []const u8,
         relationship: []const u8,
     ) bool {
-        _ = self;
-        if (!std.ascii.eqlIgnoreCase(parent_type, "Opportunity")) return false;
-        return std.ascii.eqlIgnoreCase(relationship, "npe01__OppPayment__r") or
-            std.ascii.eqlIgnoreCase(relationship, "OpportunityContactRoles") or
+        const parent_base = type_base_name(strip_type_namespace(parent_type));
+        if (!std.mem.endsWith(u8, parent_base, "__c") and
+            custom_child_type_from_relationship_name(self.arena, relationship) != null)
+        {
+            return true;
+        }
+        if (!std.ascii.eqlIgnoreCase(parent_base, "Opportunity")) return false;
+        return std.ascii.eqlIgnoreCase(relationship, "OpportunityContactRoles") or
             std.ascii.eqlIgnoreCase(relationship, "OpportunityLineItems");
     }
 
@@ -53999,10 +54006,10 @@ pub const Evaluator = struct {
             return rel.child_type;
         }
         const parent_base = type_base_name(strip_type_namespace(parent_type));
-        if (std.ascii.eqlIgnoreCase(parent_base, "Opportunity") and
-            std.ascii.eqlIgnoreCase(relationship_name, "npe01__OppPayment__r"))
-        {
-            return "npe01__OppPayment__c";
+        if (!std.mem.endsWith(u8, parent_base, "__c")) {
+            if (custom_child_type_from_relationship_name(self.arena, relationship_name)) |child_type| {
+                return child_type;
+            }
         }
         if (std.ascii.eqlIgnoreCase(parent_base, "Opportunity") and
             std.ascii.eqlIgnoreCase(relationship_name, "OpportunityContactRoles"))
@@ -54020,6 +54027,49 @@ pub const Evaluator = struct {
             return "Contact";
         }
         return null;
+    }
+
+    fn custom_child_type_from_relationship_name(
+        arena: std.mem.Allocator,
+        relationship_name: []const u8,
+    ) ?[]const u8 {
+        const base = namespaced_relationship_base(relationship_name) orelse return null;
+        return std.fmt.allocPrint(arena, "{s}__c", .{base}) catch null;
+    }
+
+    fn custom_foreign_key_from_relationship_name(
+        arena: std.mem.Allocator,
+        child_type: []const u8,
+        parent_type: []const u8,
+        relationship_name: []const u8,
+    ) ?[]const u8 {
+        const base = namespaced_relationship_base(relationship_name) orelse return null;
+        const expected_child = std.fmt.allocPrint(arena, "{s}__c", .{base}) catch return null;
+        if (!std.ascii.eqlIgnoreCase(child_type, expected_child)) return null;
+
+        const sep = std.mem.indexOf(u8, base, "__") orelse return null;
+        const ns = base[0..sep];
+        const parent_base = type_base_name(strip_type_namespace(parent_type));
+        if (std.mem.endsWith(u8, parent_base, "__c")) return null;
+        return std.fmt.allocPrint(arena, "{s}__{s}__c", .{ ns, parent_base }) catch null;
+    }
+
+    fn namespaced_relationship_base(relationship_name: []const u8) ?[]const u8 {
+        if (!std.mem.endsWith(u8, relationship_name, "__r")) return null;
+        const base = relationship_name[0 .. relationship_name.len - "__r".len];
+        const sep = std.mem.indexOf(u8, base, "__") orelse return null;
+        if (!is_lowercase_namespace_token(base[0..sep])) return null;
+        return base;
+    }
+
+    fn is_lowercase_namespace_token(token: []const u8) bool {
+        if (token.len == 0) return false;
+        if (!std.ascii.isAlphabetic(token[0]) or std.ascii.isUpper(token[0])) return false;
+        for (token[1..]) |ch| {
+            if (std.ascii.isUpper(ch)) return false;
+            if (!std.ascii.isAlphanumeric(ch) and ch != '_') return false;
+        }
+        return true;
     }
 
     fn normalize_json_relationship_record(

@@ -459,7 +459,7 @@ test "valueEql: null != non-null" {
     try std.testing.expect(!value_eql(Value{ .string = "" }, Value.null_val));
 }
 
-test "sobject_get matches known namespace prefixes" {
+test "sobject_get matches managed namespace prefixes" {
     var fields: std.StringArrayHashMapUnmanaged(Value) = .empty;
     defer fields.deinit(std.testing.allocator);
 
@@ -470,13 +470,13 @@ test "sobject_get matches known namespace prefixes" {
     );
     try fields.put(
         std.testing.allocator,
-        "npsp__Relationship__r",
+        "demo__Relationship__r",
         Value{ .string = "parent" },
     );
 
     try std.testing.expectEqualStrings(
         "a01000000000000001",
-        sobject_get(&fields, "npsp__Form_Template__c").?.string,
+        sobject_get(&fields, "pkg__Form_Template__c").?.string,
     );
     try std.testing.expectEqualStrings(
         "parent",
@@ -512,7 +512,7 @@ pub fn sobject_get(fields: *const std.StringArrayHashMapUnmanaged(Value), name: 
     for (fields.keys(), fields.values()) |k, v| {
         if (std.ascii.eqlIgnoreCase(k, name)) return v;
     }
-    const stripped_name = strip_known_namespace_prefix(name);
+    const stripped_name = strip_namespace_prefix(name);
     if (stripped_name.ptr != name.ptr) {
         if (fields.get(stripped_name)) |v| return v;
         for (fields.keys(), fields.values()) |k, v| {
@@ -520,7 +520,7 @@ pub fn sobject_get(fields: *const std.StringArrayHashMapUnmanaged(Value), name: 
         }
     } else {
         for (fields.keys(), fields.values()) |k, v| {
-            const stripped_key = strip_known_namespace_prefix(k);
+            const stripped_key = strip_namespace_prefix(k);
             if (stripped_key.ptr != k.ptr and
                 std.ascii.eqlIgnoreCase(stripped_key, name))
             {
@@ -541,9 +541,9 @@ pub fn sobject_put(
 ) !void {
     // Check if there's an existing key with different case
     var existing_key: ?[]const u8 = null;
-    const stripped_name = strip_known_namespace_prefix(name);
+    const stripped_name = strip_namespace_prefix(name);
     for (fields.keys()) |k| {
-        const stripped_key = strip_known_namespace_prefix(k);
+        const stripped_key = strip_namespace_prefix(k);
         if (std.ascii.eqlIgnoreCase(k, name) or
             std.ascii.eqlIgnoreCase(stripped_key, stripped_name))
         {
@@ -559,14 +559,54 @@ pub fn sobject_put(
     }
 }
 
-fn strip_known_namespace_prefix(name: []const u8) []const u8 {
-    if (std.ascii.startsWithIgnoreCase(name, "npsp__")) return name["npsp__".len..];
-    if (std.ascii.startsWithIgnoreCase(name, "npo02__")) return name["npo02__".len..];
-    if (std.ascii.startsWithIgnoreCase(name, "npe01__")) return name["npe01__".len..];
-    if (std.ascii.startsWithIgnoreCase(name, "npe03__")) return name["npe03__".len..];
-    if (std.ascii.startsWithIgnoreCase(name, "npe4__")) return name["npe4__".len..];
-    if (std.ascii.startsWithIgnoreCase(name, "npe5__")) return name["npe5__".len..];
-    return name;
+fn strip_namespace_prefix(name: []const u8) []const u8 {
+    const sep = std.mem.indexOf(u8, name, "__") orelse return name;
+    if (sep == 0) return name;
+    const rest_start = sep + 2;
+    if (rest_start >= name.len) return name;
+    if (!is_namespace_token(name[0..sep])) return name;
+
+    const rest = name[rest_start..];
+    if (std.mem.indexOf(u8, rest, "__") == null) return name;
+    return rest;
+}
+
+fn is_namespace_token(token: []const u8) bool {
+    if (token.len == 0) return false;
+    if (!std.ascii.isAlphabetic(token[0])) return false;
+    if (std.ascii.isUpper(token[0])) return false;
+    for (token[1..]) |ch| {
+        if (std.ascii.isUpper(ch)) return false;
+        if (!std.ascii.isAlphanumeric(ch) and ch != '_') return false;
+    }
+    return true;
+}
+
+test "strip_namespace_prefix does not strip local custom names" {
+    try std.testing.expectEqualStrings(
+        "Custom_Field__c",
+        strip_namespace_prefix("Custom_Field__c"),
+    );
+    try std.testing.expectEqualStrings(
+        "Custom_Object__r",
+        strip_namespace_prefix("Custom_Object__r"),
+    );
+    try std.testing.expectEqualStrings(
+        "RD2__Schedule_Field__c",
+        strip_namespace_prefix("RD2__Schedule_Field__c"),
+    );
+    try std.testing.expectEqualStrings("Name", strip_namespace_prefix("Name"));
+}
+
+test "strip_namespace_prefix strips arbitrary managed namespaces" {
+    try std.testing.expectEqualStrings(
+        "Custom_Field__c",
+        strip_namespace_prefix("pkg__Custom_Field__c"),
+    );
+    try std.testing.expectEqualStrings(
+        "ChildRelationship__r",
+        strip_namespace_prefix("pkg2__ChildRelationship__r"),
+    );
 }
 
 /// Apex の Double/Decimal を文字列化する。
