@@ -39041,42 +39041,13 @@ pub const Evaluator = struct {
     fn eval_map_get(self: *Evaluator, map: *types.MapValue, key_value: Value) !Value {
         if (self.find_map_entry_key(map, key_value)) |key| {
             if (map.entries.get(key)) |value| {
-                if (value != .null_val) return value;
-                if (npsp_data_import_field_mapping_fallback(key_value)) |field_name| {
-                    return Value{ .string = field_name };
-                }
                 return value;
             }
         }
         if (try self.synthetic_schema_field_map_value(map, key_value)) |value| {
             return value;
         }
-        if (npsp_data_import_field_mapping_fallback(key_value)) |field_name| {
-            return Value{ .string = field_name };
-        }
         return Value.null_val;
-    }
-
-    fn npsp_data_import_field_mapping_fallback(key_value: Value) ?[]const u8 {
-        if (key_value != .string) return null;
-        const key = strip_known_namespace_prefix(key_value.string);
-        const mappings = [_]struct { source: []const u8, target: []const u8 }{
-            .{ .source = "Home_Street__c", .target = "MailingStreet__c" },
-            .{ .source = "Home_City__c", .target = "MailingCity__c" },
-            .{ .source = "Home_State_Province__c", .target = "MailingState__c" },
-            .{ .source = "Home_Zip_Postal_Code__c", .target = "MailingPostalCode__c" },
-            .{ .source = "Home_Country__c", .target = "MailingCountry__c" },
-        };
-        for (mappings) |mapping| {
-            if (std.ascii.eqlIgnoreCase(key, mapping.source)) return mapping.target;
-        }
-        return null;
-    }
-
-    fn strip_known_namespace_prefix(name: []const u8) []const u8 {
-        if (std.ascii.startsWithIgnoreCase(name, "npsp__")) return name["npsp__".len..];
-        if (std.ascii.startsWithIgnoreCase(name, "npo02__")) return name["npo02__".len..];
-        return name;
     }
 
     fn eval_map_contains_key(self: *Evaluator, map: *types.MapValue, key_value: Value) bool {
