@@ -1638,20 +1638,20 @@ pub const Evaluator = struct {
             return true;
         }
         const builtin_names = [_][]const u8{
-            "System",            "String",            "Id",              "Integer",
-            "Long",              "Boolean",           "Decimal",         "Double",
-            "Date",              "Math",              "Time",            "TimeZone",
-            "DateTime",          "Approval",          "BusinessHours",   "JSON",
-            "UserInfo",          "LoggingLevel",      "Quiddity",        "UUID",
-            "OrgLimits",         "Database",          "RestContext",     "HttpResponse",
-            "HttpRequest",       "Schema",            "Security",        "AccessLevel",
-            "FeatureManagement", "Limits",            "Script",          "Pattern",
-            "Type",              "Request",           "Crypto",          "Blob",
-            "EncodingUtil",      "Messaging",         "EventBus",        "Invocable.Action",
-            "Test",              "Location",          "System.Location", "Formula",
-            "Cache",             "Http",              "CanTheUser",      "OrgShape",
-            "ApexPages",         "Network",           "Url",             "URL",
-            "AccessType",        "fflib_IDGenerator",
+            "System",            "String",       "Id",              "Integer",
+            "Long",              "Boolean",      "Decimal",         "Double",
+            "Date",              "Math",         "Time",            "TimeZone",
+            "DateTime",          "Approval",     "BusinessHours",   "JSON",
+            "UserInfo",          "LoggingLevel", "Quiddity",        "UUID",
+            "OrgLimits",         "Database",     "RestContext",     "HttpResponse",
+            "HttpRequest",       "Schema",       "Security",        "AccessLevel",
+            "FeatureManagement", "Limits",       "Script",          "Pattern",
+            "Type",              "Request",      "Crypto",          "Blob",
+            "EncodingUtil",      "Messaging",    "EventBus",        "Invocable.Action",
+            "Test",              "Location",     "System.Location", "Formula",
+            "Cache",             "Http",         "CanTheUser",      "OrgShape",
+            "ApexPages",         "Network",      "Url",             "URL",
+            "AccessType",
         };
         inline for (builtin_names) |builtin_name| {
             if (std.ascii.eqlIgnoreCase(class_name, builtin_name)) return true;

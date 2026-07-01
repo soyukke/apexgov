@@ -369,6 +369,9 @@ fn expand_fixture_dependency_paths(
     paths: []const []const u8,
     expanded: *std.ArrayListUnmanaged([]const u8),
 ) !void {
+    const has_common = paths_include_fixture_repo(paths, "fflib-apex-common") or
+        paths_include_fixture_repo(paths, "fflib-apex-common-latest") or
+        paths_include_fixture_repo(paths, "fflib-apex-common-v2");
     const has_samplecode = paths_include_fixture_repo(paths, "fflib-apex-common-samplecode");
     const has_extensions = paths_include_fixture_repo(paths, "fflib-apex-extensions");
     const has_at4dx = paths_include_fixture_repo(paths, "at4dx");
@@ -386,6 +389,8 @@ fn expand_fixture_dependency_paths(
             expanded,
             ".local-fixtures/apex/repos/fflib-apex-common/sfdx-source/apex-common/main",
         );
+    }
+    if (has_common or has_samplecode or has_extensions or has_at4dx) {
         try append_unique_path(
             alloc,
             expanded,
@@ -7802,24 +7807,24 @@ test "E2E: Type.forName returns null for names that don't resolve" {
     try expect_entry_string(source, "TypeForNameNullProbe", "test", "ok");
 }
 
-test "E2E: fflib_IDGenerator.generate provides a fake id when class source is absent" {
-    // fflib-apex-common tests reference fflib_IDGenerator from the sibling fflib-apex-mocks
-    // package, but when only fflib-apex-common is loaded the class is missing and tests
-    // crash with `null.Id` downstream. We stub the helper with a deterministic fake id —
-    // only when the user hasn't actually supplied their own fflib_IDGenerator.
-    const source =
-        \\public class FflibIdGeneratorStubProbe {
-        \\    public static String test() {
-        \\        Id a = fflib_IDGenerator.generate(Schema.Account.SObjectType);
-        \\        Id b = fflib_IDGenerator.generate(Schema.Account.SObjectType);
-        \\        if (a == null || b == null) return 'null-id';
-        \\        if (a == b) return 'duplicate-id';
-        \\        if (!String.valueOf(a).startsWith('001')) return 'bad-prefix:' + String.valueOf(a);
-        \\        return 'ok';
-        \\    }
-        \\}
-    ;
-    try expect_entry_string(source, "FflibIdGeneratorStubProbe", "test", "ok");
+test "fixture dependency expansion adds fflib mocks for apex common" {
+    var expanded: std.ArrayListUnmanaged([]const u8) = .empty;
+    try expand_fixture_dependency_paths(
+        std.testing.allocator,
+        &.{".local-fixtures/apex/repos/fflib-apex-common"},
+        &expanded,
+    );
+    defer expanded.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(usize, 2), expanded.items.len);
+    try std.testing.expectEqualStrings(
+        ".local-fixtures/apex/repos/fflib-apex-mocks/sfdx-source/apex-mocks/main",
+        expanded.items[0],
+    );
+    try std.testing.expectEqualStrings(
+        ".local-fixtures/apex/repos/fflib-apex-common",
+        expanded.items[1],
+    );
 }
 
 test "E2E: Contact exposes Tasks and Account exposes Cases as child relationships" {

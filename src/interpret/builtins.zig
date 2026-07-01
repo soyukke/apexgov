@@ -515,81 +515,12 @@ pub fn dispatch_static(
         return dispatch_static_url(ctx, method_name);
     }
     if (ci.eqlIgnoreCase(class_name, "AccessType")) return Value{ .string = method_name };
-    // Stubbed utility classes — only provided when the user hasn't supplied a copy.
-    // fflib_IDGenerator lives in fflib-apex-mocks, but fflib-apex-common's tests call
-    // it even when the mock source isn't co-loaded. Emitting a deterministic fake Id
-    // keeps those tests on the happy path.
-    if (ci.eqlIgnoreCase(class_name, "fflib_IDGenerator") and
-        ctx.eval.classes.get("fflib_IDGenerator") == null)
-    {
-        if (ci.eqlIgnoreCase(method_name, "generate") and args.len > 0) {
-            const sobj_name: []const u8 = if (args[0] == .object and
-                (ci.eqlIgnoreCase(args[0].object.class_name, "Schema.SObjectType") or
-                    ci.eqlIgnoreCase(args[0].object.class_name, "SObjectType")))
-            blk: {
-                if (args[0].object.fields.get("name")) |n| if (n == .string) break :blk n.string;
-                break :blk "SObject";
-            } else if (args[0] == .string) args[0].string else "SObject";
-            const prefix = builtins_key_prefix_for_name(sobj_name);
-            ctx.eval.next_id += 1;
-            const id_str = try std.fmt.allocPrint(
-                ctx.arena,
-                "{s}{x:0>12}",
-                .{ prefix, ctx.eval.next_id },
-            );
-            return Value{ .string = id_str };
-        }
-    }
     return null;
 }
 
 fn is_location_class(class_name: []const u8) bool {
     return std.ascii.eqlIgnoreCase(class_name, "Location") or
         std.ascii.eqlIgnoreCase(class_name, "System.Location");
-}
-
-/// Quick keyPrefix lookup used by builtin-stubbed id generators. Returns `000` for
-/// unknown types (fine for round-tripping Id.valueOf).
-fn builtins_key_prefix_for_name(name: []const u8) []const u8 {
-    const pairs = [_]struct { name: []const u8, prefix: []const u8 }{
-        .{ .name = "Account", .prefix = "001" },
-        .{ .name = "Contact", .prefix = "003" },
-        .{ .name = "Opportunity", .prefix = "006" },
-        .{ .name = "Case", .prefix = "500" },
-        .{ .name = "Lead", .prefix = "00Q" },
-        .{ .name = "Campaign", .prefix = "701" },
-        .{ .name = "CampaignMember", .prefix = "00v" },
-        .{ .name = "Task", .prefix = "00T" },
-        .{ .name = "Event", .prefix = "00U" },
-        .{ .name = "User", .prefix = "005" },
-        .{ .name = "Profile", .prefix = "00e" },
-        .{ .name = "Product2", .prefix = "01t" },
-        .{ .name = "Pricebook2", .prefix = "01s" },
-        .{ .name = "PricebookEntry", .prefix = "01u" },
-        .{ .name = "OpportunityLineItem", .prefix = "00k" },
-        .{ .name = "Quote", .prefix = "0Q0" },
-        .{ .name = "QuoteLineItem", .prefix = "0QL" },
-        .{ .name = "Contract", .prefix = "800" },
-        .{ .name = "Order", .prefix = "801" },
-        .{ .name = "OrderItem", .prefix = "802" },
-        .{ .name = "Asset", .prefix = "02i" },
-        .{ .name = "RecordType", .prefix = "012" },
-        .{ .name = "Group", .prefix = "00G" },
-        .{ .name = "UserRole", .prefix = "00E" },
-        .{ .name = "ContentDocument", .prefix = "069" },
-        .{ .name = "ContentVersion", .prefix = "068" },
-        .{ .name = "EmailMessage", .prefix = "02s" },
-        .{ .name = "CaseComment", .prefix = "00a" },
-        .{ .name = "FeedItem", .prefix = "0D5" },
-    };
-    for (pairs) |p| {
-        if (std.ascii.eqlIgnoreCase(p.name, name)) return p.prefix;
-    }
-    // Custom objects keep a deterministic placeholder prefix — enough to round-trip
-    // through Id.valueOf for tests that just want "some id that isn't null".
-    if (std.mem.endsWith(u8, name, "__c")) return "a00";
-    if (std.mem.endsWith(u8, name, "__mdt")) return "m00";
-    return "000";
 }
 
 // ---------------------------------------------------------------------------
