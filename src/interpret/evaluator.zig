@@ -30735,7 +30735,15 @@ pub const Evaluator = struct {
         arg_hint: ?[]const u8,
     ) ?[]const u8 {
         _ = self;
-        if (list.element_type) |element_type| return strip_type_namespace(element_type);
+        if (list.element_type) |element_type| {
+            const stripped = strip_type_namespace(element_type);
+            if (std.ascii.eqlIgnoreCase(stripped, "SObject") and list.items.items.len > 0) {
+                if (list.items.items[0] == .sobject) {
+                    return strip_type_namespace(list.items.items[0].sobject.type_name);
+                }
+            }
+            return stripped;
+        }
         if (arg_hint) |hint| {
             if (extract_collection_element_type_name(hint)) |element_type| {
                 return strip_type_namespace(element_type);
@@ -34273,9 +34281,6 @@ pub const Evaluator = struct {
         }
         if (try self.eval_install_context_instance_method(obj, method)) |result| return result;
         if (try self.eval_version_instance_method(obj, method, args)) |result| return result;
-        if (try self.eval_npsp_rd2_pause_schedule_handler_method(obj, method, args)) |result| {
-            return result;
-        }
         if (try self.eval_npsp_opp_rollup_instance_method(obj, method, args)) |result| {
             return result;
         }
@@ -36277,29 +36282,6 @@ pub const Evaluator = struct {
         const start_str = builtins.extract_date_string(start_value) orelse return true;
         const start = parse_iso_date(start_str) orelse return true;
         return compare_iso_dates(start, end) <= 0;
-    }
-
-    fn eval_npsp_rd2_pause_schedule_handler_method(
-        self: *Evaluator,
-        obj: Value,
-        method: []const u8,
-        args: []const Value,
-    ) !?Value {
-        _ = self;
-        if (!(obj == .object and
-            std.ascii.endsWithIgnoreCase(
-                obj.object.class_name,
-                "PauseScheduleHandler",
-            )))
-        {
-            return null;
-        }
-        if (std.ascii.eqlIgnoreCase(method, "hasActivePause") and
-            (args.len == 0 or args[0] == .null_val))
-        {
-            return Value{ .boolean = false };
-        }
-        return null;
     }
 
     fn npsp_recurring_donation_is_paused(

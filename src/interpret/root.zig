@@ -20862,6 +20862,25 @@ test "E2E: Map<Id, SObject>.values() preserves homogeneous SObjectType for gener
     try expect_entry_string(source, "MapValuesSObjectTypeProbe", "test", "Account");
 }
 
+test "E2E: List<SObject> with concrete rows prefers concrete list overload" {
+    const source =
+        \\public class ConcreteListOverloadProbe {
+        \\    public static String choose(Account row) {
+        \\        return 'single';
+        \\    }
+        \\    public static String choose(List<Account> rows) {
+        \\        return 'list:' + rows.size();
+        \\    }
+        \\    public static String test() {
+        \\        List<SObject> rows = new List<SObject>();
+        \\        rows.add(new Account(Name = 'Acme'));
+        \\        return choose(rows);
+        \\    }
+        \\}
+    ;
+    try expect_entry_string(source, "ConcreteListOverloadProbe", "test", "list:1");
+}
+
 test "E2E: concrete typed list reports its SObjectType" {
     const source =
         \\public class ConcreteListTypeProbe {
