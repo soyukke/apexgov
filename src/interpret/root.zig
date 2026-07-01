@@ -11502,6 +11502,45 @@ test "E2E: instance property getter can update its backing value repeatedly" {
     try expect_entry_string(source, "InstancePropertyIncrementProbe", "test", "1:2:3");
 }
 
+test "E2E: instance lazy property can read same-name static lazy property" {
+    const source =
+        \\public class StaticLazyDateSource {
+        \\    public static Date currentDate {
+        \\        get {
+        \\            if (currentDate == null) {
+        \\                currentDate = Date.newInstance(2024, 6, 10);
+        \\            }
+        \\            return currentDate;
+        \\        }
+        \\        set;
+        \\    }
+        \\}
+        \\public class InstanceLazyDateHolder {
+        \\    private Date currentDate {
+        \\        get {
+        \\            if (currentDate == null) {
+        \\                currentDate = StaticLazyDateSource.currentDate;
+        \\            }
+        \\            return currentDate;
+        \\        }
+        \\        set;
+        \\    }
+        \\    public InstanceLazyDateHolder(Date currentDate) {
+        \\        this.currentDate = currentDate;
+        \\    }
+        \\    public String previousDay() {
+        \\        return String.valueOf(currentDate.addDays(-1));
+        \\    }
+        \\}
+        \\public class InstanceLazyDateProbe {
+        \\    public static String test() {
+        \\        return new InstanceLazyDateHolder(null).previousDay();
+        \\    }
+        \\}
+    ;
+    try expect_entry_string(source, "InstanceLazyDateProbe", "test", "2024-06-09");
+}
+
 test "E2E: instance property setter can assign through same property name" {
     const source =
         \\public class SelfAssigningPropertySetterProbe {
