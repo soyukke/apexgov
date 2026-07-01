@@ -32501,7 +32501,8 @@ pub const Evaluator = struct {
     ) anyerror!?Value {
         const current_class_name = self.current_class orelse return null;
         const already_in_getter = if (self.evaluating_getter) |getter_name|
-            std.ascii.eqlIgnoreCase(getter_name, class_name)
+            std.ascii.eqlIgnoreCase(getter_name, class_name) and
+                self.evaluating_getter_instance == null
         else
             false;
         if (!already_in_getter) {
@@ -34282,9 +34283,6 @@ pub const Evaluator = struct {
         if (try self.eval_install_context_instance_method(obj, method)) |result| return result;
         if (try self.eval_version_instance_method(obj, method, args)) |result| return result;
         if (try self.eval_npsp_opp_rollup_instance_method(obj, method, args)) |result| {
-            return result;
-        }
-        if (try self.eval_npsp_rd2_sustainer_evaluation_service_method(obj, method, args)) |result| {
             return result;
         }
         if (try self.eval_time_instance_method(obj, method)) |result| return result;
@@ -36504,191 +36502,6 @@ pub const Evaluator = struct {
         while (existing_jobs < target_jobs) : (existing_jobs += 1) {
             _ = try self.create_async_apex_job("BatchApex", batch_obj.class_name, "execute");
         }
-    }
-
-    fn eval_npsp_rd2_sustainer_evaluation_service_method(
-        self: *Evaluator,
-        obj: Value,
-        method: []const u8,
-        args: []const Value,
-    ) !?Value {
-        if (!self.fixture_relaxed_exceptions) return null;
-        if (obj != .object) return null;
-        if (!std.ascii.eqlIgnoreCase(obj.object.class_name, "RD2_SustainerEvaluationService")) return null;
-        if (self.npsp_rd2_sustainer_service_has_stubbed_query_service()) return null;
-        if (std.ascii.eqlIgnoreCase(method, "withBatchContext")) return obj;
-        if (std.ascii.eqlIgnoreCase(method, "withRecurringDonations")) {
-            if (args.len > 0) {
-                const list = try self.npsp_rd2_sustainer_service_append_list(
-                    self.get_object_field_case_insensitive(obj.object, "__apexgov_recurring_donations"),
-                    args[0],
-                );
-                try obj.object.fields.put(self.arena, "__apexgov_recurring_donations", Value{ .list = list });
-            }
-            return obj;
-        }
-        if (std.ascii.eqlIgnoreCase(method, "withContacts")) {
-            if (args.len > 0) {
-                const list = try self.npsp_rd2_sustainer_service_append_list(
-                    self.get_object_field_case_insensitive(obj.object, "__apexgov_contacts"),
-                    args[0],
-                );
-                try obj.object.fields.put(self.arena, "__apexgov_contacts", Value{ .list = list });
-            }
-            return obj;
-        }
-        if (std.ascii.eqlIgnoreCase(method, "withAccounts")) {
-            if (args.len > 0) {
-                const list = try self.npsp_rd2_sustainer_service_append_list(
-                    self.get_object_field_case_insensitive(obj.object, "__apexgov_accounts"),
-                    args[0],
-                );
-                try obj.object.fields.put(self.arena, "__apexgov_accounts", Value{ .list = list });
-            }
-            return obj;
-        }
-        if (std.ascii.eqlIgnoreCase(method, "getContactsWithSustainerChanged")) {
-            return try self.npsp_rd2_contacts_with_sustainer_changed(obj.object);
-        }
-        if (!std.ascii.eqlIgnoreCase(method, "getAccountsWithSustainerChanged")) return null;
-        return try self.npsp_rd2_accounts_with_sustainer_changed(obj.object);
-    }
-
-    fn npsp_rd2_sustainer_service_append_list(
-        self: *Evaluator,
-        existing_value: ?Value,
-        value: Value,
-    ) !*types.ListValue {
-        if (existing_value) |existing| {
-            if (existing == .list) {
-                if (value == .list) {
-                    for (value.list.items.items) |item| {
-                        try existing.list.items.append(self.arena, item);
-                    }
-                } else {
-                    try existing.list.items.append(self.arena, value);
-                }
-                return existing.list;
-            }
-        }
-        const list = try self.arena.create(types.ListValue);
-        list.* = .{};
-        if (value == .list) {
-            for (value.list.items.items) |item| {
-                try list.items.append(self.arena, item);
-            }
-        } else {
-            try list.items.append(self.arena, value);
-        }
-        return list;
-    }
-
-    fn npsp_rd2_contacts_with_sustainer_changed(
-        self: *Evaluator,
-        service: *types.ObjectInstance,
-    ) !Value {
-        var contact_ids = std.StringArrayHashMapUnmanaged(void).empty;
-        if (self.get_object_field_case_insensitive(service, "__apexgov_contacts")) |contacts_value| {
-            if (contacts_value == .list) {
-                for (contacts_value.list.items.items) |contact_value| {
-                    if (contact_value != .sobject or contact_value.sobject.id == null) continue;
-                    if (!std.ascii.eqlIgnoreCase(contact_value.sobject.type_name, "Contact")) continue;
-                    try contact_ids.put(self.arena, contact_value.sobject.id.?, {});
-                }
-            }
-        }
-        if (self.get_object_field_case_insensitive(service, "__apexgov_recurring_donations")) |rds_value| {
-            if (rds_value == .list) {
-                for (rds_value.list.items.items) |rd_value| {
-                    if (rd_value != .sobject) continue;
-                    const contact =
-                        self.get_s_object_field_value_case_insensitive(rd_value.sobject, "npe03__Contact__c") orelse
-                        continue;
-                    if (contact == .string and contact.string.len > 0) {
-                        try contact_ids.put(self.arena, contact.string, {});
-                    }
-                }
-            }
-        }
-        const list = try self.arena.create(types.ListValue);
-        list.* = .{};
-        for (contact_ids.keys()) |contact_id| {
-            const contact = self.find_stored_sobject_by_id("Contact", contact_id) orelse continue;
-            const sustainer = self.npsp_sustainer_value_for_contact(contact_id);
-            const current =
-                self.get_s_object_field_value_case_insensitive(contact, "Sustainer__c") orelse
-                Value.null_val;
-            if (sustainer) |value| {
-                if (current == .string and std.ascii.eqlIgnoreCase(current.string, value)) continue;
-                try utils.sobject_put(&contact.fields, self.arena, "Sustainer__c", Value{ .string = value });
-            } else {
-                if (current == .null_val) continue;
-                _ = contact.fields.orderedRemove("Sustainer__c");
-            }
-            try list.items.append(self.arena, Value{ .sobject = contact });
-        }
-        return Value{ .list = list };
-    }
-
-    fn npsp_rd2_accounts_with_sustainer_changed(
-        self: *Evaluator,
-        service: *types.ObjectInstance,
-    ) !Value {
-        var account_ids = std.StringArrayHashMapUnmanaged(void).empty;
-        const accounts_value = self.get_object_field_case_insensitive(
-            service,
-            "__apexgov_accounts",
-        ) orelse Value.null_val;
-        if (accounts_value == .list) {
-            for (accounts_value.list.items.items) |account_value| {
-                if (account_value != .sobject or account_value.sobject.id == null) continue;
-                const account = account_value.sobject;
-                if (!std.ascii.eqlIgnoreCase(account.type_name, "Account")) continue;
-                try account_ids.put(self.arena, account.id.?, {});
-            }
-        }
-        if (self.get_object_field_case_insensitive(service, "__apexgov_recurring_donations")) |rds_value| {
-            if (rds_value == .list) {
-                for (rds_value.list.items.items) |rd_value| {
-                    if (rd_value != .sobject) continue;
-                    if (self.get_s_object_field_value_case_insensitive(rd_value.sobject, "npe03__Organization__c")) |account| {
-                        if (account == .string and account.string.len > 0) {
-                            try account_ids.put(self.arena, account.string, {});
-                        }
-                    }
-                    if (self.get_s_object_field_value_case_insensitive(rd_value.sobject, "npe03__Contact__c")) |contact| {
-                        if (contact != .string) continue;
-                        const stored_contact = self.find_stored_sobject_by_id("Contact", contact.string) orelse continue;
-                        const contact_account =
-                            self.get_s_object_field_value_case_insensitive(stored_contact, "AccountId") orelse
-                            continue;
-                        if (contact_account == .string and contact_account.string.len > 0) {
-                            try account_ids.put(self.arena, contact_account.string, {});
-                        }
-                    }
-                }
-            }
-        }
-        const list = try self.arena.create(types.ListValue);
-        list.* = .{};
-        for (account_ids.keys()) |account_id| {
-            const account = self.find_stored_sobject_by_id("Account", account_id) orelse continue;
-            const sustainer = self.npsp_sustainer_value_for_account(account_id) orelse continue;
-            const current =
-                self.get_s_object_field_value_case_insensitive(account, "Sustainer__c") orelse
-                Value.null_val;
-            if (current == .string and std.ascii.eqlIgnoreCase(current.string, sustainer)) continue;
-            try utils.sobject_put(&account.fields, self.arena, "Sustainer__c", Value{ .string = sustainer });
-            try list.items.append(self.arena, Value{ .sobject = account });
-        }
-        return Value{ .list = list };
-    }
-
-    fn npsp_rd2_sustainer_service_has_stubbed_query_service(self: *Evaluator) bool {
-        const query_service =
-            self.resolve_static_field_value_on_class("RD2_SustainerEvaluationService", "queryService") orelse
-            return false;
-        return query_service == .object and query_service.object.fields.get("__stubProvider__") != null;
     }
 
     fn npsp_sustainer_value_for_account(
@@ -52469,7 +52282,8 @@ pub const Evaluator = struct {
         const cd = self.find_class(class_name) orelse return null;
         // Try static property getter first
         const already_in_getter = if (self.evaluating_getter) |eg|
-            std.ascii.eqlIgnoreCase(eg, field_name)
+            std.ascii.eqlIgnoreCase(eg, field_name) and
+                self.evaluating_getter_instance == null
         else
             false;
         if (!already_in_getter) {
