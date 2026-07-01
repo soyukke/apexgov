@@ -19904,6 +19904,39 @@ test "E2E: collection casts reject non-collection values" {
     );
 }
 
+test "E2E: primitive casts reject incompatible object values" {
+    const source =
+        \\public class PrimitiveCastTypeProbe {
+        \\    public static String test() {
+        \\        Map<String, Object> values = new Map<String, Object>{
+        \\            'String' => true,
+        \\            'Boolean' => 'not-bool'
+        \\        };
+        \\        String result = '';
+        \\        try {
+        \\            String text = (String) values.get('String');
+        \\            result += 'string-ok:' + text;
+        \\        } catch (System.TypeException ex) {
+        \\            result += 'string-type';
+        \\        }
+        \\        try {
+        \\            Boolean flag = (Boolean) values.get('Boolean');
+        \\            result += ':boolean-ok:' + String.valueOf(flag);
+        \\        } catch (System.TypeException ex) {
+        \\            result += ':boolean-type';
+        \\        }
+        \\        return result;
+        \\    }
+        \\}
+    ;
+    try expect_entry_string(
+        source,
+        "PrimitiveCastTypeProbe",
+        "test",
+        "string-type:boolean-type",
+    );
+}
+
 test "E2E: List String to List Id cast validates id strings" {
     const source =
         \\public class ListIdCastValidationProbe {

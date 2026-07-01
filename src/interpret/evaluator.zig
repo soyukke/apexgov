@@ -30260,8 +30260,60 @@ pub const Evaluator = struct {
                 else => val,
             };
         }
+        if (try self.eval_primitive_cast_expr(val, target)) |casted| return casted;
         if (val != .object) return val;
         return self.eval_object_cast_expr(val, target);
+    }
+
+    fn eval_primitive_cast_expr(
+        self: *Evaluator,
+        val: Value,
+        target: []const u8,
+    ) anyerror!?Value {
+        const target_base = type_base_name(target);
+        const is_temporal_target =
+            std.ascii.eqlIgnoreCase(target_base, "Date") or
+            std.ascii.eqlIgnoreCase(target_base, "Datetime") or
+            std.ascii.eqlIgnoreCase(target_base, "DateTime") or
+            std.ascii.eqlIgnoreCase(target_base, "Time");
+        if (val == .null_val and is_primitive_cast_target(target_base)) return val;
+        if (is_temporal_target and val == .object) return null;
+        if (!is_primitive_cast_target(target_base)) return null;
+        if (primitive_cast_matches_value(val, target_base)) return val;
+        return try self.raise_type_exception(test_helper_value_type_name(val), target_base);
+    }
+
+    fn is_primitive_cast_target(target_base: []const u8) bool {
+        return std.ascii.eqlIgnoreCase(target_base, "String") or
+            std.ascii.eqlIgnoreCase(target_base, "Id") or
+            std.ascii.eqlIgnoreCase(target_base, "Boolean") or
+            std.ascii.eqlIgnoreCase(target_base, "Integer") or
+            std.ascii.eqlIgnoreCase(target_base, "Long") or
+            std.ascii.eqlIgnoreCase(target_base, "Double") or
+            std.ascii.eqlIgnoreCase(target_base, "Date") or
+            std.ascii.eqlIgnoreCase(target_base, "Datetime") or
+            std.ascii.eqlIgnoreCase(target_base, "DateTime") or
+            std.ascii.eqlIgnoreCase(target_base, "Time");
+    }
+
+    fn primitive_cast_matches_value(val: Value, target_base: []const u8) bool {
+        if (std.ascii.eqlIgnoreCase(target_base, "String")) return val != .boolean;
+        if (val == .string) {
+            return (std.ascii.eqlIgnoreCase(target_base, "Id") and
+                Evaluator.is_salesforce_id_string(val.string));
+        }
+        if (val == .boolean) return std.ascii.eqlIgnoreCase(target_base, "Boolean");
+        if (val == .integer) {
+            return std.ascii.eqlIgnoreCase(target_base, "Integer") or
+                std.ascii.eqlIgnoreCase(target_base, "Long") or
+                std.ascii.eqlIgnoreCase(target_base, "Double");
+        }
+        if (val == .long) {
+            return std.ascii.eqlIgnoreCase(target_base, "Long") or
+                std.ascii.eqlIgnoreCase(target_base, "Double");
+        }
+        if (val == .double) return std.ascii.eqlIgnoreCase(target_base, "Double");
+        return false;
     }
 
     fn eval_collection_cast_expr(
@@ -34271,12 +34323,6 @@ pub const Evaluator = struct {
         if (try self.eval_npsp_rd2_sustainer_evaluation_service_method(obj, method, args)) |result| {
             return result;
         }
-        if (try self.eval_npsp_rd2_data_migration_mapper_method(obj, method)) |result| {
-            return result;
-        }
-        if (try self.eval_npsp_callable_api_parameters_method(obj, method, args)) |result| {
-            return result;
-        }
         if (try self.eval_time_instance_method(obj, method)) |result| return result;
         if (try self.eval_date_like_instance_method(obj, method, args)) |result| return result;
         if (try self.eval_field_expression_matching_method(obj, method, args)) |result| {
@@ -36910,41 +36956,6 @@ pub const Evaluator = struct {
         return query_service == .object and query_service.object.fields.get("__stubProvider__") != null;
     }
 
-    fn eval_npsp_rd2_data_migration_mapper_method(
-        self: *Evaluator,
-        obj: Value,
-        method: []const u8,
-    ) !?Value {
-        if (!self.fixture_relaxed_exceptions) return null;
-        if (obj != .object) return null;
-        if (!std.ascii.eqlIgnoreCase(obj.object.class_name, "RD2_DataMigrationMapper")) return null;
-        if (!std.ascii.eqlIgnoreCase(method, "convertToEnhancedRD")) return null;
-        const rd_value = self.get_object_field_case_insensitive(obj.object, "rd") orelse return null;
-        if (rd_value != .sobject) return null;
-        const rd = rd_value.sobject;
-        const open_status =
-            self.get_s_object_field_value_case_insensitive(rd, "npe03__Open_Ended_Status__c") orelse
-            Value.null_val;
-        if (open_status != .string or !std.ascii.eqlIgnoreCase(open_status.string, "Closed")) {
-            return null;
-        }
-        const schedule_type =
-            self.get_s_object_field_value_case_insensitive(rd, "npe03__Schedule_Type__c") orelse
-            Value.null_val;
-        if (schedule_type == .string and std.mem.trim(u8, schedule_type.string, " \t\r\n").len > 0) {
-            return null;
-        }
-        const installments =
-            self.get_s_object_field_value_case_insensitive(rd, "npe03__Installments__c") orelse
-            Value.null_val;
-        const planned = numeric_value_as_f64(installments) orelse return null;
-        if (@abs(planned) <= 1.0) return null;
-        const message =
-            self.get_custom_label_case_insensitive("RD2_DataMigrationInvalidPlannedInstallments") orelse
-            "RD2_DataMigrationInvalidPlannedInstallments";
-        return try self.throw_named_exception("RD2_DataMigrationMapper.MigrationException", message);
-    }
-
     fn npsp_sustainer_value_for_account(
         self: *Evaluator,
         account_id: []const u8,
@@ -37036,128 +37047,6 @@ pub const Evaluator = struct {
         );
         try service.fields.put(self.arena, "unitOfWork", Value{ .object = unit_of_work });
         return unit_of_work;
-    }
-
-    fn eval_npsp_callable_api_parameters_method(
-        self: *Evaluator,
-        obj: Value,
-        method: []const u8,
-        args: []const Value,
-    ) !?Value {
-        if (obj != .object or
-            !std.ascii.eqlIgnoreCase(obj.object.class_name, "CallableApiParameters") or
-            args.len == 0 or args[0] != .string)
-        {
-            return null;
-        }
-        const params = obj.object.fields.get("params") orelse return null;
-        if (params != .map) return null;
-        const param_name = args[0].string;
-        const value = params.map.entries.get(param_name) orelse return null;
-
-        if (std.ascii.eqlIgnoreCase(method, "getString")) {
-            if (value != .string and value != .null_val) return self.throw_callable_api_parameter_exception("String", param_name);
-            return null;
-        }
-        if (std.ascii.eqlIgnoreCase(method, "getBoolean")) {
-            if (value != .boolean and value != .null_val) return self.throw_callable_api_parameter_exception("Boolean", param_name);
-            return null;
-        }
-        if (std.ascii.eqlIgnoreCase(method, "getListString")) {
-            if (!is_list_of_strings_value(value)) return self.throw_callable_api_parameter_exception("List<String>", param_name);
-            return null;
-        }
-        if (std.ascii.eqlIgnoreCase(method, "getSetString")) {
-            if (!is_set_of_strings_value(value)) return self.throw_callable_api_parameter_exception("Set<String>", param_name);
-            return null;
-        }
-        if (std.ascii.eqlIgnoreCase(method, "getSObjects")) {
-            if (!is_list_of_sobjects_value(value)) return self.throw_callable_api_parameter_exception("List<SObject>", param_name);
-            return null;
-        }
-        if (std.ascii.eqlIgnoreCase(method, "getRollupDataMap")) {
-            if (value != .map and value != .null_val) {
-                return self.throw_callable_api_parameter_exception(
-                    "Map<Id, Map<SObjectType, List<SObject>>>",
-                    param_name,
-                );
-            }
-            return null;
-        }
-        if (std.ascii.eqlIgnoreCase(method, "getPauseObjectsById")) {
-            if (!is_callable_pause_object_map_value(value)) {
-                return self.throw_callable_api_parameter_exception(
-                    "Map<Id, RD2_ApiService.PauseObject>",
-                    param_name,
-                );
-            }
-            return null;
-        }
-        if (std.ascii.eqlIgnoreCase(method, "getRollupDefinitions")) {
-            if (value == .string and std.ascii.indexOfIgnoreCase(value.string, "StringList") != null) {
-                return self.throw_callable_api_parameter_exception(
-                    "List<CRLP_Rollup> JSON",
-                    param_name,
-                );
-            }
-            return null;
-        }
-        return null;
-    }
-
-    fn throw_callable_api_parameter_exception(
-        self: *Evaluator,
-        data_type: []const u8,
-        param_name: []const u8,
-    ) anyerror!?Value {
-        const message = try std.fmt.allocPrint(
-            self.arena,
-            "Could not parse parameter {s} as {s}",
-            .{ param_name, data_type },
-        );
-        _ = try self.throw_named_exception("CallableApiParameters.ParameterException", message);
-        return null;
-    }
-
-    fn is_list_of_strings_value(value: Value) bool {
-        if (value == .null_val) return true;
-        if (value != .list) return false;
-        for (value.list.items.items) |item| {
-            if (item != .string) return false;
-        }
-        return true;
-    }
-
-    fn is_set_of_strings_value(value: Value) bool {
-        if (value == .null_val) return true;
-        if (value != .set) return false;
-        for (value.set.entries.values()) |item| {
-            if (item != .string) return false;
-        }
-        return true;
-    }
-
-    fn is_list_of_sobjects_value(value: Value) bool {
-        if (value == .null_val) return true;
-        if (value != .list) return false;
-        for (value.list.items.items) |item| {
-            if (item != .sobject) return false;
-        }
-        return true;
-    }
-
-    fn is_callable_pause_object_map_value(value: Value) bool {
-        if (value == .null_val) return true;
-        if (value != .map) return false;
-        for (value.map.entries.values()) |item| {
-            if (item == .object and std.ascii.eqlIgnoreCase(item.object.class_name, "RD2_ApiService.PauseObject")) {
-                continue;
-            }
-            if (item == .map) continue;
-            if (item == .string and item.string.len > 0 and item.string[0] == '{') continue;
-            return false;
-        }
-        return true;
     }
 
     fn refresh_npsp_rollup_contacts_from_value(self: *Evaluator, value: Value) !void {
