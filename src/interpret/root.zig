@@ -5567,6 +5567,19 @@ test "E2E: field assignment on static variable whose name collides with a class"
     try expect_entry_string(source, "ShadowedStaticTest", "test", "set-via-static");
 }
 
+test "E2E: static field storage is case-insensitive for class qualifiers" {
+    const source =
+        \\public class StaticCaseStorageProbe {
+        \\    public static Account cached;
+        \\    public static String test() {
+        \\        StaticCaseStorageProbe.cached = new Account(Name = 'upper-write');
+        \\        return staticcasestorageprobe.cached.Name;
+        \\    }
+        \\}
+    ;
+    try expect_entry_string(source, "StaticCaseStorageProbe", "test", "upper-write");
+}
+
 test "E2E: inherited method reaches intermediate override via virtual dispatch" {
     const source =
         \\public virtual class VirtualDispatchBase {
@@ -11461,6 +11474,32 @@ test "E2E: static property getter can update its backing value repeatedly" {
         \\}
     ;
     try expect_entry_string(source, "StaticPropertyIncrementProbe", "test", "1:2:3");
+}
+
+test "E2E: instance property getter can update its backing value repeatedly" {
+    const source =
+        \\public class InstancePropertyIncrementProbe {
+        \\    private Integer counter {
+        \\        get {
+        \\            if (counter == null) {
+        \\                counter = 0;
+        \\            }
+        \\            counter++;
+        \\            return counter;
+        \\        }
+        \\        set;
+        \\    }
+        \\    public static String test() {
+        \\        InstancePropertyIncrementProbe probe = new InstancePropertyIncrementProbe();
+        \\        Integer first = probe.counter;
+        \\        Integer second = probe.counter;
+        \\        Integer third = probe.counter;
+        \\        return String.valueOf(first) + ':' +
+        \\            String.valueOf(second) + ':' + String.valueOf(third);
+        \\    }
+        \\}
+    ;
+    try expect_entry_string(source, "InstancePropertyIncrementProbe", "test", "1:2:3");
 }
 
 test "E2E: instance property setter can assign through same property name" {
@@ -19333,6 +19372,30 @@ test "E2E: Database DmlOptions allOrNone false returns partial save results" {
         \\}
     ;
     try expect_entry_string(source, "DatabaseDmlOptionsTest", "test", "true:false:true:false");
+}
+
+test "E2E: partial DML static snapshot preserves shared object aliases" {
+    const source =
+        \\public class PartialDmlStaticAliasBox {
+        \\    public Account value;
+        \\}
+        \\public class PartialDmlStaticAliasProbe {
+        \\    public static Account shared;
+        \\    public static PartialDmlStaticAliasBox box;
+        \\    public static String test() {
+        \\        shared = new Account(Name = 'before');
+        \\        box = new PartialDmlStaticAliasBox();
+        \\        box.value = shared;
+        \\        List<Account> rows = new List<Account>{ new Account() };
+        \\        List<Database.SaveResult> results = Database.insert(rows, false);
+        \\        box.value.Name = 'after';
+        \\        return String.valueOf(results[0].isSuccess()) + ':' +
+        \\            shared.Name + ':' +
+        \\            box.value.Name;
+        \\    }
+        \\}
+    ;
+    try expect_entry_string(source, "PartialDmlStaticAliasProbe", "test", "false:after:after");
 }
 
 test "E2E: update uses reassigned SObject Id field" {

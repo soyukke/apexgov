@@ -90,6 +90,22 @@ const PartialDmlSnapshot = struct {
     static_bindings: std.StringArrayHashMapUnmanaged(Value) = .empty,
 };
 
+const PartialDmlCloneContext = struct {
+    sobjects: std.AutoHashMapUnmanaged(usize, *types.SObject) = .empty,
+    objects: std.AutoHashMapUnmanaged(usize, *types.ObjectInstance) = .empty,
+    lists: std.AutoHashMapUnmanaged(usize, *types.ListValue) = .empty,
+    maps: std.AutoHashMapUnmanaged(usize, *types.MapValue) = .empty,
+    sets: std.AutoHashMapUnmanaged(usize, *types.SetValue) = .empty,
+
+    fn deinit(self: *PartialDmlCloneContext, alloc: std.mem.Allocator) void {
+        self.sobjects.deinit(alloc);
+        self.objects.deinit(alloc);
+        self.lists.deinit(alloc);
+        self.maps.deinit(alloc);
+        self.sets.deinit(alloc);
+    }
+};
+
 const PendingQueueable = struct {
     job: *types.ObjectInstance,
     job_id: []const u8,
@@ -1495,11 +1511,7 @@ pub const Evaluator = struct {
                             self.eval_expr(init_expr, self.global_env) catch Value.null_val
                         else
                             default_value(fd.type_ref);
-                        const key = std.fmt.allocPrint(
-                            self.arena,
-                            "{s}.{s}",
-                            .{ cd.name, fd.name },
-                        ) catch continue;
+                        const key = self.static_field_cache_key(cd.name, fd.name) catch continue;
                         self.global_env.set(key, val) catch {
                             self.global_env.define(key, val) catch {};
                         };
@@ -1525,11 +1537,7 @@ pub const Evaluator = struct {
                     .field_decl => |fd| {
                         if (!fd.modifiers.is_static) continue;
                         const init_expr = fd.initializer orelse continue;
-                        const key = std.fmt.allocPrint(
-                            self.arena,
-                            "{s}.{s}",
-                            .{ cd.name, fd.name },
-                        ) catch continue;
+                        const key = self.static_field_cache_key(cd.name, fd.name) catch continue;
                         const current = self.global_env.get(key) orelse Value.null_val;
                         if (current != .null_val) continue;
                         const val =
@@ -1554,11 +1562,7 @@ pub const Evaluator = struct {
             switch (member) {
                 .field_decl => |fd| {
                     if (fd.modifiers.is_static) {
-                        const key = std.fmt.allocPrint(
-                            self.arena,
-                            "{s}.{s}",
-                            .{ cd.name, fd.name },
-                        ) catch continue;
+                        const key = self.static_field_cache_key(cd.name, fd.name) catch continue;
                         const value = default_value(fd.type_ref);
                         self.global_env.set(key, value) catch {
                             self.global_env.define(key, value) catch {};
@@ -1869,11 +1873,7 @@ pub const Evaluator = struct {
             switch (member) {
                 .field_decl => |fd| {
                     if (fd.modifiers.is_static) {
-                        const key = std.fmt.allocPrint(
-                            self.arena,
-                            "{s}.{s}",
-                            .{ cd.name, fd.name },
-                        ) catch continue;
+                        const key = self.static_field_cache_key(cd.name, fd.name) catch continue;
                         const cur = self.global_env.get(key) orelse Value.null_val;
                         static_keys.append(self.arena, key) catch continue;
                         original_values.append(self.arena, cur) catch continue;
@@ -1894,11 +1894,7 @@ pub const Evaluator = struct {
                         const key = if (static_index < static_keys.items.len)
                             static_keys.items[static_index]
                         else
-                            std.fmt.allocPrint(
-                                self.arena,
-                                "{s}.{s}",
-                                .{ cd.name, fd.name },
-                            ) catch continue;
+                            self.static_field_cache_key(cd.name, fd.name) catch continue;
                         const original_value = if (static_index < original_values.items.len)
                             original_values.items[static_index]
                         else
@@ -29598,22 +29594,12 @@ pub const Evaluator = struct {
         if (current_env.get_this()) |this_val| {
             if (this_val == .object) {
                 const this_cn = this_val.object.class_name;
-                const key =
-                    std.fmt.allocPrint(
-                        self.arena,
-                        "{s}.{s}",
-                        .{ this_cn, id_name },
-                    ) catch return .null_val;
+                const key = self.static_field_cache_key(this_cn, id_name) catch return .null_val;
                 if (self.global_env.get(key)) |val| return val;
                 if (self.find_class(this_cn)) |cd| {
                     if (cd.super_class) |sc| {
                         self.ensure_static_init(sc.name);
-                        const pkey =
-                            std.fmt.allocPrint(
-                                self.arena,
-                                "{s}.{s}",
-                                .{ sc.name, id_name },
-                            ) catch return .null_val;
+                        const pkey = self.static_field_cache_key(sc.name, id_name) catch return .null_val;
                         if (self.global_env.get(pkey)) |val| return val;
                     }
                 }
@@ -31601,10 +31587,9 @@ pub const Evaluator = struct {
         value: Value,
     ) bool {
         const owner = self.find_static_field_owner(class_name, field_name) orelse return false;
-        const static_key = std.fmt.allocPrint(
-            self.arena,
-            "{s}.{s}",
-            .{ owner.owner_name, owner.field_decl.name },
+        const static_key = self.static_field_cache_key(
+            owner.owner_name,
+            owner.field_decl.name,
         ) catch "";
         if (self.global_env.bindings.getIndex(static_key)) |idx| {
             self.global_env.bindings.values()[idx] = value;
@@ -31773,7 +31758,7 @@ pub const Evaluator = struct {
         if (!is_class or is_var) return null;
 
         self.ensure_static_init(class_name);
-        const key = try std.fmt.allocPrint(self.arena, "{s}.{s}", .{ class_name, fa.field });
+        const key = try self.static_field_cache_key(class_name, fa.field);
         const current = self.global_env.get(key) orelse Value.null_val;
         const final_val = if (op == .assign)
             coerced_val
@@ -34291,9 +34276,6 @@ pub const Evaluator = struct {
         if (try self.eval_npsp_rd2_pause_schedule_handler_method(obj, method, args)) |result| {
             return result;
         }
-        if (try self.eval_npsp_rd2_settings_method(obj, method, args)) |result| {
-            return result;
-        }
         if (try self.eval_npsp_opp_rollup_instance_method(obj, method, args)) |result| {
             return result;
         }
@@ -36318,42 +36300,6 @@ pub const Evaluator = struct {
             return Value{ .boolean = false };
         }
         return null;
-    }
-
-    fn eval_npsp_rd2_settings_method(
-        self: *Evaluator,
-        obj: Value,
-        method: []const u8,
-        args: []const Value,
-    ) !?Value {
-        if (!(obj == .object and std.ascii.eqlIgnoreCase(obj.object.class_name, "RD2_Settings"))) {
-            return null;
-        }
-        if (!std.ascii.eqlIgnoreCase(method, "saveLatestBatchResults") or args.len < 3) return null;
-        const settings = self.npsp_cached_recurring_donation_settings() orelse
-            self.first_custom_setting_record("npe03__Recurring_Donations_Settings__c") orelse
-            return Value.void_val;
-        const records_processed: i64 = @intFromFloat(numeric_value_as_f64(args[1]) orelse 0);
-        const records_failed: i64 = @intFromFloat(numeric_value_as_f64(args[2]) orelse 0);
-        try utils.sobject_put(
-            &settings.fields,
-            self.arena,
-            "npe03__Last_Batch_Run__c",
-            Value{ .string = try builtins.current_date_time_string(self.arena) },
-        );
-        try utils.sobject_put(
-            &settings.fields,
-            self.arena,
-            "npe03__Number_of_Successes__c",
-            Value{ .integer = records_processed - records_failed },
-        );
-        try utils.sobject_put(
-            &settings.fields,
-            self.arena,
-            "npe03__Number_of_Failures__c",
-            Value{ .integer = records_failed },
-        );
-        return Value.void_val;
     }
 
     fn npsp_recurring_donation_is_paused(
@@ -41969,10 +41915,34 @@ pub const Evaluator = struct {
             if (err == error.StackOverflow) return Value.null_val;
             return err;
         };
+        try self.sync_object_fields_from_env(instance, getter_env);
         return switch (result) {
             .return_val => |value| value,
             else => self.return_value,
         };
+    }
+
+    fn sync_object_fields_from_env(
+        self: *Evaluator,
+        object: *types.ObjectInstance,
+        env: *Env,
+    ) !void {
+        const this_val = env.get_this() orelse return;
+        if (this_val == .object and this_val.object == object) {
+            var field_keys: std.ArrayListUnmanaged([]const u8) = .empty;
+            defer field_keys.deinit(self.arena);
+
+            for (object.fields.keys()) |key| try field_keys.append(self.arena, key);
+            for (field_keys.items) |key| {
+                if (env.get(key)) |updated| {
+                    try object.fields.put(self.arena, key, updated);
+                }
+            }
+        } else if (this_val == .object) {
+            for (this_val.object.fields.keys(), this_val.object.fields.values()) |key, value| {
+                try object.fields.put(self.arena, key, value);
+            }
+        }
     }
 
     fn populate_getter_env_instance_fields(
@@ -42605,11 +42575,7 @@ pub const Evaluator = struct {
                         if (std.ascii.eqlIgnoreCase(field_name, "class")) {
                             return try self.make_type_value(fq_name);
                         }
-                        const static_key = try std.fmt.allocPrint(
-                            self.arena,
-                            "{s}.{s}",
-                            .{ fq_name, field_name },
-                        );
+                        const static_key = try self.static_field_cache_key(fq_name, field_name);
                         if (self.global_env.get(static_key)) |value| return value;
                         return Value{ .string = field_name };
                     }
@@ -44174,9 +44140,16 @@ pub const Evaluator = struct {
         alloc: std.mem.Allocator,
     ) !std.StringArrayHashMapUnmanaged(Value) {
         var cloned: std.StringArrayHashMapUnmanaged(Value) = .empty;
+        var clone_context: PartialDmlCloneContext = .{};
+        defer clone_context.deinit(alloc);
+
         for (self.global_env.bindings.keys(), self.global_env.bindings.values()) |key, value| {
             if (!binding_name_is_static_field(key)) continue;
-            try cloned.put(alloc, key, try self.clone_partial_dml_value_with_allocator(value, alloc));
+            try cloned.put(
+                alloc,
+                key,
+                try self.clone_partial_dml_value_with_context(value, alloc, &clone_context),
+            );
         }
         return cloned;
     }
@@ -44196,6 +44169,9 @@ pub const Evaluator = struct {
             _ = self.global_env.bindings.orderedRemove(key);
             _ = self.global_env.lower_binding_names.orderedRemove(key);
         }
+        var clone_context: PartialDmlCloneContext = .{};
+        defer clone_context.deinit(self.arena);
+
         for (snapshot.keys(), snapshot.values()) |key, value| {
             const current = self.global_env.get_exact(key) orelse Value.null_val;
             if (!partial_dml_value_is_mutable(current) and
@@ -44203,7 +44179,11 @@ pub const Evaluator = struct {
             {
                 continue;
             }
-            const cloned = try self.clone_partial_dml_value(value);
+            const cloned = try self.clone_partial_dml_value_with_context(
+                value,
+                self.arena,
+                &clone_context,
+            );
             self.global_env.set(key, cloned) catch try self.global_env.define(key, cloned);
         }
     }
@@ -44229,12 +44209,44 @@ pub const Evaluator = struct {
         value: Value,
         alloc: std.mem.Allocator,
     ) anyerror!Value {
+        var clone_context: PartialDmlCloneContext = .{};
+        defer clone_context.deinit(alloc);
+
+        return self.clone_partial_dml_value_with_context(value, alloc, &clone_context);
+    }
+
+    fn clone_partial_dml_value_with_context(
+        self: *Evaluator,
+        value: Value,
+        alloc: std.mem.Allocator,
+        clone_context: *PartialDmlCloneContext,
+    ) anyerror!Value {
         return switch (value) {
-            .sobject => |sob| try self.clone_partial_dml_sobject_with_allocator(sob, alloc),
-            .object => |obj| try self.clone_partial_dml_object_with_allocator(obj, alloc),
-            .list => |list| try self.clone_partial_dml_list_with_allocator(list, alloc),
-            .map => |map| try self.clone_partial_dml_map_with_allocator(map, alloc),
-            .set => |set| try self.clone_partial_dml_set_with_allocator(set, alloc),
+            .sobject => |sob| try self.clone_partial_dml_sobject_with_context(
+                sob,
+                alloc,
+                clone_context,
+            ),
+            .object => |obj| try self.clone_partial_dml_object_with_context(
+                obj,
+                alloc,
+                clone_context,
+            ),
+            .list => |list| try self.clone_partial_dml_list_with_context(
+                list,
+                alloc,
+                clone_context,
+            ),
+            .map => |map| try self.clone_partial_dml_map_with_context(
+                map,
+                alloc,
+                clone_context,
+            ),
+            .set => |set| try self.clone_partial_dml_set_with_context(
+                set,
+                alloc,
+                clone_context,
+            ),
             else => value,
         };
     }
@@ -44248,8 +44260,25 @@ pub const Evaluator = struct {
         sob: *types.SObject,
         alloc: std.mem.Allocator,
     ) anyerror!Value {
+        var clone_context: PartialDmlCloneContext = .{};
+        defer clone_context.deinit(alloc);
+
+        return self.clone_partial_dml_sobject_with_context(sob, alloc, &clone_context);
+    }
+
+    fn clone_partial_dml_sobject_with_context(
+        self: *Evaluator,
+        sob: *types.SObject,
+        alloc: std.mem.Allocator,
+        clone_context: *PartialDmlCloneContext,
+    ) anyerror!Value {
+        const ptr_key = @intFromPtr(sob);
+        if (clone_context.sobjects.get(ptr_key)) |existing| {
+            return Value{ .sobject = existing };
+        }
         const cloned = try alloc.create(types.SObject);
         cloned.* = .{ .type_name = sob.type_name };
+        try clone_context.sobjects.put(alloc, ptr_key, cloned);
         cloned.id = sob.id;
         cloned.is_stripped = sob.is_stripped;
         cloned.is_clone = sob.is_clone;
@@ -44257,7 +44286,7 @@ pub const Evaluator = struct {
             try cloned.fields.put(
                 alloc,
                 key,
-                try self.clone_partial_dml_value_with_allocator(field_value, alloc),
+                try self.clone_partial_dml_value_with_context(field_value, alloc, clone_context),
             );
         }
         return Value{ .sobject = cloned };
@@ -44272,13 +44301,30 @@ pub const Evaluator = struct {
         obj: *types.ObjectInstance,
         alloc: std.mem.Allocator,
     ) anyerror!Value {
+        var clone_context: PartialDmlCloneContext = .{};
+        defer clone_context.deinit(alloc);
+
+        return self.clone_partial_dml_object_with_context(obj, alloc, &clone_context);
+    }
+
+    fn clone_partial_dml_object_with_context(
+        self: *Evaluator,
+        obj: *types.ObjectInstance,
+        alloc: std.mem.Allocator,
+        clone_context: *PartialDmlCloneContext,
+    ) anyerror!Value {
+        const ptr_key = @intFromPtr(obj);
+        if (clone_context.objects.get(ptr_key)) |existing| {
+            return Value{ .object = existing };
+        }
         const cloned = try alloc.create(types.ObjectInstance);
         cloned.* = .{ .class_name = obj.class_name };
+        try clone_context.objects.put(alloc, ptr_key, cloned);
         for (obj.fields.keys(), obj.fields.values()) |key, field_value| {
             try cloned.fields.put(
                 alloc,
                 key,
-                try self.clone_partial_dml_value_with_allocator(field_value, alloc),
+                try self.clone_partial_dml_value_with_context(field_value, alloc, clone_context),
             );
         }
         return Value{ .object = cloned };
@@ -44293,15 +44339,32 @@ pub const Evaluator = struct {
         list: *types.ListValue,
         alloc: std.mem.Allocator,
     ) anyerror!Value {
+        var clone_context: PartialDmlCloneContext = .{};
+        defer clone_context.deinit(alloc);
+
+        return self.clone_partial_dml_list_with_context(list, alloc, &clone_context);
+    }
+
+    fn clone_partial_dml_list_with_context(
+        self: *Evaluator,
+        list: *types.ListValue,
+        alloc: std.mem.Allocator,
+        clone_context: *PartialDmlCloneContext,
+    ) anyerror!Value {
+        const ptr_key = @intFromPtr(list);
+        if (clone_context.lists.get(ptr_key)) |existing| {
+            return Value{ .list = existing };
+        }
         const cloned = try alloc.create(types.ListValue);
         cloned.* = .{
             .element_type = list.element_type,
             .explicitly_generic = list.explicitly_generic,
         };
+        try clone_context.lists.put(alloc, ptr_key, cloned);
         for (list.items.items) |item| {
             try cloned.items.append(
                 alloc,
-                try self.clone_partial_dml_value_with_allocator(item, alloc),
+                try self.clone_partial_dml_value_with_context(item, alloc, clone_context),
             );
         }
         return Value{ .list = cloned };
@@ -44316,23 +44379,40 @@ pub const Evaluator = struct {
         map: *types.MapValue,
         alloc: std.mem.Allocator,
     ) anyerror!Value {
+        var clone_context: PartialDmlCloneContext = .{};
+        defer clone_context.deinit(alloc);
+
+        return self.clone_partial_dml_map_with_context(map, alloc, &clone_context);
+    }
+
+    fn clone_partial_dml_map_with_context(
+        self: *Evaluator,
+        map: *types.MapValue,
+        alloc: std.mem.Allocator,
+        clone_context: *PartialDmlCloneContext,
+    ) anyerror!Value {
+        const ptr_key = @intFromPtr(map);
+        if (clone_context.maps.get(ptr_key)) |existing| {
+            return Value{ .map = existing };
+        }
         const cloned = try alloc.create(types.MapValue);
         cloned.* = .{
             .schema_field_owner = map.schema_field_owner,
             .case_insensitive_keys = map.case_insensitive_keys,
         };
+        try clone_context.maps.put(alloc, ptr_key, cloned);
         for (map.entries.keys(), map.entries.values()) |key, entry_value| {
             try cloned.entries.put(
                 alloc,
                 key,
-                try self.clone_partial_dml_value_with_allocator(entry_value, alloc),
+                try self.clone_partial_dml_value_with_context(entry_value, alloc, clone_context),
             );
         }
         for (map.key_values.keys(), map.key_values.values()) |key, key_value| {
             try cloned.key_values.put(
                 alloc,
                 key,
-                try self.clone_partial_dml_value_with_allocator(key_value, alloc),
+                try self.clone_partial_dml_value_with_context(key_value, alloc, clone_context),
             );
         }
         return Value{ .map = cloned };
@@ -44347,13 +44427,38 @@ pub const Evaluator = struct {
         set: *types.SetValue,
         alloc: std.mem.Allocator,
     ) anyerror!Value {
+        var clone_context: PartialDmlCloneContext = .{};
+        defer clone_context.deinit(alloc);
+
+        return self.clone_partial_dml_set_with_context(set, alloc, &clone_context);
+    }
+
+    fn clone_partial_dml_set_with_context(
+        self: *Evaluator,
+        set: *types.SetValue,
+        alloc: std.mem.Allocator,
+        clone_context: *PartialDmlCloneContext,
+    ) anyerror!Value {
+        const ptr_key = @intFromPtr(set);
+        if (clone_context.sets.get(ptr_key)) |existing| {
+            return Value{ .set = existing };
+        }
         const cloned = try alloc.create(types.SetValue);
         cloned.* = .{ .element_type = set.element_type };
+        try clone_context.sets.put(alloc, ptr_key, cloned);
+        if (set.map_key_owner) |owner| {
+            const cloned_owner = try self.clone_partial_dml_map_with_context(
+                owner,
+                alloc,
+                clone_context,
+            );
+            if (cloned_owner == .map) cloned.map_key_owner = cloned_owner.map;
+        }
         for (set.entries.keys(), set.entries.values()) |key, entry_value| {
             try cloned.entries.put(
                 alloc,
                 key,
-                try self.clone_partial_dml_value_with_allocator(entry_value, alloc),
+                try self.clone_partial_dml_value_with_context(entry_value, alloc, clone_context),
             );
         }
         return Value{ .set = cloned };
@@ -51493,18 +51598,10 @@ pub const Evaluator = struct {
         field_name: []const u8,
     ) Value {
         self.ensure_static_init(owner_name);
-        const key = std.fmt.allocPrint(
-            self.arena,
-            "{s}.{s}",
-            .{ owner_name, field_name },
-        ) catch return .null_val;
+        const key = self.static_field_cache_key(owner_name, field_name) catch return .null_val;
         if (self.global_env.get(key)) |v| return v;
         if (self.find_outer_class_name(owner_name)) |outer| {
-            const outer_key = std.fmt.allocPrint(
-                self.arena,
-                "{s}.{s}",
-                .{ outer, field_name },
-            ) catch return .null_val;
+            const outer_key = self.static_field_cache_key(outer, field_name) catch return .null_val;
             if (self.global_env.get(outer_key)) |v| return v;
         }
         return .null_val;
@@ -52427,11 +52524,7 @@ pub const Evaluator = struct {
             }
         }
         // Plain static field lookup
-        const key = std.fmt.allocPrint(
-            self.arena,
-            "{s}.{s}",
-            .{ class_name, field_name },
-        ) catch return null;
+        const key = self.static_field_cache_key(class_name, field_name) catch return null;
         return self.global_env.get(key);
     }
 
