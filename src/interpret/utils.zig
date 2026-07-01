@@ -484,6 +484,22 @@ test "sobject_get matches known namespace prefixes" {
     );
 }
 
+test "sobject_put owns inserted field names" {
+    var arena_alloc = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_alloc.deinit();
+
+    const arena = arena_alloc.allocator();
+    var fields: std.StringArrayHashMapUnmanaged(Value) = .empty;
+    const dynamic_key = try std.testing.allocator.dupe(u8, "Transient__c");
+    try sobject_put(&fields, arena, dynamic_key, Value{ .string = "kept" });
+    std.testing.allocator.free(dynamic_key);
+
+    try std.testing.expectEqualStrings(
+        "kept",
+        sobject_get(&fields, "Transient__c").?.string,
+    );
+}
+
 // ---------------------------------------------------------------------------
 // SObject フィールドのケースインセンシティブアクセス
 // ---------------------------------------------------------------------------
@@ -538,7 +554,8 @@ pub fn sobject_put(
     if (existing_key) |ek| {
         try fields.put(arena, ek, value);
     } else {
-        try fields.put(arena, name, value);
+        const owned_name = try arena.dupe(u8, name);
+        try fields.put(arena, owned_name, value);
     }
 }
 

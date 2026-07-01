@@ -651,7 +651,7 @@ fn run_test_method(
     suite.total += 1;
     _ = test_arena.reset(.{ .retain_with_limit = 128 * 1024 * 1024 });
     var test_eval = evaluator.Evaluator.init(test_arena.allocator(), io) catch return;
-    copy_test_eval_context(&test_eval, base_eval, parse_alloc);
+    try copy_test_eval_context(&test_eval, base_eval, parse_alloc);
     configure_test_method(
         &test_eval,
         method_decl,
@@ -673,7 +673,7 @@ fn copy_test_eval_context(
     test_eval: *evaluator.Evaluator,
     base_eval: *evaluator.Evaluator,
     parse_alloc: std.mem.Allocator,
-) void {
+) !void {
     test_eval.classes = base_eval.classes;
     test_eval.top_level_enums = base_eval.top_level_enums;
     test_eval.class_arena = parse_alloc;
@@ -684,18 +684,104 @@ fn copy_test_eval_context(
     test_eval.trigger_sources = base_eval.trigger_sources;
     test_eval.source_paths = base_eval.source_paths;
     test_eval.fixture_relaxed_exceptions = base_eval.fixture_relaxed_exceptions;
-    test_eval.field_defaults = base_eval.field_defaults;
-    test_eval.field_types = base_eval.field_types;
-    test_eval.field_metadata = base_eval.field_metadata;
-    test_eval.child_relationships = base_eval.child_relationships;
-    test_eval.custom_setting_types = base_eval.custom_setting_types;
-    test_eval.custom_setting_kinds = base_eval.custom_setting_kinds;
-    test_eval.object_labels = base_eval.object_labels;
-    test_eval.object_label_plurals = base_eval.object_label_plurals;
-    test_eval.custom_labels = base_eval.custom_labels;
-    test_eval.field_sets = base_eval.field_sets;
-    test_eval.custom_metadata_records = base_eval.custom_metadata_records;
+    test_eval.field_defaults = try copy_nested_metadata_map(
+        Value,
+        test_eval.arena,
+        &base_eval.field_defaults,
+    );
+    test_eval.field_types = try copy_nested_metadata_map(
+        []const u8,
+        test_eval.arena,
+        &base_eval.field_types,
+    );
+    test_eval.field_metadata = try copy_nested_metadata_map(
+        evaluator.FieldMetadata,
+        test_eval.arena,
+        &base_eval.field_metadata,
+    );
+    test_eval.child_relationships = try copy_metadata_map(
+        evaluator.CustomChildRelationship,
+        test_eval.arena,
+        &base_eval.child_relationships,
+    );
+    test_eval.custom_setting_types = try copy_metadata_map(
+        void,
+        test_eval.arena,
+        &base_eval.custom_setting_types,
+    );
+    test_eval.custom_setting_kinds = try copy_metadata_map(
+        []const u8,
+        test_eval.arena,
+        &base_eval.custom_setting_kinds,
+    );
+    test_eval.object_labels = try copy_metadata_map(
+        []const u8,
+        test_eval.arena,
+        &base_eval.object_labels,
+    );
+    test_eval.object_label_plurals = try copy_metadata_map(
+        []const u8,
+        test_eval.arena,
+        &base_eval.object_label_plurals,
+    );
+    test_eval.custom_labels = try copy_metadata_map(
+        []const u8,
+        test_eval.arena,
+        &base_eval.custom_labels,
+    );
+    test_eval.field_sets = try copy_nested_metadata_map(
+        evaluator.FieldSetMetadata,
+        test_eval.arena,
+        &base_eval.field_sets,
+    );
     test_eval.custom_metadata_paths_indexed = base_eval.custom_metadata_paths_indexed;
+    try copy_custom_metadata_record_cache(test_eval, base_eval);
+}
+
+fn copy_metadata_map(
+    comptime ValueType: type,
+    arena: std.mem.Allocator,
+    src: *const std.StringArrayHashMapUnmanaged(ValueType),
+) !std.StringArrayHashMapUnmanaged(ValueType) {
+    var out: std.StringArrayHashMapUnmanaged(ValueType) = .empty;
+    var src_copy = src.*;
+    var iter = src_copy.iterator();
+    while (iter.next()) |entry| {
+        try out.put(arena, entry.key_ptr.*, entry.value_ptr.*);
+    }
+    return out;
+}
+
+fn copy_nested_metadata_map(
+    comptime ValueType: type,
+    arena: std.mem.Allocator,
+    src: *const std.StringArrayHashMapUnmanaged(std.StringArrayHashMapUnmanaged(ValueType)),
+) !std.StringArrayHashMapUnmanaged(std.StringArrayHashMapUnmanaged(ValueType)) {
+    var out: std.StringArrayHashMapUnmanaged(std.StringArrayHashMapUnmanaged(ValueType)) = .empty;
+    var src_copy = src.*;
+    var iter = src_copy.iterator();
+    while (iter.next()) |entry| {
+        var inner: std.StringArrayHashMapUnmanaged(ValueType) = .empty;
+        var inner_src = entry.value_ptr.*;
+        var inner_iter = inner_src.iterator();
+        while (inner_iter.next()) |inner_entry| {
+            try inner.put(arena, inner_entry.key_ptr.*, inner_entry.value_ptr.*);
+        }
+        try out.put(arena, entry.key_ptr.*, inner);
+    }
+    return out;
+}
+
+fn copy_custom_metadata_record_cache(
+    test_eval: *evaluator.Evaluator,
+    base_eval: *evaluator.Evaluator,
+) !void {
+    var iter = base_eval.custom_metadata_records.iterator();
+    while (iter.next()) |entry| {
+        var records: std.ArrayListUnmanaged(Value) = .empty;
+        try records.appendSlice(test_eval.arena, entry.value_ptr.items);
+        try test_eval.custom_metadata_records.put(test_eval.arena, entry.key_ptr.*, records);
+    }
 }
 
 fn configure_test_method(

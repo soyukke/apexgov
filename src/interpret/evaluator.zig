@@ -28801,12 +28801,122 @@ pub const Evaluator = struct {
         return false;
     }
 
-    /// Create a shallow clone of an SObject (copies the fields map).
+    /// Create an independent SObject clone for query/custom-metadata results.
     fn clone_s_object(self: *Evaluator, src: *types.SObject) !*types.SObject {
+        return self.clone_s_object_depth(src, 0);
+    }
+
+    fn clone_s_object_depth(
+        self: *Evaluator,
+        src: *types.SObject,
+        depth: u8,
+    ) anyerror!*types.SObject {
         const copy = try self.arena.create(types.SObject);
-        copy.* = .{ .type_name = src.type_name, .id = src.id };
+        copy.* = .{
+            .type_name = src.type_name,
+            .id = src.id,
+            .is_stripped = src.is_stripped,
+            .is_clone = src.is_clone,
+        };
         for (src.fields.keys(), src.fields.values()) |k, v| {
-            try copy.fields.put(self.arena, k, v);
+            try copy.fields.put(
+                self.arena,
+                try self.arena.dupe(u8, k),
+                try self.clone_runtime_value_depth(v, depth + 1),
+            );
+        }
+        return copy;
+    }
+
+    fn clone_runtime_value_depth(
+        self: *Evaluator,
+        value: Value,
+        depth: u8,
+    ) anyerror!Value {
+        if (depth >= 16) return value;
+        return switch (value) {
+            .sobject => |sob| Value{ .sobject = try self.clone_s_object_depth(sob, depth) },
+            .object => |obj| Value{ .object = try self.clone_object_instance_depth(obj, depth) },
+            .list => |list| Value{ .list = try self.clone_list_value_depth(list, depth) },
+            .map => |map| Value{ .map = try self.clone_map_value_depth(map, depth) },
+            .set => |set| Value{ .set = try self.clone_set_value_depth(set, depth) },
+            else => value,
+        };
+    }
+
+    fn clone_object_instance_depth(
+        self: *Evaluator,
+        src: *types.ObjectInstance,
+        depth: u8,
+    ) anyerror!*types.ObjectInstance {
+        const copy = try self.arena.create(types.ObjectInstance);
+        copy.* = .{ .class_name = src.class_name };
+        for (src.fields.keys(), src.fields.values()) |k, v| {
+            try copy.fields.put(
+                self.arena,
+                try self.arena.dupe(u8, k),
+                try self.clone_runtime_value_depth(v, depth + 1),
+            );
+        }
+        return copy;
+    }
+
+    fn clone_list_value_depth(
+        self: *Evaluator,
+        src: *types.ListValue,
+        depth: u8,
+    ) anyerror!*types.ListValue {
+        const copy = try self.arena.create(types.ListValue);
+        copy.* = .{
+            .element_type = src.element_type,
+            .explicitly_generic = src.explicitly_generic,
+        };
+        for (src.items.items) |item| {
+            try copy.items.append(self.arena, try self.clone_runtime_value_depth(item, depth + 1));
+        }
+        return copy;
+    }
+
+    fn clone_map_value_depth(
+        self: *Evaluator,
+        src: *types.MapValue,
+        depth: u8,
+    ) anyerror!*types.MapValue {
+        const copy = try self.arena.create(types.MapValue);
+        copy.* = .{
+            .schema_field_owner = src.schema_field_owner,
+            .case_insensitive_keys = src.case_insensitive_keys,
+        };
+        for (src.entries.keys(), src.entries.values()) |k, v| {
+            try copy.entries.put(
+                self.arena,
+                try self.arena.dupe(u8, k),
+                try self.clone_runtime_value_depth(v, depth + 1),
+            );
+        }
+        for (src.key_values.keys(), src.key_values.values()) |k, v| {
+            try copy.key_values.put(
+                self.arena,
+                try self.arena.dupe(u8, k),
+                try self.clone_runtime_value_depth(v, depth + 1),
+            );
+        }
+        return copy;
+    }
+
+    fn clone_set_value_depth(
+        self: *Evaluator,
+        src: *types.SetValue,
+        depth: u8,
+    ) anyerror!*types.SetValue {
+        const copy = try self.arena.create(types.SetValue);
+        copy.* = .{ .element_type = src.element_type };
+        for (src.entries.keys(), src.entries.values()) |k, v| {
+            try copy.entries.put(
+                self.arena,
+                try self.arena.dupe(u8, k),
+                try self.clone_runtime_value_depth(v, depth + 1),
+            );
         }
         return copy;
     }
@@ -56773,4 +56883,34 @@ test "instanceof supports Apex collection and schema token semantics" {
     defer r.deinit();
 
     try std.testing.expectEqualStrings("true|true|true|true|true", r.value.string);
+}
+
+test "clone_s_object clones nested relationship values independently" {
+    var arena_alloc = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_alloc.deinit();
+
+    const arena = arena_alloc.allocator();
+
+    var eval = try Evaluator.init(arena, std.testing.io);
+    const parent = try arena.create(types.SObject);
+    parent.* = .{ .type_name = "Parent__c" };
+    try utils.sobject_put(&parent.fields, arena, "Name", Value{ .string = "original" });
+
+    const child = try arena.create(types.SObject);
+    child.* = .{ .type_name = "Child__c" };
+    try utils.sobject_put(&child.fields, arena, "Parent__r", Value{ .sobject = parent });
+
+    const cloned = try eval.clone_s_object(child);
+    const cloned_parent = utils.sobject_get(&cloned.fields, "Parent__r").?.sobject;
+    try std.testing.expect(cloned_parent != parent);
+    try utils.sobject_put(&cloned_parent.fields, arena, "Name", Value{ .string = "changed" });
+
+    try std.testing.expectEqualStrings(
+        "original",
+        utils.sobject_get(&parent.fields, "Name").?.string,
+    );
+    try std.testing.expectEqualStrings(
+        "changed",
+        utils.sobject_get(&cloned_parent.fields, "Name").?.string,
+    );
 }
