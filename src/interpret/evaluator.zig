@@ -1547,8 +1547,8 @@ pub const Evaluator = struct {
         }
     }
 
-    /// Register static field placeholders (null values) without evaluating initializers.
-    /// Used to prepare global_env keys so that lazy init can later fill in real values.
+    /// Register/reset static field placeholders without evaluating initializers.
+    /// Used before each test phase so lazy init can later fill in real values.
     pub fn register_static_field_placeholders(self: *Evaluator, cd: *ast.ClassDecl) void {
         for (cd.members) |member| {
             switch (member) {
@@ -1559,7 +1559,10 @@ pub const Evaluator = struct {
                             "{s}.{s}",
                             .{ cd.name, fd.name },
                         ) catch continue;
-                        self.global_env.define(key, default_value(fd.type_ref)) catch {};
+                        const value = default_value(fd.type_ref);
+                        self.global_env.set(key, value) catch {
+                            self.global_env.define(key, value) catch {};
+                        };
                     }
                 },
                 else => {},
@@ -34247,12 +34250,6 @@ pub const Evaluator = struct {
         }
         if (try self.eval_install_context_instance_method(obj, method)) |result| return result;
         if (try self.eval_version_instance_method(obj, method, args)) |result| return result;
-        if (try self.eval_npsp_rd2_status_mapper_method(obj, method, args)) |result| {
-            return result;
-        }
-        if (try self.eval_npsp_record_currency_code_method(obj, method)) |result| {
-            return result;
-        }
         if (try self.eval_npsp_rd2_pause_schedule_handler_method(obj, method, args)) |result| {
             return result;
         }
@@ -36284,122 +36281,6 @@ pub const Evaluator = struct {
         return Value.null_val;
     }
 
-    fn eval_npsp_rd2_status_mapper_method(
-        self: *Evaluator,
-        obj: Value,
-        method: []const u8,
-        args: []const Value,
-    ) !?Value {
-        if (!(obj == .object and
-            std.ascii.eqlIgnoreCase(obj.object.class_name, "RD2_StatusMapper")))
-        {
-            return null;
-        }
-        if (std.ascii.eqlIgnoreCase(method, "getState")) {
-            if (args.len == 0) return Value.null_val;
-            if (args[0] == .null_val) return Value{ .string = "Active" };
-            if (args[0] != .string) return Value.null_val;
-            if (npsp_rd2_status_state(args[0].string)) |state| return Value{ .string = state };
-            if (self.get_object_field_case_insensitive(obj.object, "gateway") != null or
-                self.get_object_field_case_insensitive(obj.object, "statusLabelByValue") != null)
-            {
-                return null;
-            }
-            return Value.null_val;
-        }
-        if (std.ascii.eqlIgnoreCase(method, "getActiveStatusValues")) {
-            return try self.npsp_rd2_status_set(&.{ "Active", "Paused", "Failing" });
-        }
-        if (std.ascii.eqlIgnoreCase(method, "getClosedStatusValues")) {
-            return try self.npsp_rd2_status_set(&.{"Closed"});
-        }
-        if (std.ascii.eqlIgnoreCase(method, "getLapsedStatusValues")) {
-            return try self.npsp_rd2_status_set(&.{"Lapsed"});
-        }
-        return null;
-    }
-
-    fn npsp_rd2_status_set(self: *Evaluator, values: []const []const u8) !Value {
-        const set = try self.arena.create(types.SetValue);
-        set.* = .{};
-        for (values) |status| {
-            const value = Value{ .string = status };
-            try set.entries.put(self.arena, try self.set_entry_key(value), value);
-        }
-        return Value{ .set = set };
-    }
-
-    fn npsp_rd2_status_state(status: []const u8) ?[]const u8 {
-        if (std.ascii.eqlIgnoreCase(status, "Active")) return "Active";
-        if (std.ascii.eqlIgnoreCase(status, "Paused")) return "Active";
-        if (std.ascii.eqlIgnoreCase(status, "Failing")) return "Active";
-        if (std.ascii.eqlIgnoreCase(status, "Lapsed")) return "Lapsed";
-        if (std.ascii.eqlIgnoreCase(status, "Closed")) return "Closed";
-        return null;
-    }
-
-    fn eval_npsp_record_currency_code_method(
-        self: *Evaluator,
-        obj: Value,
-        method: []const u8,
-    ) !?Value {
-        if (!self.fixture_relaxed_exceptions) return null;
-        if (!(obj == .object and
-            std.ascii.eqlIgnoreCase(obj.object.class_name, "RecordCurrencyCode") and
-            std.ascii.eqlIgnoreCase(method, "value")))
-        {
-            return null;
-        }
-        const code = obj.object.fields.get("recordCurrencyCode") orelse Value.null_val;
-        if (code == .string and code.string.len > 0) return code;
-        return Value{ .string = "USD" };
-    }
-
-    fn eval_npsp_rd2_pause_schedule_handler_method(
-        self: *Evaluator,
-        obj: Value,
-        method: []const u8,
-        args: []const Value,
-    ) !?Value {
-        if (!(obj == .object and
-            std.ascii.endsWithIgnoreCase(
-                obj.object.class_name,
-                "PauseScheduleHandler",
-            )))
-        {
-            return null;
-        }
-        if (std.ascii.eqlIgnoreCase(method, "isPause") and args.len >= 1) {
-            return Value{ .boolean = self.npsp_rd2_schedule_value_is_pause(args[0]) };
-        }
-        if (std.ascii.eqlIgnoreCase(method, "isActivePause") and args.len >= 2) {
-            return Value{ .boolean = self.npsp_rd2_schedule_value_is_active_pause(args[0], args[1]) };
-        }
-        if (std.ascii.eqlIgnoreCase(method, "hasActivePause") and
-            (args.len == 0 or args[0] == .null_val))
-        {
-            return Value{ .boolean = false };
-        }
-        if (std.ascii.eqlIgnoreCase(method, "hasActivePause") and args.len >= 1) {
-            const reference_date = if (args.len >= 2)
-                args[1]
-            else
-                self.npsp_recurring_donation_current_date() orelse Value.null_val;
-            if (args[0] == .list) {
-                for (args[0].list.items.items) |schedule| {
-                    if (self.npsp_rd2_schedule_value_is_active_pause(schedule, reference_date)) {
-                        return Value{ .boolean = true };
-                    }
-                }
-                return Value{ .boolean = false };
-            }
-            return Value{
-                .boolean = self.npsp_rd2_schedule_value_is_active_pause(args[0], reference_date),
-            };
-        }
-        return null;
-    }
-
     fn npsp_rd2_schedule_value_is_pause(self: *Evaluator, value: Value) bool {
         const schedule = switch (value) {
             .sobject => |s| s,
@@ -36436,6 +36317,29 @@ pub const Evaluator = struct {
         const start_str = builtins.extract_date_string(start_value) orelse return true;
         const start = parse_iso_date(start_str) orelse return true;
         return compare_iso_dates(start, end) <= 0;
+    }
+
+    fn eval_npsp_rd2_pause_schedule_handler_method(
+        self: *Evaluator,
+        obj: Value,
+        method: []const u8,
+        args: []const Value,
+    ) !?Value {
+        _ = self;
+        if (!(obj == .object and
+            std.ascii.endsWithIgnoreCase(
+                obj.object.class_name,
+                "PauseScheduleHandler",
+            )))
+        {
+            return null;
+        }
+        if (std.ascii.eqlIgnoreCase(method, "hasActivePause") and
+            (args.len == 0 or args[0] == .null_val))
+        {
+            return Value{ .boolean = false };
+        }
+        return null;
     }
 
     fn eval_npsp_rd2_settings_method(

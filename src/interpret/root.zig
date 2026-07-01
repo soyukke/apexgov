@@ -9630,6 +9630,56 @@ test "E2E: hierarchy custom setting accessors return detached records" {
     try std.testing.expectEqualStrings("saved:org", result.value.string);
 }
 
+test "E2E: cached hierarchy custom setting object mutations remain visible through static facade" {
+    const alloc = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try write_generic_hierarchy_custom_setting_fixture(tmp_dir.dir);
+    const tmp_path = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", alloc);
+    defer alloc.free(tmp_path);
+
+    const source =
+        \\public class GenericSettingsFacade {
+        \\    private static AppSettings__c cached;
+        \\    public static AppSettings__c getSettings() {
+        \\        if (cached == null) {
+        \\            cached = new AppSettings__c();
+        \\        }
+        \\        return cached;
+        \\    }
+        \\}
+        \\public class GenericSettingsWrapper {
+        \\    private AppSettings__c settings {
+        \\        get {
+        \\            if (settings == null) {
+        \\                settings = GenericSettingsFacade.getSettings();
+        \\            }
+        \\            return settings;
+        \\        }
+        \\        set;
+        \\    }
+        \\    public void save(String value) {
+        \\        settings.Flag__c = value;
+        \\    }
+        \\}
+        \\public class GenericSettingsCacheMutationTest {
+        \\    public static String test() {
+        \\        new GenericSettingsWrapper().save('updated');
+        \\        return GenericSettingsFacade.getSettings().Flag__c;
+        \\    }
+        \\}
+    ;
+    const result = try run(alloc, std.testing.io, source, .{
+        .entry_class = "GenericSettingsCacheMutationTest",
+        .entry_method = "test",
+        .source_paths = &.{tmp_path},
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("updated", result.value.string);
+}
+
 test "E2E: hierarchy custom setting records are visible to later static initialization" {
     const alloc = std.testing.allocator;
     var tmp_dir = std.testing.tmpDir(.{});
@@ -9804,6 +9854,60 @@ test "E2E: test runner sees hierarchy custom settings before later class static 
         \\        settings.Flag__c = 'configured';
         \\        upsert settings;
         \\        System.Assert.areEqual('configured', ScenarioHolder.getScenario());
+        \\    }
+        \\}
+        ,
+    });
+    const tmp_path = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", alloc);
+    defer alloc.free(tmp_path);
+
+    var _null_buf: [256]u8 = undefined;
+    var _null_writer: std.Io.Writer.Discarding = .init(&_null_buf);
+    var suite = try run_test_suite(
+        alloc,
+        std.testing.io,
+        &.{tmp_path},
+        &_null_writer.writer,
+    );
+    defer suite.deinit();
+
+    try std.testing.expectEqual(@as(u32, 1), suite.total);
+    try std.testing.expectEqual(@as(u32, 1), suite.passed);
+    try std.testing.expectEqual(@as(u32, 0), suite.failed);
+    try std.testing.expectEqual(@as(u32, 0), suite.errors);
+}
+
+test "E2E: test setup static state is reset before each test method" {
+    const alloc = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try write_generic_hierarchy_custom_setting_fixture(tmp_dir.dir);
+    try tmp_dir.dir.writeFile(std.testing.io, .{
+        .sub_path = "SetupStaticReset_Tests.cls",
+        .data =
+        \\@IsTest
+        \\private class SetupStaticReset_Tests {
+        \\    private static AppSettings__c cachedSettings;
+        \\
+        \\    private static AppSettings__c getSettings() {
+        \\        if (cachedSettings == null) {
+        \\            cachedSettings = new AppSettings__c();
+        \\        }
+        \\        return cachedSettings;
+        \\    }
+        \\
+        \\    @TestSetup
+        \\    static void setupData() {
+        \\        getSettings().Flag__c = 'setup';
+        \\        insert new Account(Name = 'setup');
+        \\    }
+        \\
+        \\    @IsTest
+        \\    static void statics_start_fresh_after_setup() {
+        \\        System.Assert.areEqual(null, cachedSettings);
+        \\        getSettings().Flag__c = 'test';
+        \\        System.Assert.areEqual('test', getSettings().Flag__c);
         \\    }
         \\}
         ,
