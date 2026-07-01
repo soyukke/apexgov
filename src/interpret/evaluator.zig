@@ -39060,7 +39060,8 @@ pub const Evaluator = struct {
             return true;
         }
         if (!is_synthetic_schema_extension_field_name(field_name_value.string)) return true;
-        return self.get_field_metadata(object_type.string, field_name_value.string) != null;
+        return self.get_field_metadata(object_type.string, field_name_value.string) != null or
+            self.schema_field_exists_dynamic(object_type.string, field_name_value.string);
     }
 
     fn eval_map_values(self: *Evaluator, map: *types.MapValue) !Value {

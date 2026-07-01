@@ -5054,23 +5054,10 @@ const known_describe_field_sets = [_]struct { object: []const u8, fields: []cons
         "Subject", "ActivityDate", "Priority", "Status", "Type", "WhatId", "WhoId",
     } },
     .{ .object = "Opportunity", .fields = &.{
-        "AccountId",                   "StageName",        "CloseDate",            "Amount",
-        "CampaignId",                  "Probability",      "Type",                 "LeadSource",
-        "Description",                 "IsPrivate",        "IsWon",                "IsClosed",
-        "ExpectedRevenue",             "ForecastCategory", "ForecastCategoryName", "NextStep",
-        "npe01__Membership_Origin__c",
-    } },
-    .{ .object = "npe01__OppPayment__c", .fields = &.{
-        "npe01__Paid__c",           "npe01__Written_Off__c", "npe01__Opportunity__c",
-        "npe01__Payment_Amount__c",
-    } },
-    .{ .object = "npe4__Relationship__c", .fields = &.{
-        "npe4__Contact__c",
-        "npe4__RelatedContact__c",
-        "npe4__ReciprocalRelationship__c",
-        "npe4__Type__c",
-        "npe4__Status__c",
-        "npe4__Description__c",
+        "AccountId",       "StageName",        "CloseDate",            "Amount",
+        "CampaignId",      "Probability",      "Type",                 "LeadSource",
+        "Description",     "IsPrivate",        "IsWon",                "IsClosed",
+        "ExpectedRevenue", "ForecastCategory", "ForecastCategoryName", "NextStep",
     } },
     .{ .object = "OpportunityContactRole", .fields = &.{
         "OpportunityId", "ContactId", "Role", "IsPrimary",
@@ -5093,13 +5080,6 @@ const known_describe_field_sets = [_]struct { object: []const u8, fields: []cons
         "MasterLabel",        "ApiName",          "SortOrder",
         "IsActive",           "IsClosed",         "IsWon",
         "DefaultProbability", "ForecastCategory", "ForecastCategoryName",
-    } },
-    .{ .object = "npe03__Recurring_Donation__c", .fields = &.{
-        "Amount",
-        "npe03__Amount__c",
-        "npe03__Installment_Period__c",
-        "npe03__Open_Ended_Status__c",
-        "npe03__Schedule_Type__c",
     } },
     .{ .object = "User", .fields = &.{
         "Username",       "Email",             "FirstName",    "LastName",
@@ -5170,25 +5150,10 @@ const canonical_describe_field_sets = [_]struct { object: []const u8, fields: []
         "Id", "Name", "DeveloperName", "UserType", "UserLicenseId",
     } },
     .{ .object = "Opportunity", .fields = &.{
-        "Id",          "Name",                        "AccountId",  "StageName",
-        "CloseDate",   "Amount",                      "CampaignId", "OwnerId",
-        "Probability", "Type",                        "LeadSource", "Description",
-        "IsPrivate",   "npe01__Membership_Origin__c",
-    } },
-    .{ .object = "npe01__OppPayment__c", .fields = &.{
-        "Id",                    "Name",
-        "npe01__Paid__c",        "npe01__Written_Off__c",
-        "npe01__Opportunity__c", "npe01__Payment_Amount__c",
-    } },
-    .{ .object = "npe4__Relationship__c", .fields = &.{
-        "Id",
-        "Name",
-        "npe4__Contact__c",
-        "npe4__RelatedContact__c",
-        "npe4__ReciprocalRelationship__c",
-        "npe4__Type__c",
-        "npe4__Status__c",
-        "npe4__Description__c",
+        "Id",          "Name",   "AccountId",  "StageName",
+        "CloseDate",   "Amount", "CampaignId", "OwnerId",
+        "Probability", "Type",   "LeadSource", "Description",
+        "IsPrivate",
     } },
     .{ .object = "OpportunityContactRole", .fields = &.{
         "Id", "OpportunityId", "ContactId", "Role", "IsPrimary",
@@ -5327,6 +5292,7 @@ fn canonical_field_api_name(
             }
         }
     }
+    if (is_namespaced_custom_field_api_name(field_name)) return field_name;
     // Fallback: upper-case the first letter only, leave the rest alone.
     if (field_name.len > 0 and std.ascii.isLower(field_name[0])) {
         var buf = ctx.arena.alloc(u8, field_name.len) catch return field_name;
@@ -5335,6 +5301,13 @@ fn canonical_field_api_name(
         return buf;
     }
     return field_name;
+}
+
+fn is_namespaced_custom_field_api_name(field_name: []const u8) bool {
+    const simple = simple_field_api_name(field_name);
+    if (!std.ascii.endsWithIgnoreCase(simple, "__c")) return false;
+    const namespace_sep = std.mem.indexOf(u8, simple, "__") orelse return false;
+    return std.mem.indexOf(u8, simple[namespace_sep + 2 ..], "__") != null;
 }
 
 fn create_field_describe_result_with_type(
@@ -5423,6 +5396,7 @@ fn is_system_metadata_field(field_name: []const u8) bool {
         "CreatedById",
         "LastModifiedDate",
         "LastModifiedById",
+        "MasterRecordId",
         "SystemModstamp",
         "IsDeleted",
     });
@@ -5560,7 +5534,7 @@ fn infer_field_type(field_name: []const u8) []const u8 {
 /// Infer an xml-form type for a standard SObject field.
 /// `object_type` is optional ("" for unknown); well-known object/field pairs
 /// resolve to their real DisplayType even without field-meta.xml.
-fn infer_field_type_for_object(
+pub fn infer_field_type_for_object(
     object_type: []const u8,
     field_name: []const u8,
 ) []const u8 {
@@ -8982,6 +8956,10 @@ fn describe_field_reference_to(ctx: *BuiltinContext, obj: *types.ObjectInstance)
         if (metadata.reference_to) |reference_to| {
             try append_s_object_type_token(ctx, list, reference_to);
         }
+    } else if (std.ascii.eqlIgnoreCase(field_name_val.string, "MasterRecordId") or
+        std.ascii.eqlIgnoreCase(field_name_val.string, "MasterRecord"))
+    {
+        try append_s_object_type_token(ctx, list, object_type_val.string);
     } else if (standard_reference_target_for_field_name(field_name_val.string)) |reference_to| {
         try append_s_object_type_token(ctx, list, reference_to);
     }
@@ -9516,6 +9494,7 @@ fn is_system_field(field_name: []const u8) bool {
         std.ascii.eqlIgnoreCase(field_name, "CreatedById") or
         std.ascii.eqlIgnoreCase(field_name, "LastModifiedDate") or
         std.ascii.eqlIgnoreCase(field_name, "LastModifiedById") or
+        std.ascii.eqlIgnoreCase(field_name, "MasterRecordId") or
         std.ascii.eqlIgnoreCase(field_name, "SystemModstamp") or
         std.ascii.eqlIgnoreCase(field_name, "IsDeleted");
 }

@@ -64,6 +64,12 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, source: []const u8, opts: Options
                 &eval.field_metadata,
                 &eval.child_relationships,
             );
+            try collect_field_type_hints(
+                arena.allocator(),
+                io,
+                path,
+                &eval.field_types,
+            );
             try collect_child_relationship_hints(
                 arena.allocator(),
                 io,
@@ -501,6 +507,12 @@ fn load_test_metadata_path(
         &eval.field_types,
         &eval.field_metadata,
         &eval.child_relationships,
+    ) catch {};
+    collect_field_type_hints(
+        parse_alloc,
+        io,
+        path,
+        &eval.field_types,
     ) catch {};
     collect_child_relationship_hints(
         parse_alloc,
@@ -1456,6 +1468,257 @@ fn put_child_relationship(
         .child_type = try alloc.dupe(u8, child_type),
         .fk_field = try alloc.dupe(u8, fk_field),
     });
+}
+
+fn collect_field_type_hints(
+    alloc: std.mem.Allocator,
+    io: std.Io,
+    path: []const u8,
+    field_types: *FieldTypesMap,
+) !void {
+    var dir = std.Io.Dir.cwd().openDir(io, path, .{ .iterate = true }) catch return;
+    defer dir.close(io);
+
+    var walker = dir.walk(alloc) catch return;
+    defer walker.deinit();
+
+    while (walker.next(io) catch null) |entry| {
+        if (entry.kind != .file) continue;
+
+        if (std.mem.endsWith(u8, entry.basename, ".fieldSet-meta.xml")) {
+            const object_type = metadata_object_from_path(entry.path) orelse continue;
+            try collect_field_type_hints_from_file(
+                alloc,
+                io,
+                path,
+                entry.path,
+                object_type,
+                field_types,
+            );
+        } else if (std.mem.endsWith(u8, entry.basename, ".layout-meta.xml")) {
+            const object_type = layout_parent_type_from_basename(entry.basename) orelse continue;
+            try collect_field_type_hints_from_file(
+                alloc,
+                io,
+                path,
+                entry.path,
+                object_type,
+                field_types,
+            );
+        } else if (std.mem.endsWith(u8, entry.basename, ".quickAction-meta.xml")) {
+            try collect_quick_action_field_type_hints(
+                alloc,
+                io,
+                path,
+                entry.path,
+                entry.basename,
+                field_types,
+            );
+        } else if (std.mem.endsWith(u8, entry.basename, ".cls") or
+            std.mem.endsWith(u8, entry.basename, ".trigger"))
+        {
+            try collect_apex_source_field_type_hints(
+                alloc,
+                io,
+                path,
+                entry.path,
+                field_types,
+            );
+        }
+    }
+}
+
+fn collect_field_type_hints_from_file(
+    alloc: std.mem.Allocator,
+    io: std.Io,
+    base_path: []const u8,
+    entry_path: []const u8,
+    object_type: []const u8,
+    field_types: *FieldTypesMap,
+) !void {
+    const full_path = try std.fs.path.join(alloc, &.{ base_path, entry_path });
+    const content = std.Io.Dir.cwd().readFileAlloc(
+        io,
+        full_path,
+        alloc,
+        .limited(512 * 1024),
+    ) catch return;
+    try collect_field_type_hints_from_content(alloc, content, object_type, field_types);
+}
+
+fn collect_quick_action_field_type_hints(
+    alloc: std.mem.Allocator,
+    io: std.Io,
+    base_path: []const u8,
+    entry_path: []const u8,
+    basename: []const u8,
+    field_types: *FieldTypesMap,
+) !void {
+    const full_path = try std.fs.path.join(alloc, &.{ base_path, entry_path });
+    const content = std.Io.Dir.cwd().readFileAlloc(
+        io,
+        full_path,
+        alloc,
+        .limited(128 * 1024),
+    ) catch return;
+    const object_type = if (extract_xml_tag_value(content, "targetObject")) |target|
+        std.mem.trim(u8, target, " \t\r\n")
+    else
+        quick_action_parent_type_from_basename(basename) orelse return;
+    try collect_field_type_hints_from_content(alloc, content, object_type, field_types);
+}
+
+fn collect_field_type_hints_from_content(
+    alloc: std.mem.Allocator,
+    content: []const u8,
+    object_type: []const u8,
+    field_types: *FieldTypesMap,
+) !void {
+    var cursor: usize = 0;
+    while (std.mem.indexOfPos(u8, content, cursor, "<field>")) |start_idx| {
+        const value_start = start_idx + "<field>".len;
+        const end_idx = std.mem.indexOfPos(u8, content, value_start, "</field>") orelse break;
+        cursor = end_idx + "</field>".len;
+        const field_name = std.mem.trim(u8, content[value_start..end_idx], " \t\r\n");
+        if (field_name.len == 0 or std.mem.indexOfScalar(u8, field_name, '.') != null) continue;
+        try store_field_type_hint(alloc, field_types, object_type, field_name);
+    }
+}
+
+fn collect_apex_source_field_type_hints(
+    alloc: std.mem.Allocator,
+    io: std.Io,
+    base_path: []const u8,
+    entry_path: []const u8,
+    field_types: *FieldTypesMap,
+) !void {
+    const full_path = try std.fs.path.join(alloc, &.{ base_path, entry_path });
+    const content = std.Io.Dir.cwd().readFileAlloc(
+        io,
+        full_path,
+        alloc,
+        .limited(10 * 1024 * 1024),
+    ) catch return;
+    try collect_direct_source_field_hints(alloc, content, field_types);
+    try collect_schema_fields_source_hints(alloc, content, field_types);
+}
+
+fn collect_direct_source_field_hints(
+    alloc: std.mem.Allocator,
+    content: []const u8,
+    field_types: *FieldTypesMap,
+) !void {
+    var cursor: usize = 0;
+    while (std.mem.indexOfScalarPos(u8, content, cursor, '.')) |dot| {
+        cursor = dot + 1;
+        const object_type = source_identifier_before(content, dot) orelse continue;
+        const field_name = source_identifier_after(content, dot + 1) orelse continue;
+        if (!source_field_hint_pair_is_sobject_field(object_type, field_name)) continue;
+        try store_field_type_hint(alloc, field_types, object_type, field_name);
+    }
+}
+
+fn collect_schema_fields_source_hints(
+    alloc: std.mem.Allocator,
+    content: []const u8,
+    field_types: *FieldTypesMap,
+) !void {
+    var cursor: usize = 0;
+    while (std.mem.indexOfPos(u8, content, cursor, ".fields.")) |fields_dot| {
+        cursor = fields_dot + ".fields.".len;
+        const field_name = source_identifier_after(content, cursor) orelse continue;
+        if (!source_custom_field_name(field_name)) continue;
+        const object_end = fields_dot;
+        var object_type = source_identifier_before(content, object_end) orelse continue;
+        if (std.ascii.eqlIgnoreCase(object_type, "SObjectType")) {
+            if (object_end <= object_type.len) continue;
+            const before_sobject_type = object_end - object_type.len - 1;
+            object_type = source_identifier_before(content, before_sobject_type) orelse continue;
+        }
+        if (!source_sobject_type_name(object_type)) continue;
+        try store_field_type_hint(alloc, field_types, object_type, field_name);
+    }
+}
+
+fn source_identifier_before(content: []const u8, end: usize) ?[]const u8 {
+    if (end == 0) return null;
+    var start = end;
+    while (start > 0 and source_identifier_char(content[start - 1])) : (start -= 1) {}
+    if (start == end) return null;
+    return content[start..end];
+}
+
+fn source_identifier_after(content: []const u8, start: usize) ?[]const u8 {
+    if (start >= content.len or !source_identifier_char(content[start])) return null;
+    var end = start + 1;
+    while (end < content.len and source_identifier_char(content[end])) : (end += 1) {}
+    return content[start..end];
+}
+
+fn source_identifier_char(ch: u8) bool {
+    return std.ascii.isAlphanumeric(ch) or ch == '_';
+}
+
+fn source_field_hint_pair_is_sobject_field(
+    object_type: []const u8,
+    field_name: []const u8,
+) bool {
+    return source_sobject_type_name(object_type) and source_custom_field_name(field_name);
+}
+
+fn source_sobject_type_name(name: []const u8) bool {
+    if (std.ascii.endsWithIgnoreCase(name, "__c") or
+        std.ascii.endsWithIgnoreCase(name, "__mdt") or
+        std.ascii.endsWithIgnoreCase(name, "__e"))
+    {
+        return true;
+    }
+    const standard_objects = [_][]const u8{
+        "Account",
+        "Campaign",
+        "Case",
+        "Contact",
+        "Event",
+        "Lead",
+        "Opportunity",
+        "Task",
+        "User",
+    };
+    for (standard_objects) |standard| {
+        if (std.ascii.eqlIgnoreCase(name, standard)) return true;
+    }
+    return false;
+}
+
+fn source_custom_field_name(field_name: []const u8) bool {
+    return std.ascii.endsWithIgnoreCase(field_name, "__c") or
+        std.ascii.endsWithIgnoreCase(field_name, "__r");
+}
+
+fn store_field_type_hint(
+    alloc: std.mem.Allocator,
+    field_types: *FieldTypesMap,
+    object_type: []const u8,
+    field_name: []const u8,
+) !void {
+    const type_key = try alloc.dupe(u8, object_type);
+    const field_key = try alloc.dupe(u8, field_name);
+    const gop = try field_types.getOrPut(alloc, type_key);
+    if (!gop.found_existing) gop.value_ptr.* = .empty;
+    for (gop.value_ptr.keys()) |known_field| {
+        if (std.ascii.eqlIgnoreCase(known_field, field_name)) return;
+    }
+    const inferred_type = builtins.infer_field_type_for_object(object_type, field_name);
+    try gop.value_ptr.put(alloc, field_key, inferred_type);
+}
+
+fn metadata_object_from_path(entry_path: []const u8) ?[]const u8 {
+    const objects_idx = std.mem.indexOf(u8, entry_path, "objects/") orelse
+        std.mem.indexOf(u8, entry_path, "objects\\") orelse return null;
+    const after_objects = entry_path[objects_idx + 8 ..];
+    const sep_idx = std.mem.indexOfAny(u8, after_objects, "/\\") orelse return null;
+    if (sep_idx == 0) return null;
+    return after_objects[0..sep_idx];
 }
 
 fn collect_child_relationship_hints(
@@ -7044,7 +7307,14 @@ test "E2E: relationship-style field names describe as REFERENCE" {
         \\        String refName = (refs != null && refs.size() > 0)
         \\            ? refs[0].getDescribe().getName()
         \\            : 'none';
-        \\        return String.valueOf(dt) + '|' + rel + '|' + refName;
+        \\        Schema.DescribeFieldResult master = Contact.MasterRecordId.getDescribe();
+        \\        List<Schema.SObjectType> masterRefs = master.getReferenceTo();
+        \\        String masterRefName = (masterRefs != null && masterRefs.size() > 0)
+        \\            ? masterRefs[0].getDescribe().getName()
+        \\            : 'none';
+        \\        return String.valueOf(dt) + '|' + rel + '|' + refName + '|' +
+        \\            master.getRelationshipName() + '|' + masterRefName + '|' +
+        \\            String.valueOf(master.isUpdateable());
         \\    }
         \\}
     ;
@@ -7052,7 +7322,7 @@ test "E2E: relationship-style field names describe as REFERENCE" {
         source,
         "RelationshipDescribeProbe",
         "test",
-        "REFERENCE|CreatedBy|User",
+        "REFERENCE|CreatedBy|User|MasterRecord|Contact|false",
     );
 }
 
@@ -19852,6 +20122,7 @@ test "E2E: global describe includes source-path custom objects" {
     defer tmp.cleanup();
 
     try tmp.dir.createDirPath(std.testing.io, "force-app/main/default/objects/Widget__c/fields");
+    try tmp.dir.createDirPath(std.testing.io, "force-app/main/default/classes");
     try tmp.dir.writeFile(std.testing.io, .{
         .sub_path = "force-app/main/default/objects/Widget__c/fields/Amount__c.field-meta.xml",
         .data =
@@ -19865,6 +20136,16 @@ test "E2E: global describe includes source-path custom objects" {
         \\</CustomField>
         ,
     });
+    try tmp.dir.writeFile(std.testing.io, .{
+        .sub_path = "force-app/main/default/classes/SourcePathFieldHintProbe.cls",
+        .data =
+        \\public class SourcePathFieldHintProbe {
+        \\    public static void mark() {
+        \\        Object ignored = Account.pkg__Managed_Field__c;
+        \\    }
+        \\}
+        ,
+    });
     const source_path = try tmp.dir.realPathFileAlloc(std.testing.io, ".", alloc);
     defer alloc.free(source_path);
 
@@ -19876,6 +20157,8 @@ test "E2E: global describe includes source-path custom objects" {
         \\        Map<String, Schema.SObjectField> fields = describe.fields.getMap();
         \\        return String.valueOf(gd.containsKey('widget__c')) + ':' +
         \\            describe.getName() + ':' +
+        \\            String.valueOf(Account.SObjectType.getDescribe().fields.getMap()
+        \\                .keySet().contains('pkg__Managed_Field__c')) + ':' +
         \\            String.valueOf(fields.containsKey('pkg__Managed_Field__c')) + ':' +
         \\            fields.get('pkg__Managed_Field__c').getDescribe().getName() + ':' +
         \\            String.valueOf(fields.get('Amount__c').getDescribe().getDefaultValueFormula()) + ':' +
@@ -19891,7 +20174,7 @@ test "E2E: global describe includes source-path custom objects" {
     defer result.deinit();
 
     try std.testing.expectEqualStrings(
-        "true:Widget__c:true:Pkg__Managed_Field__c:42:Widget.Amount",
+        "true:Widget__c:true:true:pkg__Managed_Field__c:42:Widget.Amount",
         result.value.string,
     );
 }
