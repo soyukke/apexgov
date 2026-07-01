@@ -515,81 +515,12 @@ pub fn dispatch_static(
         return dispatch_static_url(ctx, method_name);
     }
     if (ci.eqlIgnoreCase(class_name, "AccessType")) return Value{ .string = method_name };
-    // Stubbed utility classes — only provided when the user hasn't supplied a copy.
-    // fflib_IDGenerator lives in fflib-apex-mocks, but fflib-apex-common's tests call
-    // it even when the mock source isn't co-loaded. Emitting a deterministic fake Id
-    // keeps those tests on the happy path.
-    if (ci.eqlIgnoreCase(class_name, "fflib_IDGenerator") and
-        ctx.eval.classes.get("fflib_IDGenerator") == null)
-    {
-        if (ci.eqlIgnoreCase(method_name, "generate") and args.len > 0) {
-            const sobj_name: []const u8 = if (args[0] == .object and
-                (ci.eqlIgnoreCase(args[0].object.class_name, "Schema.SObjectType") or
-                    ci.eqlIgnoreCase(args[0].object.class_name, "SObjectType")))
-            blk: {
-                if (args[0].object.fields.get("name")) |n| if (n == .string) break :blk n.string;
-                break :blk "SObject";
-            } else if (args[0] == .string) args[0].string else "SObject";
-            const prefix = builtins_key_prefix_for_name(sobj_name);
-            ctx.eval.next_id += 1;
-            const id_str = try std.fmt.allocPrint(
-                ctx.arena,
-                "{s}{x:0>12}",
-                .{ prefix, ctx.eval.next_id },
-            );
-            return Value{ .string = id_str };
-        }
-    }
     return null;
 }
 
 fn is_location_class(class_name: []const u8) bool {
     return std.ascii.eqlIgnoreCase(class_name, "Location") or
         std.ascii.eqlIgnoreCase(class_name, "System.Location");
-}
-
-/// Quick keyPrefix lookup used by builtin-stubbed id generators. Returns `000` for
-/// unknown types (fine for round-tripping Id.valueOf).
-fn builtins_key_prefix_for_name(name: []const u8) []const u8 {
-    const pairs = [_]struct { name: []const u8, prefix: []const u8 }{
-        .{ .name = "Account", .prefix = "001" },
-        .{ .name = "Contact", .prefix = "003" },
-        .{ .name = "Opportunity", .prefix = "006" },
-        .{ .name = "Case", .prefix = "500" },
-        .{ .name = "Lead", .prefix = "00Q" },
-        .{ .name = "Campaign", .prefix = "701" },
-        .{ .name = "CampaignMember", .prefix = "00v" },
-        .{ .name = "Task", .prefix = "00T" },
-        .{ .name = "Event", .prefix = "00U" },
-        .{ .name = "User", .prefix = "005" },
-        .{ .name = "Profile", .prefix = "00e" },
-        .{ .name = "Product2", .prefix = "01t" },
-        .{ .name = "Pricebook2", .prefix = "01s" },
-        .{ .name = "PricebookEntry", .prefix = "01u" },
-        .{ .name = "OpportunityLineItem", .prefix = "00k" },
-        .{ .name = "Quote", .prefix = "0Q0" },
-        .{ .name = "QuoteLineItem", .prefix = "0QL" },
-        .{ .name = "Contract", .prefix = "800" },
-        .{ .name = "Order", .prefix = "801" },
-        .{ .name = "OrderItem", .prefix = "802" },
-        .{ .name = "Asset", .prefix = "02i" },
-        .{ .name = "RecordType", .prefix = "012" },
-        .{ .name = "Group", .prefix = "00G" },
-        .{ .name = "UserRole", .prefix = "00E" },
-        .{ .name = "ContentDocument", .prefix = "069" },
-        .{ .name = "ContentVersion", .prefix = "068" },
-        .{ .name = "EmailMessage", .prefix = "02s" },
-        .{ .name = "CaseComment", .prefix = "00a" },
-        .{ .name = "FeedItem", .prefix = "0D5" },
-    };
-    for (pairs) |p| {
-        if (std.ascii.eqlIgnoreCase(p.name, name)) return p.prefix;
-    }
-    // Custom objects keep a deterministic placeholder prefix — enough to round-trip
-    // through Id.valueOf for tests that just want "some id that isn't null".
-    if (std.mem.endsWith(u8, name, "__c")) return "a00";
-    if (std.mem.endsWith(u8, name, "__mdt")) return "m00";
-    return "000";
 }
 
 // ---------------------------------------------------------------------------
@@ -614,17 +545,14 @@ fn dispatch_static_system(
         return .void_val;
     }
     if (std.ascii.eqlIgnoreCase(method_name, "currentTimeMillis")) {
-        if (ctx.eval.fixture_relaxed_exceptions) {
-            return Value{ .long = next_logical_millis(ctx) };
-        }
-        return Value{ .integer = 1000 };
+        return Value{ .long = next_logical_millis(ctx) };
     }
     if (std.ascii.eqlIgnoreCase(method_name, "now")) {
         const result = try make_datetime_value(
             ctx.arena,
             try current_date_time_string(ctx.arena),
         );
-        if (ctx.eval.fixture_relaxed_exceptions and result == .object) {
+        if (result == .object) {
             try result.object.fields.put(
                 ctx.arena,
                 "epoch_millis",
@@ -2323,9 +2251,8 @@ fn dispatch_static_schema(
         return try dispatch_schema_describe_s_objects(ctx, args);
     }
     // Minimal Schema.describeTabs() stub: return an empty list so utility
-    // code (e.g. ActionPlansV4's SectionHeader controller) that iterates
-    // `for (DescribeTabSetResult tsr : Schema.describeTabs())` falls through
-    // to its default-icon branch instead of NPE-ing on a null return.
+    // code that iterates `for (DescribeTabSetResult tsr : Schema.describeTabs())`
+    // falls through to default handling instead of NPE-ing on a null return.
     if (std.ascii.eqlIgnoreCase(method_name, "describeTabs")) {
         const list = try ctx.arena.create(types.ListValue);
         list.* = .{};
@@ -4323,12 +4250,6 @@ const standard_child_relationships = [_]ChildRelationshipSpec{
         .fk = "OpportunityId",
         .relationship = "OpportunityContactRoles",
     },
-    .{
-        .parent = "Opportunity",
-        .child = "npe01__OppPayment__c",
-        .fk = "npe01__Opportunity__c",
-        .relationship = "npe01__OppPayment__r",
-    },
     .{ .parent = "Opportunity", .child = "Event", .fk = "WhatId", .relationship = "Events" },
     .{ .parent = "Opportunity", .child = "Task", .fk = "WhatId", .relationship = "Tasks" },
     .{ .parent = "Opportunity", .child = "Quote", .fk = "OpportunityId", .relationship = "Quotes" },
@@ -5063,23 +4984,10 @@ const known_describe_field_sets = [_]struct { object: []const u8, fields: []cons
         "Subject", "ActivityDate", "Priority", "Status", "Type", "WhatId", "WhoId",
     } },
     .{ .object = "Opportunity", .fields = &.{
-        "AccountId",                   "StageName",        "CloseDate",            "Amount",
-        "CampaignId",                  "Probability",      "Type",                 "LeadSource",
-        "Description",                 "IsPrivate",        "IsWon",                "IsClosed",
-        "ExpectedRevenue",             "ForecastCategory", "ForecastCategoryName", "NextStep",
-        "npe01__Membership_Origin__c",
-    } },
-    .{ .object = "npe01__OppPayment__c", .fields = &.{
-        "npe01__Paid__c",           "npe01__Written_Off__c", "npe01__Opportunity__c",
-        "npe01__Payment_Amount__c",
-    } },
-    .{ .object = "npe4__Relationship__c", .fields = &.{
-        "npe4__Contact__c",
-        "npe4__RelatedContact__c",
-        "npe4__ReciprocalRelationship__c",
-        "npe4__Type__c",
-        "npe4__Status__c",
-        "npe4__Description__c",
+        "AccountId",       "StageName",        "CloseDate",            "Amount",
+        "CampaignId",      "Probability",      "Type",                 "LeadSource",
+        "Description",     "IsPrivate",        "IsWon",                "IsClosed",
+        "ExpectedRevenue", "ForecastCategory", "ForecastCategoryName", "NextStep",
     } },
     .{ .object = "OpportunityContactRole", .fields = &.{
         "OpportunityId", "ContactId", "Role", "IsPrimary",
@@ -5102,13 +5010,6 @@ const known_describe_field_sets = [_]struct { object: []const u8, fields: []cons
         "MasterLabel",        "ApiName",          "SortOrder",
         "IsActive",           "IsClosed",         "IsWon",
         "DefaultProbability", "ForecastCategory", "ForecastCategoryName",
-    } },
-    .{ .object = "npe03__Recurring_Donation__c", .fields = &.{
-        "Amount",
-        "npe03__Amount__c",
-        "npe03__Installment_Period__c",
-        "npe03__Open_Ended_Status__c",
-        "npe03__Schedule_Type__c",
     } },
     .{ .object = "User", .fields = &.{
         "Username",       "Email",             "FirstName",    "LastName",
@@ -5179,25 +5080,10 @@ const canonical_describe_field_sets = [_]struct { object: []const u8, fields: []
         "Id", "Name", "DeveloperName", "UserType", "UserLicenseId",
     } },
     .{ .object = "Opportunity", .fields = &.{
-        "Id",          "Name",                        "AccountId",  "StageName",
-        "CloseDate",   "Amount",                      "CampaignId", "OwnerId",
-        "Probability", "Type",                        "LeadSource", "Description",
-        "IsPrivate",   "npe01__Membership_Origin__c",
-    } },
-    .{ .object = "npe01__OppPayment__c", .fields = &.{
-        "Id",                    "Name",
-        "npe01__Paid__c",        "npe01__Written_Off__c",
-        "npe01__Opportunity__c", "npe01__Payment_Amount__c",
-    } },
-    .{ .object = "npe4__Relationship__c", .fields = &.{
-        "Id",
-        "Name",
-        "npe4__Contact__c",
-        "npe4__RelatedContact__c",
-        "npe4__ReciprocalRelationship__c",
-        "npe4__Type__c",
-        "npe4__Status__c",
-        "npe4__Description__c",
+        "Id",          "Name",   "AccountId",  "StageName",
+        "CloseDate",   "Amount", "CampaignId", "OwnerId",
+        "Probability", "Type",   "LeadSource", "Description",
+        "IsPrivate",
     } },
     .{ .object = "OpportunityContactRole", .fields = &.{
         "Id", "OpportunityId", "ContactId", "Role", "IsPrimary",
@@ -5336,6 +5222,7 @@ fn canonical_field_api_name(
             }
         }
     }
+    if (is_namespaced_custom_field_api_name(field_name)) return field_name;
     // Fallback: upper-case the first letter only, leave the rest alone.
     if (field_name.len > 0 and std.ascii.isLower(field_name[0])) {
         var buf = ctx.arena.alloc(u8, field_name.len) catch return field_name;
@@ -5344,6 +5231,13 @@ fn canonical_field_api_name(
         return buf;
     }
     return field_name;
+}
+
+fn is_namespaced_custom_field_api_name(field_name: []const u8) bool {
+    const simple = simple_field_api_name(field_name);
+    if (!std.ascii.endsWithIgnoreCase(simple, "__c")) return false;
+    const namespace_sep = std.mem.indexOf(u8, simple, "__") orelse return false;
+    return std.mem.indexOf(u8, simple[namespace_sep + 2 ..], "__") != null;
 }
 
 fn create_field_describe_result_with_type(
@@ -5432,6 +5326,7 @@ fn is_system_metadata_field(field_name: []const u8) bool {
         "CreatedById",
         "LastModifiedDate",
         "LastModifiedById",
+        "MasterRecordId",
         "SystemModstamp",
         "IsDeleted",
     });
@@ -5569,50 +5464,23 @@ fn infer_field_type(field_name: []const u8) []const u8 {
 /// Infer an xml-form type for a standard SObject field.
 /// `object_type` is optional ("" for unknown); well-known object/field pairs
 /// resolve to their real DisplayType even without field-meta.xml.
-fn infer_field_type_for_object(
+pub fn infer_field_type_for_object(
     object_type: []const u8,
     field_name: []const u8,
 ) []const u8 {
     if (object_type.len > 0) {
         if (infer_standard_picklist_type(object_type, field_name)) |t| return t;
-        if (std.ascii.eqlIgnoreCase(object_type, "npe03__Recurring_Donation__c") and
-            std.ascii.eqlIgnoreCase(field_name, "npe03__Amount__c"))
-        {
-            return "Currency";
-        }
-        if (std.ascii.eqlIgnoreCase(object_type, "npe03__Recurring_Donation__c") and
-            std.ascii.eqlIgnoreCase(field_name, "npe03__Installment_Period__c"))
-        {
-            return "Picklist";
-        }
-        if (std.ascii.eqlIgnoreCase(object_type, "npe03__Recurring_Donation__c") and
-            (field_api_name_matches(field_name, "npe03__Open_Ended_Status__c") or
-                field_api_name_matches(field_name, "npe03__Schedule_Type__c")))
-        {
-            return "Picklist";
-        }
         if (std.ascii.eqlIgnoreCase(object_type, "Opportunity") and
             field_api_name_matches(field_name, "Primary_Contact__c"))
         {
             return "Reference";
-        }
-        if (std.ascii.eqlIgnoreCase(object_type, "npe01__OppPayment__c") and
-            (std.ascii.eqlIgnoreCase(field_name, "npe01__Paid__c") or
-                std.ascii.eqlIgnoreCase(field_name, "npe01__Written_Off__c")))
-        {
-            return "Boolean";
-        }
-        if ((std.ascii.eqlIgnoreCase(object_type, "Account") or
-            std.ascii.eqlIgnoreCase(object_type, "Contact")) and
-            std.ascii.eqlIgnoreCase(field_name, "npo02__OppsClosedThisYear__c"))
-        {
-            return "Double";
         }
         if (std.ascii.eqlIgnoreCase(object_type, "Opportunity")) {
             if (std.ascii.eqlIgnoreCase(field_name, "CloseDate")) return "Date";
             if (std.ascii.eqlIgnoreCase(field_name, "Amount")) return "Currency";
         }
     }
+    if (infer_custom_field_type_by_name(field_name)) |t| return t;
     if (std.ascii.eqlIgnoreCase(field_name, "NumberOfEmployees") or
         std.ascii.eqlIgnoreCase(field_name, "TotalSize"))
         return "Integer";
@@ -5645,6 +5513,41 @@ fn infer_field_type_for_object(
         return "DateTime";
     if (type_matches_any(field_name, &.{ "Priority", "Status" })) return "Picklist";
     return "String";
+}
+
+fn infer_custom_field_type_by_name(field_name: []const u8) ?[]const u8 {
+    const local = local_custom_field_name(field_name);
+    if (!std.ascii.endsWithIgnoreCase(local, "__c")) return null;
+    if (std.ascii.endsWithIgnoreCase(local, "Amount__c")) return "Currency";
+    if (std.ascii.endsWithIgnoreCase(local, "Status__c") or
+        std.ascii.endsWithIgnoreCase(local, "Type__c") or
+        std.ascii.endsWithIgnoreCase(local, "Period__c"))
+    {
+        return "Picklist";
+    }
+    if (std.ascii.eqlIgnoreCase(local, "Paid__c") or
+        std.ascii.eqlIgnoreCase(local, "Written_Off__c") or
+        std.ascii.startsWithIgnoreCase(local, "Is") or
+        std.ascii.startsWithIgnoreCase(local, "Has"))
+    {
+        return "Boolean";
+    }
+    if ((std.mem.indexOf(u8, local, "Closed") != null and
+        std.mem.indexOf(u8, local, "Year") != null) or
+        std.ascii.startsWithIgnoreCase(local, "NumberOf") or
+        std.ascii.endsWithIgnoreCase(local, "Count__c"))
+    {
+        return "Double";
+    }
+    return null;
+}
+
+fn local_custom_field_name(field_name: []const u8) []const u8 {
+    const simple = simple_field_api_name(field_name);
+    const namespace_sep = std.mem.indexOf(u8, simple, "__") orelse return simple;
+    const after_namespace = simple[namespace_sep + 2 ..];
+    if (std.mem.indexOf(u8, after_namespace, "__") == null) return simple;
+    return after_namespace;
 }
 
 /// Return the xml-form type for well-known standard picklists ("Account.Rating" etc.).
@@ -5724,6 +5627,7 @@ pub fn normalize_s_object_field_assignment(
     value: Value,
 ) !Value {
     if (value == .null_val) return value;
+    if (value == .sobject and is_parent_relationship_field_name(field_name)) return value;
 
     const display_type = get_s_object_field_display_type(ctx, sob, field_name);
 
@@ -5765,6 +5669,13 @@ pub fn normalize_s_object_field_assignment(
     return value;
 }
 
+fn is_parent_relationship_field_name(field_name: []const u8) bool {
+    if (std.mem.endsWith(u8, field_name, "__r")) return true;
+    if (std.mem.endsWith(u8, field_name, "__c")) return false;
+    if (std.mem.endsWith(u8, field_name, "Id")) return false;
+    return standard_reference_target_for_field_name(field_name) != null;
+}
+
 fn normalize_boolean_field_assignment(ctx: *BuiltinContext, value: Value) !Value {
     return switch (value) {
         .boolean => value,
@@ -5784,6 +5695,7 @@ fn normalize_boolean_field_assignment(ctx: *BuiltinContext, value: Value) !Value
 fn normalize_integer_field_assignment(ctx: *BuiltinContext, value: Value) !Value {
     return switch (value) {
         .integer => value,
+        .long => value,
         .double => |d| Value{ .integer = @intFromFloat(d) },
         .string => |s| blk: {
             const parsed = std.fmt.parseInt(i64, s, 10) catch {
@@ -5802,6 +5714,7 @@ fn normalize_integer_field_assignment(ctx: *BuiltinContext, value: Value) !Value
 fn normalize_decimal_field_assignment(ctx: *BuiltinContext, value: Value) !Value {
     return switch (value) {
         .integer => value,
+        .long => value,
         .double => value,
         .string => |s| blk: {
             const parsed = std.fmt.parseFloat(f64, s) catch {
@@ -7698,78 +7611,27 @@ fn dispatch_describe_field_picklist_values(
     const list = try ctx.arena.create(types.ListValue);
     list.* = .{};
     if (object_type != null and field_name.len > 0) {
-        if (try append_known_object_picklist_values(ctx, list, object_type.?, field_name)) {
-            // The local metadata for managed packages can contain placeholder or
-            // org-specific values without matching custom metadata records.
-        } else {
-            if (lookup_field_metadata(ctx, object_type.?, field_name)) |metadata| {
-                for (metadata.picklist_values) |picklist_value| {
-                    try append_picklist_entry(
-                        ctx,
-                        list,
-                        picklist_value.label,
-                        picklist_value.value,
-                    );
-                }
+        if (lookup_field_metadata(ctx, object_type.?, field_name)) |metadata| {
+            for (metadata.picklist_values) |picklist_value| {
+                try append_picklist_entry(
+                    ctx,
+                    list,
+                    picklist_value.label,
+                    picklist_value.value,
+                    picklist_value.is_active,
+                );
             }
-            if (list.items.items.len == 0) {
-                _ = try load_picklist_from_metadata(ctx, list, object_type.?, field_name);
-            }
-            try append_picklist_values_from_store(ctx, list, object_type.?, field_name);
         }
         if (list.items.items.len == 0) {
-            try append_known_managed_picklist_values(ctx, list, field_name);
+            _ = try load_picklist_from_metadata(ctx, list, object_type.?, field_name);
         }
+        try append_picklist_values_from_store(ctx, list, object_type.?, field_name);
     }
     // Ensure at least one entry so that get(0) doesn't fail
     if (list.items.items.len == 0) {
-        try append_picklist_entry(ctx, list, "Default", "Default");
+        try append_picklist_entry(ctx, list, "Default", "Default", true);
     }
     return Value{ .list = list };
-}
-
-fn append_known_object_picklist_values(
-    ctx: *BuiltinContext,
-    list: *types.ListValue,
-    object_type: []const u8,
-    field_name: []const u8,
-) !bool {
-    if (std.ascii.eqlIgnoreCase(object_type, "npe03__Recurring_Donation__c") and
-        std.ascii.eqlIgnoreCase(simple_field_api_name(field_name), "Status__c"))
-    {
-        try append_picklist_entry(ctx, list, "Active", "Active");
-        try append_picklist_entry(ctx, list, "Lapsed", "Lapsed");
-        try append_picklist_entry(ctx, list, "Closed", "Closed");
-        try append_picklist_entry(ctx, list, "Paused", "Paused");
-        try append_picklist_entry(ctx, list, "Failing", "Failing");
-        return true;
-    }
-    if (std.ascii.eqlIgnoreCase(object_type, "npe03__Recurring_Donation__c") and
-        field_api_name_matches(field_name, "npe03__Installment_Period__c"))
-    {
-        try append_picklist_entry(ctx, list, "Monthly", "Monthly");
-        try append_picklist_entry(ctx, list, "Weekly", "Weekly");
-        try append_picklist_entry(ctx, list, "Quarterly", "Quarterly");
-        try append_picklist_entry(ctx, list, "1st and 15th", "1st and 15th");
-        try append_picklist_entry(ctx, list, "Yearly", "Yearly");
-        return true;
-    }
-    if (std.ascii.eqlIgnoreCase(object_type, "npe03__Recurring_Donation__c") and
-        field_api_name_matches(field_name, "npe03__Open_Ended_Status__c"))
-    {
-        try append_picklist_entry(ctx, list, "Open", "Open");
-        try append_picklist_entry(ctx, list, "Closed", "Closed");
-        try append_picklist_entry(ctx, list, "None", "None");
-        return true;
-    }
-    if (std.ascii.eqlIgnoreCase(object_type, "npe03__Recurring_Donation__c") and
-        field_api_name_matches(field_name, "npe03__Schedule_Type__c"))
-    {
-        try append_picklist_entry(ctx, list, "Multiply By", "Multiply By");
-        try append_picklist_entry(ctx, list, "Divide By", "Divide By");
-        return true;
-    }
-    return false;
 }
 
 fn simple_field_api_name(field_name: []const u8) []const u8 {
@@ -7790,26 +7652,14 @@ fn field_api_name_matches(field_name: []const u8, canonical: []const u8) bool {
     return false;
 }
 
-fn append_known_managed_picklist_values(
-    ctx: *BuiltinContext,
-    list: *types.ListValue,
-    field_name: []const u8,
-) !void {
-    if (std.ascii.endsWithIgnoreCase(field_name, "Open_Ended_Status__c")) {
-        try append_picklist_entry(ctx, list, "Open", "Open");
-        try append_picklist_entry(ctx, list, "Closed", "Closed");
-        try append_picklist_entry(ctx, list, "None", "None");
-    }
-}
-
 fn describe_field_default_value(
     ctx: *BuiltinContext,
     obj: *types.ObjectInstance,
     object_type: ?[]const u8,
     field_name: []const u8,
 ) Value {
-    // Resolve field-meta.xml <defaultValue> first. NPSP package-detection code
-    // reads text defaults through getDefaultValueFormula().
+    // Resolve metadata <defaultValue> first; Apex exposes text defaults through
+    // getDefaultValueFormula().
     if (object_type) |obj_name| {
         if (lookup_field_default(ctx, obj_name, field_name)) |default_val| {
             return default_val;
@@ -8981,6 +8831,10 @@ fn describe_field_reference_to(ctx: *BuiltinContext, obj: *types.ObjectInstance)
         if (metadata.reference_to) |reference_to| {
             try append_s_object_type_token(ctx, list, reference_to);
         }
+    } else if (std.ascii.eqlIgnoreCase(field_name_val.string, "MasterRecordId") or
+        std.ascii.eqlIgnoreCase(field_name_val.string, "MasterRecord"))
+    {
+        try append_s_object_type_token(ctx, list, object_type_val.string);
     } else if (standard_reference_target_for_field_name(field_name_val.string)) |reference_to| {
         try append_s_object_type_token(ctx, list, reference_to);
     }
@@ -9515,6 +9369,7 @@ fn is_system_field(field_name: []const u8) bool {
         std.ascii.eqlIgnoreCase(field_name, "CreatedById") or
         std.ascii.eqlIgnoreCase(field_name, "LastModifiedDate") or
         std.ascii.eqlIgnoreCase(field_name, "LastModifiedById") or
+        std.ascii.eqlIgnoreCase(field_name, "MasterRecordId") or
         std.ascii.eqlIgnoreCase(field_name, "SystemModstamp") or
         std.ascii.eqlIgnoreCase(field_name, "IsDeleted");
 }
@@ -10155,6 +10010,33 @@ test "String.valueOf converts integer" {
     const result = try dispatch_static(&ctx, "String", "valueOf", &.{Value{ .integer = 42 }});
     try std.testing.expect(result != null);
     try std.testing.expectEqualStrings("42", result.?.string);
+}
+
+test "numeric field assignment accepts Long values" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var stdout: std.ArrayListUnmanaged(u8) = .empty;
+    var pending_exception: ?Value = null;
+    var ctx = BuiltinContext{
+        .arena = arena.allocator(),
+        .stdout = &stdout,
+        .pending_exception = &pending_exception,
+    };
+
+    const decimal_value = try normalize_decimal_field_assignment(
+        &ctx,
+        Value{ .long = 1_777_593_600_000 },
+    );
+    try std.testing.expect(decimal_value == .long);
+    try std.testing.expectEqual(@as(i64, 1_777_593_600_000), decimal_value.long);
+
+    const integer_value = try normalize_integer_field_assignment(
+        &ctx,
+        Value{ .long = 42 },
+    );
+    try std.testing.expect(integer_value == .long);
+    try std.testing.expectEqual(@as(i64, 42), integer_value.long);
 }
 
 test "String.escapeSingleQuotes escapes embedded quotes" {
@@ -10953,6 +10835,7 @@ fn append_picklist_entry(
     list: *types.ListValue,
     label: []const u8,
     value: []const u8,
+    is_active: bool,
 ) !void {
     for (list.items.items) |existing| {
         if (existing != .object) continue;
@@ -10970,7 +10853,7 @@ fn append_picklist_entry(
     pe.* = .{ .class_name = "Schema.PicklistEntry" };
     try pe.fields.put(ctx.arena, "label", Value{ .string = label });
     try pe.fields.put(ctx.arena, "value", Value{ .string = value });
-    try pe.fields.put(ctx.arena, "active", Value{ .boolean = true });
+    try pe.fields.put(ctx.arena, "active", Value{ .boolean = is_active });
     try list.items.append(ctx.arena, Value{ .object = pe });
 }
 
@@ -10987,7 +10870,7 @@ fn append_picklist_values_from_store(
             if (record != .sobject) continue;
             if (utils.sobject_get(&record.sobject.fields, field_name)) |val| {
                 if (val == .string) {
-                    try append_picklist_entry(ctx, list, val.string, val.string);
+                    try append_picklist_entry(ctx, list, val.string, val.string, true);
                 }
             }
         }
@@ -11105,11 +10988,26 @@ fn parse_picklist_xml(ctx: *BuiltinContext, list: *types.ListValue, content: []c
         }
 
         if (label) |lbl| {
-            try append_picklist_entry(ctx, list, lbl, api_name orelse lbl);
+            try append_picklist_entry(
+                ctx,
+                list,
+                lbl,
+                api_name orelse lbl,
+                picklist_xml_value_is_active(block),
+            );
         }
 
         pos = value_end + value_end_tag.len;
     }
+}
+
+fn picklist_xml_value_is_active(block: []const u8) bool {
+    const start_tag = "<isActive>";
+    const end_tag = "</isActive>";
+    const start = std.mem.indexOf(u8, block, start_tag) orelse return true;
+    const value_start = start + start_tag.len;
+    const end = std.mem.indexOfPos(u8, block, value_start, end_tag) orelse return true;
+    return std.ascii.eqlIgnoreCase(std.mem.trim(u8, block[value_start..end], " \t\r\n"), "true");
 }
 
 fn decode_xml_entities(arena: std.mem.Allocator, s: []const u8) ![]const u8 {

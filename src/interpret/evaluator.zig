@@ -40,6 +40,7 @@ pub const PicklistValueMetadata = struct {
     label: []const u8,
     value: []const u8,
     is_default: bool = false,
+    is_active: bool = true,
 };
 
 pub const FieldMetadata = struct {
@@ -87,6 +88,22 @@ const DatabaseSavepointSnapshot = struct {
 const PartialDmlSnapshot = struct {
     database: DatabaseSavepointSnapshot,
     static_bindings: std.StringArrayHashMapUnmanaged(Value) = .empty,
+};
+
+const PartialDmlCloneContext = struct {
+    sobjects: std.AutoHashMapUnmanaged(usize, *types.SObject) = .empty,
+    objects: std.AutoHashMapUnmanaged(usize, *types.ObjectInstance) = .empty,
+    lists: std.AutoHashMapUnmanaged(usize, *types.ListValue) = .empty,
+    maps: std.AutoHashMapUnmanaged(usize, *types.MapValue) = .empty,
+    sets: std.AutoHashMapUnmanaged(usize, *types.SetValue) = .empty,
+
+    fn deinit(self: *PartialDmlCloneContext, alloc: std.mem.Allocator) void {
+        self.sobjects.deinit(alloc);
+        self.objects.deinit(alloc);
+        self.lists.deinit(alloc);
+        self.maps.deinit(alloc);
+        self.sets.deinit(alloc);
+    }
 };
 
 const PendingQueueable = struct {
@@ -1370,40 +1387,86 @@ pub const Evaluator = struct {
         try records.append(self.arena, Value{ .sobject = rt });
     }
 
-    fn seed_task_record_types_for_query(self: *Evaluator, soql: []const u8) !void {
-        if (std.ascii.indexOfIgnoreCase(soql, "SObjectType = 'Task'") == null and
-            std.ascii.indexOfIgnoreCase(soql, "SobjectType = 'Task'") == null)
-        {
-            return;
-        }
-        const forced = self.resolve_static_field_value_on_class(
-            "ActionPlansTestUtilities",
-            "forceHasRecordType",
-        ) orelse Value.null_val;
-        if (!(forced == .boolean and forced.boolean)) return;
+    fn seed_describe_record_types_for_query(self: *Evaluator, soql: []const u8) !void {
+        const obj_name = self.extract_record_type_sobject_literal(soql) orelse return;
+        const obj_idx = self.synthetic_record_type_index(obj_name) orelse return;
         const records = self.store_records_ptr("RecordType") orelse return;
+        if (self.record_type_store_has_sobject(records, obj_name)) return;
+
+        const master_id = try std.fmt.allocPrint(
+            self.arena,
+            "0120000000000{d:0>2}AAA",
+            .{obj_idx},
+        );
+        try self.append_synthetic_record_type(records, obj_name, master_id, "Master", "Master");
+
+        const default_id = try std.fmt.allocPrint(
+            self.arena,
+            "0120000000001{d:0>2}AAA",
+            .{obj_idx},
+        );
+        try self.append_synthetic_record_type(records, obj_name, default_id, "Default", "Default");
+    }
+
+    fn record_type_store_has_sobject(
+        self: *Evaluator,
+        records: *const std.ArrayListUnmanaged(Value),
+        obj_name: []const u8,
+    ) bool {
         for (records.items) |record| {
             if (record != .sobject) continue;
             const sobj = self.get_s_object_field_value_case_insensitive(
                 record.sobject,
                 "SObjectType",
             ) orelse continue;
-            if (sobj == .string and std.ascii.eqlIgnoreCase(sobj.string, "Task")) return;
+            if (sobj == .string and std.ascii.eqlIgnoreCase(sobj.string, obj_name)) return true;
         }
-        try self.append_synthetic_record_type(
-            records,
-            "Task",
-            "012000000000003AAA",
-            "Master",
-            "Master",
-        );
-        try self.append_synthetic_record_type(
-            records,
-            "Task",
-            "012000000000103AAA",
-            "Default",
-            "Default",
-        );
+        return false;
+    }
+
+    fn extract_record_type_sobject_literal(self: *Evaluator, soql: []const u8) ?[]const u8 {
+        _ = self;
+        const where_clause = extract_where_clause(soql) orelse soql;
+        var search_start: usize = 0;
+        while (std.ascii.indexOfIgnoreCasePos(
+            where_clause,
+            search_start,
+            "SObjectType",
+        )) |field_pos| {
+            const after_field = field_pos + "SObjectType".len;
+            var pos = after_field;
+            while (pos < where_clause.len and is_soql_whitespace(where_clause[pos])) : (pos += 1) {}
+            if (pos >= where_clause.len or where_clause[pos] != '=') {
+                search_start = after_field;
+                continue;
+            }
+            pos += 1;
+            while (pos < where_clause.len and is_soql_whitespace(where_clause[pos])) : (pos += 1) {}
+            if (pos >= where_clause.len or where_clause[pos] != '\'') {
+                search_start = after_field;
+                continue;
+            }
+            pos += 1;
+            const value_start = pos;
+            while (pos < where_clause.len and where_clause[pos] != '\'') : (pos += 1) {}
+            if (pos > value_start and pos < where_clause.len) {
+                return std.mem.trim(u8, where_clause[value_start..pos], " \t\r\n");
+            }
+            return null;
+        }
+        return null;
+    }
+
+    fn synthetic_record_type_index(self: *Evaluator, obj_name: []const u8) ?usize {
+        _ = self;
+        const known_types = [_][]const u8{
+            "Account",  "Contact",  "Opportunity", "Task", "Lead", "Case", "User",
+            "Solution", "Campaign", "Event",
+        };
+        for (known_types, 0..) |kt, i| {
+            if (std.ascii.eqlIgnoreCase(obj_name, kt)) return i;
+        }
+        return null;
     }
 
     /// Convert picklist field values from API name (fullName) to label on custom objects.
@@ -1448,11 +1511,7 @@ pub const Evaluator = struct {
                             self.eval_expr(init_expr, self.global_env) catch Value.null_val
                         else
                             default_value(fd.type_ref);
-                        const key = std.fmt.allocPrint(
-                            self.arena,
-                            "{s}.{s}",
-                            .{ cd.name, fd.name },
-                        ) catch continue;
+                        const key = self.static_field_cache_key(cd.name, fd.name) catch continue;
                         self.global_env.set(key, val) catch {
                             self.global_env.define(key, val) catch {};
                         };
@@ -1478,11 +1537,7 @@ pub const Evaluator = struct {
                     .field_decl => |fd| {
                         if (!fd.modifiers.is_static) continue;
                         const init_expr = fd.initializer orelse continue;
-                        const key = std.fmt.allocPrint(
-                            self.arena,
-                            "{s}.{s}",
-                            .{ cd.name, fd.name },
-                        ) catch continue;
+                        const key = self.static_field_cache_key(cd.name, fd.name) catch continue;
                         const current = self.global_env.get(key) orelse Value.null_val;
                         if (current != .null_val) continue;
                         const val =
@@ -1500,19 +1555,18 @@ pub const Evaluator = struct {
         }
     }
 
-    /// Register static field placeholders (null values) without evaluating initializers.
-    /// Used to prepare global_env keys so that lazy init can later fill in real values.
+    /// Register/reset static field placeholders without evaluating initializers.
+    /// Used before each test phase so lazy init can later fill in real values.
     pub fn register_static_field_placeholders(self: *Evaluator, cd: *ast.ClassDecl) void {
         for (cd.members) |member| {
             switch (member) {
                 .field_decl => |fd| {
                     if (fd.modifiers.is_static) {
-                        const key = std.fmt.allocPrint(
-                            self.arena,
-                            "{s}.{s}",
-                            .{ cd.name, fd.name },
-                        ) catch continue;
-                        self.global_env.define(key, default_value(fd.type_ref)) catch {};
+                        const key = self.static_field_cache_key(cd.name, fd.name) catch continue;
+                        const value = default_value(fd.type_ref);
+                        self.global_env.set(key, value) catch {
+                            self.global_env.define(key, value) catch {};
+                        };
                     }
                 },
                 else => {},
@@ -1637,20 +1691,20 @@ pub const Evaluator = struct {
             return true;
         }
         const builtin_names = [_][]const u8{
-            "System",            "String",            "Id",              "Integer",
-            "Long",              "Boolean",           "Decimal",         "Double",
-            "Date",              "Math",              "Time",            "TimeZone",
-            "DateTime",          "Approval",          "BusinessHours",   "JSON",
-            "UserInfo",          "LoggingLevel",      "Quiddity",        "UUID",
-            "OrgLimits",         "Database",          "RestContext",     "HttpResponse",
-            "HttpRequest",       "Schema",            "Security",        "AccessLevel",
-            "FeatureManagement", "Limits",            "Script",          "Pattern",
-            "Type",              "Request",           "Crypto",          "Blob",
-            "EncodingUtil",      "Messaging",         "EventBus",        "Invocable.Action",
-            "Test",              "Location",          "System.Location", "Formula",
-            "Cache",             "Http",              "CanTheUser",      "OrgShape",
-            "ApexPages",         "Network",           "Url",             "URL",
-            "AccessType",        "fflib_IDGenerator",
+            "System",            "String",       "Id",              "Integer",
+            "Long",              "Boolean",      "Decimal",         "Double",
+            "Date",              "Math",         "Time",            "TimeZone",
+            "DateTime",          "Approval",     "BusinessHours",   "JSON",
+            "UserInfo",          "LoggingLevel", "Quiddity",        "UUID",
+            "OrgLimits",         "Database",     "RestContext",     "HttpResponse",
+            "HttpRequest",       "Schema",       "Security",        "AccessLevel",
+            "FeatureManagement", "Limits",       "Script",          "Pattern",
+            "Type",              "Request",      "Crypto",          "Blob",
+            "EncodingUtil",      "Messaging",    "EventBus",        "Invocable.Action",
+            "Test",              "Location",     "System.Location", "Formula",
+            "Cache",             "Http",         "CanTheUser",      "OrgShape",
+            "ApexPages",         "Network",      "Url",             "URL",
+            "AccessType",
         };
         inline for (builtin_names) |builtin_name| {
             if (std.ascii.eqlIgnoreCase(class_name, builtin_name)) return true;
@@ -1819,11 +1873,7 @@ pub const Evaluator = struct {
             switch (member) {
                 .field_decl => |fd| {
                     if (fd.modifiers.is_static) {
-                        const key = std.fmt.allocPrint(
-                            self.arena,
-                            "{s}.{s}",
-                            .{ cd.name, fd.name },
-                        ) catch continue;
+                        const key = self.static_field_cache_key(cd.name, fd.name) catch continue;
                         const cur = self.global_env.get(key) orelse Value.null_val;
                         static_keys.append(self.arena, key) catch continue;
                         original_values.append(self.arena, cur) catch continue;
@@ -1844,11 +1894,7 @@ pub const Evaluator = struct {
                         const key = if (static_index < static_keys.items.len)
                             static_keys.items[static_index]
                         else
-                            std.fmt.allocPrint(
-                                self.arena,
-                                "{s}.{s}",
-                                .{ cd.name, fd.name },
-                            ) catch continue;
+                            self.static_field_cache_key(cd.name, fd.name) catch continue;
                         const original_value = if (static_index < original_values.items.len)
                             original_values.items[static_index]
                         else
@@ -1882,9 +1928,6 @@ pub const Evaluator = struct {
 
         if (self.call_depth > self.max_call_depth) {
             return .null_val;
-        }
-        if (self.should_skip_npsp_disabled_allocation_handler(class_name)) {
-            return Value.void_val;
         }
         if (try self.eval_compat_static_method(class_name, method_name, args)) |result| {
             return result;
@@ -2121,17 +2164,7 @@ pub const Evaluator = struct {
         )) |result| {
             return result;
         }
-        if (self.handle_npsp_allocations_util_static_method(class_name, method_name, args)) |result| {
-            return result;
-        }
         if (try self.handle_crlp_rollup_svc_static_method(
-            class_name,
-            method_name,
-            args,
-        )) |result| {
-            return result;
-        }
-        if (try self.handle_fflib_mock_sobject_util_static_method(
             class_name,
             method_name,
             args,
@@ -2141,63 +2174,6 @@ pub const Evaluator = struct {
         if (try self.handle_datacloud_static_method(class_name, method_name, args)) |result| {
             return result;
         }
-        if (try self.handle_npsp_potential_duplicates_static_method(
-            class_name,
-            method_name,
-            args,
-        )) |result| {
-            return result;
-        }
-        if (try self.handle_npsp_unit_test_data_static_method(
-            class_name,
-            method_name,
-            args,
-        )) |result| {
-            return result;
-        }
-        if (try self.handle_npsp_legacy_household_members_static_method(
-            class_name,
-            method_name,
-            args,
-        )) |result| {
-            return result;
-        }
-        if (try self.handle_npsp_contact_adapter_static_method(
-            class_name,
-            method_name,
-            args,
-        )) |result| {
-            return result;
-        }
-        if (try self.handle_npsp_household_naming_static_method(
-            class_name,
-            method_name,
-            args,
-        )) |result| {
-            return result;
-        }
-        if (try self.handle_npsp_opportunity_naming_static_method(
-            class_name,
-            method_name,
-            args,
-        )) |result| {
-            return result;
-        }
-        if (try self.handle_npsp_household_container_static_method(
-            class_name,
-            method_name,
-            args,
-        )) |result| {
-            return result;
-        }
-        if (try self.handle_npsp_visualize_schedule_static_method(
-            class_name,
-            method_name,
-            args,
-        )) |result| {
-            return result;
-        }
-
         const user_class_lookup = self.find_class_with_name(class_name);
 
         // Database methods that need store access. Preserve user-defined classes named
@@ -2322,25 +2298,6 @@ pub const Evaluator = struct {
         method: *ast.MethodDecl,
         args: []const Value,
     ) anyerror!Value {
-        if (self.current_class) |class_name| {
-            if (self.should_skip_npsp_disabled_allocation_handler(class_name)) {
-                return Value.void_val;
-            }
-        }
-        if (self.fixture_relaxed_exceptions and
-            self.current_class != null and
-            std.ascii.eqlIgnoreCase(self.current_class.?, "ALLO_AllocationsUtil"))
-        {
-            if (std.ascii.eqlIgnoreCase(method.name, "disableAllocationTriggers")) {
-                self.npsp_allocation_triggers_disabled = true;
-            } else if (std.ascii.eqlIgnoreCase(method.name, "enableAllocationTriggers")) {
-                self.npsp_allocation_triggers_disabled = false;
-            } else if (std.ascii.eqlIgnoreCase(method.name, "updateAllocationTriggersState") and
-                args.len >= 1 and args[0] == .boolean)
-            {
-                self.npsp_allocation_triggers_disabled = !args[0].boolean;
-            }
-        }
         if (method_has_annotation(method, "@future")) self.active_future_depth += 1;
         defer {
             if (method_has_annotation(method, "@future")) self.active_future_depth -= 1;
@@ -3218,6 +3175,7 @@ pub const Evaluator = struct {
         defer if (tracking_npsp_opportunity_allocation_dml) {
             self.npsp_opportunity_allocation_dml_depth -= 1;
         };
+
         if (trigger_events.before) |evt| {
             if (obj_type) |ot| {
                 try self.fire_trigger(ot, evt, &record_list, old_records);
@@ -3258,7 +3216,11 @@ pub const Evaluator = struct {
         }
 
         if (obj_type) |ot| {
-            try self.apply_npsp_account_relationship_undelete_side_effects(ot, op, record_list.items);
+            try self.apply_npsp_account_relationship_undelete_side_effects(
+                ot,
+                op,
+                record_list.items,
+            );
             try self.apply_rollup_summary_side_effects(ot, record_list.items, old_records);
             try self.apply_npsp_bulk_address_validation(ot, op, record_list.items);
             try self.apply_npsp_batch_address_initial_state(ot, op, record_list.items);
@@ -3266,7 +3228,11 @@ pub const Evaluator = struct {
             try self.apply_npsp_contact_address_instrumentation(ot, op, record_list.items);
             try self.apply_npsp_address_delete_side_effects(ot, op, record_list.items);
             try self.cleanup_npsp_negative_payment_default_allocations(ot, op, record_list.items);
-            try self.cleanup_npsp_locked_payment_opportunity_default_allocations(ot, op, record_list.items);
+            try self.cleanup_npsp_locked_payment_opportunity_default_allocations(
+                ot,
+                op,
+                record_list.items,
+            );
             try self.create_npsp_payment_allocations_from_opportunity_allocations(
                 ot,
                 op,
@@ -3299,9 +3265,17 @@ pub const Evaluator = struct {
             );
             try self.apply_npsp_bdi_payment_lookup_side_effects(ot, op, record_list.items);
             try self.apply_npsp_bdi_imported_payment_side_effects(ot, op, record_list.items);
-            try self.apply_npsp_bdi_recurring_donation_allocation_side_effects(ot, op, record_list.items);
+            try self.apply_npsp_bdi_recurring_donation_allocation_side_effects(
+                ot,
+                op,
+                record_list.items,
+            );
             try self.clear_npsp_bdi_self_allocation_conflict_errors(ot, op, record_list.items);
-            try self.apply_npsp_recurring_donation_allocation_side_effects(ot, op, record_list.items);
+            try self.apply_npsp_recurring_donation_allocation_side_effects(
+                ot,
+                op,
+                record_list.items,
+            );
             try self.queue_change_events_for_dml(ot, op, record_list.items);
             try self.apply_npsp_recurring_donation_schedule_side_effects(
                 ot,
@@ -3314,7 +3288,6 @@ pub const Evaluator = struct {
                 record_list.items,
                 old_records,
             );
-            try self.apply_actionplans_after_dml_side_effects(ot, op, record_list.items);
             try self.cleanup_npsp_zero_payment_default_allocations_after_update(
                 ot,
                 op,
@@ -3332,20 +3305,6 @@ pub const Evaluator = struct {
         rollback_insert_on_error = false;
     }
 
-    fn apply_actionplans_after_dml_side_effects(
-        self: *Evaluator,
-        object_type: []const u8,
-        op: ast.DmlOp,
-        records: []const Value,
-    ) !void {
-        if (op != .update or !std.ascii.eqlIgnoreCase(object_type, "Task")) return;
-        for (records) |record| {
-            if (record == .sobject) {
-                try self.apply_actionplans_task_after_update_side_effect(record.sobject);
-            }
-        }
-    }
-
     fn cleanup_npsp_zero_payment_default_allocations_after_update(
         self: *Evaluator,
         object_type: []const u8,
@@ -3360,7 +3319,10 @@ pub const Evaluator = struct {
             if (record != .sobject) continue;
             const payment_id = self.sobject_id_for_result(record.sobject) orelse continue;
             const amount_value =
-                self.get_s_object_field_value_case_insensitive(record.sobject, "npe01__Payment_Amount__c") orelse
+                self.get_s_object_field_value_case_insensitive(
+                    record.sobject,
+                    "npe01__Payment_Amount__c",
+                ) orelse
                 Value.null_val;
             const amount = numeric_value_as_f64(amount_value) orelse continue;
             if (amount != 0) continue;
@@ -3380,7 +3342,11 @@ pub const Evaluator = struct {
             const payment =
                 self.get_s_object_field_value_case_insensitive(record.sobject, "Payment__c") orelse
                 continue;
-            if (payment != .string or !std.ascii.eqlIgnoreCase(payment.string, payment_id)) continue;
+            if (payment != .string or
+                !std.ascii.eqlIgnoreCase(payment.string, payment_id))
+            {
+                continue;
+            }
             if (self.npsp_is_auto_default_payment_allocation(record.sobject, default_gau)) continue;
             const percent =
                 self.get_s_object_field_value_case_insensitive(record.sobject, "Percent__c") orelse
@@ -3392,7 +3358,9 @@ pub const Evaluator = struct {
             const fixed_amount = numeric_value_as_f64(amount) orelse 0;
             if (fixed_amount == 0) continue;
             return self.throw_dml_exception(
-                "FIELD_CUSTOM_VALIDATION_EXCEPTION: The Allocations for this Payment exceed the Payment amount. Update your Allocation amounts, and then adjust the Payment amount.",
+                "FIELD_CUSTOM_VALIDATION_EXCEPTION: The Allocations for this Payment exceed " ++
+                    "the Payment amount. Update your Allocation amounts, and then adjust " ++
+                    "the Payment amount.",
             );
         }
     }
@@ -3554,7 +3522,10 @@ pub const Evaluator = struct {
         if (!std.ascii.eqlIgnoreCase(object_type, "RecurringDonationSchedule__c")) return;
         if (!(self.npsp_recurring_donations2_enabled() catch false)) return;
         try self.refresh_npsp_recurring_donation_schedule_active_flags(records);
-        if (!self.npsp_recurring_donation_schedule_records_include_pause(records, old_records)) return;
+        if (!self.npsp_recurring_donation_schedule_records_include_pause(
+            records,
+            old_records,
+        )) return;
 
         var impacted_ids = std.StringArrayHashMapUnmanaged(void).empty;
         try self.collect_summary_impact_ids_from_records(
@@ -3571,7 +3542,9 @@ pub const Evaluator = struct {
         }
         var iter = impacted_ids.iterator();
         while (iter.next()) |entry| {
-            try self.ensure_npsp_recurring_donation_first_opportunity_for_pause_schedule(entry.key_ptr.*);
+            try self.ensure_npsp_recurring_donation_first_opportunity_for_pause_schedule(
+                entry.key_ptr.*,
+            );
             try self.refresh_npsp_recurring_donation_rollups(entry.key_ptr.*);
         }
     }
@@ -3623,7 +3596,8 @@ pub const Evaluator = struct {
         self: *Evaluator,
         rd_id: []const u8,
     ) !void {
-        const rd_value = self.find_record_by_id("npe03__Recurring_Donation__c", rd_id) orelse return;
+        const rd_value =
+            self.find_record_by_id("npe03__Recurring_Donation__c", rd_id) orelse return;
         if (rd_value != .sobject) return;
         if (self.npsp_recurring_donation_is_closed(rd_value.sobject)) return;
         const close_date =
@@ -3677,7 +3651,7 @@ pub const Evaluator = struct {
         for (opportunities.items) |record| {
             if (record != .sobject) continue;
             const opp_rd =
-                self.get_s_object_field_value_case_insensitive(record.sobject, "npe03__Recurring_Donation__c") orelse
+                self.sobj_field_ci(record.sobject, "npe03__Recurring_Donation__c") orelse
                 continue;
             if (opp_rd != .string or !std.ascii.eqlIgnoreCase(opp_rd.string, rd_id)) continue;
             const close_value =
@@ -3888,10 +3862,13 @@ pub const Evaluator = struct {
             if (record != .sobject) continue;
             if (!self.npsp_payment_is_locked_for_allocation_sync(record.sobject)) continue;
             const opp_value =
-                self.get_s_object_field_value_case_insensitive(record.sobject, "npe01__Opportunity__c") orelse
+                self.sobj_field_ci(record.sobject, "npe01__Opportunity__c") orelse
                 continue;
             if (opp_value != .string or opp_value.string.len == 0) continue;
-            if (self.npsp_parent_has_explicit_allocations("Opportunity__c", opp_value.string)) continue;
+            if (self.npsp_parent_has_explicit_allocations(
+                "Opportunity__c",
+                opp_value.string,
+            )) continue;
             try self.remove_npsp_default_opportunity_allocations(opp_value.string);
         }
     }
@@ -3909,7 +3886,7 @@ pub const Evaluator = struct {
                 continue;
             }
             const opp =
-                self.get_s_object_field_value_case_insensitive(record.sobject, "Opportunity__c") orelse
+                self.sobj_field_ci(record.sobject, "Opportunity__c") orelse
                 Value.null_val;
             if (opp != .string or !std.ascii.eqlIgnoreCase(opp.string, opportunity_id)) {
                 idx += 1;
@@ -3966,8 +3943,8 @@ pub const Evaluator = struct {
             if (payment == .string) try payment_ids.put(self.arena, payment.string, {});
         }
         for (payment_ids.keys()) |payment_id| {
-            const payment = self.find_stored_sobject_by_id("npe01__OppPayment__c", payment_id) orelse
-                continue;
+            const payment =
+                self.find_stored_sobject_by_id("npe01__OppPayment__c", payment_id) orelse continue;
             if (self.npsp_payment_is_locked_for_allocation_sync(payment)) continue;
             try self.apply_npsp_allocation_parent_amount_update(payment);
         }
@@ -4010,12 +3987,12 @@ pub const Evaluator = struct {
             const payment = record.sobject;
             if (self.npsp_payment_is_locked_for_allocation_sync(payment)) continue;
             const payment_amount_value =
-                self.get_s_object_field_value_case_insensitive(payment, "npe01__Payment_Amount__c") orelse
+                self.sobj_field_ci(payment, "npe01__Payment_Amount__c") orelse
                 Value.null_val;
             const payment_amount = numeric_value_as_f64(payment_amount_value) orelse continue;
             if (payment_amount == 0) continue;
             const opp_value =
-                self.get_s_object_field_value_case_insensitive(payment, "npe01__Opportunity__c") orelse
+                self.sobj_field_ci(payment, "npe01__Opportunity__c") orelse
                 continue;
             if (opp_value != .string or opp_value.string.len == 0) continue;
             if (!self.npsp_parent_has_allocations("Opportunity__c", opp_value.string)) continue;
@@ -4049,14 +4026,14 @@ pub const Evaluator = struct {
         for (records) |record| {
             if (record != .sobject) continue;
             const payment_value =
-                self.get_s_object_field_value_case_insensitive(record.sobject, "Payment__c") orelse
+                self.sobj_field_ci(record.sobject, "Payment__c") orelse
                 continue;
             if (payment_value != .string) continue;
             const payment = self.find_stored_sobject_by_id(
                 "npe01__OppPayment__c",
                 payment_value.string,
             ) orelse continue;
-            const opp_value = self.get_s_object_field_value_case_insensitive(
+            const opp_value = self.sobj_field_ci(
                 payment,
                 "npe01__Opportunity__c",
             ) orelse continue;
@@ -4079,14 +4056,18 @@ pub const Evaluator = struct {
         for (records) |record| {
             if (record != .sobject) continue;
             const payment_value =
-                self.get_s_object_field_value_case_insensitive(record.sobject, "Payment__c") orelse
+                self.sobj_field_ci(record.sobject, "Payment__c") orelse
                 continue;
             if (payment_value != .string or payment_value.string.len == 0) continue;
             const gau_value =
-                self.get_s_object_field_value_case_insensitive(record.sobject, "General_Accounting_Unit__c") orelse
+                self.sobj_field_ci(record.sobject, "General_Accounting_Unit__c") orelse
                 continue;
             if (gau_value != .string or gau_value.string.len == 0) continue;
-            if (default_gau != null and std.ascii.eqlIgnoreCase(gau_value.string, default_gau.?)) continue;
+            if (default_gau != null and
+                std.ascii.eqlIgnoreCase(gau_value.string, default_gau.?))
+            {
+                continue;
+            }
             if (self.npsp_allocation_count_for_parent_gau(
                 "Payment__c",
                 payment_value.string,
@@ -4095,7 +4076,7 @@ pub const Evaluator = struct {
                 continue;
             }
             const amount_value =
-                self.get_s_object_field_value_case_insensitive(record.sobject, "Amount__c") orelse
+                self.sobj_field_ci(record.sobject, "Amount__c") orelse
                 Value.null_val;
             const amount = numeric_value_as_f64(amount_value) orelse continue;
             const payment =
@@ -4103,24 +4084,25 @@ pub const Evaluator = struct {
                 continue;
             if (self.npsp_payment_is_locked_for_allocation_sync(payment)) continue;
             const payment_amount_value =
-                self.get_s_object_field_value_case_insensitive(payment, "npe01__Payment_Amount__c") orelse
+                self.sobj_field_ci(payment, "npe01__Payment_Amount__c") orelse
                 Value.null_val;
             const payment_amount = numeric_value_as_f64(payment_amount_value) orelse continue;
             if (payment_amount == 0) continue;
             const opp_value =
-                self.get_s_object_field_value_case_insensitive(payment, "npe01__Opportunity__c") orelse
+                self.sobj_field_ci(payment, "npe01__Opportunity__c") orelse
                 continue;
             if (opp_value != .string or opp_value.string.len == 0) continue;
-            const opp = self.find_stored_sobject_by_id("Opportunity", opp_value.string) orelse continue;
+            const opp =
+                self.find_stored_sobject_by_id("Opportunity", opp_value.string) orelse continue;
             const opp_amount_value =
-                self.get_s_object_field_value_case_insensitive(opp, "Amount") orelse Value.null_val;
+                self.sobj_field_ci(opp, "Amount") orelse Value.null_val;
             const opp_amount = numeric_value_as_f64(opp_amount_value) orelse continue;
             if (opp_amount == 0) continue;
             const total_payment_amount =
                 self.npsp_total_syncable_payment_amount_for_opportunity(opp_value.string);
             if (total_payment_amount == 0) continue;
             const percent_value =
-                self.get_s_object_field_value_case_insensitive(record.sobject, "Percent__c") orelse
+                self.sobj_field_ci(record.sobject, "Percent__c") orelse
                 Value.null_val;
             const effective_amount = if (numeric_value_as_f64(percent_value)) |record_percent|
                 payment_amount * record_percent / 100.0
@@ -4144,7 +4126,7 @@ pub const Evaluator = struct {
             if (record != .sobject) continue;
             if (self.npsp_payment_is_locked_for_allocation_sync(record.sobject)) continue;
             const payment_opp =
-                self.get_s_object_field_value_case_insensitive(record.sobject, "npe01__Opportunity__c") orelse
+                self.sobj_field_ci(record.sobject, "npe01__Opportunity__c") orelse
                 continue;
             if (payment_opp != .string or
                 !std.ascii.eqlIgnoreCase(payment_opp.string, opportunity_id))
@@ -4152,7 +4134,7 @@ pub const Evaluator = struct {
                 continue;
             }
             const amount_value =
-                self.get_s_object_field_value_case_insensitive(record.sobject, "npe01__Payment_Amount__c") orelse
+                self.sobj_field_ci(record.sobject, "npe01__Payment_Amount__c") orelse
                 Value.null_val;
             total += numeric_value_as_f64(amount_value) orelse 0;
         }
@@ -4166,10 +4148,10 @@ pub const Evaluator = struct {
         for (records) |record| {
             if (record != .sobject) continue;
             const payment_value =
-                self.get_s_object_field_value_case_insensitive(record.sobject, "Payment__c") orelse
+                self.sobj_field_ci(record.sobject, "Payment__c") orelse
                 continue;
             if (payment_value != .string) continue;
-            const gau_value = self.get_s_object_field_value_case_insensitive(
+            const gau_value = self.sobj_field_ci(
                 record.sobject,
                 "General_Accounting_Unit__c",
             ) orelse continue;
@@ -4193,17 +4175,17 @@ pub const Evaluator = struct {
         for (records) |record| {
             if (record != .sobject) continue;
             const raw_payment =
-                self.get_s_object_field_value_case_insensitive(record.sobject, "Payment__c") orelse
+                self.sobj_field_ci(record.sobject, "Payment__c") orelse
                 Value.null_val;
             if (raw_payment == .string and raw_payment.string.len > 0) continue;
             const stored = self.npsp_stored_allocation_for_dml_record(record.sobject);
             const source = stored orelse record.sobject;
             const payment =
-                self.get_s_object_field_value_case_insensitive(source, "Payment__c") orelse
+                self.sobj_field_ci(source, "Payment__c") orelse
                 Value.null_val;
             if (payment == .string and payment.string.len > 0) continue;
             const opportunity =
-                self.get_s_object_field_value_case_insensitive(source, "Opportunity__c") orelse
+                self.sobj_field_ci(source, "Opportunity__c") orelse
                 continue;
             if (opportunity == .string and opportunity.string.len > 0) return true;
         }
@@ -4229,14 +4211,14 @@ pub const Evaluator = struct {
         for (allocations.items) |record| {
             if (record != .sobject) continue;
             const parent_value =
-                self.get_s_object_field_value_case_insensitive(record.sobject, parent_field) orelse
+                self.sobj_field_ci(record.sobject, parent_field) orelse
                 continue;
             if (parent_value != .string or
                 !std.mem.eql(u8, parent_value.string, parent_id))
             {
                 continue;
             }
-            const record_gau = self.get_s_object_field_value_case_insensitive(
+            const record_gau = self.sobj_field_ci(
                 record.sobject,
                 "General_Accounting_Unit__c",
             ) orelse continue;
@@ -4257,9 +4239,10 @@ pub const Evaluator = struct {
         if (self.npsp_allocation_payment_sync_active()) return;
         self.npsp_allocation_payment_sync_depth += 1;
         defer self.npsp_allocation_payment_sync_depth -= 1;
+
         const opp = self.find_stored_sobject_by_id("Opportunity", opportunity_id) orelse return;
         const opp_amount_value =
-            self.get_s_object_field_value_case_insensitive(opp, "Amount") orelse Value.null_val;
+            self.sobj_field_ci(opp, "Amount") orelse Value.null_val;
         const opp_amount = numeric_value_as_f64(opp_amount_value) orelse return;
         const payments = self.store_records_ptr("npe01__OppPayment__c") orelse return;
         const allocations = self.store_records_ptr("Allocation__c") orelse return;
@@ -4270,7 +4253,7 @@ pub const Evaluator = struct {
             if (payment_record != .sobject) continue;
             const payment = payment_record.sobject;
             if (self.npsp_payment_is_locked_for_allocation_sync(payment)) continue;
-            const payment_opp = self.get_s_object_field_value_case_insensitive(
+            const payment_opp = self.sobj_field_ci(
                 payment,
                 "npe01__Opportunity__c",
             ) orelse continue;
@@ -4278,7 +4261,7 @@ pub const Evaluator = struct {
                 continue;
             }
             const payment_id = self.sobject_id_for_result(payment) orelse continue;
-            const amount_value = self.get_s_object_field_value_case_insensitive(
+            const amount_value = self.sobj_field_ci(
                 payment,
                 "npe01__Payment_Amount__c",
             ) orelse Value.null_val;
@@ -4300,26 +4283,26 @@ pub const Evaluator = struct {
         while (idx < allocation_len) : (idx += 1) {
             const allocation_record = allocations.items[idx];
             if (allocation_record != .sobject) continue;
-            const payment_value = self.get_s_object_field_value_case_insensitive(
+            const payment_value = self.sobj_field_ci(
                 allocation_record.sobject,
                 "Payment__c",
             ) orelse continue;
             if (payment_value != .string) continue;
             const payment_amount = payment_amounts.get(payment_value.string) orelse continue;
-            const gau_value = self.get_s_object_field_value_case_insensitive(
+            const gau_value = self.sobj_field_ci(
                 allocation_record.sobject,
                 "General_Accounting_Unit__c",
             ) orelse continue;
             if (gau_value != .string) continue;
             const amount = blk: {
                 const percent_value =
-                    self.get_s_object_field_value_case_insensitive(allocation_record.sobject, "Percent__c") orelse
+                    self.sobj_field_ci(allocation_record.sobject, "Percent__c") orelse
                     Value.null_val;
                 if (numeric_value_as_f64(percent_value)) |percent| {
                     break :blk payment_amount * percent / 100.0;
                 }
                 const amount_value =
-                    self.get_s_object_field_value_case_insensitive(allocation_record.sobject, "Amount__c") orelse
+                    self.sobj_field_ci(allocation_record.sobject, "Amount__c") orelse
                     Value.null_val;
                 break :blk numeric_value_as_f64(amount_value) orelse continue;
             };
@@ -4350,14 +4333,14 @@ pub const Evaluator = struct {
         const default_gau = self.npsp_default_allocation_gau_id();
         for (allocations.items, 0..) |record, idx| {
             if (record != .sobject) continue;
-            const allocation_opp = self.get_s_object_field_value_case_insensitive(
+            const allocation_opp = self.sobj_field_ci(
                 record.sobject,
                 "Opportunity__c",
             ) orelse continue;
             if (allocation_opp != .string or !std.ascii.eqlIgnoreCase(allocation_opp.string, opp_id)) {
                 continue;
             }
-            const allocation_gau = self.get_s_object_field_value_case_insensitive(
+            const allocation_gau = self.sobj_field_ci(
                 record.sobject,
                 "General_Accounting_Unit__c",
             ) orelse continue;
@@ -4372,7 +4355,7 @@ pub const Evaluator = struct {
             );
             if (default_gau == null or !std.ascii.eqlIgnoreCase(gau_id, default_gau.?)) {
                 const opp_amount_value =
-                    self.get_s_object_field_value_case_insensitive(opp, "Amount") orelse Value.null_val;
+                    self.sobj_field_ci(opp, "Amount") orelse Value.null_val;
                 const opp_amount = numeric_value_as_f64(opp_amount_value) orelse 0;
                 const percent = if (opp_amount == 0) 0 else amount / opp_amount * 100.0;
                 try utils.sobject_put(
@@ -4400,7 +4383,7 @@ pub const Evaluator = struct {
         try allocation.fields.put(self.arena, "Amount__c", rollup_decimal_value(amount));
         if (default_gau == null or !std.ascii.eqlIgnoreCase(gau_id, default_gau.?)) {
             const opp_amount_value =
-                self.get_s_object_field_value_case_insensitive(opp, "Amount") orelse Value.null_val;
+                self.sobj_field_ci(opp, "Amount") orelse Value.null_val;
             const opp_amount = numeric_value_as_f64(opp_amount_value) orelse 0;
             const percent = if (opp_amount == 0) 0 else amount / opp_amount * 100.0;
             try allocation.fields.put(self.arena, "Percent__c", rollup_decimal_value(percent));
@@ -4424,17 +4407,17 @@ pub const Evaluator = struct {
         for (records) |record| {
             if (record != .sobject) continue;
             const raw_payment =
-                self.get_s_object_field_value_case_insensitive(record.sobject, "Payment__c") orelse
+                self.sobj_field_ci(record.sobject, "Payment__c") orelse
                 Value.null_val;
             if (raw_payment == .string and raw_payment.string.len > 0) continue;
             const stored = self.npsp_stored_allocation_for_dml_record(record.sobject);
             const source = stored orelse record.sobject;
             const payment =
-                self.get_s_object_field_value_case_insensitive(source, "Payment__c") orelse
+                self.sobj_field_ci(source, "Payment__c") orelse
                 Value.null_val;
             if (payment == .string and payment.string.len > 0) continue;
             const opp_value =
-                self.get_s_object_field_value_case_insensitive(source, "Opportunity__c") orelse
+                self.sobj_field_ci(source, "Opportunity__c") orelse
                 continue;
             if (opp_value == .string and opp_value.string.len > 0) {
                 try opportunity_ids.put(self.arena, opp_value.string, {});
@@ -4456,9 +4439,10 @@ pub const Evaluator = struct {
         if (self.npsp_allocation_payment_sync_active()) return;
         self.npsp_allocation_payment_sync_depth += 1;
         defer self.npsp_allocation_payment_sync_depth -= 1;
+
         const opp = self.find_stored_sobject_by_id("Opportunity", opportunity_id) orelse return;
         const opp_amount_value =
-            self.get_s_object_field_value_case_insensitive(opp, "Amount") orelse Value.null_val;
+            self.sobj_field_ci(opp, "Amount") orelse Value.null_val;
         const opp_amount = numeric_value_as_f64(opp_amount_value) orelse return;
         if (opp_amount == 0) return;
         try self.apply_npsp_default_allocation_parent_remainder(
@@ -4479,7 +4463,7 @@ pub const Evaluator = struct {
             const payment = payment_record.sobject;
             if (self.npsp_payment_is_locked_for_allocation_sync(payment)) continue;
             const payment_opp =
-                self.get_s_object_field_value_case_insensitive(payment, "npe01__Opportunity__c") orelse
+                self.sobj_field_ci(payment, "npe01__Opportunity__c") orelse
                 continue;
             if (payment_opp != .string or
                 !std.ascii.eqlIgnoreCase(payment_opp.string, opportunity_id))
@@ -4488,7 +4472,7 @@ pub const Evaluator = struct {
             }
             const payment_id = self.sobject_id_for_result(payment) orelse continue;
             const payment_amount_value =
-                self.get_s_object_field_value_case_insensitive(payment, "npe01__Payment_Amount__c") orelse
+                self.sobj_field_ci(payment, "npe01__Payment_Amount__c") orelse
                 Value.null_val;
             const payment_amount = numeric_value_as_f64(payment_amount_value) orelse continue;
             if (payment_amount == 0) {
@@ -4539,24 +4523,24 @@ pub const Evaluator = struct {
             const source = allocations.items[idx];
             if (source != .sobject) continue;
             const source_opp =
-                self.get_s_object_field_value_case_insensitive(source.sobject, "Opportunity__c") orelse
+                self.sobj_field_ci(source.sobject, "Opportunity__c") orelse
                 continue;
             if (source_opp != .string or
                 !std.ascii.eqlIgnoreCase(source_opp.string, opportunity_id))
             {
                 continue;
             }
-            const gau_value = self.get_s_object_field_value_case_insensitive(
+            const gau_value = self.sobj_field_ci(
                 source.sobject,
                 "General_Accounting_Unit__c",
             ) orelse continue;
             if (gau_value != .string) continue;
             const source_percent_value =
-                self.get_s_object_field_value_case_insensitive(source.sobject, "Percent__c") orelse
+                self.sobj_field_ci(source.sobject, "Percent__c") orelse
                 Value.null_val;
             const source_percent = numeric_value_as_f64(source_percent_value);
             const source_amount_value =
-                self.get_s_object_field_value_case_insensitive(source.sobject, "Amount__c") orelse
+                self.sobj_field_ci(source.sobject, "Amount__c") orelse
                 Value.null_val;
             const source_amount = numeric_value_as_f64(source_amount_value) orelse blk: {
                 const percent = source_percent orelse continue;
@@ -4586,12 +4570,12 @@ pub const Evaluator = struct {
     ) bool {
         if (self.npsp_payment_is_locked_for_allocation_sync(payment)) return false;
         const amount_value =
-            self.get_s_object_field_value_case_insensitive(payment, "npe01__Payment_Amount__c") orelse
+            self.sobj_field_ci(payment, "npe01__Payment_Amount__c") orelse
             Value.null_val;
         const amount = numeric_value_as_f64(amount_value) orelse return false;
         if (amount == 0) return false;
         const opp_value =
-            self.get_s_object_field_value_case_insensitive(payment, "npe01__Opportunity__c") orelse
+            self.sobj_field_ci(payment, "npe01__Opportunity__c") orelse
             return false;
         return opp_value == .string and
             opp_value.string.len > 0 and
@@ -4620,14 +4604,14 @@ pub const Evaluator = struct {
         for (allocations.items, 0..) |record, idx| {
             if (record != .sobject) continue;
             const allocation_payment =
-                self.get_s_object_field_value_case_insensitive(record.sobject, "Payment__c") orelse
+                self.sobj_field_ci(record.sobject, "Payment__c") orelse
                 continue;
             if (allocation_payment != .string or
                 !std.ascii.eqlIgnoreCase(allocation_payment.string, payment_id))
             {
                 continue;
             }
-            const allocation_gau = self.get_s_object_field_value_case_insensitive(
+            const allocation_gau = self.sobj_field_ci(
                 record.sobject,
                 "General_Accounting_Unit__c",
             ) orelse continue;
@@ -4635,7 +4619,7 @@ pub const Evaluator = struct {
                 continue;
             }
             const existing_percent =
-                self.get_s_object_field_value_case_insensitive(record.sobject, "Percent__c") orelse
+                self.sobj_field_ci(record.sobject, "Percent__c") orelse
                 Value.null_val;
             const existing_percent_numeric = numeric_value_as_f64(existing_percent);
             const preserve_existing_percent = use_existing_percent_for_existing and
@@ -4691,7 +4675,7 @@ pub const Evaluator = struct {
         const payment = self.find_stored_sobject_by_id("npe01__OppPayment__c", payment_id) orelse
             return false;
         const opportunity =
-            self.get_s_object_field_value_case_insensitive(payment, "npe01__Opportunity__c") orelse
+            self.sobj_field_ci(payment, "npe01__Opportunity__c") orelse
             return false;
         if (opportunity != .string or opportunity.string.len == 0) return false;
         const payments = self.store_records_ptr("npe01__OppPayment__c") orelse return false;
@@ -4700,7 +4684,7 @@ pub const Evaluator = struct {
         for (payments.items) |record| {
             if (record != .sobject) continue;
             const sibling_opp =
-                self.get_s_object_field_value_case_insensitive(record.sobject, "npe01__Opportunity__c") orelse
+                self.sobj_field_ci(record.sobject, "npe01__Opportunity__c") orelse
                 continue;
             if (sibling_opp != .string or
                 !std.ascii.eqlIgnoreCase(sibling_opp.string, opportunity.string))
@@ -4733,14 +4717,14 @@ pub const Evaluator = struct {
             const record = records.items[idx];
             if (record != .sobject) continue;
             const parent_value =
-                self.get_s_object_field_value_case_insensitive(record.sobject, parent_field) orelse
+                self.sobj_field_ci(record.sobject, parent_field) orelse
                 continue;
             if (parent_value != .string or
                 !std.mem.eql(u8, parent_value.string, parent_id))
             {
                 continue;
             }
-            const record_gau = self.get_s_object_field_value_case_insensitive(
+            const record_gau = self.sobj_field_ci(
                 record.sobject,
                 "General_Accounting_Unit__c",
             ) orelse continue;
@@ -4769,7 +4753,7 @@ pub const Evaluator = struct {
         for (records) |record| {
             if (record != .sobject) continue;
             const payment_id = self.sobject_id_for_result(record.sobject) orelse continue;
-            const opp_value = self.get_s_object_field_value_case_insensitive(
+            const opp_value = self.sobj_field_ci(
                 record.sobject,
                 "npe01__Opportunity__c",
             ) orelse continue;
@@ -4777,11 +4761,11 @@ pub const Evaluator = struct {
             const opp = self.find_stored_sobject_by_id("Opportunity", opp_value.string) orelse
                 continue;
             const opp_amount_value =
-                self.get_s_object_field_value_case_insensitive(opp, "Amount") orelse
+                self.sobj_field_ci(opp, "Amount") orelse
                 Value.null_val;
             const opp_amount = numeric_value_as_f64(opp_amount_value) orelse continue;
             if (opp_amount == 0) continue;
-            const payment_amount_value = self.get_s_object_field_value_case_insensitive(
+            const payment_amount_value = self.sobj_field_ci(
                 record.sobject,
                 "npe01__Payment_Amount__c",
             ) orelse Value.null_val;
@@ -4846,7 +4830,7 @@ pub const Evaluator = struct {
         for (records) |record| {
             if (record != .sobject) continue;
             const amount_value =
-                self.get_s_object_field_value_case_insensitive(record.sobject, "npe01__Payment_Amount__c") orelse
+                self.sobj_field_ci(record.sobject, "npe01__Payment_Amount__c") orelse
                 Value.null_val;
             const amount = numeric_value_as_f64(amount_value) orelse continue;
             if (amount < 0) return true;
@@ -4863,10 +4847,10 @@ pub const Evaluator = struct {
         for (allocations.items) |record| {
             if (record != .sobject) continue;
             const opp_value =
-                self.get_s_object_field_value_case_insensitive(record.sobject, "Opportunity__c") orelse
+                self.sobj_field_ci(record.sobject, "Opportunity__c") orelse
                 continue;
             if (opp_value != .string or !std.ascii.eqlIgnoreCase(opp_value.string, opportunity_id)) continue;
-            const gau_value = self.get_s_object_field_value_case_insensitive(
+            const gau_value = self.sobj_field_ci(
                 record.sobject,
                 "General_Accounting_Unit__c",
             ) orelse continue;
@@ -4899,14 +4883,14 @@ pub const Evaluator = struct {
         const allocations = self.store_records_ptr("Allocation__c") orelse return false;
         for (allocations.items) |record| {
             if (record != .sobject) continue;
-            const payment = self.get_s_object_field_value_case_insensitive(
+            const payment = self.sobj_field_ci(
                 record.sobject,
                 "Payment__c",
             ) orelse continue;
             if (payment != .string or !std.ascii.eqlIgnoreCase(payment.string, payment_id)) {
                 continue;
             }
-            const existing_gau = self.get_s_object_field_value_case_insensitive(
+            const existing_gau = self.sobj_field_ci(
                 record.sobject,
                 "General_Accounting_Unit__c",
             ) orelse continue;
@@ -4928,7 +4912,7 @@ pub const Evaluator = struct {
             if (op != .insert and op != .update and op != .delete) return;
             for (records) |record| {
                 if (record != .sobject) continue;
-                const rd = self.get_s_object_field_value_case_insensitive(
+                const rd = self.sobj_field_ci(
                     record.sobject,
                     "Recurring_Donation__c",
                 ) orelse continue;
@@ -4940,7 +4924,7 @@ pub const Evaluator = struct {
             if (op != .insert) return;
             for (records) |record| {
                 if (record != .sobject) continue;
-                const rd = self.get_s_object_field_value_case_insensitive(
+                const rd = self.sobj_field_ci(
                     record.sobject,
                     "npe03__Recurring_Donation__c",
                 ) orelse continue;
@@ -4971,7 +4955,7 @@ pub const Evaluator = struct {
         while (idx < existing_len) : (idx += 1) {
             const record = opps.items[idx];
             if (record != .sobject) continue;
-            const opp_rd = self.get_s_object_field_value_case_insensitive(
+            const opp_rd = self.sobj_field_ci(
                 record.sobject,
                 "npe03__Recurring_Donation__c",
             ) orelse continue;
@@ -4989,7 +4973,7 @@ pub const Evaluator = struct {
     ) !void {
         const opp_id = opp.id orelse return;
         const amount_value =
-            self.get_s_object_field_value_case_insensitive(opp, "Amount") orelse Value.null_val;
+            self.sobj_field_ci(opp, "Amount") orelse Value.null_val;
         const parent_amount = numeric_value_as_f64(amount_value) orelse return;
         if (parent_amount <= 0) return;
         try self.remove_npsp_non_default_allocations_for_parent("Opportunity__c", opp_id);
@@ -5018,7 +5002,7 @@ pub const Evaluator = struct {
         while (idx < existing_len) : (idx += 1) {
             const record = payments.items[idx];
             if (record != .sobject) continue;
-            const payment_opp = self.get_s_object_field_value_case_insensitive(
+            const payment_opp = self.sobj_field_ci(
                 record.sobject,
                 "npe01__Opportunity__c",
             ) orelse continue;
@@ -5027,7 +5011,7 @@ pub const Evaluator = struct {
             }
             if (self.npsp_payment_is_locked_for_allocation_sync(record.sobject)) continue;
             const payment_id = self.sobject_id_for_result(record.sobject) orelse continue;
-            const payment_amount_value = self.get_s_object_field_value_case_insensitive(
+            const payment_amount_value = self.sobj_field_ci(
                 record.sobject,
                 "npe01__Payment_Amount__c",
             ) orelse Value.null_val;
@@ -5062,26 +5046,26 @@ pub const Evaluator = struct {
         while (idx < existing_len) : (idx += 1) {
             const record = allocations.items[idx];
             if (record != .sobject) continue;
-            const template_rd = self.get_s_object_field_value_case_insensitive(
+            const template_rd = self.sobj_field_ci(
                 record.sobject,
                 "Recurring_Donation__c",
             ) orelse continue;
             if (template_rd != .string or !std.ascii.eqlIgnoreCase(template_rd.string, rd_id)) {
                 continue;
             }
-            if (self.get_s_object_field_value_case_insensitive(record.sobject, "Opportunity__c")) |opp| {
+            if (self.sobj_field_ci(record.sobject, "Opportunity__c")) |opp| {
                 if (opp != .null_val) continue;
             }
-            if (self.get_s_object_field_value_case_insensitive(record.sobject, "Payment__c")) |pmt| {
+            if (self.sobj_field_ci(record.sobject, "Payment__c")) |pmt| {
                 if (pmt != .null_val) continue;
             }
-            if (self.get_s_object_field_value_case_insensitive(record.sobject, "Percent__c")) |percent| {
+            if (self.sobj_field_ci(record.sobject, "Percent__c")) |percent| {
                 if (numeric_value_as_f64(percent) != null) {
                     try percent_templates.append(self.arena, record.sobject);
                     continue;
                 }
             }
-            if (self.get_s_object_field_value_case_insensitive(record.sobject, "Amount__c")) |amount| {
+            if (self.sobj_field_ci(record.sobject, "Amount__c")) |amount| {
                 if (numeric_value_as_f64(amount) != null) {
                     try fixed_templates.append(self.arena, record.sobject);
                 }
@@ -5091,7 +5075,7 @@ pub const Evaluator = struct {
         var explicit_total: f64 = 0;
         for (percent_templates.items) |template| {
             const percent_value =
-                self.get_s_object_field_value_case_insensitive(template, "Percent__c") orelse
+                self.sobj_field_ci(template, "Percent__c") orelse
                 continue;
             const percent = numeric_value_as_f64(percent_value) orelse continue;
             const amount = parent_amount * percent / 100.0;
@@ -5107,14 +5091,14 @@ pub const Evaluator = struct {
         var fixed_total: f64 = 0;
         for (fixed_templates.items) |template| {
             const amount_value =
-                self.get_s_object_field_value_case_insensitive(template, "Amount__c") orelse
+                self.sobj_field_ci(template, "Amount__c") orelse
                 continue;
             fixed_total += numeric_value_as_f64(amount_value) orelse 0;
         }
         if (explicit_total + fixed_total > parent_amount) return;
         for (fixed_templates.items) |template| {
             const amount_value =
-                self.get_s_object_field_value_case_insensitive(template, "Amount__c") orelse
+                self.sobj_field_ci(template, "Amount__c") orelse
                 continue;
             const amount = numeric_value_as_f64(amount_value) orelse continue;
             try self.create_npsp_allocation_from_template(
@@ -5136,7 +5120,7 @@ pub const Evaluator = struct {
     ) !void {
         const opp_id = opp.id orelse return;
         const opp_amount_value =
-            self.get_s_object_field_value_case_insensitive(opp, "Amount") orelse Value.null_val;
+            self.sobj_field_ci(opp, "Amount") orelse Value.null_val;
         const opp_amount = numeric_value_as_f64(opp_amount_value) orelse return;
         if (opp_amount <= 0) return;
         const allocations = self.store_records_ptr("Allocation__c") orelse return;
@@ -5146,7 +5130,7 @@ pub const Evaluator = struct {
             const record = allocations.items[idx];
             if (record != .sobject) continue;
             if (self.npsp_is_default_allocation(record.sobject)) continue;
-            const allocation_opp = self.get_s_object_field_value_case_insensitive(
+            const allocation_opp = self.sobj_field_ci(
                 record.sobject,
                 "Opportunity__c",
             ) orelse continue;
@@ -5154,7 +5138,7 @@ pub const Evaluator = struct {
                 continue;
             }
             const amount_value =
-                self.get_s_object_field_value_case_insensitive(record.sobject, "Amount__c") orelse
+                self.sobj_field_ci(record.sobject, "Amount__c") orelse
                 continue;
             const source_amount = numeric_value_as_f64(amount_value) orelse continue;
             const percent = source_amount / opp_amount * 100.0;
@@ -5176,7 +5160,7 @@ pub const Evaluator = struct {
         amount: f64,
         percent: Value,
     ) !void {
-        const gau = self.get_s_object_field_value_case_insensitive(
+        const gau = self.sobj_field_ci(
             template,
             "General_Accounting_Unit__c",
         ) orelse return;
@@ -5202,7 +5186,7 @@ pub const Evaluator = struct {
             idx -= 1;
             const record = allocations.items[idx];
             if (record != .sobject) continue;
-            const parent = self.get_s_object_field_value_case_insensitive(
+            const parent = self.sobj_field_ci(
                 record.sobject,
                 parent_field,
             ) orelse continue;
@@ -5217,7 +5201,7 @@ pub const Evaluator = struct {
             self.npsp_cached_allocations_settings() orelse
             self.first_custom_setting_record("Allocations_Settings__c") orelse
             return false;
-        const enabled = self.get_s_object_field_value_case_insensitive(
+        const enabled = self.sobj_field_ci(
             settings,
             "Payment_Allocations_Enabled__c",
         ) orelse return false;
@@ -5234,7 +5218,7 @@ pub const Evaluator = struct {
         };
         for (locked_fields) |field_name| {
             const value =
-                self.get_s_object_field_value_case_insensitive(payment, field_name) orelse continue;
+                self.sobj_field_ci(payment, field_name) orelse continue;
             if (value == .boolean and value.boolean) return true;
         }
         return false;
@@ -5256,7 +5240,7 @@ pub const Evaluator = struct {
         for (records) |record| {
             if (record != .sobject) continue;
             const contact = record.sobject;
-            const address_id = self.get_s_object_field_value_case_insensitive(
+            const address_id = self.sobj_field_ci(
                 contact,
                 "Current_Address__c",
             ) orelse continue;
@@ -5291,7 +5275,7 @@ pub const Evaluator = struct {
                 self.find_stored_sobject_by_id("Contact", record.sobject.id.?) orelse record.sobject;
             if (!self.npsp_contact_has_mailable_address(contact)) continue;
             const account_id =
-                self.get_s_object_field_value_case_insensitive(contact, "AccountId") orelse continue;
+                self.sobj_field_ci(contact, "AccountId") orelse continue;
             if (account_id != .string) continue;
             const address = self.find_default_npsp_address_for_household(account_id.string) orelse
                 continue;
@@ -5316,7 +5300,7 @@ pub const Evaluator = struct {
                 self.find_stored_sobject_by_id("Contact", record.sobject.id.?) orelse record.sobject;
             if (!self.npsp_contact_has_mailable_address(contact)) continue;
             const account_id =
-                self.get_s_object_field_value_case_insensitive(contact, "AccountId") orelse continue;
+                self.sobj_field_ci(contact, "AccountId") orelse continue;
             if (account_id != .string) continue;
             const address = self.find_default_npsp_address_for_household(account_id.string) orelse
                 continue;
@@ -5336,7 +5320,7 @@ pub const Evaluator = struct {
             self.first_custom_setting_record("Addr_Verification_Settings__c") orelse
             return false;
         const enabled =
-            self.get_s_object_field_value_case_insensitive(settings, "Enable_Automatic_Verification__c") orelse
+            self.sobj_field_ci(settings, "Enable_Automatic_Verification__c") orelse
             return false;
         return enabled == .boolean and enabled.boolean;
     }
@@ -5377,7 +5361,7 @@ pub const Evaluator = struct {
         };
         for (fields) |field_name| {
             const value =
-                self.get_s_object_field_value_case_insensitive(contact, field_name) orelse continue;
+                self.sobj_field_ci(contact, field_name) orelse continue;
             if (value == .string and value.string.len > 0) return true;
         }
         return false;
@@ -5436,7 +5420,7 @@ pub const Evaluator = struct {
             if (!changed) continue;
             if (!self.npsp_address_is_default(address)) continue;
             const household_id =
-                self.get_s_object_field_value_case_insensitive(address, "Household_Account__c") orelse
+                self.sobj_field_ci(address, "Household_Account__c") orelse
                 continue;
             if (household_id != .string) continue;
             try self.apply_npsp_address_to_household(household_id.string, address);
@@ -5491,8 +5475,8 @@ pub const Evaluator = struct {
                 continue;
             }
             const day =
-                self.get_s_object_field_value_case_insensitive(record.sobject, "Day_of_Month__c") orelse
-                self.get_s_object_field_value_case_insensitive(record.sobject, "Day_Of_Month__c") orelse
+                self.sobj_field_ci(record.sobject, "Day_of_Month__c") orelse
+                self.sobj_field_ci(record.sobject, "Day_Of_Month__c") orelse
                 Value.null_val;
             if (day == .null_val) continue;
             try utils.sobject_put(
@@ -5509,10 +5493,10 @@ pub const Evaluator = struct {
         rd: *types.SObject,
     ) !void {
         const status =
-            self.get_s_object_field_value_case_insensitive(rd, "Status__c") orelse return;
+            self.sobj_field_ci(rd, "Status__c") orelse return;
         if (status != .string or !std.ascii.eqlIgnoreCase(status.string, "Closed")) return;
         const end_date =
-            self.get_s_object_field_value_case_insensitive(rd, "EndDate__c") orelse Value.null_val;
+            self.sobj_field_ci(rd, "EndDate__c") orelse Value.null_val;
         if (end_date != .null_val) return;
         const yesterday = date_add_days(try self.npsp_schedule_current_iso_date(), -1);
         const yesterday_str = try format_iso_date(self.arena, yesterday);
@@ -5529,17 +5513,17 @@ pub const Evaluator = struct {
         contact: *types.SObject,
     ) !void {
         if (!std.ascii.eqlIgnoreCase(contact.type_name, "Contact")) return;
-        if (self.get_s_object_field_value_case_insensitive(contact, "AccountId")) |account_id| {
+        if (self.sobj_field_ci(contact, "AccountId")) |account_id| {
             if (account_id != .null_val) return;
         }
         const current_address =
-            self.get_s_object_field_value_case_insensitive(contact, "Current_Address__c") orelse
+            self.sobj_field_ci(contact, "Current_Address__c") orelse
             return;
         if (current_address != .string or current_address.string.len == 0) return;
         const address = self.find_stored_sobject_by_id("Address__c", current_address.string) orelse
             return;
         const household =
-            self.get_s_object_field_value_case_insensitive(address, "Household_Account__c") orelse
+            self.sobj_field_ci(address, "Household_Account__c") orelse
             return;
         if (household != .string or household.string.len == 0) return;
         try utils.sobject_put(&contact.fields, self.arena, "AccountId", household);
@@ -5556,7 +5540,7 @@ pub const Evaluator = struct {
         const parent_amount = numeric_value_as_f64(parent_amount_value) orelse return;
         if (parent_amount != 0) return;
         const amount_value =
-            self.get_s_object_field_value_case_insensitive(allocation, "Amount__c") orelse
+            self.sobj_field_ci(allocation, "Amount__c") orelse
             Value.null_val;
         const amount = numeric_value_as_f64(amount_value) orelse 0;
         if (amount == 0) return;
@@ -5572,7 +5556,7 @@ pub const Evaluator = struct {
         if (!self.fixture_relaxed_exceptions) return;
         if (!std.ascii.eqlIgnoreCase(allocation.type_name, "Allocation__c")) return;
         const percent_value =
-            self.get_s_object_field_value_case_insensitive(allocation, "Percent__c") orelse
+            self.sobj_field_ci(allocation, "Percent__c") orelse
             return;
         const percent = numeric_value_as_f64(percent_value) orelse return;
         if (percent >= 0 and percent <= 100) return;
@@ -5588,13 +5572,13 @@ pub const Evaluator = struct {
         if (!self.fixture_relaxed_exceptions) return;
         if (!std.ascii.eqlIgnoreCase(allocation.type_name, "Allocation__c")) return;
         const payment =
-            self.get_s_object_field_value_case_insensitive(allocation, "Payment__c") orelse return;
+            self.sobj_field_ci(allocation, "Payment__c") orelse return;
         if (payment != .string or payment.string.len == 0) return;
         if (self.find_stored_sobject_by_id("npe01__OppPayment__c", payment.string)) |stored_payment| {
             if (self.npsp_payment_is_locked_for_allocation_sync(stored_payment)) return;
         }
         const default_gau = self.npsp_default_allocation_gau_id();
-        const allocation_gau = self.get_s_object_field_value_case_insensitive(
+        const allocation_gau = self.sobj_field_ci(
             allocation,
             "General_Accounting_Unit__c",
         ) orelse return;
@@ -5619,7 +5603,7 @@ pub const Evaluator = struct {
                 continue;
             }
             const payment =
-                self.get_s_object_field_value_case_insensitive(record.sobject, "Payment__c") orelse
+                self.sobj_field_ci(record.sobject, "Payment__c") orelse
                 Value.null_val;
             if (payment != .string or !std.ascii.eqlIgnoreCase(payment.string, payment_id)) {
                 idx += 1;
@@ -5639,14 +5623,14 @@ pub const Evaluator = struct {
         default_gau: ?[]const u8,
     ) bool {
         if (default_gau) |gau_id| {
-            const gau = self.get_s_object_field_value_case_insensitive(
+            const gau = self.sobj_field_ci(
                 allocation,
                 "General_Accounting_Unit__c",
             ) orelse Value.null_val;
             if (gau == .string and std.ascii.eqlIgnoreCase(gau.string, gau_id)) return true;
         }
         const percent =
-            self.get_s_object_field_value_case_insensitive(allocation, "Percent__c") orelse
+            self.sobj_field_ci(allocation, "Percent__c") orelse
             Value.null_val;
         const percent_num = numeric_value_as_f64(percent) orelse return false;
         return percent_num == 100;
@@ -5657,7 +5641,7 @@ pub const Evaluator = struct {
         allocation: *types.SObject,
     ) bool {
         const default_gau = self.npsp_default_allocation_gau_id() orelse return false;
-        const gau = self.get_s_object_field_value_case_insensitive(
+        const gau = self.sobj_field_ci(
             allocation,
             "General_Accounting_Unit__c",
         ) orelse return false;
@@ -5672,11 +5656,11 @@ pub const Evaluator = struct {
         if (self.npsp_allocation_triggers_disabled) return;
         if (!std.ascii.eqlIgnoreCase(allocation.type_name, "Allocation__c")) return;
         const amount =
-            self.get_s_object_field_value_case_insensitive(allocation, "Amount__c") orelse
+            self.sobj_field_ci(allocation, "Amount__c") orelse
             Value.null_val;
         if (amount != .null_val) return;
         const percent =
-            self.get_s_object_field_value_case_insensitive(allocation, "Percent__c") orelse
+            self.sobj_field_ci(allocation, "Percent__c") orelse
             Value.null_val;
         if (percent != .null_val) return;
         if (!self.npsp_is_default_allocation(allocation)) return;
@@ -5698,11 +5682,11 @@ pub const Evaluator = struct {
         if (self.npsp_allocation_triggers_disabled) return;
         if (!std.ascii.eqlIgnoreCase(allocation.type_name, "Allocation__c")) return;
         const existing_amount =
-            self.get_s_object_field_value_case_insensitive(allocation, "Amount__c") orelse
+            self.sobj_field_ci(allocation, "Amount__c") orelse
             Value.null_val;
         if (existing_amount != .null_val) return;
         const percent_value =
-            self.get_s_object_field_value_case_insensitive(allocation, "Percent__c") orelse
+            self.sobj_field_ci(allocation, "Percent__c") orelse
             return;
         const percent = numeric_value_as_f64(percent_value) orelse return;
         const parent_amount_value = self.npsp_allocation_parent_amount(allocation) orelse return;
@@ -5723,7 +5707,7 @@ pub const Evaluator = struct {
         if (!self.fixture_relaxed_exceptions) return;
         if (!std.ascii.eqlIgnoreCase(allocation.type_name, "Allocation__c")) return;
         const percent_value =
-            self.get_s_object_field_value_case_insensitive(allocation, "Percent__c") orelse
+            self.sobj_field_ci(allocation, "Percent__c") orelse
             return;
         const percent = numeric_value_as_f64(percent_value) orelse return;
         const parent_amount_value = self.npsp_allocation_parent_amount(allocation) orelse return;
@@ -5738,21 +5722,21 @@ pub const Evaluator = struct {
     }
 
     fn npsp_allocation_parent_amount(self: *Evaluator, allocation: *types.SObject) ?Value {
-        if (self.get_s_object_field_value_case_insensitive(allocation, "Opportunity__c")) |opp_id| {
+        if (self.sobj_field_ci(allocation, "Opportunity__c")) |opp_id| {
             if (opp_id == .string) {
                 const opp = self.find_record_by_id("Opportunity", opp_id.string) orelse return null;
                 if (opp == .sobject) {
-                    return self.get_s_object_field_value_case_insensitive(opp.sobject, "Amount");
+                    return self.sobj_field_ci(opp.sobject, "Amount");
                 }
             }
         }
-        if (self.get_s_object_field_value_case_insensitive(allocation, "Payment__c")) |payment_id| {
+        if (self.sobj_field_ci(allocation, "Payment__c")) |payment_id| {
             if (payment_id == .string) {
                 const payment =
                     self.find_record_by_id("npe01__OppPayment__c", payment_id.string) orelse
                     return null;
                 if (payment == .sobject) {
-                    return self.get_s_object_field_value_case_insensitive(
+                    return self.sobj_field_ci(
                         payment.sobject,
                         "npe01__Payment_Amount__c",
                     );
@@ -5779,14 +5763,14 @@ pub const Evaluator = struct {
         else
             "npe01__Payment_Amount__c";
         const parent_amount_value =
-            self.get_s_object_field_value_case_insensitive(parent, parent_amount_field) orelse
+            self.sobj_field_ci(parent, parent_amount_field) orelse
             return;
         const parent_amount = numeric_value_as_f64(parent_amount_value) orelse return;
         const allocations = self.store_records_ptr("Allocation__c") orelse return;
         for (allocations.items) |record| {
             if (record != .sobject) continue;
             const allocation_parent =
-                self.get_s_object_field_value_case_insensitive(record.sobject, parent_field) orelse
+                self.sobj_field_ci(record.sobject, parent_field) orelse
                 continue;
             if (allocation_parent != .string or
                 !std.mem.eql(u8, allocation_parent.string, parent_id))
@@ -5803,7 +5787,7 @@ pub const Evaluator = struct {
                 continue;
             }
             const percent_value =
-                self.get_s_object_field_value_case_insensitive(record.sobject, "Percent__c") orelse
+                self.sobj_field_ci(record.sobject, "Percent__c") orelse
                 continue;
             const percent = numeric_value_as_f64(percent_value) orelse continue;
             const amount = @round(parent_amount * percent) / 100.0;
@@ -5838,7 +5822,7 @@ pub const Evaluator = struct {
         for (allocations.items, 0..) |record, idx| {
             if (record != .sobject) continue;
             const allocation_parent =
-                self.get_s_object_field_value_case_insensitive(record.sobject, parent_field) orelse
+                self.sobj_field_ci(record.sobject, parent_field) orelse
                 continue;
             if (allocation_parent != .string or
                 !std.mem.eql(u8, allocation_parent.string, parent_id))
@@ -5855,7 +5839,7 @@ pub const Evaluator = struct {
                 parent_amount,
             );
             const amount_value =
-                self.get_s_object_field_value_case_insensitive(record.sobject, "Amount__c") orelse
+                self.sobj_field_ci(record.sobject, "Amount__c") orelse
                 Value.null_val;
             explicit_total += numeric_value_as_f64(amount_value) orelse 0;
         }
@@ -5874,7 +5858,7 @@ pub const Evaluator = struct {
                 const record = allocations.items[idx];
                 if (record != .sobject) continue;
                 const allocation_parent =
-                    self.get_s_object_field_value_case_insensitive(record.sobject, parent_field) orelse
+                    self.sobj_field_ci(record.sobject, parent_field) orelse
                     continue;
                 if (allocation_parent != .string or
                     !std.mem.eql(u8, allocation_parent.string, parent_id))
@@ -5903,7 +5887,7 @@ pub const Evaluator = struct {
                 const record = allocations.items[idx];
                 if (record != .sobject) continue;
                 const allocation_parent =
-                    self.get_s_object_field_value_case_insensitive(record.sobject, parent_field) orelse
+                    self.sobj_field_ci(record.sobject, parent_field) orelse
                     continue;
                 if (allocation_parent != .string or
                     !std.mem.eql(u8, allocation_parent.string, parent_id))
@@ -5929,27 +5913,17 @@ pub const Evaluator = struct {
         return false;
     }
 
-    fn should_skip_npsp_disabled_allocation_handler(
-        self: *Evaluator,
-        class_name: []const u8,
-    ) bool {
-        if (!self.fixture_relaxed_exceptions) return false;
-        if (!self.npsp_allocation_triggers_disabled) return false;
-        return std.ascii.eqlIgnoreCase(class_name, "ALLO_Allocations_TDTM") or
-            std.ascii.eqlIgnoreCase(class_name, "ALLO_PaymentSync_TDTM");
-    }
-
     fn normalize_npsp_allocation_fixed_amount_sign(
         self: *Evaluator,
         allocation: *types.SObject,
         parent_amount: f64,
     ) !void {
         if (parent_amount >= 0) return;
-        if (self.get_s_object_field_value_case_insensitive(allocation, "Percent__c")) |percent| {
+        if (self.sobj_field_ci(allocation, "Percent__c")) |percent| {
             if (percent != .null_val) return;
         }
         const amount_value =
-            self.get_s_object_field_value_case_insensitive(allocation, "Amount__c") orelse
+            self.sobj_field_ci(allocation, "Amount__c") orelse
             return;
         const amount = numeric_value_as_f64(amount_value) orelse return;
         if (amount == 0) return;
@@ -5999,7 +5973,7 @@ pub const Evaluator = struct {
                 continue;
             }
             const allocation_parent =
-                self.get_s_object_field_value_case_insensitive(record.sobject, parent_field) orelse {
+                self.sobj_field_ci(record.sobject, parent_field) orelse {
                     other_records.append(self.arena, record) catch return;
                     continue;
                 };
@@ -6011,7 +5985,7 @@ pub const Evaluator = struct {
             }
             if (self.npsp_is_default_allocation(record.sobject)) {
                 default_records.append(self.arena, record) catch return;
-            } else if (self.get_s_object_field_value_case_insensitive(record.sobject, "Percent__c")) |percent| {
+            } else if (self.sobj_field_ci(record.sobject, "Percent__c")) |percent| {
                 if (percent != .null_val) {
                     percent_records.append(self.arena, record) catch return;
                 } else {
@@ -6047,7 +6021,7 @@ pub const Evaluator = struct {
         else
             "npe01__Payment_Amount__c";
         const update_amount =
-            self.get_s_object_field_value_case_insensitive(update_obj, parent_amount_field) orelse
+            self.sobj_field_ci(update_obj, parent_amount_field) orelse
             return;
         const parent_amount = numeric_value_as_f64(update_amount) orelse return;
         if (parent_amount == 0 and std.ascii.eqlIgnoreCase(stored_parent.type_name, "Opportunity")) return;
@@ -6056,7 +6030,7 @@ pub const Evaluator = struct {
         for (allocations.items) |record| {
             if (record != .sobject) continue;
             const allocation_parent =
-                self.get_s_object_field_value_case_insensitive(record.sobject, parent_field) orelse
+                self.sobj_field_ci(record.sobject, parent_field) orelse
                 continue;
             if (allocation_parent != .string or
                 !std.mem.eql(u8, allocation_parent.string, parent_id))
@@ -6064,14 +6038,14 @@ pub const Evaluator = struct {
                 continue;
             }
             if (self.npsp_is_default_allocation(record.sobject)) continue;
-            if (self.get_s_object_field_value_case_insensitive(record.sobject, "Percent__c")) |percent_value| {
+            if (self.sobj_field_ci(record.sobject, "Percent__c")) |percent_value| {
                 if (numeric_value_as_f64(percent_value)) |percent| {
                     total += @round(parent_amount * percent) / 100.0;
                     continue;
                 }
             }
             const amount_value =
-                self.get_s_object_field_value_case_insensitive(record.sobject, "Amount__c") orelse
+                self.sobj_field_ci(record.sobject, "Amount__c") orelse
                 Value.null_val;
             total += numeric_value_as_f64(amount_value) orelse 0;
         }
@@ -6097,10 +6071,10 @@ pub const Evaluator = struct {
         if (self.npsp_allocation_payment_sync_active()) return;
         if (!std.ascii.eqlIgnoreCase(stored_allocation.type_name, "Allocation__c")) return;
         const opp_value =
-            self.get_s_object_field_value_case_insensitive(stored_allocation, "Opportunity__c") orelse
+            self.sobj_field_ci(stored_allocation, "Opportunity__c") orelse
             return;
         if (opp_value != .string or opp_value.string.len == 0) return;
-        const old_gau_value = self.get_s_object_field_value_case_insensitive(
+        const old_gau_value = self.sobj_field_ci(
             stored_allocation,
             "General_Accounting_Unit__c",
         ) orelse return;
@@ -6123,7 +6097,7 @@ pub const Evaluator = struct {
             return self.throw_dml_exception(remove_message);
         }
         const update = update_obj orelse return;
-        const new_gau_value = self.get_s_object_field_value_case_insensitive(
+        const new_gau_value = self.sobj_field_ci(
             update,
             "General_Accounting_Unit__c",
         ) orelse old_gau_value;
@@ -6155,13 +6129,13 @@ pub const Evaluator = struct {
                 }
             }
             const opp_value =
-                self.get_s_object_field_value_case_insensitive(allocation, "Opportunity__c") orelse
+                self.sobj_field_ci(allocation, "Opportunity__c") orelse
                 continue;
             if (opp_value != .string or !std.ascii.eqlIgnoreCase(opp_value.string, opportunity_id)) {
                 continue;
             }
             const allocation_gau =
-                self.get_s_object_field_value_case_insensitive(allocation, "General_Accounting_Unit__c") orelse
+                self.sobj_field_ci(allocation, "General_Accounting_Unit__c") orelse
                 continue;
             if (allocation_gau != .string or !std.ascii.eqlIgnoreCase(allocation_gau.string, gau_id)) {
                 continue;
@@ -6177,10 +6151,10 @@ pub const Evaluator = struct {
         update_obj: *types.SObject,
         stored_allocation: *types.SObject,
     ) ?f64 {
-        if (self.get_s_object_field_value_case_insensitive(update_obj, "Amount__c")) |amount_value| {
+        if (self.sobj_field_ci(update_obj, "Amount__c")) |amount_value| {
             if (numeric_value_as_f64(amount_value)) |amount| return amount;
         }
-        if (self.get_s_object_field_value_case_insensitive(update_obj, "Percent__c")) |percent_value| {
+        if (self.sobj_field_ci(update_obj, "Percent__c")) |percent_value| {
             if (numeric_value_as_f64(percent_value)) |percent| {
                 const parent_amount = self.npsp_allocation_parent_amount(stored_allocation) orelse
                     return null;
@@ -6189,7 +6163,7 @@ pub const Evaluator = struct {
             }
         }
         const amount_value =
-            self.get_s_object_field_value_case_insensitive(stored_allocation, "Amount__c") orelse
+            self.sobj_field_ci(stored_allocation, "Amount__c") orelse
             return null;
         return numeric_value_as_f64(amount_value);
     }
@@ -6206,12 +6180,12 @@ pub const Evaluator = struct {
             if (payment_record != .sobject) continue;
             const payment = payment_record.sobject;
             const payment_opp =
-                self.get_s_object_field_value_case_insensitive(payment, "npe01__Opportunity__c") orelse
+                self.sobj_field_ci(payment, "npe01__Opportunity__c") orelse
                 continue;
             if (payment_opp != .string or !std.ascii.eqlIgnoreCase(payment_opp.string, opportunity_id)) {
                 continue;
             }
-            const paid = self.get_s_object_field_value_case_insensitive(payment, "npe01__Paid__c") orelse
+            const paid = self.sobj_field_ci(payment, "npe01__Paid__c") orelse
                 Value.null_val;
             if (paid != .boolean or !paid.boolean) continue;
             const payment_id = self.sobject_id_for_result(payment) orelse continue;
@@ -6222,10 +6196,10 @@ pub const Evaluator = struct {
             if (allocation_record != .sobject) continue;
             const allocation = allocation_record.sobject;
             const payment_value =
-                self.get_s_object_field_value_case_insensitive(allocation, "Payment__c") orelse
+                self.sobj_field_ci(allocation, "Payment__c") orelse
                 continue;
             if (payment_value != .string or !payment_ids.contains(payment_value.string)) continue;
-            const allocation_gau = self.get_s_object_field_value_case_insensitive(
+            const allocation_gau = self.sobj_field_ci(
                 allocation,
                 "General_Accounting_Unit__c",
             ) orelse continue;
@@ -6233,7 +6207,7 @@ pub const Evaluator = struct {
                 continue;
             }
             const amount_value =
-                self.get_s_object_field_value_case_insensitive(allocation, "Amount__c") orelse
+                self.sobj_field_ci(allocation, "Amount__c") orelse
                 Value.null_val;
             total += numeric_value_as_f64(amount_value) orelse 0;
         }
@@ -6248,7 +6222,7 @@ pub const Evaluator = struct {
         const payments = self.store_records_ptr("npe01__OppPayment__c") orelse return false;
         for (payments.items) |record| {
             if (record != .sobject) continue;
-            const payment_opp = self.get_s_object_field_value_case_insensitive(
+            const payment_opp = self.sobj_field_ci(
                 record.sobject,
                 "npe01__Opportunity__c",
             ) orelse continue;
@@ -12269,31 +12243,16 @@ pub const Evaluator = struct {
             _ = try self.create_npsp_address_for_account(account, account_id);
             return;
         }
-        try self.copy_npsp_account_billing_field(
-            account,
-            address,
-            "BillingStreet",
-            "MailingStreet__c",
-        );
-        try self.copy_npsp_account_billing_field(account, address, "BillingCity", "MailingCity__c");
-        try self.copy_npsp_account_billing_field(
-            account,
-            address,
-            "BillingState",
-            "MailingState__c",
-        );
-        try self.copy_npsp_account_billing_field(
-            account,
-            address,
-            "BillingPostalCode",
-            "MailingPostalCode__c",
-        );
-        try self.copy_npsp_account_billing_field(
-            account,
-            address,
-            "BillingCountry",
-            "MailingCountry__c",
-        );
+        const field_pairs = [_]struct { account: []const u8, address: []const u8 }{
+            .{ .account = "BillingStreet", .address = "MailingStreet__c" },
+            .{ .account = "BillingCity", .address = "MailingCity__c" },
+            .{ .account = "BillingState", .address = "MailingState__c" },
+            .{ .account = "BillingPostalCode", .address = "MailingPostalCode__c" },
+            .{ .account = "BillingCountry", .address = "MailingCountry__c" },
+        };
+        for (field_pairs) |pair| {
+            try self.copy_npsp_account_billing_field(account, address, pair.account, pair.address);
+        }
         if (self.get_s_object_field_value_case_insensitive(
             account,
             "Undeliverable_Address__c",
@@ -13201,11 +13160,6 @@ pub const Evaluator = struct {
             try self.apply_false_default(obj, "npe01__Paid__c");
             try self.apply_false_default(obj, "npe01__Written_Off__c");
         }
-        if (std.ascii.eqlIgnoreCase(obj.type_name, "APTask__c")) {
-            try self.apply_string_default(obj, "Status__c", "Not Started");
-            try self.apply_string_default(obj, "Priority__c", "Normal");
-            try self.apply_string_default(obj, "Type__c", "");
-        }
         if (std.ascii.eqlIgnoreCase(obj.type_name, "npe03__Recurring_Donation__c")) {
             try self.apply_npsp_recurring_donation_defaults(obj);
         }
@@ -13264,16 +13218,6 @@ pub const Evaluator = struct {
     fn apply_false_default(self: *Evaluator, obj: *types.SObject, field_name: []const u8) !void {
         if (self.get_s_object_field_value_case_insensitive(obj, field_name) != null) return;
         try utils.sobject_put(&obj.fields, self.arena, field_name, Value{ .boolean = false });
-    }
-
-    fn apply_string_default(
-        self: *Evaluator,
-        obj: *types.SObject,
-        field_name: []const u8,
-        value: []const u8,
-    ) !void {
-        if (self.get_s_object_field_value_case_insensitive(obj, field_name) != null) return;
-        try utils.sobject_put(&obj.fields, self.arena, field_name, Value{ .string = value });
     }
 
     fn update_record(
@@ -13344,32 +13288,6 @@ pub const Evaluator = struct {
             try self.apply_npsp_address_update(obj, found_rec.?, old_address);
             try self.apply_npsp_account_address_update(found_rec.?, old_record);
             try self.apply_npsp_account_deceased_update(found_rec.?);
-        }
-    }
-
-    fn apply_actionplans_task_after_update_side_effect(
-        self: *Evaluator,
-        task: *types.SObject,
-    ) !void {
-        if (!std.ascii.eqlIgnoreCase(task.type_name, "Task")) return;
-        if (!task_status_is_closed(task)) return;
-        const aptask_id_val =
-            self.get_s_object_field_value_case_insensitive(task, "TaskAPTask__c") orelse return;
-        if (aptask_id_val != .string) return;
-        try self.create_actionplans_dependent_tasks_for_controller(aptask_id_val.string);
-    }
-
-    fn create_actionplans_dependent_tasks_for_controller(
-        self: *Evaluator,
-        controller_id: []const u8,
-    ) !void {
-        const aptasks = self.store_records_ptr("APTask__c") orelse return;
-        for (aptasks.items) |item| {
-            if (item != .sobject) continue;
-            if (!self.actionplans_task_depends_on(item.sobject, controller_id)) continue;
-            const dep_id = item.sobject.id orelse continue;
-            if (self.active_task_for_aptask_exists(dep_id)) continue;
-            try self.insert_actionplans_task_for_aptask(item.sobject, dep_id);
         }
     }
 
@@ -13453,11 +13371,7 @@ pub const Evaluator = struct {
     ) !bool {
         if (!self.fixture_relaxed_exceptions) return false;
         if (!std.mem.endsWith(u8, obj.type_name, "__c")) return false;
-        const kind = self.custom_setting_kind(obj.type_name) orelse
-            if (std.ascii.eqlIgnoreCase(obj.type_name, "Customizable_Rollup_Settings__c"))
-                "Hierarchy"
-            else
-                return false;
+        const kind = self.custom_setting_kind(obj.type_name) orelse return false;
         if (obj.id != null) return false;
         if (self.get_s_object_field_value_case_insensitive(obj, "Id")) |id_value| {
             if (id_value != .null_val) return false;
@@ -14044,14 +13958,7 @@ pub const Evaluator = struct {
         obj: *types.SObject,
     ) !bool {
         if (!std.mem.endsWith(u8, obj.type_name, "__c")) return false;
-        if (std.ascii.eqlIgnoreCase(obj.type_name, "Customizable_Rollup_Settings__c")) {
-            return false;
-        }
-        const kind = self.custom_setting_kind(obj.type_name) orelse
-            if (std.ascii.eqlIgnoreCase(obj.type_name, "Customizable_Rollup_Settings__c"))
-                "Hierarchy"
-            else
-                return false;
+        const kind = self.custom_setting_kind(obj.type_name) orelse return false;
         if (obj.id != null) return false;
         if (self.get_s_object_field_value_case_insensitive(obj, "Id")) |id_value| {
             if (id_value != .null_val) return false;
@@ -14107,7 +14014,6 @@ pub const Evaluator = struct {
         if (self.store_records_ptr(obj.type_name)) |records| {
             if (obj.id) |record_id| {
                 if (self.find_stored_sobject_by_id(obj.type_name, record_id)) |stored| {
-                    try self.apply_actionplans_task_before_delete_side_effect(stored);
                     try self.validate_npsp_paid_payment_opportunity_allocation_change(
                         null,
                         stored,
@@ -14139,100 +14045,6 @@ pub const Evaluator = struct {
         if (std.ascii.eqlIgnoreCase(obj.type_name, "Opportunity")) {
             try self.cascade_delete_npsp_opportunity_allocations(obj.id.?);
         }
-        if (std.ascii.eqlIgnoreCase(obj.type_name, "ActionPlan__c")) {
-            try self.cascade_delete_actionplans_tasks(obj.id.?);
-        }
-    }
-
-    fn apply_actionplans_task_before_delete_side_effect(
-        self: *Evaluator,
-        task: *types.SObject,
-    ) !void {
-        if (!std.ascii.eqlIgnoreCase(task.type_name, "Task")) return;
-        const aptask_id_val =
-            self.get_s_object_field_value_case_insensitive(task, "TaskAPTask__c") orelse return;
-        if (aptask_id_val != .string) return;
-        const aptasks = self.store_records_ptr("APTask__c") orelse return;
-        for (aptasks.items) |item| {
-            if (item != .sobject) continue;
-            if (!self.actionplans_task_depends_on(item.sobject, aptask_id_val.string)) continue;
-            const dep_id = item.sobject.id orelse continue;
-            if (self.active_task_for_aptask_exists(dep_id)) continue;
-            try self.insert_actionplans_task_for_aptask(item.sobject, dep_id);
-        }
-    }
-
-    fn insert_actionplans_task_for_aptask(
-        self: *Evaluator,
-        aptask: *types.SObject,
-        aptask_id: []const u8,
-    ) !void {
-        const new_task = try self.arena.create(types.SObject);
-        new_task.* = .{ .type_name = "Task" };
-        try self.copy_actionplans_task_field(aptask, new_task, "Subject__c", "Subject");
-        try self.copy_actionplans_task_field(aptask, new_task, "Priority__c", "Priority");
-        try self.copy_actionplans_task_field(aptask, new_task, "Status__c", "Status");
-        try self.copy_actionplans_task_field(aptask, new_task, "User__c", "OwnerId");
-        try utils.sobject_put(
-            &new_task.fields,
-            self.arena,
-            "TaskAPTask__c",
-            Value{ .string = aptask_id },
-        );
-        try self.insert_record(new_task);
-    }
-
-    fn actionplans_task_depends_on(
-        self: *Evaluator,
-        aptask: *types.SObject,
-        controller_id: []const u8,
-    ) bool {
-        if (self.get_s_object_field_value_case_insensitive(
-            aptask,
-            "Controller__c",
-        )) |controller| {
-            if (controller == .string and
-                std.ascii.eqlIgnoreCase(controller.string, controller_id))
-            {
-                return true;
-            }
-        }
-        const dependent =
-            self.get_s_object_field_value_case_insensitive(aptask, "Dependent__c") orelse
-            return false;
-        return dependent == .string and dependent.string.len > 0 and
-            !std.ascii.eqlIgnoreCase(dependent.string, "None");
-    }
-
-    fn active_task_for_aptask_exists(self: *Evaluator, aptask_id: []const u8) bool {
-        const tasks = self.store_records_ptr("Task") orelse return false;
-        for (tasks.items) |item| {
-            if (item != .sobject) continue;
-            const link =
-                self.get_s_object_field_value_case_insensitive(
-                    item.sobject,
-                    "TaskAPTask__c",
-                ) orelse
-                continue;
-            if (link == .string and
-                std.ascii.eqlIgnoreCase(link.string, aptask_id))
-            {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    fn copy_actionplans_task_field(
-        self: *Evaluator,
-        source: *types.SObject,
-        target: *types.SObject,
-        source_field: []const u8,
-        target_field: []const u8,
-    ) !void {
-        const value =
-            self.get_s_object_field_value_case_insensitive(source, source_field) orelse return;
-        try utils.sobject_put(&target.fields, self.arena, target_field, value);
     }
 
     fn delete_record_from_store_records(
@@ -14313,32 +14125,6 @@ pub const Evaluator = struct {
         }
     }
 
-    fn cascade_delete_actionplans_tasks(self: *Evaluator, action_plan_id: []const u8) !void {
-        var aptask_ids: std.ArrayListUnmanaged([]const u8) = .empty;
-        if (self.store_records_ptr("APTask__c")) |aptasks| {
-            for (aptasks.items) |item| {
-                if (item != .sobject) continue;
-                const parent =
-                    self.get_s_object_field_value_case_insensitive(
-                        item.sobject,
-                        "Action_Plan__c",
-                    ) orelse
-                    continue;
-                if (parent != .string or
-                    !std.ascii.eqlIgnoreCase(parent.string, action_plan_id))
-                {
-                    continue;
-                }
-                if (item.sobject.id) |aptask_id| {
-                    try aptask_ids.append(self.arena, aptask_id);
-                }
-            }
-        }
-        for (aptask_ids.items) |aptask_id| {
-            try self.delete_open_tasks_for_aptask(aptask_id);
-        }
-    }
-
     fn cascade_delete_npsp_opportunity_allocations(
         self: *Evaluator,
         opportunity_id: []const u8,
@@ -14406,45 +14192,6 @@ pub const Evaluator = struct {
             self.get_s_object_field_value_case_insensitive(allocation, "Payment__c") orelse
             Value.null_val;
         return payment == .string and payment_ids.contains(payment.string);
-    }
-
-    fn delete_open_tasks_for_aptask(self: *Evaluator, aptask_id: []const u8) !void {
-        const records = self.store_records_ptr("Task") orelse return;
-        const trash_gop = try self.trash.getOrPut(self.arena, "Task");
-        if (!trash_gop.found_existing) trash_gop.value_ptr.* = .empty;
-
-        var i: usize = 0;
-        while (i < records.items.len) {
-            const record = records.items[i];
-            if (record != .sobject) {
-                i += 1;
-                continue;
-            }
-            const link =
-                self.get_s_object_field_value_case_insensitive(
-                    record.sobject,
-                    "TaskAPTask__c",
-                ) orelse {
-                    i += 1;
-                    continue;
-                };
-            if (link != .string or !std.ascii.eqlIgnoreCase(link.string, aptask_id) or
-                task_status_is_closed(record.sobject))
-            {
-                i += 1;
-                continue;
-            }
-            const removed = records.orderedRemove(i);
-            if (removed == .sobject) {
-                try utils.sobject_put(
-                    &removed.sobject.fields,
-                    self.arena,
-                    "IsDeleted",
-                    Value{ .boolean = true },
-                );
-            }
-            try trash_gop.value_ptr.append(self.arena, removed);
-        }
     }
 
     fn apply_delete_set_null_lookups_for_records(
@@ -14616,15 +14363,7 @@ pub const Evaluator = struct {
 
     fn undelete_record(self: *Evaluator, obj: *types.SObject) anyerror!void {
         if (obj.id == null) {
-            const exc = try self.arena.create(types.ObjectInstance);
-            exc.* = .{ .class_name = "DmlException" };
-            try exc.fields.put(
-                self.arena,
-                "message",
-                Value{ .string = "UNDELETE_FAILED: entity not in recycle bin" },
-            );
-            self.pending_exception = Value{ .object = exc };
-            return error.ApexException;
+            return self.throw_undelete_failed();
         }
         var found = false;
         if (self.trash.getPtr(obj.type_name)) |trashed| {
@@ -14633,6 +14372,9 @@ pub const Evaluator = struct {
                 if (trashed.items[i] == .sobject and trashed.items[i].sobject.id != null and
                     std.mem.eql(u8, trashed.items[i].sobject.id.?, obj.id.?))
                 {
+                    if (self.trashed_record_is_hard_deleted(trashed.items[i].sobject)) {
+                        return self.throw_undelete_failed();
+                    }
                     const restored = trashed.orderedRemove(i);
                     if (restored == .sobject) {
                         try restored.sobject.fields.put(
@@ -14652,31 +14394,7 @@ pub const Evaluator = struct {
             }
         }
         if (!found) {
-            const exc = try self.arena.create(types.ObjectInstance);
-            exc.* = .{ .class_name = "DmlException" };
-            try exc.fields.put(
-                self.arena,
-                "message",
-                Value{ .string = "UNDELETE_FAILED: entity not in recycle bin" },
-            );
-            self.pending_exception = Value{ .object = exc };
-            return error.ApexException;
-        }
-        if (std.ascii.eqlIgnoreCase(obj.type_name, "APTask__c") and
-            !self.has_task_for_aptask_in_recycle_bin(obj.id.?))
-        {
-            const message =
-                "Error Task AFTER_UNDELETE: " ++
-                "UNDELETE_FAILED: entity not in recycle bin";
-            const exc = try self.arena.create(types.ObjectInstance);
-            exc.* = .{ .class_name = "DmlException" };
-            try exc.fields.put(
-                self.arena,
-                "message",
-                Value{ .string = message },
-            );
-            self.pending_exception = Value{ .object = exc };
-            return error.ApexException;
+            return self.throw_undelete_failed();
         }
         if (std.ascii.eqlIgnoreCase(obj.type_name, "Account")) {
             try self.cascade_undelete_account_contacts(obj.id.?);
@@ -14686,17 +14404,21 @@ pub const Evaluator = struct {
         }
     }
 
-    fn has_task_for_aptask_in_recycle_bin(self: *Evaluator, aptask_id: []const u8) bool {
-        const trashed = self.trash.get("Task") orelse return false;
-        for (trashed.items) |item| {
-            if (item != .sobject) continue;
-            const link = self.get_s_object_field_value_case_insensitive(
-                item.sobject,
-                "TaskAPTask__c",
-            ) orelse continue;
-            if (link == .string and std.ascii.eqlIgnoreCase(link.string, aptask_id)) return true;
-        }
-        return false;
+    fn trashed_record_is_hard_deleted(_: *Evaluator, obj: *types.SObject) bool {
+        const flag = utils.sobject_get(&obj.fields, "__apexgov_hard_deleted") orelse return false;
+        return flag == .boolean and flag.boolean;
+    }
+
+    fn throw_undelete_failed(self: *Evaluator) anyerror!void {
+        const exc = try self.arena.create(types.ObjectInstance);
+        exc.* = .{ .class_name = "DmlException" };
+        try exc.fields.put(
+            self.arena,
+            "message",
+            Value{ .string = "UNDELETE_FAILED: entity not in recycle bin" },
+        );
+        self.pending_exception = Value{ .object = exc };
+        return error.ApexException;
     }
 
     fn cascade_undelete_account_contacts(self: *Evaluator, account_id: []const u8) !void {
@@ -15089,6 +14811,10 @@ pub const Evaluator = struct {
         include_all_rows: bool,
     ) !Value {
         const from_type = extract_from_type(soql) orelse return Value{ .integer = 0 };
+        if (std.ascii.eqlIgnoreCase(from_type, "RecordType")) {
+            try self.seed_record_type_store();
+            try self.seed_describe_record_types_for_query(soql);
+        }
         var count: i64 = 0;
         var store_iter = self.store.iterator();
         while (store_iter.next()) |entry| {
@@ -16009,7 +15735,7 @@ pub const Evaluator = struct {
         }
         if (std.ascii.eqlIgnoreCase(from_type, "RecordType")) {
             try self.seed_record_type_store();
-            try self.seed_task_record_types_for_query(soql);
+            try self.seed_describe_record_types_for_query(soql);
             try self.append_matching_store_records("RecordType", soql, current_env, records);
             return;
         }
@@ -16589,42 +16315,17 @@ pub const Evaluator = struct {
                 null;
             var child_records: std.ArrayListUnmanaged(Value) = .empty;
             if (child_type) |ct| {
-                if (std.mem.endsWith(u8, ct, "__mdt")) self.ensure_custom_metadata_loaded(ct);
-                var child_iter = self.store.iterator();
-                while (child_iter.next()) |child_entry| {
-                    if (std.ascii.eqlIgnoreCase(child_entry.key_ptr.*, ct)) {
-                        const fk_field = self.resolve_foreign_key(ct, from_type, rel_name);
-                        for (child_entry.value_ptr.items) |child_rec| {
-                            if (child_rec == .sobject) {
-                                if (utils.sobject_get(
-                                    &child_rec.sobject.fields,
-                                    fk_field,
-                                )) |fk_val| {
-                                    if (fk_val == .string) {
-                                        const matches_id =
-                                            std.ascii.eqlIgnoreCase(fk_val.string, parent_id);
-                                        const matches_developer_name =
-                                            parent_developer_name != null and
-                                            parent_developer_name.? == .string and
-                                            std.ascii.eqlIgnoreCase(
-                                                fk_val.string,
-                                                parent_developer_name.?.string,
-                                            );
-                                        if (matches_id or matches_developer_name) {
-                                            if (sub_query_requires_where_filter(sub_info.query) and
-                                                !self.matches_where(child_rec, sub_info.query, current_env))
-                                            {
-                                                continue;
-                                            }
-                                            try child_records.append(self.arena, child_rec);
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        break;
-                    }
-                }
+                try self.append_soql_sub_query_children(
+                    from_type,
+                    rel_name,
+                    ct,
+                    parent_id,
+                    parent_developer_name,
+                    sub_info.query,
+                    current_env,
+                    &child_records,
+                );
+                try self.ensure_selected_soql_fields(sub_info.query, &child_records);
                 try self.apply_parent_field_lookups(sub_info.query, ct, &child_records);
                 try self.resolve_formula_fields(sub_info.query, &child_records);
                 self.sort_soql_records(sub_info.query, &child_records);
@@ -16635,6 +16336,110 @@ pub const Evaluator = struct {
             child_list.* = .{ .items = child_records };
             try rec.sobject.fields.put(self.arena, rel_name, Value{ .list = child_list });
         }
+    }
+
+    fn append_soql_sub_query_children(
+        self: *Evaluator,
+        parent_type: []const u8,
+        relationship: []const u8,
+        child_type: []const u8,
+        parent_id: []const u8,
+        parent_developer_name: ?Value,
+        sub_query: []const u8,
+        current_env: *Env,
+        child_records: *std.ArrayListUnmanaged(Value),
+    ) !void {
+        if (std.ascii.eqlIgnoreCase(child_type, "Activity")) {
+            try self.append_soql_sub_query_children_for_type(
+                parent_type,
+                relationship,
+                "Task",
+                parent_id,
+                parent_developer_name,
+                sub_query,
+                current_env,
+                child_records,
+            );
+            try self.append_soql_sub_query_children_for_type(
+                parent_type,
+                relationship,
+                "Event",
+                parent_id,
+                parent_developer_name,
+                sub_query,
+                current_env,
+                child_records,
+            );
+            return;
+        }
+        try self.append_soql_sub_query_children_for_type(
+            parent_type,
+            relationship,
+            child_type,
+            parent_id,
+            parent_developer_name,
+            sub_query,
+            current_env,
+            child_records,
+        );
+    }
+
+    fn append_soql_sub_query_children_for_type(
+        self: *Evaluator,
+        parent_type: []const u8,
+        relationship: []const u8,
+        concrete_child_type: []const u8,
+        parent_id: []const u8,
+        parent_developer_name: ?Value,
+        sub_query: []const u8,
+        current_env: *Env,
+        child_records: *std.ArrayListUnmanaged(Value),
+    ) !void {
+        if (std.mem.endsWith(u8, concrete_child_type, "__mdt")) {
+            self.ensure_custom_metadata_loaded(concrete_child_type);
+        }
+        const records = self.store_records_ptr(concrete_child_type) orelse return;
+        const fk_field = self.resolve_sub_query_foreign_key(
+            parent_type,
+            relationship,
+            concrete_child_type,
+        );
+        for (records.items) |child_rec| {
+            if (child_rec != .sobject) continue;
+            const fk_val =
+                utils.sobject_get(&child_rec.sobject.fields, fk_field) orelse continue;
+            if (fk_val != .string) continue;
+            const matches_id = std.ascii.eqlIgnoreCase(fk_val.string, parent_id);
+            const matches_developer_name =
+                parent_developer_name != null and
+                parent_developer_name.? == .string and
+                std.ascii.eqlIgnoreCase(fk_val.string, parent_developer_name.?.string);
+            if (!matches_id and !matches_developer_name) continue;
+            if (sub_query_requires_where_filter(sub_query) and
+                !self.matches_where(child_rec, sub_query, current_env))
+            {
+                continue;
+            }
+            try child_records.append(self.arena, child_rec);
+        }
+    }
+
+    fn resolve_sub_query_foreign_key(
+        self: *Evaluator,
+        parent_type: []const u8,
+        relationship: []const u8,
+        concrete_child_type: []const u8,
+    ) []const u8 {
+        if (self.resolve_custom_child_relationship(parent_type, relationship)) |custom| {
+            if (std.ascii.eqlIgnoreCase(custom.child_type, concrete_child_type) or
+                (std.ascii.eqlIgnoreCase(custom.child_type, "Activity") and
+                    (std.ascii.eqlIgnoreCase(concrete_child_type, "Task") or
+                        std.ascii.eqlIgnoreCase(concrete_child_type, "Event"))))
+            {
+                return custom.fk_field;
+            }
+        }
+        return self.resolve_foreign_key(concrete_child_type, parent_type, relationship);
     }
 
     fn sub_query_requires_where_filter(query: []const u8) bool {
@@ -18071,59 +17876,22 @@ pub const Evaluator = struct {
         if (std.mem.endsWith(u8, field_name, "__c") and field_name.len > 3) {
             const base = field_name[0 .. field_name.len - 3];
             const rel_name = try std.fmt.allocPrint(self.arena, "{s}__r", .{base});
-            const fd = try self.arena.create(types.SObject);
-            fd.* = .{ .type_name = "FieldDefinition" };
-            try fd.fields.put(
-                self.arena,
-                "DeveloperName",
-                Value{ .string = field_value },
-            );
-            try fd.fields.put(
-                self.arena,
-                "QualifiedAPIName",
-                Value{ .string = field_value },
-            );
-            try self.apply_known_mdt_relationship_fields(fd, field_name, field_value);
-            try sob.fields.put(self.arena, rel_name, Value{ .sobject = fd });
+            if (self.custom_metadata_parent_type_for_ref(sob.type_name, rel_name) == null) {
+                const fd = try self.arena.create(types.SObject);
+                fd.* = .{ .type_name = "FieldDefinition" };
+                try fd.fields.put(
+                    self.arena,
+                    "DeveloperName",
+                    Value{ .string = field_value },
+                );
+                try fd.fields.put(
+                    self.arena,
+                    "QualifiedAPIName",
+                    Value{ .string = field_value },
+                );
+                try sob.fields.put(self.arena, rel_name, Value{ .sobject = fd });
+            }
         }
-    }
-
-    fn apply_known_mdt_relationship_fields(
-        self: *Evaluator,
-        rel: *types.SObject,
-        field_name: []const u8,
-        field_value: []const u8,
-    ) !void {
-        if (!std.ascii.eqlIgnoreCase(field_name, "Target_Object_Mapping__c")) return;
-        const object_api = npsp_data_import_target_object_api(field_value) orelse return;
-        try rel.fields.put(self.arena, "Object_API_Name__c", Value{ .string = object_api });
-        try rel.fields.put(
-            self.arena,
-            "Legacy_Data_Import_Object_Name__c",
-            Value{ .string = field_value },
-        );
-    }
-
-    fn npsp_data_import_target_object_api(mapping_name: []const u8) ?[]const u8 {
-        const mappings = [_]struct { name: []const u8, object_api: []const u8 }{
-            .{ .name = "Account1", .object_api = "Account" },
-            .{ .name = "Account2", .object_api = "Account" },
-            .{ .name = "Address", .object_api = "Address__c" },
-            .{ .name = "Contact1", .object_api = "Contact" },
-            .{ .name = "Contact2", .object_api = "Contact" },
-            .{ .name = "Household", .object_api = "Account" },
-            .{ .name = "Opportunity", .object_api = "Opportunity" },
-            .{ .name = "Payment", .object_api = "npe01__OppPayment__c" },
-            .{ .name = "Recurring_Donation", .object_api = "npe03__Recurring_Donation__c" },
-            .{ .name = "GAU_Allocation_1", .object_api = "npsp__Allocation__c" },
-            .{ .name = "GAU_Allocation_2", .object_api = "npsp__Allocation__c" },
-            .{ .name = "Opportunity_Contact_Role_1", .object_api = "OpportunityContactRole" },
-            .{ .name = "Opportunity_Contact_Role_2", .object_api = "OpportunityContactRole" },
-        };
-        for (mappings) |mapping| {
-            if (std.ascii.eqlIgnoreCase(mapping_name, mapping.name)) return mapping.object_api;
-        }
-        return null;
     }
 
     fn xml_tag_value(self: *Evaluator, xml: []const u8, tag_name: []const u8) ?[]const u8 {
@@ -19556,7 +19324,7 @@ pub const Evaluator = struct {
                 "{s}__r",
                 .{field_name[0 .. field_name.len - 3]},
             ) catch return false;
-            break :blk self.known_custom_metadata_parent_type(object_type, rel_name) orelse
+            break :blk self.custom_metadata_parent_type_for_ref(object_type, rel_name) orelse
                 return false;
         };
         return self.custom_metadata_record_id_has_developer_name(
@@ -20460,25 +20228,16 @@ pub const Evaluator = struct {
         if (self.resolve_custom_child_relationship(parent_type, relationship)) |custom| {
             return custom.child_type;
         }
-        if (std.ascii.eqlIgnoreCase(parent_type, "Data_Import_Object_Mapping__mdt") and
-            std.ascii.eqlIgnoreCase(relationship, "Data_Import_Field_Mappings__r"))
-        {
-            return "Data_Import_Field_Mapping__mdt";
-        }
         if (std.ascii.eqlIgnoreCase(parent_type, "npe03__Recurring_Donation__c") and
             std.ascii.eqlIgnoreCase(relationship, "npe03__Donations__r"))
         {
             return "Opportunity";
         }
-        if (std.ascii.eqlIgnoreCase(parent_type, "npe03__Recurring_Donation__c") and
-            std.ascii.eqlIgnoreCase(relationship, "RecurringDonationSchedules__r"))
-        {
-            return "RecurringDonationSchedule__c";
-        }
-        if (std.ascii.eqlIgnoreCase(parent_type, "Opportunity") and
-            std.ascii.eqlIgnoreCase(relationship, "npe01__OppPayment__r"))
-        {
-            return "npe01__OppPayment__c";
+        const parent_base = type_base_name(strip_type_namespace(parent_type));
+        if (!std.mem.endsWith(u8, parent_base, "__c")) {
+            if (custom_child_type_from_relationship_name(self.arena, relationship)) |child_type| {
+                return child_type;
+            }
         }
         // Common Salesforce relationship mappings
         const mappings = .{
@@ -20539,29 +20298,19 @@ pub const Evaluator = struct {
         if (self.resolve_custom_child_relationship(parent_type, relationship)) |custom| {
             if (std.ascii.eqlIgnoreCase(custom.child_type, child_type)) return custom.fk_field;
         }
-        if (std.ascii.eqlIgnoreCase(parent_type, "Data_Import_Object_Mapping__mdt") and
-            std.ascii.eqlIgnoreCase(child_type, "Data_Import_Field_Mapping__mdt") and
-            std.ascii.eqlIgnoreCase(relationship, "Data_Import_Field_Mappings__r"))
-        {
-            return "Target_Object_Mapping__c";
-        }
         if (std.ascii.eqlIgnoreCase(parent_type, "npe03__Recurring_Donation__c") and
             std.ascii.eqlIgnoreCase(child_type, "Opportunity") and
             std.ascii.eqlIgnoreCase(relationship, "npe03__Donations__r"))
         {
             return "npe03__Recurring_Donation__c";
         }
-        if (std.ascii.eqlIgnoreCase(parent_type, "npe03__Recurring_Donation__c") and
-            std.ascii.eqlIgnoreCase(child_type, "RecurringDonationSchedule__c") and
-            std.ascii.eqlIgnoreCase(relationship, "RecurringDonationSchedules__r"))
-        {
-            return "RecurringDonation__c";
-        }
-        if (std.ascii.eqlIgnoreCase(parent_type, "Opportunity") and
-            std.ascii.eqlIgnoreCase(child_type, "npe01__OppPayment__c") and
-            std.ascii.eqlIgnoreCase(relationship, "npe01__OppPayment__r"))
-        {
-            return "npe01__Opportunity__c";
+        if (custom_foreign_key_from_relationship_name(
+            self.arena,
+            child_type,
+            parent_type,
+            relationship,
+        )) |fk| {
+            return fk;
         }
         // Self-referencing hierarchy relationships use ParentId regardless of
         // the logical parent type name.
@@ -20661,7 +20410,6 @@ pub const Evaluator = struct {
             const parent_type = parent_type_opt.?;
             const parent_rec = self.find_parent_relationship_record(
                 current_type,
-                parent_ref,
                 parent_type,
                 fk_val_opt.?.string,
             ) orelse return;
@@ -20733,7 +20481,6 @@ pub const Evaluator = struct {
     fn find_parent_relationship_record(
         self: *Evaluator,
         current_type: []const u8,
-        parent_ref: []const u8,
         parent_type: []const u8,
         fk_value: []const u8,
     ) ?Value {
@@ -20743,12 +20490,6 @@ pub const Evaluator = struct {
                 parent_type,
                 fk_value,
             )) |record| return record;
-            if (self.known_custom_metadata_parent_type(current_type, parent_ref)) |known_type| {
-                if (self.find_custom_metadata_record_by_developer_name(
-                    known_type,
-                    fk_value,
-                )) |record| return record;
-            }
         }
         return null;
     }
@@ -20963,12 +20704,7 @@ pub const Evaluator = struct {
         object_type: []const u8,
         ref: []const u8,
     ) ?[]const u8 {
-        if (std.ascii.eqlIgnoreCase(object_type, "Contact") and
-            std.ascii.eqlIgnoreCase(ref, "npo02__Household__r"))
-        {
-            return "npo02__Household__c";
-        }
-        if (self.known_custom_metadata_parent_type(object_type, ref)) |target| return target;
+        if (self.custom_metadata_parent_type_for_ref(object_type, ref)) |target| return target;
         const fk_field = self.parent_ref_to_fk(ref);
         if (self.get_field_metadata(object_type, fk_field)) |meta| {
             if (meta.reference_to) |target_type| return target_type;
@@ -20985,46 +20721,42 @@ pub const Evaluator = struct {
                 return object_type;
             }
         }
-        return self.parent_ref_to_type(ref);
+        return self.parent_ref_to_type(ref) orelse self.custom_parent_type_from_relationship_ref(ref);
     }
 
-    fn known_custom_metadata_parent_type(
+    fn custom_parent_type_from_relationship_ref(
+        self: *Evaluator,
+        ref: []const u8,
+    ) ?[]const u8 {
+        if (ref.len <= 3 or !std.ascii.eqlIgnoreCase(ref[ref.len - 3 ..], "__r")) return null;
+        return std.fmt.allocPrint(self.arena, "{s}__c", .{ref[0 .. ref.len - 3]}) catch null;
+    }
+
+    fn custom_metadata_parent_type_for_ref(
         self: *Evaluator,
         object_type: []const u8,
         ref: []const u8,
     ) ?[]const u8 {
-        _ = self;
         if (!std.mem.endsWith(u8, object_type, "__mdt")) return null;
-        const mappings = .{
-            .{
-                "Data_Import_Field_Mapping_Set__mdt",
-                "Data_Import_Object_Mapping_Set__r",
-                "Data_Import_Object_Mapping_Set__mdt",
-            },
-            .{
-                "Data_Import_Object_Mapping__mdt",
-                "Data_Import_Object_Mapping_Set__r",
-                "Data_Import_Object_Mapping_Set__mdt",
-            },
-            .{
-                "Data_Import_Field_Mapping__mdt",
-                "Data_Import_Field_Mapping_Set__r",
-                "Data_Import_Field_Mapping_Set__mdt",
-            },
-            .{
-                "Data_Import_Field_Mapping__mdt",
-                "Target_Object_Mapping__r",
-                "Data_Import_Object_Mapping__mdt",
-            },
-        };
-        inline for (mappings) |mapping| {
-            if (std.ascii.eqlIgnoreCase(object_type, mapping[0]) and
-                std.ascii.eqlIgnoreCase(ref, mapping[1]))
-            {
-                return mapping[2];
-            }
-        }
-        return null;
+        if (ref.len <= 3 or !std.ascii.eqlIgnoreCase(ref[ref.len - 3 ..], "__r")) return null;
+        const fk_field = std.fmt.allocPrint(
+            self.arena,
+            "{s}__c",
+            .{ref[0 .. ref.len - 3]},
+        ) catch return null;
+        return self.custom_metadata_parent_type_for_fk(object_type, fk_field);
+    }
+
+    fn custom_metadata_parent_type_for_fk(
+        self: *Evaluator,
+        object_type: []const u8,
+        fk_field: []const u8,
+    ) ?[]const u8 {
+        if (!std.mem.endsWith(u8, object_type, "__mdt")) return null;
+        const metadata = self.get_field_metadata(object_type, fk_field) orelse return null;
+        const reference_to = metadata.reference_to orelse return null;
+        if (!std.mem.endsWith(u8, reference_to, "__mdt")) return null;
+        return reference_to;
     }
 
     /// Find a record by Id in the store.
@@ -21352,6 +21084,10 @@ pub const Evaluator = struct {
             return Value{ .boolean = false };
         }
         return matched_value;
+    }
+
+    fn sobj_field_ci(self: *Evaluator, sob: *types.SObject, field_name: []const u8) ?Value {
+        return self.get_s_object_field_value_case_insensitive(sob, field_name);
     }
 
     fn is_checkbox_field(
@@ -22004,10 +21740,14 @@ pub const Evaluator = struct {
         parent_type: []const u8,
         relationship: []const u8,
     ) bool {
-        _ = self;
-        if (!std.ascii.eqlIgnoreCase(parent_type, "Opportunity")) return false;
-        return std.ascii.eqlIgnoreCase(relationship, "npe01__OppPayment__r") or
-            std.ascii.eqlIgnoreCase(relationship, "OpportunityContactRoles") or
+        const parent_base = type_base_name(strip_type_namespace(parent_type));
+        if (!std.mem.endsWith(u8, parent_base, "__c") and
+            custom_child_type_from_relationship_name(self.arena, relationship) != null)
+        {
+            return true;
+        }
+        if (!std.ascii.eqlIgnoreCase(parent_base, "Opportunity")) return false;
+        return std.ascii.eqlIgnoreCase(relationship, "OpportunityContactRoles") or
             std.ascii.eqlIgnoreCase(relationship, "OpportunityLineItems");
     }
 
@@ -22026,6 +21766,16 @@ pub const Evaluator = struct {
             fk_field,
             fk_value.string,
         ) orelse return null;
+        if (std.mem.endsWith(u8, sob.type_name, "__mdt") and
+            std.mem.endsWith(u8, target_type, "__mdt"))
+        {
+            if (self.find_custom_metadata_record_by_developer_name(
+                target_type,
+                fk_value.string,
+            )) |record| {
+                if (record == .sobject) return record;
+            }
+        }
         if (self.find_record_by_id(target_type, fk_value.string)) |record| {
             if (record == .sobject) return record;
         }
@@ -28556,6 +28306,7 @@ pub const Evaluator = struct {
         const trimmed = std.mem.trim(u8, formula, " \t\n\r");
         if (trimmed.len == 0) return null;
         if (self.compute_active_date_range_formula(sob, trimmed)) |value| return value;
+        if (self.compute_if_formula_field_value(sob, trimmed)) |value| return value;
 
         if (std.mem.indexOfScalar(u8, trimmed, '+')) |_| {
             var total: i64 = 0;
@@ -28605,6 +28356,94 @@ pub const Evaluator = struct {
         }
 
         return self.get_s_object_field_value_case_insensitive(sob, trimmed);
+    }
+
+    fn compute_if_formula_field_value(
+        self: *Evaluator,
+        sob: *types.SObject,
+        formula: []const u8,
+    ) ?Value {
+        const inner = formula_function_inner(formula, "IF") orelse return null;
+        var args: [3][]const u8 = undefined;
+        const count = split_formula_args(inner, args[0..]);
+        if (count != 3) return null;
+        const condition = self.evaluate_formula_condition(sob, args[0]) orelse return null;
+        return self.evaluate_formula_value_expr(sob, if (condition) args[1] else args[2]) orelse
+            Value.null_val;
+    }
+
+    fn evaluate_formula_condition(
+        self: *Evaluator,
+        sob: *types.SObject,
+        raw_expr: []const u8,
+    ) ?bool {
+        const expr = std.mem.trim(u8, raw_expr, " \t\n\r");
+        if (find_formula_operator(expr, "!=")) |idx| {
+            const left = self.evaluate_formula_value_expr(sob, expr[0..idx]) orelse Value.null_val;
+            const right = self.evaluate_formula_value_expr(sob, expr[idx + 2 ..]) orelse Value.null_val;
+            return !formula_values_equal(left, right);
+        }
+        if (find_formula_operator(expr, "==")) |idx| {
+            const left = self.evaluate_formula_value_expr(sob, expr[0..idx]) orelse Value.null_val;
+            const right = self.evaluate_formula_value_expr(sob, expr[idx + 2 ..]) orelse Value.null_val;
+            return formula_values_equal(left, right);
+        }
+        if (find_formula_operator(expr, "=")) |idx| {
+            const left = self.evaluate_formula_value_expr(sob, expr[0..idx]) orelse Value.null_val;
+            const right = self.evaluate_formula_value_expr(sob, expr[idx + 1 ..]) orelse Value.null_val;
+            return formula_values_equal(left, right);
+        }
+        const value = self.evaluate_formula_value_expr(sob, expr) orelse return null;
+        return switch (value) {
+            .boolean => |b| b,
+            .null_val => false,
+            .string => |s| s.len > 0,
+            else => null,
+        };
+    }
+
+    fn evaluate_formula_value_expr(
+        self: *Evaluator,
+        sob: *types.SObject,
+        raw_expr: []const u8,
+    ) ?Value {
+        const expr = std.mem.trim(u8, raw_expr, " \t\n\r");
+        if (expr.len == 0) return Value.null_val;
+        if (std.ascii.eqlIgnoreCase(expr, "null")) return Value.null_val;
+        if (std.ascii.eqlIgnoreCase(expr, "true")) return Value{ .boolean = true };
+        if (std.ascii.eqlIgnoreCase(expr, "false")) return Value{ .boolean = false };
+        if (formula_string_literal(expr)) |literal| return Value{ .string = literal };
+        if (self.compute_if_formula_field_value(sob, expr)) |value| return value;
+        if (formula_function_inner(expr, "CASESAFEID")) |inner| {
+            const value = self.evaluate_formula_value_expr(sob, inner) orelse Value.null_val;
+            return formula_case_safe_id_value(self.arena, value) catch Value.null_val;
+        }
+        if (std.mem.indexOfScalar(u8, expr, '.')) |_| {
+            return self.resolve_field_path_value(sob, expr) orelse Value.null_val;
+        }
+        return self.get_s_object_field_value_case_insensitive(sob, expr) orelse Value.null_val;
+    }
+
+    fn formula_case_safe_id_value(arena: std.mem.Allocator, value: Value) !Value {
+        if (value == .null_val) return Value.null_val;
+        const id = switch (value) {
+            .string => |s| s,
+            else => return value,
+        };
+        if (id.len != 15) return value;
+        const suffix_alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ012345";
+        var suffix: [3]u8 = undefined;
+        for (0..3) |chunk| {
+            var flags: u5 = 0;
+            for (0..5) |offset| {
+                const ch = id[chunk * 5 + offset];
+                if (ch >= 'A' and ch <= 'Z') {
+                    flags |= @as(u5, 1) << @intCast(offset);
+                }
+            }
+            suffix[chunk] = suffix_alphabet[flags];
+        }
+        return Value{ .string = try std.fmt.allocPrint(arena, "{s}{s}", .{ id, suffix }) };
     }
 
     fn compute_active_date_range_formula(
@@ -28661,12 +28500,234 @@ pub const Evaluator = struct {
         return null;
     }
 
-    /// Create a shallow clone of an SObject (copies the fields map).
+    fn formula_function_inner(formula: []const u8, name: []const u8) ?[]const u8 {
+        const trimmed = std.mem.trim(u8, formula, " \t\n\r");
+        if (trimmed.len < name.len + 2) return null;
+        if (!std.ascii.startsWithIgnoreCase(trimmed, name)) return null;
+        var pos = name.len;
+        while (pos < trimmed.len and is_soql_whitespace(trimmed[pos])) pos += 1;
+        if (pos >= trimmed.len or trimmed[pos] != '(') return null;
+        const inner_start = pos + 1;
+        var depth: usize = 1;
+        var in_string = false;
+        pos = inner_start;
+        while (pos < trimmed.len) : (pos += 1) {
+            const ch = trimmed[pos];
+            if (ch == '\'' and (pos == inner_start or trimmed[pos - 1] != '\\')) {
+                in_string = !in_string;
+                continue;
+            }
+            if (in_string) continue;
+            if (ch == '(') {
+                depth += 1;
+                continue;
+            }
+            if (ch == ')') {
+                depth -= 1;
+                if (depth == 0) {
+                    const tail = std.mem.trim(u8, trimmed[pos + 1 ..], " \t\n\r");
+                    if (tail.len != 0) return null;
+                    return std.mem.trim(u8, trimmed[inner_start..pos], " \t\n\r");
+                }
+            }
+        }
+        return null;
+    }
+
+    fn split_formula_args(input: []const u8, out: [][]const u8) usize {
+        var count: usize = 0;
+        var start: usize = 0;
+        var depth: usize = 0;
+        var in_string = false;
+        var idx: usize = 0;
+        while (idx < input.len) : (idx += 1) {
+            const ch = input[idx];
+            if (ch == '\'' and (idx == 0 or input[idx - 1] != '\\')) {
+                in_string = !in_string;
+                continue;
+            }
+            if (in_string) continue;
+            if (ch == '(') {
+                depth += 1;
+                continue;
+            }
+            if (ch == ')') {
+                if (depth > 0) depth -= 1;
+                continue;
+            }
+            if (ch == ',' and depth == 0) {
+                if (count >= out.len) return count;
+                out[count] = std.mem.trim(u8, input[start..idx], " \t\n\r");
+                count += 1;
+                start = idx + 1;
+            }
+        }
+        if (count < out.len) {
+            out[count] = std.mem.trim(u8, input[start..], " \t\n\r");
+            count += 1;
+        }
+        return count;
+    }
+
+    fn find_formula_operator(expr: []const u8, operator: []const u8) ?usize {
+        var depth: usize = 0;
+        var in_string = false;
+        var idx: usize = 0;
+        while (idx + operator.len <= expr.len) : (idx += 1) {
+            const ch = expr[idx];
+            if (ch == '\'' and (idx == 0 or expr[idx - 1] != '\\')) {
+                in_string = !in_string;
+                continue;
+            }
+            if (in_string) continue;
+            if (ch == '(') {
+                depth += 1;
+                continue;
+            }
+            if (ch == ')') {
+                if (depth > 0) depth -= 1;
+                continue;
+            }
+            if (depth == 0 and std.mem.eql(u8, expr[idx .. idx + operator.len], operator)) {
+                return idx;
+            }
+        }
+        return null;
+    }
+
+    fn formula_string_literal(expr: []const u8) ?[]const u8 {
+        const trimmed = std.mem.trim(u8, expr, " \t\n\r");
+        if (trimmed.len < 2) return null;
+        if (trimmed[0] != '\'' or trimmed[trimmed.len - 1] != '\'') return null;
+        return trimmed[1 .. trimmed.len - 1];
+    }
+
+    fn formula_values_equal(left: Value, right: Value) bool {
+        if (left == .null_val or right == .null_val) return left == .null_val and right == .null_val;
+        if (left == .string and right == .string) return std.mem.eql(u8, left.string, right.string);
+        if (left == .boolean and right == .boolean) return left.boolean == right.boolean;
+        if (numeric_value_as_f64(left)) |left_num| {
+            if (numeric_value_as_f64(right)) |right_num| return @abs(left_num - right_num) < 0.000001;
+        }
+        return false;
+    }
+
+    /// Create an independent SObject clone for query/custom-metadata results.
     fn clone_s_object(self: *Evaluator, src: *types.SObject) !*types.SObject {
+        return self.clone_s_object_depth(src, 0);
+    }
+
+    fn clone_s_object_depth(
+        self: *Evaluator,
+        src: *types.SObject,
+        depth: u8,
+    ) anyerror!*types.SObject {
         const copy = try self.arena.create(types.SObject);
-        copy.* = .{ .type_name = src.type_name, .id = src.id };
+        copy.* = .{
+            .type_name = src.type_name,
+            .id = src.id,
+            .is_stripped = src.is_stripped,
+            .is_clone = src.is_clone,
+        };
         for (src.fields.keys(), src.fields.values()) |k, v| {
-            try copy.fields.put(self.arena, k, v);
+            try copy.fields.put(
+                self.arena,
+                try self.arena.dupe(u8, k),
+                try self.clone_runtime_value_depth(v, depth + 1),
+            );
+        }
+        return copy;
+    }
+
+    fn clone_runtime_value_depth(
+        self: *Evaluator,
+        value: Value,
+        depth: u8,
+    ) anyerror!Value {
+        if (depth >= 16) return value;
+        return switch (value) {
+            .sobject => |sob| Value{ .sobject = try self.clone_s_object_depth(sob, depth) },
+            .object => |obj| Value{ .object = try self.clone_object_instance_depth(obj, depth) },
+            .list => |list| Value{ .list = try self.clone_list_value_depth(list, depth) },
+            .map => |map| Value{ .map = try self.clone_map_value_depth(map, depth) },
+            .set => |set| Value{ .set = try self.clone_set_value_depth(set, depth) },
+            else => value,
+        };
+    }
+
+    fn clone_object_instance_depth(
+        self: *Evaluator,
+        src: *types.ObjectInstance,
+        depth: u8,
+    ) anyerror!*types.ObjectInstance {
+        const copy = try self.arena.create(types.ObjectInstance);
+        copy.* = .{ .class_name = src.class_name };
+        for (src.fields.keys(), src.fields.values()) |k, v| {
+            try copy.fields.put(
+                self.arena,
+                try self.arena.dupe(u8, k),
+                try self.clone_runtime_value_depth(v, depth + 1),
+            );
+        }
+        return copy;
+    }
+
+    fn clone_list_value_depth(
+        self: *Evaluator,
+        src: *types.ListValue,
+        depth: u8,
+    ) anyerror!*types.ListValue {
+        const copy = try self.arena.create(types.ListValue);
+        copy.* = .{
+            .element_type = src.element_type,
+            .explicitly_generic = src.explicitly_generic,
+        };
+        for (src.items.items) |item| {
+            try copy.items.append(self.arena, try self.clone_runtime_value_depth(item, depth + 1));
+        }
+        return copy;
+    }
+
+    fn clone_map_value_depth(
+        self: *Evaluator,
+        src: *types.MapValue,
+        depth: u8,
+    ) anyerror!*types.MapValue {
+        const copy = try self.arena.create(types.MapValue);
+        copy.* = .{
+            .schema_field_owner = src.schema_field_owner,
+            .case_insensitive_keys = src.case_insensitive_keys,
+        };
+        for (src.entries.keys(), src.entries.values()) |k, v| {
+            try copy.entries.put(
+                self.arena,
+                try self.arena.dupe(u8, k),
+                try self.clone_runtime_value_depth(v, depth + 1),
+            );
+        }
+        for (src.key_values.keys(), src.key_values.values()) |k, v| {
+            try copy.key_values.put(
+                self.arena,
+                try self.arena.dupe(u8, k),
+                try self.clone_runtime_value_depth(v, depth + 1),
+            );
+        }
+        return copy;
+    }
+
+    fn clone_set_value_depth(
+        self: *Evaluator,
+        src: *types.SetValue,
+        depth: u8,
+    ) anyerror!*types.SetValue {
+        const copy = try self.arena.create(types.SetValue);
+        copy.* = .{ .element_type = src.element_type };
+        for (src.entries.keys(), src.entries.values()) |k, v| {
+            try copy.entries.put(
+                self.arena,
+                try self.arena.dupe(u8, k),
+                try self.clone_runtime_value_depth(v, depth + 1),
+            );
         }
         return copy;
     }
@@ -28896,31 +28957,6 @@ pub const Evaluator = struct {
         return Value.void_val;
     }
 
-    fn handle_npsp_allocations_util_static_method(
-        self: *Evaluator,
-        class_name: []const u8,
-        method_name: []const u8,
-        args: []const Value,
-    ) ?Value {
-        if (!self.fixture_relaxed_exceptions) return null;
-        if (!std.ascii.eqlIgnoreCase(class_name, "ALLO_AllocationsUtil")) return null;
-        if (std.ascii.eqlIgnoreCase(method_name, "disableAllocationTriggers")) {
-            self.npsp_allocation_triggers_disabled = true;
-            return Value.void_val;
-        }
-        if (std.ascii.eqlIgnoreCase(method_name, "enableAllocationTriggers")) {
-            self.npsp_allocation_triggers_disabled = false;
-            return Value.void_val;
-        }
-        if (std.ascii.eqlIgnoreCase(method_name, "updateAllocationTriggersState")) {
-            if (args.len >= 1 and args[0] == .boolean) {
-                self.npsp_allocation_triggers_disabled = !args[0].boolean;
-            }
-            return Value.void_val;
-        }
-        return null;
-    }
-
     fn set_tdtm_trigger_handler_active(
         self: *Evaluator,
         object_name: []const u8,
@@ -29087,31 +29123,6 @@ pub const Evaluator = struct {
         return null;
     }
 
-    fn handle_fflib_mock_sobject_util_static_method(
-        self: *Evaluator,
-        class_name: []const u8,
-        method_name: []const u8,
-        args: []const Value,
-    ) !?Value {
-        if (!std.ascii.eqlIgnoreCase(class_name, "fflib_MockSObjectUtil") or
-            !std.ascii.eqlIgnoreCase(method_name, "addRelatedParentObject") or
-            args.len < 3 or
-            args[0] != .sobject or
-            args[1] != .sobject or
-            args[2] != .string)
-        {
-            return null;
-        }
-        const clone = try self.arena.create(types.SObject);
-        clone.* = .{ .type_name = args[0].sobject.type_name };
-        clone.id = args[0].sobject.id;
-        for (args[0].sobject.fields.keys(), args[0].sobject.fields.values()) |key, value| {
-            try clone.fields.put(self.arena, key, value);
-        }
-        try clone.fields.put(self.arena, args[2].string, args[1]);
-        return Value{ .sobject = clone };
-    }
-
     fn handle_datacloud_static_method(
         self: *Evaluator,
         class_name: []const u8,
@@ -29211,868 +29222,6 @@ pub const Evaluator = struct {
         const obj = try self.arena.create(types.ObjectInstance);
         obj.* = .{ .class_name = class_name };
         return obj;
-    }
-
-    fn handle_npsp_potential_duplicates_static_method(
-        self: *Evaluator,
-        class_name: []const u8,
-        method_name: []const u8,
-        args: []const Value,
-    ) !?Value {
-        if (!std.ascii.eqlIgnoreCase(class_name, "PotentialDuplicates") or
-            !std.ascii.eqlIgnoreCase(method_name, "getDuplicates"))
-        {
-            return null;
-        }
-        const map = try self.arena.create(types.MapValue);
-        map.* = .{};
-        const matches = if (args.len > 0 and args[0] == .string)
-            try self.duplicate_match_id_csv(args[0].string)
-        else
-            "";
-        try map.entries.put(self.arena, "setOfMatches", Value{ .string = matches });
-        return Value{ .map = map };
-    }
-
-    fn duplicate_match_id_csv(self: *Evaluator, record_id: []const u8) ![]const u8 {
-        const matches = try self.find_duplicate_match_records(record_id);
-        var buf: std.ArrayListUnmanaged(u8) = .empty;
-        for (matches.items.items, 0..) |match_value, idx| {
-            if (match_value != .object) continue;
-            const record = match_value.object.fields.get("record") orelse continue;
-            if (record != .sobject or record.sobject.id == null) continue;
-            if (idx > 0 and buf.items.len > 0) try buf.append(self.arena, ',');
-            try buf.appendSlice(self.arena, record.sobject.id.?);
-        }
-        return try buf.toOwnedSlice(self.arena);
-    }
-
-    fn handle_npsp_unit_test_data_static_method(
-        self: *Evaluator,
-        class_name: []const u8,
-        method_name: []const u8,
-        args: []const Value,
-    ) !?Value {
-        if (!self.fixture_relaxed_exceptions) return null;
-        _ = class_name;
-        if (std.ascii.eqlIgnoreCase(method_name, "getClosedWonStage")) {
-            return Value{ .string = "Closed Won" };
-        }
-        if (std.ascii.eqlIgnoreCase(method_name, "getClosedLostStage")) {
-            return Value{ .string = "Closed Lost" };
-        }
-        if (std.ascii.eqlIgnoreCase(method_name, "mockIds") and args.len >= 2) {
-            return try self.npsp_mock_ids(args[0], args[1]);
-        }
-        if (std.ascii.eqlIgnoreCase(method_name, "OppsForContactListByRecTypeId") and
-            args.len >= 7)
-        {
-            return try self.npsp_opps_for_contact_list(
-                args[0],
-                args[2],
-                args[3],
-                args[4],
-                args[5],
-                args[6],
-            );
-        }
-        return null;
-    }
-
-    fn handle_npsp_legacy_household_members_static_method(
-        self: *Evaluator,
-        class_name: []const u8,
-        method_name: []const u8,
-        args: []const Value,
-    ) !?Value {
-        if (!self.fixture_relaxed_exceptions) return null;
-        if (!std.ascii.eqlIgnoreCase(class_name, "LegacyHouseholdMembers") and
-            !std.ascii.endsWithIgnoreCase(class_name, ".LegacyHouseholdMembers"))
-        {
-            return null;
-        }
-        const key = try self.static_field_cache_key("LegacyHouseholdMembers", "mock");
-        if (std.ascii.eqlIgnoreCase(method_name, "setMock") and args.len >= 1) {
-            if (self.global_env.bindings.getPtr(key)) |slot| {
-                slot.* = args[0];
-            } else {
-                try self.global_env.define(key, args[0]);
-            }
-            return Value.void_val;
-        }
-        if (std.ascii.eqlIgnoreCase(method_name, "newInstance")) {
-            if (self.global_env.get(key)) |mock| {
-                if (mock != .null_val) return mock;
-            }
-        }
-        return null;
-    }
-
-    fn handle_npsp_contact_adapter_static_method(
-        self: *Evaluator,
-        class_name: []const u8,
-        method_name: []const u8,
-        args: []const Value,
-    ) !?Value {
-        if (!self.fixture_relaxed_exceptions) return null;
-        if (!std.ascii.eqlIgnoreCase(class_name, "ContactAdapter")) return null;
-        if (!std.ascii.eqlIgnoreCase(method_name, "rollupContactsAndHouseholdsAfterMerge")) return null;
-        if (args.len > 0) {
-            try self.refresh_npsp_rollup_contacts_from_value(args[0]);
-        }
-        return Value.void_val;
-    }
-
-    fn npsp_mock_ids(self: *Evaluator, sobject_type_value: Value, size_value: Value) !Value {
-        const type_name = if (sobject_type_value == .object)
-            sobject_type_value.object.fields.get("name") orelse Value{ .string = "SObject" }
-        else
-            Value{ .string = "SObject" };
-        const sobject_type = if (type_name == .string) type_name.string else "SObject";
-        const size: i64 = switch (size_value) {
-            .integer => |value| value,
-            .double => |value| @intFromFloat(value),
-            else => 0,
-        };
-
-        const list = try self.arena.create(types.ListValue);
-        list.* = .{};
-        if (size <= 0) return Value{ .list = list };
-
-        const prefix = sobject_key_prefix(sobject_type);
-        var i: i64 = 0;
-        while (i < size) : (i += 1) {
-            const id = try self.next_non_existing_mock_id(prefix);
-            try list.items.append(self.arena, Value{ .string = id });
-        }
-        return Value{ .list = list };
-    }
-
-    fn next_non_existing_mock_id(self: *Evaluator, prefix: [3]u8) ![]const u8 {
-        while (true) {
-            const counter = self.next_id;
-            self.next_id += 1;
-            const suffix = try std.fmt.allocPrint(self.arena, "{d:0>12}", .{counter});
-            const id = try std.fmt.allocPrint(
-                self.arena,
-                "{s}{s}",
-                .{ prefix, suffix[suffix.len - @min(suffix.len, 12) ..] },
-            );
-            if (!self.mock_id_collides_with_existing_record(id)) return id;
-        }
-    }
-
-    fn mock_id_collides_with_existing_record(self: *Evaluator, id: []const u8) bool {
-        if (std.ascii.eqlIgnoreCase(id, self.current_user_id)) return true;
-        if (std.ascii.eqlIgnoreCase(id, self.current_profile_id)) return true;
-        if (self.id_type_map.get(id) != null) return true;
-        var store_iter = self.store.iterator();
-        while (store_iter.next()) |entry| {
-            for (entry.value_ptr.items) |record| {
-                if (record != .sobject or record.sobject.id == null) continue;
-                if (std.ascii.eqlIgnoreCase(record.sobject.id.?, id)) return true;
-            }
-        }
-        var trash_iter = self.trash.iterator();
-        while (trash_iter.next()) |entry| {
-            for (entry.value_ptr.items) |record| {
-                if (record != .sobject or record.sobject.id == null) continue;
-                if (std.ascii.eqlIgnoreCase(record.sobject.id.?, id)) return true;
-            }
-        }
-        return false;
-    }
-
-    fn npsp_opps_for_contact_list(
-        self: *Evaluator,
-        contacts_value: Value,
-        stage_value: Value,
-        close_date_value: Value,
-        amount_value: Value,
-        record_type_id_value: Value,
-        type_value: Value,
-    ) !Value {
-        const list = try self.arena.create(types.ListValue);
-        list.* = .{};
-        const contacts = if (contacts_value == .list)
-            contacts_value.list.items.items
-        else
-            &[_]Value{contacts_value};
-
-        for (contacts) |contact_value| {
-            if (contact_value != .sobject) continue;
-            const contact = contact_value.sobject;
-            const opp = try self.arena.create(types.SObject);
-            opp.* = .{ .type_name = "Opportunity" };
-            try utils.sobject_put(&opp.fields, self.arena, "Name", Value{ .string = "Test Opportunity" });
-            try utils.sobject_put(&opp.fields, self.arena, "StageName", stage_value);
-            try utils.sobject_put(&opp.fields, self.arena, "CloseDate", close_date_value);
-            try utils.sobject_put(&opp.fields, self.arena, "Amount", amount_value);
-            if (record_type_id_value != .null_val) {
-                try utils.sobject_put(
-                    &opp.fields,
-                    self.arena,
-                    "RecordTypeId",
-                    record_type_id_value,
-                );
-            }
-            if (type_value != .null_val) {
-                try utils.sobject_put(&opp.fields, self.arena, "Type", type_value);
-            }
-            if (contact.id) |contact_id| {
-                try utils.sobject_put(
-                    &opp.fields,
-                    self.arena,
-                    "Primary_Contact__c",
-                    Value{ .string = contact_id },
-                );
-                try utils.sobject_put(
-                    &opp.fields,
-                    self.arena,
-                    "npe01__Contact_Id_for_Role__c",
-                    Value{ .string = contact_id },
-                );
-            }
-            try list.items.append(self.arena, Value{ .sobject = opp });
-        }
-        return Value{ .list = list };
-    }
-
-    fn handle_npsp_household_naming_static_method(
-        self: *Evaluator,
-        class_name: []const u8,
-        method_name: []const u8,
-        args: []const Value,
-    ) !?Value {
-        if (!self.fixture_relaxed_exceptions) return null;
-        if (!std.ascii.eqlIgnoreCase(class_name, "HouseholdNamingService")) return null;
-        if (!std.ascii.eqlIgnoreCase(method_name, "updateHouseholdNameAndMemberCountAsynchronously") and
-            !std.ascii.eqlIgnoreCase(method_name, "updateHouseholdNameAndMemberCount"))
-        {
-            return null;
-        }
-        if (!self.npsp_automatic_household_naming_enabled()) return Value.void_val;
-        if (args.len == 0 or args[0] != .list) return Value.void_val;
-
-        var updated: i64 = 0;
-        var eligible: i64 = 0;
-        var skipped_user_controlled: i64 = 0;
-        var requested: i64 = 0;
-        for (args[0].list.items.items) |id_value| {
-            if (id_value != .string) continue;
-            requested += 1;
-            const household_id = id_value.string;
-            const household = self.find_record_by_id("Account", household_id) orelse
-                self.find_record_by_id("npo02__Household__c", household_id) orelse
-                (try self.ensure_npsp_legacy_household_record_for_members(household_id)) orelse
-                continue;
-            if (household != .sobject) continue;
-            if (self.npsp_household_name_is_user_controlled(household.sobject)) {
-                skipped_user_controlled += 1;
-                continue;
-            }
-            eligible += 1;
-
-            const members = self.npsp_household_members_for(household_id);
-            if (members.len == 0) continue;
-            const primary = members[0];
-            try utils.sobject_put(
-                &household.sobject.fields,
-                self.arena,
-                "Name",
-                Value{ .string = try self.npsp_household_name_from_members(members) },
-            );
-            try utils.sobject_put(
-                &household.sobject.fields,
-                self.arena,
-                "npo02__Informal_Greeting__c",
-                if (members.len > 1)
-                    Value{ .string = try self.npsp_household_informal_greeting_from_members(members) }
-                else
-                    self.npsp_contact_informal_greeting(primary),
-            );
-            try utils.sobject_put(
-                &household.sobject.fields,
-                self.arena,
-                "npo02__Formal_Greeting__c",
-                if (members.len > 1)
-                    Value{ .string = try self.npsp_household_formal_greeting_from_members(members) }
-                else
-                    try self.npsp_contact_formal_greeting(primary),
-            );
-            try utils.sobject_put(
-                &household.sobject.fields,
-                self.arena,
-                "Number_of_Household_Members__c",
-                Value{ .integer = @intCast(members.len) },
-            );
-            updated += 1;
-        }
-        if (updated > 0 or eligible > 0) {
-            try self.record_npsp_household_naming_instrumentation(if (updated > 0) updated else eligible);
-        } else if (std.ascii.eqlIgnoreCase(method_name, "updateHouseholdNameAndMemberCountAsynchronously") and
-            requested > 0 and skipped_user_controlled == 0)
-        {
-            try self.record_npsp_household_naming_instrumentation(requested);
-        }
-        return Value.void_val;
-    }
-
-    fn handle_npsp_opportunity_naming_static_method(
-        self: *Evaluator,
-        class_name: []const u8,
-        method_name: []const u8,
-        args: []const Value,
-    ) !?Value {
-        if (!self.fixture_relaxed_exceptions) return null;
-        if (!std.ascii.eqlIgnoreCase(class_name, "OPP_OpportunityNaming")) return null;
-        if (!std.ascii.eqlIgnoreCase(method_name, "refreshOppNames") and
-            !std.ascii.eqlIgnoreCase(method_name, "getOppNamesAfterInsert"))
-        {
-            return null;
-        }
-        if (args.len == 0 or args[0] != .list) {
-            return if (std.ascii.eqlIgnoreCase(method_name, "getOppNamesAfterInsert"))
-                try self.make_empty_list()
-            else
-                Value.void_val;
-        }
-
-        if (std.ascii.eqlIgnoreCase(method_name, "refreshOppNames")) {
-            for (args[0].list.items.items) |item| {
-                if (item != .sobject) continue;
-                try self.refresh_npsp_opportunity_name(item.sobject, true);
-            }
-            return Value.void_val;
-        }
-
-        const renamed = try self.arena.create(types.ListValue);
-        renamed.* = .{};
-        for (args[0].list.items.items) |item| {
-            if (item != .sobject) continue;
-            if (try self.npsp_renamed_opportunity_for_after_insert(item.sobject)) |renamed_opp| {
-                try renamed.items.append(self.arena, Value{ .sobject = renamed_opp });
-            }
-        }
-        return Value{ .list = renamed };
-    }
-
-    fn npsp_renamed_opportunity_for_after_insert(
-        self: *Evaluator,
-        source: *types.SObject,
-    ) !?*types.SObject {
-        const opp_id = self.sobject_id_for_result(source) orelse return null;
-        const stored = self.find_stored_sobject_by_id("Opportunity", opp_id) orelse source;
-        const new_name = try self.npsp_opportunity_name_from_settings(stored) orelse return null;
-        const current_name =
-            self.get_s_object_field_value_case_insensitive(stored, "Name") orelse Value.null_val;
-        if (current_name == .string and std.mem.eql(u8, current_name.string, new_name)) return null;
-
-        const renamed = try self.clone_s_object(stored);
-        try utils.sobject_put(&renamed.fields, self.arena, "Name", Value{ .string = new_name });
-        if (renamed.id == null) renamed.id = opp_id;
-        try utils.sobject_put(&stored.fields, self.arena, "Name", Value{ .string = new_name });
-        return renamed;
-    }
-
-    fn refresh_npsp_opportunity_name(
-        self: *Evaluator,
-        source: *types.SObject,
-        update_store: bool,
-    ) !void {
-        const opp_id = self.sobject_id_for_result(source);
-        const stored = if (opp_id) |id|
-            self.find_stored_sobject_by_id("Opportunity", id) orelse source
-        else
-            source;
-        const new_name = try self.npsp_opportunity_name_from_settings(stored) orelse return;
-        try utils.sobject_put(&source.fields, self.arena, "Name", Value{ .string = new_name });
-        if (update_store and stored != source) {
-            try utils.sobject_put(&stored.fields, self.arena, "Name", Value{ .string = new_name });
-        }
-    }
-
-    fn npsp_opportunity_name_from_settings(
-        self: *Evaluator,
-        opportunity: *types.SObject,
-    ) !?[]const u8 {
-        const setting = self.npsp_opportunity_naming_setting_for(opportunity) orelse return null;
-        const format_value =
-            self.get_s_object_field_value_case_insensitive(setting, "Opportunity_Name_Format__c") orelse
-            return null;
-        if (format_value != .string or format_value.string.len == 0) return null;
-        if (self.npsp_opportunity_naming_format_has_invalid_field(opportunity, format_value.string)) {
-            try self.create_npsp_error_record("Invalid Opportunity Naming Settings field path");
-            return null;
-        }
-        const contact = self.npsp_opportunity_naming_contact(opportunity);
-        const raw = try self.npsp_format_opportunity_name(opportunity, contact, setting, format_value.string);
-        const trimmed = std.mem.trim(u8, raw, " \t\r\n");
-        if (trimmed.len <= 120) return trimmed;
-        return trimmed[0..120];
-    }
-
-    fn npsp_opportunity_naming_setting_for(
-        self: *Evaluator,
-        opportunity: *types.SObject,
-    ) ?*types.SObject {
-        const records = self.store_records_ptr("Opportunity_Naming_Settings__c") orelse return null;
-        const is_individual = self.npsp_opportunity_naming_is_individual(opportunity);
-        var fallback: ?*types.SObject = null;
-        for (records.items) |record| {
-            if (record != .sobject) continue;
-            if (!self.npsp_opportunity_naming_record_type_matches(opportunity, record.sobject)) continue;
-            if (!self.npsp_opportunity_naming_attribution_matches(record.sobject, is_individual)) continue;
-            if (self.npsp_opportunity_naming_setting_has_record_type(record.sobject)) return record.sobject;
-            if (fallback == null) fallback = record.sobject;
-        }
-        return fallback;
-    }
-
-    fn npsp_opportunity_naming_record_type_matches(
-        self: *Evaluator,
-        opportunity: *types.SObject,
-        setting: *types.SObject,
-    ) bool {
-        const configured =
-            self.get_s_object_field_value_case_insensitive(setting, "Opportunity_Record_Types__c") orelse
-            return true;
-        if (configured != .string or std.mem.trim(u8, configured.string, " \t\r\n;").len == 0) return true;
-        const opp_record_type =
-            self.get_s_object_field_value_case_insensitive(opportunity, "RecordTypeId") orelse
-            return false;
-        if (opp_record_type != .string) return false;
-        var parts = std.mem.splitScalar(u8, configured.string, ';');
-        while (parts.next()) |part| {
-            const trimmed = std.mem.trim(u8, part, " \t\r\n");
-            if (trimmed.len > 0 and std.ascii.eqlIgnoreCase(trimmed, opp_record_type.string)) return true;
-        }
-        return false;
-    }
-
-    fn npsp_opportunity_naming_setting_has_record_type(
-        self: *Evaluator,
-        setting: *types.SObject,
-    ) bool {
-        const configured =
-            self.get_s_object_field_value_case_insensitive(setting, "Opportunity_Record_Types__c") orelse
-            return false;
-        return configured == .string and std.mem.trim(u8, configured.string, " \t\r\n;").len > 0;
-    }
-
-    fn npsp_opportunity_naming_attribution_matches(
-        self: *Evaluator,
-        setting: *types.SObject,
-        is_individual: bool,
-    ) bool {
-        const attribution =
-            self.get_s_object_field_value_case_insensitive(setting, "Attribution__c") orelse
-            return true;
-        if (attribution != .string) return true;
-        const value = std.mem.trim(u8, attribution.string, " \t\r\n");
-        if (value.len == 0) return true;
-        if (std.ascii.eqlIgnoreCase(value, "Both") or
-            std.ascii.eqlIgnoreCase(value, "oppNamingBoth"))
-        {
-            return true;
-        }
-        const is_contact =
-            std.ascii.indexOfIgnoreCase(value, "Contact") != null or
-            std.ascii.indexOfIgnoreCase(value, "Individual") != null;
-        const is_org =
-            std.ascii.indexOfIgnoreCase(value, "Organization") != null or
-            std.ascii.indexOfIgnoreCase(value, "Organizational") != null;
-        if (is_contact and !is_org) return is_individual;
-        if (is_org and !is_contact) return !is_individual;
-        return true;
-    }
-
-    fn npsp_opportunity_naming_is_individual(
-        self: *Evaluator,
-        opportunity: *types.SObject,
-    ) bool {
-        const account = self.resolve_parent_record_for_relationship(opportunity, "Account") orelse return true;
-        const individual =
-            self.get_s_object_field_value_case_insensitive(account, "npe01__SYSTEMIsIndividual__c") orelse
-            return true;
-        return individual != .boolean or individual.boolean;
-    }
-
-    fn npsp_opportunity_naming_format_has_invalid_field(
-        self: *Evaluator,
-        opportunity: *types.SObject,
-        format: []const u8,
-    ) bool {
-        var index: usize = 0;
-        while (index < format.len) {
-            if (std.mem.startsWith(u8, format[index..], "{!")) {
-                if (std.mem.indexOfScalarPos(u8, format, index + 2, '}')) |end| {
-                    const token = std.mem.trim(u8, format[index + 2 .. end], " \t\r\n");
-                    if (self.npsp_opportunity_naming_token_has_invalid_field(opportunity, token)) {
-                        return true;
-                    }
-                    index = end + 1;
-                    continue;
-                }
-            }
-            index += 1;
-        }
-        return false;
-    }
-
-    fn npsp_opportunity_naming_token_has_invalid_field(
-        self: *Evaluator,
-        opportunity: *types.SObject,
-        token: []const u8,
-    ) bool {
-        if (std.mem.indexOfScalar(u8, token, '.') == null) return false;
-        if (std.ascii.eqlIgnoreCase(token, "RecordType.Name")) return false;
-        var current = opportunity;
-        var remaining = token;
-        if (std.ascii.startsWithIgnoreCase(remaining, "Contact.")) {
-            const contact = self.npsp_opportunity_naming_contact(opportunity) orelse return false;
-            current = contact;
-            remaining = remaining["Contact.".len..];
-        }
-        while (true) {
-            const dot = std.mem.indexOfScalar(u8, remaining, '.') orelse {
-                var builtin_ctx = self.make_builtin_context();
-                return !builtins.sobject_field_exists(&builtin_ctx, current, remaining);
-            };
-            const relationship_name = remaining[0..dot];
-            remaining = remaining[dot + 1 ..];
-            current = self.resolve_parent_record_for_relationship(current, relationship_name) orelse
-                return false;
-        }
-    }
-
-    fn npsp_opportunity_naming_contact(
-        self: *Evaluator,
-        opportunity: *types.SObject,
-    ) ?*types.SObject {
-        const direct_fields = [_][]const u8{
-            "npe01__Contact_Id_for_Role__c",
-            "Primary_Contact__c",
-            "ContactId",
-        };
-        for (direct_fields) |field_name| {
-            const contact_id =
-                self.get_s_object_field_value_case_insensitive(opportunity, field_name) orelse
-                continue;
-            if (contact_id == .string and contact_id.string.len > 0) {
-                if (self.find_stored_sobject_by_id("Contact", contact_id.string)) |contact| return contact;
-            }
-        }
-        const opp_id = self.sobject_id_for_result(opportunity) orelse return null;
-        const roles = self.store_records_ptr("OpportunityContactRole") orelse return null;
-        for (roles.items) |record| {
-            if (record != .sobject) continue;
-            const role_opp =
-                self.get_s_object_field_value_case_insensitive(record.sobject, "OpportunityId") orelse
-                continue;
-            if (role_opp != .string or !std.ascii.eqlIgnoreCase(role_opp.string, opp_id)) continue;
-            const is_primary =
-                self.get_s_object_field_value_case_insensitive(record.sobject, "IsPrimary") orelse
-                Value.null_val;
-            if (is_primary == .boolean and !is_primary.boolean) continue;
-            const contact_id =
-                self.get_s_object_field_value_case_insensitive(record.sobject, "ContactId") orelse
-                continue;
-            if (contact_id == .string) {
-                if (self.find_stored_sobject_by_id("Contact", contact_id.string)) |contact| return contact;
-            }
-        }
-        return null;
-    }
-
-    fn npsp_format_opportunity_name(
-        self: *Evaluator,
-        opportunity: *types.SObject,
-        contact: ?*types.SObject,
-        setting: *types.SObject,
-        format: []const u8,
-    ) ![]const u8 {
-        var output: std.ArrayListUnmanaged(u8) = .empty;
-        var index: usize = 0;
-        while (index < format.len) {
-            if (std.mem.startsWith(u8, format[index..], "{!")) {
-                if (std.mem.indexOfScalarPos(u8, format, index + 2, '}')) |end| {
-                    const token = std.mem.trim(u8, format[index + 2 .. end], " \t\r\n");
-                    if (self.npsp_opportunity_naming_token_value(
-                        opportunity,
-                        contact,
-                        setting,
-                        token,
-                    )) |value| {
-                        try output.appendSlice(self.arena, value);
-                    } else {
-                        npsp_trim_trailing_space(&output);
-                        var next = end + 1;
-                        while (next < format.len and format[next] == ' ') next += 1;
-                        if (output.items.len > 0 and next < format.len) {
-                            try output.append(self.arena, ' ');
-                        }
-                        index = next;
-                        continue;
-                    }
-                    index = end + 1;
-                    continue;
-                }
-            }
-            try output.append(self.arena, format[index]);
-            index += 1;
-        }
-        return try npsp_collapse_spaces(self.arena, output.items);
-    }
-
-    fn npsp_opportunity_naming_token_value(
-        self: *Evaluator,
-        opportunity: *types.SObject,
-        contact: ?*types.SObject,
-        setting: *types.SObject,
-        token: []const u8,
-    ) ?[]const u8 {
-        const root_contact = "Contact.";
-        const value = if (std.ascii.startsWithIgnoreCase(token, root_contact)) blk: {
-            const con = contact orelse break :blk null;
-            break :blk self.resolve_field_path_value(con, token[root_contact.len..]);
-        } else self.resolve_field_path_value(opportunity, token) orelse blk: {
-            if (std.ascii.eqlIgnoreCase(token, "RecordType.Name")) {
-                break :blk Value{ .string = "Default" };
-            }
-            break :blk null;
-        };
-        return self.npsp_opportunity_naming_value_to_string(value orelse return null, token, setting) catch null;
-    }
-
-    fn npsp_opportunity_naming_value_to_string(
-        self: *Evaluator,
-        value: Value,
-        token: []const u8,
-        setting: *types.SObject,
-    ) !?[]const u8 {
-        if (value == .null_val) return null;
-        if (std.ascii.endsWithIgnoreCase(token, "CloseDate") or
-            std.ascii.endsWithIgnoreCase(token, "Date"))
-        {
-            return try self.npsp_opportunity_naming_date_with_setting(value, setting);
-        }
-        if (std.ascii.endsWithIgnoreCase(token, "Amount")) {
-            return try self.npsp_opportunity_formatted_amount_value(value);
-        }
-        return switch (value) {
-            .string => |s| if (s.len > 0) s else null,
-            .boolean => |b| if (b) "true" else "false",
-            .integer, .long, .double => try self.npsp_plain_numeric_string(value),
-            .object, .list, .map, .set, .sobject => try self.value_to_string_public(value),
-            else => try utils.coerce_to_string(value, self.arena),
-        };
-    }
-
-    fn npsp_opportunity_naming_date_with_setting(
-        self: *Evaluator,
-        value: Value,
-        setting: *types.SObject,
-    ) ![]const u8 {
-        _ = setting;
-        return self.npsp_opportunity_naming_date(value);
-    }
-
-    fn npsp_opportunity_formatted_amount_value(
-        self: *Evaluator,
-        amount: Value,
-    ) ![]const u8 {
-        const numeric = numeric_value_as_f64(amount) orelse return try utils.coerce_to_string(amount, self.arena);
-        const rounded = @round(numeric);
-        if (@abs(numeric - rounded) < 0.000001) {
-            return std.fmt.allocPrint(self.arena, "${d}", .{@as(i64, @intFromFloat(rounded))});
-        }
-        return std.fmt.allocPrint(self.arena, "${d}", .{numeric});
-    }
-
-    fn npsp_plain_numeric_string(
-        self: *Evaluator,
-        value: Value,
-    ) ![]const u8 {
-        const numeric = numeric_value_as_f64(value) orelse return try utils.coerce_to_string(value, self.arena);
-        const rounded = @round(numeric);
-        if (@abs(numeric - rounded) < 0.000001) {
-            return std.fmt.allocPrint(self.arena, "{d}", .{@as(i64, @intFromFloat(rounded))});
-        }
-        return std.fmt.allocPrint(self.arena, "{d}", .{numeric});
-    }
-
-    fn npsp_trim_trailing_space(output: *std.ArrayListUnmanaged(u8)) void {
-        while (output.items.len > 0 and output.items[output.items.len - 1] == ' ') {
-            output.items.len -= 1;
-        }
-    }
-
-    fn npsp_collapse_spaces(
-        arena: std.mem.Allocator,
-        input: []const u8,
-    ) ![]const u8 {
-        var output: std.ArrayListUnmanaged(u8) = .empty;
-        var previous_space = true;
-        for (input) |ch| {
-            if (ch == ' ' or ch == '\t' or ch == '\r' or ch == '\n') {
-                if (!previous_space) try output.append(arena, ' ');
-                previous_space = true;
-                continue;
-            }
-            try output.append(arena, ch);
-            previous_space = false;
-        }
-        if (output.items.len > 0 and output.items[output.items.len - 1] == ' ') {
-            output.items.len -= 1;
-        }
-        return output.toOwnedSlice(arena);
-    }
-
-    fn handle_npsp_household_container_static_method(
-        self: *Evaluator,
-        class_name: []const u8,
-        method_name: []const u8,
-        args: []const Value,
-    ) !?Value {
-        if (!self.fixture_relaxed_exceptions) return null;
-        if (!std.ascii.eqlIgnoreCase(class_name, "HH_Container_LCTRL")) return null;
-        if (!std.ascii.eqlIgnoreCase(method_name, "getHHNamesGreetings")) return null;
-        if (args.len < 2 or args[0] != .sobject or args[1] != .list) {
-            return if (args.len > 0) args[0] else Value.null_val;
-        }
-        if (!self.npsp_automatic_household_naming_enabled()) return args[0];
-        const household = args[0].sobject;
-        var members = std.ArrayListUnmanaged(*types.SObject).empty;
-        for (args[1].list.items.items) |item| {
-            if (item != .sobject) continue;
-            if (!std.ascii.eqlIgnoreCase(item.sobject.type_name, "Contact")) continue;
-            try members.append(self.arena, item.sobject);
-        }
-        if (members.items.len == 0) return args[0];
-        try utils.sobject_put(
-            &household.fields,
-            self.arena,
-            "Name",
-            Value{ .string = try self.npsp_household_name_from_members(members.items) },
-        );
-        try utils.sobject_put(
-            &household.fields,
-            self.arena,
-            "npo02__Informal_Greeting__c",
-            Value{ .string = try self.npsp_household_informal_greeting_from_members(members.items) },
-        );
-        try utils.sobject_put(
-            &household.fields,
-            self.arena,
-            "npo02__Formal_Greeting__c",
-            Value{ .string = try self.npsp_household_formal_greeting_from_members(members.items) },
-        );
-        try utils.sobject_put(
-            &household.fields,
-            self.arena,
-            "__apexgov_HHContainerNamesGreetings",
-            Value{ .boolean = true },
-        );
-        return args[0];
-    }
-
-    fn handle_npsp_visualize_schedule_static_method(
-        self: *Evaluator,
-        class_name: []const u8,
-        method_name: []const u8,
-        args: []const Value,
-    ) !?Value {
-        if (!self.fixture_relaxed_exceptions) return null;
-        if (!std.ascii.eqlIgnoreCase(class_name, "RD2_VisualizeScheduleController")) return null;
-        if (!std.ascii.eqlIgnoreCase(method_name, "getInstallments")) return null;
-        if (args.len == 0 or args[0] != .string) return null;
-        if (!self.npsp_rd2_visualized_installments_empty(args[0].string)) return null;
-        const message =
-            self.get_custom_label_case_insensitive("RD2_ScheduleVisualizerMessageNoSchedule") orelse
-            "RD2_ScheduleVisualizerMessageNoSchedule";
-        return try self.throw_named_exception("AuraHandledException", message);
-    }
-
-    fn npsp_rd2_visualized_installments_empty(
-        self: *Evaluator,
-        rd_id: []const u8,
-    ) bool {
-        const rd = self.find_stored_sobject_by_id("npe03__Recurring_Donation__c", rd_id) orelse return false;
-        if (!self.npsp_rd2_recurring_type_is_fixed(rd)) return false;
-        const planned = self.npsp_recurring_donation_planned_installments(rd) orelse return false;
-        if (planned <= 0) return false;
-        const paid =
-            npsp_numeric_i64(
-                self.get_s_object_field_value_case_insensitive(rd, "npe03__Total_Paid_Installments__c") orelse
-                    Value.null_val,
-            ) orelse 0;
-        const opp_count = self.npsp_recurring_donation_installment_opportunity_count(rd_id);
-        const elapsed = self.npsp_recurring_donation_elapsed_schedule_occurrences(rd) catch 0;
-        const has_future = self.npsp_recurring_donation_has_future_open_opportunity(rd_id);
-        const occupied = paid + opp_count;
-        return (occupied >= planned or paid + elapsed >= planned) and !has_future;
-    }
-
-    fn npsp_recurring_donation_installment_opportunity_count(
-        self: *Evaluator,
-        rd_id: []const u8,
-    ) i64 {
-        const opportunities = self.store_records_ptr("Opportunity") orelse return 0;
-        var count: i64 = 0;
-        for (opportunities.items) |record| {
-            if (record != .sobject) continue;
-            const opp_rd =
-                self.get_s_object_field_value_case_insensitive(record.sobject, "npe03__Recurring_Donation__c") orelse
-                continue;
-            if (opp_rd != .string or !std.ascii.eqlIgnoreCase(opp_rd.string, rd_id)) continue;
-            count += 1;
-        }
-        return count;
-    }
-
-    fn npsp_recurring_donation_elapsed_schedule_occurrences(
-        self: *Evaluator,
-        rd: *types.SObject,
-    ) !i64 {
-        const current_value = self.npsp_recurring_donation_current_date() orelse return 0;
-        const current_str = builtins.extract_date_string(current_value) orelse return 0;
-        const current = parse_iso_date(current_str) orelse return 0;
-        var schedules: std.ArrayListUnmanaged(NpspRdSchedule) = .empty;
-        try self.collect_npsp_recurring_donation_schedules(rd, &schedules);
-        var count: i64 = 0;
-        for (schedules.items) |schedule| {
-            var occurrence = npsp_schedule_first_possible_date(schedule);
-            var guard: usize = 0;
-            while (compare_iso_dates(occurrence, current) < 0 and guard < 2000) : (guard += 1) {
-                if (schedule.end) |end| {
-                    if (compare_iso_dates(occurrence, end) > 0) break;
-                }
-                count += 1;
-                occurrence = npsp_schedule_add_period(occurrence, schedule);
-            }
-        }
-        return count;
-    }
-
-    fn npsp_recurring_donation_has_future_open_opportunity(
-        self: *Evaluator,
-        rd_id: []const u8,
-    ) bool {
-        const current_value = self.npsp_recurring_donation_current_date() orelse return false;
-        const current_str = builtins.extract_date_string(current_value) orelse return false;
-        const current = parse_iso_date(current_str) orelse return false;
-        const opportunities = self.store_records_ptr("Opportunity") orelse return false;
-        for (opportunities.items) |record| {
-            if (!npsp_opportunity_matches_open_rd(record, self, rd_id)) continue;
-            const close_value =
-                self.get_s_object_field_value_case_insensitive(record.sobject, "CloseDate") orelse
-                continue;
-            const close_str = builtins.extract_date_string(close_value) orelse continue;
-            const close = parse_iso_date(close_str) orelse continue;
-            if (compare_iso_dates(close, current) >= 0) return true;
-        }
-        return false;
     }
 
     fn ensure_npsp_legacy_household_record_for_members(
@@ -30211,35 +29360,6 @@ pub const Evaluator = struct {
             };
         }
         return null;
-    }
-
-    fn record_npsp_household_naming_instrumentation(
-        self: *Evaluator,
-        updated: i64,
-    ) !void {
-        if (self.find_class("SfdoInstrumentationService") == null) return;
-        self.ensure_static_init("SfdoInstrumentationService");
-        const call_data = try self.arena.create(types.ObjectInstance);
-        call_data.* = .{ .class_name = "SfdoInstrumentationService.LastCallData" };
-        try call_data.fields.put(self.arena, "lastFeatureName", Value{ .string = "HouseholdNaming" });
-        try call_data.fields.put(self.arena, "lastComponentName", Value{ .string = "TriggerAction" });
-        try call_data.fields.put(self.arena, "lastActionName", Value{ .string = "HouseholdNamesUpdated" });
-
-        const context = try self.arena.create(types.MapValue);
-        context.* = .{};
-        try context.entries.put(self.arena, "SourceClass", Value{ .string = "HouseholdNamingService" });
-        try context.entries.put(self.arena, "Informal Greetings Updated", Value{ .integer = updated });
-        try context.entries.put(self.arena, "Formal Greetings Updated", Value{ .integer = updated });
-        try call_data.fields.put(self.arena, "lastContext", Value{ .map = context });
-        try call_data.fields.put(self.arena, "lastValue", Value{ .integer = updated });
-
-        self.global_env.set(
-            "SfdoInstrumentationService.lastCallData",
-            Value{ .object = call_data },
-        ) catch try self.global_env.define(
-            "SfdoInstrumentationService.lastCallData",
-            Value{ .object = call_data },
-        );
     }
 
     fn handle_sfdo_instrumentation_log_instance_method(
@@ -30474,22 +29594,12 @@ pub const Evaluator = struct {
         if (current_env.get_this()) |this_val| {
             if (this_val == .object) {
                 const this_cn = this_val.object.class_name;
-                const key =
-                    std.fmt.allocPrint(
-                        self.arena,
-                        "{s}.{s}",
-                        .{ this_cn, id_name },
-                    ) catch return .null_val;
+                const key = self.static_field_cache_key(this_cn, id_name) catch return .null_val;
                 if (self.global_env.get(key)) |val| return val;
                 if (self.find_class(this_cn)) |cd| {
                     if (cd.super_class) |sc| {
                         self.ensure_static_init(sc.name);
-                        const pkey =
-                            std.fmt.allocPrint(
-                                self.arena,
-                                "{s}.{s}",
-                                .{ sc.name, id_name },
-                            ) catch return .null_val;
+                        const pkey = self.static_field_cache_key(sc.name, id_name) catch return .null_val;
                         if (self.global_env.get(pkey)) |val| return val;
                     }
                 }
@@ -30826,59 +29936,7 @@ pub const Evaluator = struct {
         )) |result| {
             return result;
         }
-        if (self.handle_npsp_allocations_util_static_method(class_name, method_name, args)) |result| {
-            return result;
-        }
         if (try self.handle_crlp_rollup_svc_static_method(
-            class_name,
-            method_name,
-            args,
-        )) |result| {
-            return result;
-        }
-        if (try self.handle_npsp_unit_test_data_static_method(
-            class_name,
-            method_name,
-            args,
-        )) |result| {
-            return result;
-        }
-        if (try self.handle_npsp_legacy_household_members_static_method(
-            class_name,
-            method_name,
-            args,
-        )) |result| {
-            return result;
-        }
-        if (try self.handle_npsp_contact_adapter_static_method(
-            class_name,
-            method_name,
-            args,
-        )) |result| {
-            return result;
-        }
-        if (try self.handle_npsp_household_naming_static_method(
-            class_name,
-            method_name,
-            args,
-        )) |result| {
-            return result;
-        }
-        if (try self.handle_npsp_opportunity_naming_static_method(
-            class_name,
-            method_name,
-            args,
-        )) |result| {
-            return result;
-        }
-        if (try self.handle_npsp_household_container_static_method(
-            class_name,
-            method_name,
-            args,
-        )) |result| {
-            return result;
-        }
-        if (try self.handle_npsp_visualize_schedule_static_method(
             class_name,
             method_name,
             args,
@@ -31177,8 +30235,60 @@ pub const Evaluator = struct {
                 else => val,
             };
         }
+        if (try self.eval_primitive_cast_expr(val, target)) |casted| return casted;
         if (val != .object) return val;
         return self.eval_object_cast_expr(val, target);
+    }
+
+    fn eval_primitive_cast_expr(
+        self: *Evaluator,
+        val: Value,
+        target: []const u8,
+    ) anyerror!?Value {
+        const target_base = type_base_name(target);
+        const is_temporal_target =
+            std.ascii.eqlIgnoreCase(target_base, "Date") or
+            std.ascii.eqlIgnoreCase(target_base, "Datetime") or
+            std.ascii.eqlIgnoreCase(target_base, "DateTime") or
+            std.ascii.eqlIgnoreCase(target_base, "Time");
+        if (val == .null_val and is_primitive_cast_target(target_base)) return val;
+        if (is_temporal_target and val == .object) return null;
+        if (!is_primitive_cast_target(target_base)) return null;
+        if (primitive_cast_matches_value(val, target_base)) return val;
+        return try self.raise_type_exception(test_helper_value_type_name(val), target_base);
+    }
+
+    fn is_primitive_cast_target(target_base: []const u8) bool {
+        return std.ascii.eqlIgnoreCase(target_base, "String") or
+            std.ascii.eqlIgnoreCase(target_base, "Id") or
+            std.ascii.eqlIgnoreCase(target_base, "Boolean") or
+            std.ascii.eqlIgnoreCase(target_base, "Integer") or
+            std.ascii.eqlIgnoreCase(target_base, "Long") or
+            std.ascii.eqlIgnoreCase(target_base, "Double") or
+            std.ascii.eqlIgnoreCase(target_base, "Date") or
+            std.ascii.eqlIgnoreCase(target_base, "Datetime") or
+            std.ascii.eqlIgnoreCase(target_base, "DateTime") or
+            std.ascii.eqlIgnoreCase(target_base, "Time");
+    }
+
+    fn primitive_cast_matches_value(val: Value, target_base: []const u8) bool {
+        if (std.ascii.eqlIgnoreCase(target_base, "String")) return val != .boolean;
+        if (val == .string) {
+            return (std.ascii.eqlIgnoreCase(target_base, "Id") and
+                Evaluator.is_salesforce_id_string(val.string));
+        }
+        if (val == .boolean) return std.ascii.eqlIgnoreCase(target_base, "Boolean");
+        if (val == .integer) {
+            return std.ascii.eqlIgnoreCase(target_base, "Integer") or
+                std.ascii.eqlIgnoreCase(target_base, "Long") or
+                std.ascii.eqlIgnoreCase(target_base, "Double");
+        }
+        if (val == .long) {
+            return std.ascii.eqlIgnoreCase(target_base, "Long") or
+                std.ascii.eqlIgnoreCase(target_base, "Double");
+        }
+        if (val == .double) return std.ascii.eqlIgnoreCase(target_base, "Double");
+        return false;
     }
 
     fn eval_collection_cast_expr(
@@ -31625,7 +30735,15 @@ pub const Evaluator = struct {
         arg_hint: ?[]const u8,
     ) ?[]const u8 {
         _ = self;
-        if (list.element_type) |element_type| return strip_type_namespace(element_type);
+        if (list.element_type) |element_type| {
+            const stripped = strip_type_namespace(element_type);
+            if (std.ascii.eqlIgnoreCase(stripped, "SObject") and list.items.items.len > 0) {
+                if (list.items.items[0] == .sobject) {
+                    return strip_type_namespace(list.items.items[0].sobject.type_name);
+                }
+            }
+            return stripped;
+        }
         if (arg_hint) |hint| {
             if (extract_collection_element_type_name(hint)) |element_type| {
                 return strip_type_namespace(element_type);
@@ -32477,10 +31595,9 @@ pub const Evaluator = struct {
         value: Value,
     ) bool {
         const owner = self.find_static_field_owner(class_name, field_name) orelse return false;
-        const static_key = std.fmt.allocPrint(
-            self.arena,
-            "{s}.{s}",
-            .{ owner.owner_name, owner.field_decl.name },
+        const static_key = self.static_field_cache_key(
+            owner.owner_name,
+            owner.field_decl.name,
         ) catch "";
         if (self.global_env.bindings.getIndex(static_key)) |idx| {
             self.global_env.bindings.values()[idx] = value;
@@ -32649,7 +31766,7 @@ pub const Evaluator = struct {
         if (!is_class or is_var) return null;
 
         self.ensure_static_init(class_name);
-        const key = try std.fmt.allocPrint(self.arena, "{s}.{s}", .{ class_name, fa.field });
+        const key = try self.static_field_cache_key(class_name, fa.field);
         const current = self.global_env.get(key) orelse Value.null_val;
         const final_val = if (op == .assign)
             coerced_val
@@ -33509,9 +32626,6 @@ pub const Evaluator = struct {
             return result;
         }
         if (try self.handle_tdtm_process_control_static_method(class_name, method, args)) |result| {
-            return result;
-        }
-        if (self.handle_npsp_allocations_util_static_method(class_name, method, args)) |result| {
             return result;
         }
         if (try self.eval_user_enum_static_method(class_name, method, args)) |result| {
@@ -35162,51 +34276,15 @@ pub const Evaluator = struct {
         if (try self.eval_formula_filter_instance_method(obj, method, args)) |result| {
             return result;
         }
-        if (try self.eval_npsp_crlp_rollup_metadata_handler_method(obj, method, args)) |result| {
-            return result;
-        }
         if (try self.eval_fflib_dynamic_domain_factory_method(obj, method, args)) |result| {
             return result;
         }
         if (try self.eval_install_context_instance_method(obj, method)) |result| return result;
         if (try self.eval_version_instance_method(obj, method, args)) |result| return result;
-        if (try self.eval_npsp_rd2_status_mapper_method(obj, method, args)) |result| {
-            return result;
-        }
-        if (try self.eval_npsp_record_currency_code_method(obj, method)) |result| {
-            return result;
-        }
-        if (try self.eval_npsp_rd2_pause_schedule_handler_method(obj, method, args)) |result| {
-            return result;
-        }
-        if (try self.eval_npsp_rd2_status_automation_service_method(obj, method, args)) |result| {
-            return result;
-        }
-        if (try self.eval_npsp_rd2_settings_method(obj, method, args)) |result| {
-            return result;
-        }
         if (try self.eval_npsp_opp_rollup_instance_method(obj, method, args)) |result| {
             return result;
         }
-        if (try self.eval_npsp_hh_households_tdtm_instance_method(obj, method, args, current_env)) |result| {
-            return result;
-        }
-        if (try self.eval_npsp_deceased_batch_instance_method(obj, method, args)) |result| {
-            return result;
-        }
-        if (try self.eval_npsp_household_naming_service_instance_method(obj, method, args)) |result| {
-            return result;
-        }
         if (try self.eval_npsp_rd2_sustainer_evaluation_service_method(obj, method, args)) |result| {
-            return result;
-        }
-        if (try self.eval_npsp_rd2_data_migration_mapper_method(obj, method)) |result| {
-            return result;
-        }
-        if (try self.eval_npsp_bdi_migration_mapping_helper_method(obj, method, args)) |result| {
-            return result;
-        }
-        if (try self.eval_npsp_callable_api_parameters_method(obj, method, args)) |result| {
             return result;
         }
         if (try self.eval_time_instance_method(obj, method)) |result| return result;
@@ -35432,51 +34510,6 @@ pub const Evaluator = struct {
         try result.fields.put(self.arena, "triggerNew", trigger_new);
         try result.fields.put(self.arena, "triggerOld", trigger_old);
         return Value{ .object = result };
-    }
-
-    fn eval_npsp_crlp_rollup_metadata_handler_method(
-        self: *Evaluator,
-        obj: Value,
-        method: []const u8,
-        args: []const Value,
-    ) !?Value {
-        if (obj != .object or
-            std.ascii.indexOfIgnoreCase(obj.object.class_name, "RollupMetadataHandler") == null or
-            !std.ascii.eqlIgnoreCase(method, "performSuccessHandler"))
-        {
-            return null;
-        }
-
-        const settings_value = try self.custom_setting_get_org_defaults(
-            "Customizable_Rollup_Settings__c",
-            true,
-        );
-        if (settings_value == .sobject) {
-            try utils.sobject_put(
-                &settings_value.sobject.fields,
-                self.arena,
-                "CMT_API_Status__c",
-                if (args.len >= 2) args[1] else Value.null_val,
-            );
-            try utils.sobject_put(
-                &settings_value.sobject.fields,
-                self.arena,
-                "Customizable_Rollups_Enabled__c",
-                Value{ .boolean = true },
-            );
-            _ = try self.update_relaxed_custom_setting_without_id(settings_value.sobject);
-        }
-
-        var schedule_jobs = true;
-        if (args.len >= 1 and args[0] == .map) {
-            if (args[0].map.entries.get("ScheduleJobs")) |value| {
-                if (value == .boolean) schedule_jobs = value.boolean;
-            }
-        }
-        if (schedule_jobs) {
-            _ = try self.create_async_apex_job("ScheduledApex", "CRLP_RollupScheduler", "execute");
-        }
-        return Value.void_val;
     }
 
     fn eval_install_context_instance_method(
@@ -37213,122 +36246,6 @@ pub const Evaluator = struct {
         return Value.null_val;
     }
 
-    fn eval_npsp_rd2_status_mapper_method(
-        self: *Evaluator,
-        obj: Value,
-        method: []const u8,
-        args: []const Value,
-    ) !?Value {
-        if (!(obj == .object and
-            std.ascii.eqlIgnoreCase(obj.object.class_name, "RD2_StatusMapper")))
-        {
-            return null;
-        }
-        if (std.ascii.eqlIgnoreCase(method, "getState")) {
-            if (args.len == 0) return Value.null_val;
-            if (args[0] == .null_val) return Value{ .string = "Active" };
-            if (args[0] != .string) return Value.null_val;
-            if (npsp_rd2_status_state(args[0].string)) |state| return Value{ .string = state };
-            if (self.get_object_field_case_insensitive(obj.object, "gateway") != null or
-                self.get_object_field_case_insensitive(obj.object, "statusLabelByValue") != null)
-            {
-                return null;
-            }
-            return Value.null_val;
-        }
-        if (std.ascii.eqlIgnoreCase(method, "getActiveStatusValues")) {
-            return try self.npsp_rd2_status_set(&.{ "Active", "Paused", "Failing" });
-        }
-        if (std.ascii.eqlIgnoreCase(method, "getClosedStatusValues")) {
-            return try self.npsp_rd2_status_set(&.{"Closed"});
-        }
-        if (std.ascii.eqlIgnoreCase(method, "getLapsedStatusValues")) {
-            return try self.npsp_rd2_status_set(&.{"Lapsed"});
-        }
-        return null;
-    }
-
-    fn npsp_rd2_status_set(self: *Evaluator, values: []const []const u8) !Value {
-        const set = try self.arena.create(types.SetValue);
-        set.* = .{};
-        for (values) |status| {
-            const value = Value{ .string = status };
-            try set.entries.put(self.arena, try self.set_entry_key(value), value);
-        }
-        return Value{ .set = set };
-    }
-
-    fn npsp_rd2_status_state(status: []const u8) ?[]const u8 {
-        if (std.ascii.eqlIgnoreCase(status, "Active")) return "Active";
-        if (std.ascii.eqlIgnoreCase(status, "Paused")) return "Active";
-        if (std.ascii.eqlIgnoreCase(status, "Failing")) return "Active";
-        if (std.ascii.eqlIgnoreCase(status, "Lapsed")) return "Lapsed";
-        if (std.ascii.eqlIgnoreCase(status, "Closed")) return "Closed";
-        return null;
-    }
-
-    fn eval_npsp_record_currency_code_method(
-        self: *Evaluator,
-        obj: Value,
-        method: []const u8,
-    ) !?Value {
-        if (!self.fixture_relaxed_exceptions) return null;
-        if (!(obj == .object and
-            std.ascii.eqlIgnoreCase(obj.object.class_name, "RecordCurrencyCode") and
-            std.ascii.eqlIgnoreCase(method, "value")))
-        {
-            return null;
-        }
-        const code = obj.object.fields.get("recordCurrencyCode") orelse Value.null_val;
-        if (code == .string and code.string.len > 0) return code;
-        return Value{ .string = "USD" };
-    }
-
-    fn eval_npsp_rd2_pause_schedule_handler_method(
-        self: *Evaluator,
-        obj: Value,
-        method: []const u8,
-        args: []const Value,
-    ) !?Value {
-        if (!(obj == .object and
-            std.ascii.endsWithIgnoreCase(
-                obj.object.class_name,
-                "PauseScheduleHandler",
-            )))
-        {
-            return null;
-        }
-        if (std.ascii.eqlIgnoreCase(method, "isPause") and args.len >= 1) {
-            return Value{ .boolean = self.npsp_rd2_schedule_value_is_pause(args[0]) };
-        }
-        if (std.ascii.eqlIgnoreCase(method, "isActivePause") and args.len >= 2) {
-            return Value{ .boolean = self.npsp_rd2_schedule_value_is_active_pause(args[0], args[1]) };
-        }
-        if (std.ascii.eqlIgnoreCase(method, "hasActivePause") and
-            (args.len == 0 or args[0] == .null_val))
-        {
-            return Value{ .boolean = false };
-        }
-        if (std.ascii.eqlIgnoreCase(method, "hasActivePause") and args.len >= 1) {
-            const reference_date = if (args.len >= 2)
-                args[1]
-            else
-                self.npsp_recurring_donation_current_date() orelse Value.null_val;
-            if (args[0] == .list) {
-                for (args[0].list.items.items) |schedule| {
-                    if (self.npsp_rd2_schedule_value_is_active_pause(schedule, reference_date)) {
-                        return Value{ .boolean = true };
-                    }
-                }
-                return Value{ .boolean = false };
-            }
-            return Value{
-                .boolean = self.npsp_rd2_schedule_value_is_active_pause(args[0], reference_date),
-            };
-        }
-        return null;
-    }
-
     fn npsp_rd2_schedule_value_is_pause(self: *Evaluator, value: Value) bool {
         const schedule = switch (value) {
             .sobject => |s| s,
@@ -37365,93 +36282,6 @@ pub const Evaluator = struct {
         const start_str = builtins.extract_date_string(start_value) orelse return true;
         const start = parse_iso_date(start_str) orelse return true;
         return compare_iso_dates(start, end) <= 0;
-    }
-
-    fn eval_npsp_rd2_settings_method(
-        self: *Evaluator,
-        obj: Value,
-        method: []const u8,
-        args: []const Value,
-    ) !?Value {
-        if (!(obj == .object and std.ascii.eqlIgnoreCase(obj.object.class_name, "RD2_Settings"))) {
-            return null;
-        }
-        if (!std.ascii.eqlIgnoreCase(method, "saveLatestBatchResults") or args.len < 3) return null;
-        const settings = self.npsp_cached_recurring_donation_settings() orelse
-            self.first_custom_setting_record("npe03__Recurring_Donations_Settings__c") orelse
-            return Value.void_val;
-        const records_processed: i64 = @intFromFloat(numeric_value_as_f64(args[1]) orelse 0);
-        const records_failed: i64 = @intFromFloat(numeric_value_as_f64(args[2]) orelse 0);
-        try utils.sobject_put(
-            &settings.fields,
-            self.arena,
-            "npe03__Last_Batch_Run__c",
-            Value{ .string = try builtins.current_date_time_string(self.arena) },
-        );
-        try utils.sobject_put(
-            &settings.fields,
-            self.arena,
-            "npe03__Number_of_Successes__c",
-            Value{ .integer = records_processed - records_failed },
-        );
-        try utils.sobject_put(
-            &settings.fields,
-            self.arena,
-            "npe03__Number_of_Failures__c",
-            Value{ .integer = records_failed },
-        );
-        return Value.void_val;
-    }
-
-    fn eval_npsp_rd2_status_automation_service_method(
-        self: *Evaluator,
-        obj: Value,
-        method: []const u8,
-        args: []const Value,
-    ) !?Value {
-        if (!self.fixture_relaxed_exceptions) return null;
-        if (!(obj == .object and std.ascii.eqlIgnoreCase(obj.object.class_name, "RD2_StatusAutomationService"))) {
-            return null;
-        }
-        const closed_mode = std.ascii.eqlIgnoreCase(method, "shouldMarkRDAsClosed");
-        const lapsed_mode = std.ascii.eqlIgnoreCase(method, "shouldMarkRDAsLapsed");
-        if (!closed_mode and !lapsed_mode) return null;
-        if (args.len == 0 or args[0] != .object) return Value{ .boolean = false };
-        const rd_value = self.get_object_field_case_insensitive(args[0].object, "rd") orelse return Value{ .boolean = false };
-        if (rd_value != .sobject) return Value{ .boolean = false };
-        const rd = rd_value.sobject;
-        if (self.npsp_recurring_donation_is_closed(rd)) return Value{ .boolean = false };
-        if (self.npsp_recurring_donation_is_paused(rd)) return Value{ .boolean = false };
-
-        var schedules: std.ArrayListUnmanaged(NpspRdSchedule) = .empty;
-        try self.collect_npsp_recurring_donation_schedules(rd, &schedules);
-        if (schedules.items.len == 0) return Value{ .boolean = false };
-
-        const threshold_days = if (closed_mode)
-            self.npsp_status_automation_threshold_days("StatusAutomationDaysForClosed__c")
-        else
-            self.npsp_status_automation_threshold_days("StatusAutomationDaysForLapsed__c");
-        const days = threshold_days orelse return Value{ .boolean = false };
-
-        const expected = try self.npsp_rd2_expected_missing_donation_date_from_schedules(rd) orelse
-            return Value{ .boolean = false };
-        const threshold_date = date_add_days(expected, days);
-        const current_value = self.npsp_recurring_donation_current_date() orelse
-            try builtins.make_date_value(self.arena, try builtins.current_date_string(self.arena));
-        const current_str = builtins.extract_date_string(current_value) orelse return Value{ .boolean = false };
-        const current = parse_iso_date(current_str) orelse return Value{ .boolean = false };
-        return Value{ .boolean = compare_iso_dates(threshold_date, current) < 0 };
-    }
-
-    fn npsp_status_automation_threshold_days(
-        self: *Evaluator,
-        field_name: []const u8,
-    ) ?i64 {
-        const settings = self.npsp_cached_recurring_donation_settings() orelse
-            self.first_custom_setting_record("npe03__Recurring_Donations_Settings__c") orelse
-            return null;
-        const value = self.get_s_object_field_value_case_insensitive(settings, field_name) orelse return null;
-        return npsp_numeric_i64(value);
     }
 
     fn npsp_recurring_donation_is_paused(
@@ -37519,168 +36349,6 @@ pub const Evaluator = struct {
         return enabled == .boolean and enabled.boolean;
     }
 
-    fn eval_npsp_hh_households_tdtm_instance_method(
-        self: *Evaluator,
-        obj: Value,
-        method: []const u8,
-        args: []const Value,
-        current_env: *Env,
-    ) !?Value {
-        if (!self.fixture_relaxed_exceptions) return null;
-        if (!(obj == .object and std.ascii.eqlIgnoreCase(obj.object.class_name, "HH_Households_TDTM"))) {
-            return null;
-        }
-        if (!std.ascii.eqlIgnoreCase(method, "run") or args.len < 3) return null;
-        if (!self.npsp_trigger_action_is(args[2], "AfterInsert")) return null;
-
-        const key = try self.static_field_cache_key("LegacyHouseholdMembers", "mock");
-        const mock = self.global_env.get(key) orelse return null;
-        if (mock == .null_val) return null;
-        _ = try self.eval_instance_method(mock, "onAfterInsert", &.{}, current_env);
-        return try self.instantiate_class("DmlWrapper");
-    }
-
-    fn npsp_trigger_action_is(self: *Evaluator, value: Value, expected: []const u8) bool {
-        _ = self;
-        return switch (value) {
-            .string => |text| std.ascii.eqlIgnoreCase(text, expected),
-            .object => |object| blk: {
-                if (std.ascii.eqlIgnoreCase(object.class_name, expected)) break :blk true;
-                const name = object.fields.get("name") orelse break :blk false;
-                break :blk name == .string and std.ascii.eqlIgnoreCase(name.string, expected);
-            },
-            else => false,
-        };
-    }
-
-    fn eval_npsp_deceased_batch_instance_method(
-        self: *Evaluator,
-        obj: Value,
-        method: []const u8,
-        args: []const Value,
-    ) !?Value {
-        if (!self.fixture_relaxed_exceptions) return null;
-        if (obj != .object or !std.ascii.eqlIgnoreCase(obj.object.class_name, "DeceasedBatch")) {
-            return null;
-        }
-        if (std.ascii.eqlIgnoreCase(method, "finish")) {
-            try self.npsp_deceased_batch_finish_empty_accounts();
-            return Value.void_val;
-        }
-        if (std.ascii.eqlIgnoreCase(method, "getAllMembersDeceasedById") and args.len >= 1) {
-            return try self.npsp_deceased_batch_all_members_deceased_by_id(args[0]);
-        }
-        if (std.ascii.eqlIgnoreCase(method, "getAllMembersDeceasedUpdates") and args.len >= 2) {
-            return try self.npsp_deceased_batch_all_members_deceased_updates(args[0], args[1]);
-        }
-        return null;
-    }
-
-    fn npsp_deceased_batch_all_members_deceased_by_id(
-        self: *Evaluator,
-        contacts_value: Value,
-    ) !Value {
-        const map = try self.arena.create(types.MapValue);
-        map.* = .{};
-        if (contacts_value != .list) return Value{ .map = map };
-
-        for (contacts_value.list.items.items) |contact_value| {
-            if (contact_value != .sobject) continue;
-            const account_id = self.npsp_contact_account_id(contact_value.sobject) orelse continue;
-            const key_value = Value{ .string = account_id };
-            if (self.eval_map_contains_key(map, key_value)) continue;
-            const current =
-                self.npsp_contact_account_all_members_deceased(contact_value.sobject) orelse
-                Value{ .boolean = false };
-            const storage_key = try self.map_storage_key(map, key_value);
-            try map.entries.put(self.arena, storage_key, current);
-            try map.key_values.put(self.arena, storage_key, key_value);
-        }
-        return Value{ .map = map };
-    }
-
-    fn npsp_deceased_batch_all_members_deceased_updates(
-        self: *Evaluator,
-        contacts_value: Value,
-        current_by_id_value: Value,
-    ) !Value {
-        const updates = try self.arena.create(types.ListValue);
-        updates.* = .{ .element_type = "Account" };
-        if (contacts_value != .list or current_by_id_value != .map) {
-            return Value{ .list = updates };
-        }
-
-        const calculated_by_id = try self.arena.create(types.MapValue);
-        calculated_by_id.* = .{};
-        const account_order = try self.arena.create(types.ListValue);
-        account_order.* = .{};
-
-        for (contacts_value.list.items.items) |contact_value| {
-            if (contact_value != .sobject) continue;
-            const account_id = self.npsp_contact_account_id(contact_value.sobject) orelse continue;
-            const key_value = Value{ .string = account_id };
-            if (!self.eval_map_contains_key(current_by_id_value.map, key_value)) continue;
-            if (!self.eval_map_contains_key(calculated_by_id, key_value)) {
-                const storage_key = try self.map_storage_key(calculated_by_id, key_value);
-                try calculated_by_id.entries.put(self.arena, storage_key, Value{ .boolean = true });
-                try calculated_by_id.key_values.put(self.arena, storage_key, key_value);
-                try account_order.items.append(self.arena, key_value);
-            }
-            const deceased =
-                self.get_s_object_field_value_case_insensitive(contact_value.sobject, "Deceased__c") orelse
-                Value{ .boolean = false };
-            if (deceased != .boolean or !deceased.boolean) {
-                const storage_key = try self.map_storage_key(calculated_by_id, key_value);
-                try calculated_by_id.entries.put(self.arena, storage_key, Value{ .boolean = false });
-                try calculated_by_id.key_values.put(self.arena, storage_key, key_value);
-            }
-        }
-
-        for (account_order.items.items) |account_id_value| {
-            if (account_id_value != .string) continue;
-            const current = try self.eval_map_get(current_by_id_value.map, account_id_value);
-            const desired = try self.eval_map_get(calculated_by_id, account_id_value);
-            if (utils.value_eql(current, desired)) continue;
-            const update = try self.npsp_deceased_batch_account_update(
-                account_id_value.string,
-                desired,
-            );
-            try updates.items.append(self.arena, Value{ .sobject = update });
-        }
-        return Value{ .list = updates };
-    }
-
-    fn npsp_deceased_batch_finish_empty_accounts(self: *Evaluator) !void {
-        const accounts = self.store_records_ptr("Account") orelse return;
-        for (accounts.items) |account_value| {
-            if (account_value != .sobject) continue;
-            const account = account_value.sobject;
-            const all_deceased =
-                utils.sobject_get(&account.fields, "All_Members_Deceased__c") orelse
-                Value{ .boolean = false };
-            if (all_deceased != .boolean or !all_deceased.boolean) continue;
-            const member_count =
-                self.get_s_object_field_value_case_insensitive(
-                    account,
-                    "Number_of_Household_Members__c",
-                ) orelse Value{ .integer = 0 };
-            const is_empty = switch (member_count) {
-                .null_val => true,
-                .integer => |count| count == 0,
-                .long => |count| count == 0,
-                .double => |count| count == 0.0,
-                else => false,
-            };
-            if (!is_empty) continue;
-            try utils.sobject_put(
-                &account.fields,
-                self.arena,
-                "All_Members_Deceased__c",
-                Value{ .boolean = false },
-            );
-        }
-    }
-
     fn npsp_deceased_batch_clear_deceased_accounts(self: *Evaluator) !void {
         const accounts = self.store_records_ptr("Account") orelse return;
         for (accounts.items) |account_value| {
@@ -37697,102 +36365,6 @@ pub const Evaluator = struct {
                 Value{ .boolean = false },
             );
         }
-    }
-
-    fn npsp_contact_account_id(
-        self: *Evaluator,
-        contact: *types.SObject,
-    ) ?[]const u8 {
-        const account_id =
-            self.get_s_object_field_value_case_insensitive(contact, "AccountId") orelse
-            return null;
-        if (account_id == .string and account_id.string.len > 0) return account_id.string;
-        return null;
-    }
-
-    fn npsp_contact_account_all_members_deceased(
-        self: *Evaluator,
-        contact: *types.SObject,
-    ) ?Value {
-        if (self.get_s_object_field_value_case_insensitive(contact, "Account")) |account| {
-            if (account == .sobject) {
-                return self.get_s_object_field_value_case_insensitive(
-                    account.sobject,
-                    "All_Members_Deceased__c",
-                );
-            }
-        }
-        const account_id = self.npsp_contact_account_id(contact) orelse return null;
-        const account = self.find_record_by_id("Account", account_id) orelse return null;
-        if (account != .sobject) return null;
-        return self.get_s_object_field_value_case_insensitive(
-            account.sobject,
-            "All_Members_Deceased__c",
-        );
-    }
-
-    fn npsp_deceased_batch_account_update(
-        self: *Evaluator,
-        account_id: []const u8,
-        all_members_deceased: Value,
-    ) !*types.SObject {
-        const account = try self.arena.create(types.SObject);
-        account.* = .{ .type_name = "Account", .id = account_id };
-        try utils.sobject_put(&account.fields, self.arena, "Id", Value{ .string = account_id });
-        try utils.sobject_put(
-            &account.fields,
-            self.arena,
-            "All_Members_Deceased__c",
-            all_members_deceased,
-        );
-        return account;
-    }
-
-    fn eval_npsp_abstract_chunking_ldv_mock_method(
-        self: *Evaluator,
-        instance: *types.ObjectInstance,
-        method: []const u8,
-        args: []const Value,
-    ) !?Value {
-        if (!self.fixture_relaxed_exceptions) return null;
-        if (!std.ascii.eqlIgnoreCase(instance.class_name, "UTIL_AbstractChunkingLDV_MOCK")) {
-            return null;
-        }
-
-        if (std.ascii.eqlIgnoreCase(method, "getLDVChunkSize") and args.len == 0) {
-            return Value{ .integer = self.npsp_chunking_mock_integer_field(
-                instance,
-                "testChunkSize",
-                1,
-            ) };
-        }
-        if (std.ascii.eqlIgnoreCase(method, "getMaxNonLDVSize") and args.len == 0) {
-            return Value{ .integer = self.npsp_chunking_mock_integer_field(
-                instance,
-                "testMaxNonLDVSize",
-                1,
-            ) };
-        }
-        if (std.ascii.eqlIgnoreCase(method, "isLDVCircumstance") and args.len >= 2) {
-            const start_id = if (args[0] == .string) args[0].string else return Value{ .boolean = false };
-            const end_id = if (args[1] == .string) args[1].string else return Value{ .boolean = false };
-            const distance = npsp_salesforce_id_record_distance(start_id, end_id);
-            const max_non_ldv = self.npsp_chunking_mock_integer_field(
-                instance,
-                "testMaxNonLDVSize",
-                1,
-            );
-            return Value{ .boolean = distance > max_non_ldv };
-        }
-        if (std.ascii.eqlIgnoreCase(method, "doFinish")) {
-            if (self.get_object_field_case_insensitive(instance, "expectedLdvMode")) |expected| {
-                if (expected == .boolean) {
-                    try self.object_put_case_insensitive(instance, "ldvMode", expected);
-                }
-            }
-            return null;
-        }
-        return null;
     }
 
     fn npsp_chunking_mock_integer_field(
@@ -37932,46 +36504,6 @@ pub const Evaluator = struct {
         while (existing_jobs < target_jobs) : (existing_jobs += 1) {
             _ = try self.create_async_apex_job("BatchApex", batch_obj.class_name, "execute");
         }
-    }
-
-    fn eval_npsp_household_naming_service_instance_method(
-        self: *Evaluator,
-        obj: Value,
-        method: []const u8,
-        args: []const Value,
-    ) !?Value {
-        if (!self.fixture_relaxed_exceptions) return null;
-        if (obj != .object) return null;
-        if (std.ascii.indexOfIgnoreCase(obj.object.class_name, "HouseholdNamingService") == null) {
-            return null;
-        }
-        if (!std.ascii.eqlIgnoreCase(method, "setAllMembersDeceasedFlag")) return null;
-        if (args.len == 0 or args[0] != .list) return Value.void_val;
-
-        for (args[0].list.items.items) |account_value| {
-            if (account_value != .sobject) continue;
-            const account = account_value.sobject;
-            if (!std.ascii.eqlIgnoreCase(account.type_name, "Account")) continue;
-            const account_id = account.id orelse continue;
-            var members_value = if (args.len > 1 and args[1] == .map)
-                try self.eval_map_get(args[1].map, Value{ .string = account_id })
-            else
-                Value.null_val;
-            if (members_value == .null_val and args.len > 1 and args[1] == .map and
-                args[1].map.entries.count() == 1)
-            {
-                members_value = args[1].map.entries.values()[0];
-            }
-            const all_deceased = self.npsp_members_value_all_deceased(members_value);
-            const desired = Value{ .boolean = all_deceased };
-            const original =
-                self.get_s_object_field_value_case_insensitive(account, "All_Members_Deceased__c") orelse
-                Value.null_val;
-            if (utils.value_eql(original, desired)) continue;
-            try utils.sobject_put(&account.fields, self.arena, "All_Members_Deceased__c", desired);
-            try self.npsp_household_naming_service_register_dirty(obj.object, account_value);
-        }
-        return Value.void_val;
     }
 
     fn eval_npsp_rd2_sustainer_evaluation_service_method(
@@ -38159,41 +36691,6 @@ pub const Evaluator = struct {
         return query_service == .object and query_service.object.fields.get("__stubProvider__") != null;
     }
 
-    fn eval_npsp_rd2_data_migration_mapper_method(
-        self: *Evaluator,
-        obj: Value,
-        method: []const u8,
-    ) !?Value {
-        if (!self.fixture_relaxed_exceptions) return null;
-        if (obj != .object) return null;
-        if (!std.ascii.eqlIgnoreCase(obj.object.class_name, "RD2_DataMigrationMapper")) return null;
-        if (!std.ascii.eqlIgnoreCase(method, "convertToEnhancedRD")) return null;
-        const rd_value = self.get_object_field_case_insensitive(obj.object, "rd") orelse return null;
-        if (rd_value != .sobject) return null;
-        const rd = rd_value.sobject;
-        const open_status =
-            self.get_s_object_field_value_case_insensitive(rd, "npe03__Open_Ended_Status__c") orelse
-            Value.null_val;
-        if (open_status != .string or !std.ascii.eqlIgnoreCase(open_status.string, "Closed")) {
-            return null;
-        }
-        const schedule_type =
-            self.get_s_object_field_value_case_insensitive(rd, "npe03__Schedule_Type__c") orelse
-            Value.null_val;
-        if (schedule_type == .string and std.mem.trim(u8, schedule_type.string, " \t\r\n").len > 0) {
-            return null;
-        }
-        const installments =
-            self.get_s_object_field_value_case_insensitive(rd, "npe03__Installments__c") orelse
-            Value.null_val;
-        const planned = numeric_value_as_f64(installments) orelse return null;
-        if (@abs(planned) <= 1.0) return null;
-        const message =
-            self.get_custom_label_case_insensitive("RD2_DataMigrationInvalidPlannedInstallments") orelse
-            "RD2_DataMigrationInvalidPlannedInstallments";
-        return try self.throw_named_exception("RD2_DataMigrationMapper.MigrationException", message);
-    }
-
     fn npsp_sustainer_value_for_account(
         self: *Evaluator,
         account_id: []const u8,
@@ -38232,269 +36729,6 @@ pub const Evaluator = struct {
         const contact_account =
             self.get_s_object_field_value_case_insensitive(contact, "AccountId") orelse return false;
         return contact_account == .string and std.ascii.eqlIgnoreCase(contact_account.string, account_id);
-    }
-
-    fn npsp_members_value_all_deceased(
-        self: *Evaluator,
-        members_value: Value,
-    ) bool {
-        if (members_value != .list) return false;
-        for (members_value.list.items.items) |member_value| {
-            if (member_value != .sobject) return false;
-            const deceased = self.get_s_object_field_value_case_insensitive(
-                member_value.sobject,
-                "Deceased__c",
-            ) orelse Value{ .boolean = false };
-            if (deceased != .boolean or !deceased.boolean) return false;
-        }
-        return members_value.list.items.items.len > 0;
-    }
-
-    fn npsp_household_naming_service_register_dirty(
-        self: *Evaluator,
-        service: *types.ObjectInstance,
-        account_value: Value,
-    ) !void {
-        const unit_of_work = try self.npsp_household_naming_service_unit_of_work(service);
-        const updates_value = unit_of_work.fields.get("objectsToUpdate") orelse blk: {
-            const updates = try self.arena.create(types.ListValue);
-            updates.* = .{};
-            const value = Value{ .list = updates };
-            try unit_of_work.fields.put(self.arena, "objectsToUpdate", value);
-            break :blk value;
-        };
-        if (updates_value != .list) return;
-        try updates_value.list.items.append(self.arena, account_value);
-    }
-
-    fn npsp_household_naming_service_unit_of_work(
-        self: *Evaluator,
-        service: *types.ObjectInstance,
-    ) !*types.ObjectInstance {
-        if (service.fields.get("unitOfWork")) |value| {
-            if (value == .object) return value.object;
-        }
-        const unit_of_work = try self.arena.create(types.ObjectInstance);
-        unit_of_work.* = .{ .class_name = "fflib_SObjectUnitOfWork" };
-        const updates = try self.arena.create(types.ListValue);
-        updates.* = .{};
-        try unit_of_work.fields.put(
-            self.arena,
-            "objectsToUpdate",
-            Value{ .list = updates },
-        );
-        try service.fields.put(self.arena, "unitOfWork", Value{ .object = unit_of_work });
-        return unit_of_work;
-    }
-
-    fn eval_npsp_bdi_migration_mapping_helper_method(
-        self: *Evaluator,
-        obj: Value,
-        method: []const u8,
-        args: []const Value,
-    ) !?Value {
-        if (!self.fixture_relaxed_exceptions or obj != .object) return null;
-        if (!std.ascii.eqlIgnoreCase(obj.object.class_name, "BDI_MigrationMappingHelper")) {
-            return null;
-        }
-
-        if (std.ascii.eqlIgnoreCase(method, "getObjectMappingsBySetDeveloperName")) {
-            if (!npsp_bdi_helper_arg_equals(args, "Default_Object_Mapping_Set")) {
-                return null;
-            }
-            const map = try self.arena.create(types.MapValue);
-            map.* = .{};
-            try map.entries.put(
-                self.arena,
-                "Account_1",
-                try self.npsp_bdi_object_mapping_stub(),
-            );
-            return Value{ .map = map };
-        }
-
-        if (std.ascii.eqlIgnoreCase(method, "getFieldMappingsByFieldMappingSetDeveloperName") or
-            std.ascii.eqlIgnoreCase(method, "getFieldMappingStringsBySetDeveloperName"))
-        {
-            if (!npsp_bdi_helper_arg_equals(args, "Default_Field_Mapping_Set")) {
-                return null;
-            }
-            const map = try self.arena.create(types.MapValue);
-            map.* = .{};
-            try map.entries.put(
-                self.arena,
-                "Account.Account_1.BillingCity",
-                try self.npsp_bdi_field_mapping_stub(),
-            );
-            return Value{ .map = map };
-        }
-
-        if (std.ascii.eqlIgnoreCase(method, "getFieldMappingKeysByDeveloperName")) {
-            if (args.len < 2 or args[1] != .string or
-                !std.ascii.eqlIgnoreCase(args[1].string, "Default_Field_Mapping_Set"))
-            {
-                return null;
-            }
-            const list = try self.arena.create(types.ListValue);
-            list.* = .{ .element_type = "String" };
-            try list.items.append(self.arena, Value{ .string = "Account.Account_1.BillingCity.Account_1_City" });
-            return Value{ .list = list };
-        }
-
-        return null;
-    }
-
-    fn npsp_bdi_helper_arg_equals(args: []const Value, expected: []const u8) bool {
-        return args.len > 0 and args[0] == .string and std.ascii.eqlIgnoreCase(args[0].string, expected);
-    }
-
-    fn npsp_bdi_object_mapping_stub(self: *Evaluator) !Value {
-        const sob = try self.arena.create(types.SObject);
-        sob.* = .{ .type_name = "Data_Import_Object_Mapping__mdt" };
-        sob.id = "m000000000000001";
-        try sob.fields.put(self.arena, "Id", Value{ .string = sob.id.? });
-        try sob.fields.put(self.arena, "Label", Value{ .string = "Account 1" });
-        try sob.fields.put(self.arena, "DeveloperName", Value{ .string = "Account_1" });
-        try sob.fields.put(self.arena, "Object_API_Name__c", Value{ .string = "Account" });
-        try sob.fields.put(self.arena, "Legacy_Data_Import_Object_Name__c", Value{ .string = "Account_1" });
-        try sob.fields.put(self.arena, "Is_Deleted__c", Value{ .boolean = false });
-        return Value{ .sobject = sob };
-    }
-
-    fn npsp_bdi_field_mapping_stub(self: *Evaluator) !Value {
-        const sob = try self.arena.create(types.SObject);
-        sob.* = .{ .type_name = "Data_Import_Field_Mapping__mdt" };
-        sob.id = "m000000000000002";
-        try sob.fields.put(self.arena, "Id", Value{ .string = sob.id.? });
-        try sob.fields.put(self.arena, "Label", Value{ .string = "Account 1 City" });
-        try sob.fields.put(self.arena, "MasterLabel", Value{ .string = "Account 1 City" });
-        try sob.fields.put(self.arena, "DeveloperName", Value{ .string = "Account_1_City" });
-        try sob.fields.put(self.arena, "Source_Field_API_Name__c", Value{ .string = "Account_1_City" });
-        try sob.fields.put(self.arena, "Target_Field_API_Name__c", Value{ .string = "BillingCity" });
-        try sob.fields.put(self.arena, "Is_Deleted__c", Value{ .boolean = false });
-        try sob.fields.put(self.arena, "Target_Object_Mapping__r", try self.npsp_bdi_object_mapping_stub());
-        return Value{ .sobject = sob };
-    }
-
-    fn eval_npsp_callable_api_parameters_method(
-        self: *Evaluator,
-        obj: Value,
-        method: []const u8,
-        args: []const Value,
-    ) !?Value {
-        if (obj != .object or
-            !std.ascii.eqlIgnoreCase(obj.object.class_name, "CallableApiParameters") or
-            args.len == 0 or args[0] != .string)
-        {
-            return null;
-        }
-        const params = obj.object.fields.get("params") orelse return null;
-        if (params != .map) return null;
-        const param_name = args[0].string;
-        const value = params.map.entries.get(param_name) orelse return null;
-
-        if (std.ascii.eqlIgnoreCase(method, "getString")) {
-            if (value != .string and value != .null_val) return self.throw_callable_api_parameter_exception("String", param_name);
-            return null;
-        }
-        if (std.ascii.eqlIgnoreCase(method, "getBoolean")) {
-            if (value != .boolean and value != .null_val) return self.throw_callable_api_parameter_exception("Boolean", param_name);
-            return null;
-        }
-        if (std.ascii.eqlIgnoreCase(method, "getListString")) {
-            if (!is_list_of_strings_value(value)) return self.throw_callable_api_parameter_exception("List<String>", param_name);
-            return null;
-        }
-        if (std.ascii.eqlIgnoreCase(method, "getSetString")) {
-            if (!is_set_of_strings_value(value)) return self.throw_callable_api_parameter_exception("Set<String>", param_name);
-            return null;
-        }
-        if (std.ascii.eqlIgnoreCase(method, "getSObjects")) {
-            if (!is_list_of_sobjects_value(value)) return self.throw_callable_api_parameter_exception("List<SObject>", param_name);
-            return null;
-        }
-        if (std.ascii.eqlIgnoreCase(method, "getRollupDataMap")) {
-            if (value != .map and value != .null_val) {
-                return self.throw_callable_api_parameter_exception(
-                    "Map<Id, Map<SObjectType, List<SObject>>>",
-                    param_name,
-                );
-            }
-            return null;
-        }
-        if (std.ascii.eqlIgnoreCase(method, "getPauseObjectsById")) {
-            if (!is_callable_pause_object_map_value(value)) {
-                return self.throw_callable_api_parameter_exception(
-                    "Map<Id, RD2_ApiService.PauseObject>",
-                    param_name,
-                );
-            }
-            return null;
-        }
-        if (std.ascii.eqlIgnoreCase(method, "getRollupDefinitions")) {
-            if (value == .string and std.ascii.indexOfIgnoreCase(value.string, "StringList") != null) {
-                return self.throw_callable_api_parameter_exception(
-                    "List<CRLP_Rollup> JSON",
-                    param_name,
-                );
-            }
-            return null;
-        }
-        return null;
-    }
-
-    fn throw_callable_api_parameter_exception(
-        self: *Evaluator,
-        data_type: []const u8,
-        param_name: []const u8,
-    ) anyerror!?Value {
-        const message = try std.fmt.allocPrint(
-            self.arena,
-            "Could not parse parameter {s} as {s}",
-            .{ param_name, data_type },
-        );
-        _ = try self.throw_named_exception("CallableApiParameters.ParameterException", message);
-        return null;
-    }
-
-    fn is_list_of_strings_value(value: Value) bool {
-        if (value == .null_val) return true;
-        if (value != .list) return false;
-        for (value.list.items.items) |item| {
-            if (item != .string) return false;
-        }
-        return true;
-    }
-
-    fn is_set_of_strings_value(value: Value) bool {
-        if (value == .null_val) return true;
-        if (value != .set) return false;
-        for (value.set.entries.values()) |item| {
-            if (item != .string) return false;
-        }
-        return true;
-    }
-
-    fn is_list_of_sobjects_value(value: Value) bool {
-        if (value == .null_val) return true;
-        if (value != .list) return false;
-        for (value.list.items.items) |item| {
-            if (item != .sobject) return false;
-        }
-        return true;
-    }
-
-    fn is_callable_pause_object_map_value(value: Value) bool {
-        if (value == .null_val) return true;
-        if (value != .map) return false;
-        for (value.map.entries.values()) |item| {
-            if (item == .object and std.ascii.eqlIgnoreCase(item.object.class_name, "RD2_ApiService.PauseObject")) {
-                continue;
-            }
-            if (item == .map) continue;
-            if (item == .string and item.string.len > 0 and item.string[0] == '{') continue;
-            return false;
-        }
-        return true;
     }
 
     fn refresh_npsp_rollup_contacts_from_value(self: *Evaluator, value: Value) !void {
@@ -39982,42 +38216,13 @@ pub const Evaluator = struct {
     fn eval_map_get(self: *Evaluator, map: *types.MapValue, key_value: Value) !Value {
         if (self.find_map_entry_key(map, key_value)) |key| {
             if (map.entries.get(key)) |value| {
-                if (value != .null_val) return value;
-                if (npsp_data_import_field_mapping_fallback(key_value)) |field_name| {
-                    return Value{ .string = field_name };
-                }
                 return value;
             }
         }
         if (try self.synthetic_schema_field_map_value(map, key_value)) |value| {
             return value;
         }
-        if (npsp_data_import_field_mapping_fallback(key_value)) |field_name| {
-            return Value{ .string = field_name };
-        }
         return Value.null_val;
-    }
-
-    fn npsp_data_import_field_mapping_fallback(key_value: Value) ?[]const u8 {
-        if (key_value != .string) return null;
-        const key = strip_known_namespace_prefix(key_value.string);
-        const mappings = [_]struct { source: []const u8, target: []const u8 }{
-            .{ .source = "Home_Street__c", .target = "MailingStreet__c" },
-            .{ .source = "Home_City__c", .target = "MailingCity__c" },
-            .{ .source = "Home_State_Province__c", .target = "MailingState__c" },
-            .{ .source = "Home_Zip_Postal_Code__c", .target = "MailingPostalCode__c" },
-            .{ .source = "Home_Country__c", .target = "MailingCountry__c" },
-        };
-        for (mappings) |mapping| {
-            if (std.ascii.eqlIgnoreCase(key, mapping.source)) return mapping.target;
-        }
-        return null;
-    }
-
-    fn strip_known_namespace_prefix(name: []const u8) []const u8 {
-        if (std.ascii.startsWithIgnoreCase(name, "npsp__")) return name["npsp__".len..];
-        if (std.ascii.startsWithIgnoreCase(name, "npo02__")) return name["npo02__".len..];
-        return name;
     }
 
     fn eval_map_contains_key(self: *Evaluator, map: *types.MapValue, key_value: Value) bool {
@@ -40187,7 +38392,8 @@ pub const Evaluator = struct {
             return true;
         }
         if (!is_synthetic_schema_extension_field_name(field_name_value.string)) return true;
-        return self.get_field_metadata(object_type.string, field_name_value.string) != null;
+        return self.get_field_metadata(object_type.string, field_name_value.string) != null or
+            self.schema_field_exists_dynamic(object_type.string, field_name_value.string);
     }
 
     fn eval_map_values(self: *Evaluator, map: *types.MapValue) !Value {
@@ -43090,8 +41296,7 @@ pub const Evaluator = struct {
         }
         try self.init_new_user_class_fields(class_decl, instance);
 
-        var ctor_eval = try self.evaluate_new_constructor_args(ne, current_env);
-        try self.normalize_npsp_address_constructor_args(class_decl.name, &ctor_eval.args);
+        const ctor_eval = try self.evaluate_new_constructor_args(ne, current_env);
         const prev_ctor_hints = self.cast_type_hints;
         self.cast_type_hints = ctor_eval.hints.items;
         defer self.cast_type_hints = prev_ctor_hints;
@@ -43157,18 +41362,6 @@ pub const Evaluator = struct {
             std.mem.endsWith(u8, class_decl.name, "Exception");
         if (!is_exception) return;
         try instance.fields.put(self.arena, "message", args[0]);
-    }
-
-    fn normalize_npsp_address_constructor_args(
-        self: *Evaluator,
-        class_name: []const u8,
-        args: *std.ArrayListUnmanaged(Value),
-    ) !void {
-        if (!std.ascii.eqlIgnoreCase(class_name, "NPSP_Address")) return;
-        if (args.items.len != 1 or args.items[0] != .null_val) return;
-        const sob = try self.arena.create(types.SObject);
-        sob.* = .{ .type_name = "Address__c" };
-        args.items[0] = Value{ .sobject = sob };
     }
 
     fn new_user_exception_without_constructor(
@@ -43704,10 +41897,34 @@ pub const Evaluator = struct {
             if (err == error.StackOverflow) return Value.null_val;
             return err;
         };
+        try self.sync_object_fields_from_env(instance, getter_env);
         return switch (result) {
             .return_val => |value| value,
             else => self.return_value,
         };
+    }
+
+    fn sync_object_fields_from_env(
+        self: *Evaluator,
+        object: *types.ObjectInstance,
+        env: *Env,
+    ) !void {
+        const this_val = env.get_this() orelse return;
+        if (this_val == .object and this_val.object == object) {
+            var field_keys: std.ArrayListUnmanaged([]const u8) = .empty;
+            defer field_keys.deinit(self.arena);
+
+            for (object.fields.keys()) |key| try field_keys.append(self.arena, key);
+            for (field_keys.items) |key| {
+                if (env.get(key)) |updated| {
+                    try object.fields.put(self.arena, key, updated);
+                }
+            }
+        } else if (this_val == .object) {
+            for (this_val.object.fields.keys(), this_val.object.fields.values()) |key, value| {
+                try object.fields.put(self.arena, key, value);
+            }
+        }
     }
 
     fn populate_getter_env_instance_fields(
@@ -44340,11 +42557,7 @@ pub const Evaluator = struct {
                         if (std.ascii.eqlIgnoreCase(field_name, "class")) {
                             return try self.make_type_value(fq_name);
                         }
-                        const static_key = try std.fmt.allocPrint(
-                            self.arena,
-                            "{s}.{s}",
-                            .{ fq_name, field_name },
-                        );
+                        const static_key = try self.static_field_cache_key(fq_name, field_name);
                         if (self.global_env.get(static_key)) |value| return value;
                         return Value{ .string = field_name };
                     }
@@ -45909,9 +44122,16 @@ pub const Evaluator = struct {
         alloc: std.mem.Allocator,
     ) !std.StringArrayHashMapUnmanaged(Value) {
         var cloned: std.StringArrayHashMapUnmanaged(Value) = .empty;
+        var clone_context: PartialDmlCloneContext = .{};
+        defer clone_context.deinit(alloc);
+
         for (self.global_env.bindings.keys(), self.global_env.bindings.values()) |key, value| {
             if (!binding_name_is_static_field(key)) continue;
-            try cloned.put(alloc, key, try self.clone_partial_dml_value_with_allocator(value, alloc));
+            try cloned.put(
+                alloc,
+                key,
+                try self.clone_partial_dml_value_with_context(value, alloc, &clone_context),
+            );
         }
         return cloned;
     }
@@ -45931,6 +44151,9 @@ pub const Evaluator = struct {
             _ = self.global_env.bindings.orderedRemove(key);
             _ = self.global_env.lower_binding_names.orderedRemove(key);
         }
+        var clone_context: PartialDmlCloneContext = .{};
+        defer clone_context.deinit(self.arena);
+
         for (snapshot.keys(), snapshot.values()) |key, value| {
             const current = self.global_env.get_exact(key) orelse Value.null_val;
             if (!partial_dml_value_is_mutable(current) and
@@ -45938,7 +44161,11 @@ pub const Evaluator = struct {
             {
                 continue;
             }
-            const cloned = try self.clone_partial_dml_value(value);
+            const cloned = try self.clone_partial_dml_value_with_context(
+                value,
+                self.arena,
+                &clone_context,
+            );
             self.global_env.set(key, cloned) catch try self.global_env.define(key, cloned);
         }
     }
@@ -45964,12 +44191,44 @@ pub const Evaluator = struct {
         value: Value,
         alloc: std.mem.Allocator,
     ) anyerror!Value {
+        var clone_context: PartialDmlCloneContext = .{};
+        defer clone_context.deinit(alloc);
+
+        return self.clone_partial_dml_value_with_context(value, alloc, &clone_context);
+    }
+
+    fn clone_partial_dml_value_with_context(
+        self: *Evaluator,
+        value: Value,
+        alloc: std.mem.Allocator,
+        clone_context: *PartialDmlCloneContext,
+    ) anyerror!Value {
         return switch (value) {
-            .sobject => |sob| try self.clone_partial_dml_sobject_with_allocator(sob, alloc),
-            .object => |obj| try self.clone_partial_dml_object_with_allocator(obj, alloc),
-            .list => |list| try self.clone_partial_dml_list_with_allocator(list, alloc),
-            .map => |map| try self.clone_partial_dml_map_with_allocator(map, alloc),
-            .set => |set| try self.clone_partial_dml_set_with_allocator(set, alloc),
+            .sobject => |sob| try self.clone_partial_dml_sobject_with_context(
+                sob,
+                alloc,
+                clone_context,
+            ),
+            .object => |obj| try self.clone_partial_dml_object_with_context(
+                obj,
+                alloc,
+                clone_context,
+            ),
+            .list => |list| try self.clone_partial_dml_list_with_context(
+                list,
+                alloc,
+                clone_context,
+            ),
+            .map => |map| try self.clone_partial_dml_map_with_context(
+                map,
+                alloc,
+                clone_context,
+            ),
+            .set => |set| try self.clone_partial_dml_set_with_context(
+                set,
+                alloc,
+                clone_context,
+            ),
             else => value,
         };
     }
@@ -45983,8 +44242,25 @@ pub const Evaluator = struct {
         sob: *types.SObject,
         alloc: std.mem.Allocator,
     ) anyerror!Value {
+        var clone_context: PartialDmlCloneContext = .{};
+        defer clone_context.deinit(alloc);
+
+        return self.clone_partial_dml_sobject_with_context(sob, alloc, &clone_context);
+    }
+
+    fn clone_partial_dml_sobject_with_context(
+        self: *Evaluator,
+        sob: *types.SObject,
+        alloc: std.mem.Allocator,
+        clone_context: *PartialDmlCloneContext,
+    ) anyerror!Value {
+        const ptr_key = @intFromPtr(sob);
+        if (clone_context.sobjects.get(ptr_key)) |existing| {
+            return Value{ .sobject = existing };
+        }
         const cloned = try alloc.create(types.SObject);
         cloned.* = .{ .type_name = sob.type_name };
+        try clone_context.sobjects.put(alloc, ptr_key, cloned);
         cloned.id = sob.id;
         cloned.is_stripped = sob.is_stripped;
         cloned.is_clone = sob.is_clone;
@@ -45992,7 +44268,7 @@ pub const Evaluator = struct {
             try cloned.fields.put(
                 alloc,
                 key,
-                try self.clone_partial_dml_value_with_allocator(field_value, alloc),
+                try self.clone_partial_dml_value_with_context(field_value, alloc, clone_context),
             );
         }
         return Value{ .sobject = cloned };
@@ -46007,13 +44283,30 @@ pub const Evaluator = struct {
         obj: *types.ObjectInstance,
         alloc: std.mem.Allocator,
     ) anyerror!Value {
+        var clone_context: PartialDmlCloneContext = .{};
+        defer clone_context.deinit(alloc);
+
+        return self.clone_partial_dml_object_with_context(obj, alloc, &clone_context);
+    }
+
+    fn clone_partial_dml_object_with_context(
+        self: *Evaluator,
+        obj: *types.ObjectInstance,
+        alloc: std.mem.Allocator,
+        clone_context: *PartialDmlCloneContext,
+    ) anyerror!Value {
+        const ptr_key = @intFromPtr(obj);
+        if (clone_context.objects.get(ptr_key)) |existing| {
+            return Value{ .object = existing };
+        }
         const cloned = try alloc.create(types.ObjectInstance);
         cloned.* = .{ .class_name = obj.class_name };
+        try clone_context.objects.put(alloc, ptr_key, cloned);
         for (obj.fields.keys(), obj.fields.values()) |key, field_value| {
             try cloned.fields.put(
                 alloc,
                 key,
-                try self.clone_partial_dml_value_with_allocator(field_value, alloc),
+                try self.clone_partial_dml_value_with_context(field_value, alloc, clone_context),
             );
         }
         return Value{ .object = cloned };
@@ -46028,15 +44321,32 @@ pub const Evaluator = struct {
         list: *types.ListValue,
         alloc: std.mem.Allocator,
     ) anyerror!Value {
+        var clone_context: PartialDmlCloneContext = .{};
+        defer clone_context.deinit(alloc);
+
+        return self.clone_partial_dml_list_with_context(list, alloc, &clone_context);
+    }
+
+    fn clone_partial_dml_list_with_context(
+        self: *Evaluator,
+        list: *types.ListValue,
+        alloc: std.mem.Allocator,
+        clone_context: *PartialDmlCloneContext,
+    ) anyerror!Value {
+        const ptr_key = @intFromPtr(list);
+        if (clone_context.lists.get(ptr_key)) |existing| {
+            return Value{ .list = existing };
+        }
         const cloned = try alloc.create(types.ListValue);
         cloned.* = .{
             .element_type = list.element_type,
             .explicitly_generic = list.explicitly_generic,
         };
+        try clone_context.lists.put(alloc, ptr_key, cloned);
         for (list.items.items) |item| {
             try cloned.items.append(
                 alloc,
-                try self.clone_partial_dml_value_with_allocator(item, alloc),
+                try self.clone_partial_dml_value_with_context(item, alloc, clone_context),
             );
         }
         return Value{ .list = cloned };
@@ -46051,23 +44361,40 @@ pub const Evaluator = struct {
         map: *types.MapValue,
         alloc: std.mem.Allocator,
     ) anyerror!Value {
+        var clone_context: PartialDmlCloneContext = .{};
+        defer clone_context.deinit(alloc);
+
+        return self.clone_partial_dml_map_with_context(map, alloc, &clone_context);
+    }
+
+    fn clone_partial_dml_map_with_context(
+        self: *Evaluator,
+        map: *types.MapValue,
+        alloc: std.mem.Allocator,
+        clone_context: *PartialDmlCloneContext,
+    ) anyerror!Value {
+        const ptr_key = @intFromPtr(map);
+        if (clone_context.maps.get(ptr_key)) |existing| {
+            return Value{ .map = existing };
+        }
         const cloned = try alloc.create(types.MapValue);
         cloned.* = .{
             .schema_field_owner = map.schema_field_owner,
             .case_insensitive_keys = map.case_insensitive_keys,
         };
+        try clone_context.maps.put(alloc, ptr_key, cloned);
         for (map.entries.keys(), map.entries.values()) |key, entry_value| {
             try cloned.entries.put(
                 alloc,
                 key,
-                try self.clone_partial_dml_value_with_allocator(entry_value, alloc),
+                try self.clone_partial_dml_value_with_context(entry_value, alloc, clone_context),
             );
         }
         for (map.key_values.keys(), map.key_values.values()) |key, key_value| {
             try cloned.key_values.put(
                 alloc,
                 key,
-                try self.clone_partial_dml_value_with_allocator(key_value, alloc),
+                try self.clone_partial_dml_value_with_context(key_value, alloc, clone_context),
             );
         }
         return Value{ .map = cloned };
@@ -46082,13 +44409,38 @@ pub const Evaluator = struct {
         set: *types.SetValue,
         alloc: std.mem.Allocator,
     ) anyerror!Value {
+        var clone_context: PartialDmlCloneContext = .{};
+        defer clone_context.deinit(alloc);
+
+        return self.clone_partial_dml_set_with_context(set, alloc, &clone_context);
+    }
+
+    fn clone_partial_dml_set_with_context(
+        self: *Evaluator,
+        set: *types.SetValue,
+        alloc: std.mem.Allocator,
+        clone_context: *PartialDmlCloneContext,
+    ) anyerror!Value {
+        const ptr_key = @intFromPtr(set);
+        if (clone_context.sets.get(ptr_key)) |existing| {
+            return Value{ .set = existing };
+        }
         const cloned = try alloc.create(types.SetValue);
         cloned.* = .{ .element_type = set.element_type };
+        try clone_context.sets.put(alloc, ptr_key, cloned);
+        if (set.map_key_owner) |owner| {
+            const cloned_owner = try self.clone_partial_dml_map_with_context(
+                owner,
+                alloc,
+                clone_context,
+            );
+            if (cloned_owner == .map) cloned.map_key_owner = cloned_owner.map;
+        }
         for (set.entries.keys(), set.entries.values()) |key, entry_value| {
             try cloned.entries.put(
                 alloc,
                 key,
-                try self.clone_partial_dml_value_with_allocator(entry_value, alloc),
+                try self.clone_partial_dml_value_with_context(entry_value, alloc, clone_context),
             );
         }
         return Value{ .set = cloned };
@@ -46645,29 +44997,28 @@ pub const Evaluator = struct {
             .sobject => |sob| {
                 const id = sob.id orelse return;
                 if (!std.ascii.eqlIgnoreCase(sob.type_name, "Task")) return;
-                self.remove_trashed_record(sob.type_name, id);
+                self.mark_trashed_record_hard_deleted(sob.type_name, id);
             },
             .string => |id| {
                 const type_name = self.sobject_type_from_id_or_map(id);
                 if (!std.ascii.eqlIgnoreCase(type_name, "Task")) return;
-                self.remove_trashed_record(type_name, id);
+                self.mark_trashed_record_hard_deleted(type_name, id);
             },
             else => {},
         }
     }
 
-    fn remove_trashed_record(self: *Evaluator, type_name: []const u8, id: []const u8) void {
+    fn mark_trashed_record_hard_deleted(self: *Evaluator, type_name: []const u8, id: []const u8) void {
         const trashed = self.trash.getPtr(type_name) orelse return;
-        var idx: usize = 0;
-        while (idx < trashed.items.len) {
-            const item = trashed.items[idx];
-            if (item == .sobject and item.sobject.id != null and
-                std.ascii.eqlIgnoreCase(item.sobject.id.?, id))
-            {
-                _ = trashed.orderedRemove(idx);
-                continue;
-            }
-            idx += 1;
+        for (trashed.items) |item| {
+            if (item != .sobject or item.sobject.id == null) continue;
+            if (!std.ascii.eqlIgnoreCase(item.sobject.id.?, id)) continue;
+            utils.sobject_put(
+                &item.sobject.fields,
+                self.arena,
+                "__apexgov_hard_deleted",
+                Value{ .boolean = true },
+            ) catch {};
         }
     }
 
@@ -51706,11 +50057,6 @@ pub const Evaluator = struct {
         if (self.call_depth > self.max_call_depth) {
             return .null_val;
         }
-        if (self.should_skip_npsp_disabled_allocation_handler(instance.class_name) or
-            self.should_skip_npsp_disabled_allocation_handler(class_decl.name))
-        {
-            return Value.void_val;
-        }
         // Push call frame for stack trace generation (use current_call_line set by caller)
         const frame_line = self.current_call_line;
         self.current_call_line = 0;
@@ -51720,27 +50066,6 @@ pub const Evaluator = struct {
         if (class_decl.super_class) |sc| self.ensure_static_init(sc.name);
         if (try self.handle_sfdo_instrumentation_log_instance_method(
             class_decl.name,
-            method_name,
-            args,
-        )) |result| {
-            return result;
-        }
-        if (try self.handle_npsp_household_naming_static_method(
-            class_decl.name,
-            method_name,
-            args,
-        )) |result| {
-            return result;
-        }
-        if (try self.eval_npsp_deceased_batch_instance_method(
-            Value{ .object = instance },
-            method_name,
-            args,
-        )) |result| {
-            return result;
-        }
-        if (try self.eval_npsp_abstract_chunking_ldv_mock_method(
-            instance,
             method_name,
             args,
         )) |result| {
@@ -51834,11 +50159,6 @@ pub const Evaluator = struct {
     ) anyerror!Value {
         const owner_decl = resolved.owner;
         const method = resolved.method;
-        if (self.should_skip_npsp_disabled_allocation_handler(owner_decl.name) or
-            self.should_skip_npsp_disabled_allocation_handler(instance.class_name))
-        {
-            return Value.void_val;
-        }
         const frame_class_name = instance_method_frame_class_name(
             instance.class_name,
             owner_decl.name,
@@ -53260,18 +51580,10 @@ pub const Evaluator = struct {
         field_name: []const u8,
     ) Value {
         self.ensure_static_init(owner_name);
-        const key = std.fmt.allocPrint(
-            self.arena,
-            "{s}.{s}",
-            .{ owner_name, field_name },
-        ) catch return .null_val;
+        const key = self.static_field_cache_key(owner_name, field_name) catch return .null_val;
         if (self.global_env.get(key)) |v| return v;
         if (self.find_outer_class_name(owner_name)) |outer| {
-            const outer_key = std.fmt.allocPrint(
-                self.arena,
-                "{s}.{s}",
-                .{ outer, field_name },
-            ) catch return .null_val;
+            const outer_key = self.static_field_cache_key(outer, field_name) catch return .null_val;
             if (self.global_env.get(outer_key)) |v| return v;
         }
         return .null_val;
@@ -54194,11 +52506,7 @@ pub const Evaluator = struct {
             }
         }
         // Plain static field lookup
-        const key = std.fmt.allocPrint(
-            self.arena,
-            "{s}.{s}",
-            .{ class_name, field_name },
-        ) catch return null;
+        const key = self.static_field_cache_key(class_name, field_name) catch return null;
         return self.global_env.get(key);
     }
 
@@ -54978,10 +53286,10 @@ pub const Evaluator = struct {
             return rel.child_type;
         }
         const parent_base = type_base_name(strip_type_namespace(parent_type));
-        if (std.ascii.eqlIgnoreCase(parent_base, "Opportunity") and
-            std.ascii.eqlIgnoreCase(relationship_name, "npe01__OppPayment__r"))
-        {
-            return "npe01__OppPayment__c";
+        if (!std.mem.endsWith(u8, parent_base, "__c")) {
+            if (custom_child_type_from_relationship_name(self.arena, relationship_name)) |child_type| {
+                return child_type;
+            }
         }
         if (std.ascii.eqlIgnoreCase(parent_base, "Opportunity") and
             std.ascii.eqlIgnoreCase(relationship_name, "OpportunityContactRoles"))
@@ -54999,6 +53307,49 @@ pub const Evaluator = struct {
             return "Contact";
         }
         return null;
+    }
+
+    fn custom_child_type_from_relationship_name(
+        arena: std.mem.Allocator,
+        relationship_name: []const u8,
+    ) ?[]const u8 {
+        const base = namespaced_relationship_base(relationship_name) orelse return null;
+        return std.fmt.allocPrint(arena, "{s}__c", .{base}) catch null;
+    }
+
+    fn custom_foreign_key_from_relationship_name(
+        arena: std.mem.Allocator,
+        child_type: []const u8,
+        parent_type: []const u8,
+        relationship_name: []const u8,
+    ) ?[]const u8 {
+        const base = namespaced_relationship_base(relationship_name) orelse return null;
+        const expected_child = std.fmt.allocPrint(arena, "{s}__c", .{base}) catch return null;
+        if (!std.ascii.eqlIgnoreCase(child_type, expected_child)) return null;
+
+        const sep = std.mem.indexOf(u8, base, "__") orelse return null;
+        const ns = base[0..sep];
+        const parent_base = type_base_name(strip_type_namespace(parent_type));
+        if (std.mem.endsWith(u8, parent_base, "__c")) return null;
+        return std.fmt.allocPrint(arena, "{s}__{s}__c", .{ ns, parent_base }) catch null;
+    }
+
+    fn namespaced_relationship_base(relationship_name: []const u8) ?[]const u8 {
+        if (!std.mem.endsWith(u8, relationship_name, "__r")) return null;
+        const base = relationship_name[0 .. relationship_name.len - "__r".len];
+        const sep = std.mem.indexOf(u8, base, "__") orelse return null;
+        if (!is_lowercase_namespace_token(base[0..sep])) return null;
+        return base;
+    }
+
+    fn is_lowercase_namespace_token(token: []const u8) bool {
+        if (token.len == 0) return false;
+        if (!std.ascii.isAlphabetic(token[0]) or std.ascii.isUpper(token[0])) return false;
+        for (token[1..]) |ch| {
+            if (std.ascii.isUpper(ch)) return false;
+            if (!std.ascii.isAlphanumeric(ch) and ch != '_') return false;
+        }
+        return true;
     }
 
     fn normalize_json_relationship_record(
@@ -57862,4 +56213,34 @@ test "instanceof supports Apex collection and schema token semantics" {
     defer r.deinit();
 
     try std.testing.expectEqualStrings("true|true|true|true|true", r.value.string);
+}
+
+test "clone_s_object clones nested relationship values independently" {
+    var arena_alloc = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_alloc.deinit();
+
+    const arena = arena_alloc.allocator();
+
+    var eval = try Evaluator.init(arena, std.testing.io);
+    const parent = try arena.create(types.SObject);
+    parent.* = .{ .type_name = "Parent__c" };
+    try utils.sobject_put(&parent.fields, arena, "Name", Value{ .string = "original" });
+
+    const child = try arena.create(types.SObject);
+    child.* = .{ .type_name = "Child__c" };
+    try utils.sobject_put(&child.fields, arena, "Parent__r", Value{ .sobject = parent });
+
+    const cloned = try eval.clone_s_object(child);
+    const cloned_parent = utils.sobject_get(&cloned.fields, "Parent__r").?.sobject;
+    try std.testing.expect(cloned_parent != parent);
+    try utils.sobject_put(&cloned_parent.fields, arena, "Name", Value{ .string = "changed" });
+
+    try std.testing.expectEqualStrings(
+        "original",
+        utils.sobject_get(&parent.fields, "Name").?.string,
+    );
+    try std.testing.expectEqualStrings(
+        "changed",
+        utils.sobject_get(&cloned_parent.fields, "Name").?.string,
+    );
 }

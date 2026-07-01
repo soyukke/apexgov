@@ -55,26 +55,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, source: []const u8, opts: Options
     if (opts.source_paths.len > 0) {
         eval.source_paths = opts.source_paths;
         for (opts.source_paths) |path| {
-            try collect_field_defaults(
-                arena.allocator(),
-                io,
-                path,
-                &eval.field_defaults,
-                &eval.field_types,
-                &eval.field_metadata,
-                &eval.child_relationships,
-            );
-            try collect_field_sets(arena.allocator(), io, path, &eval.field_sets);
-            try collect_custom_setting_types(
-                arena.allocator(),
-                io,
-                path,
-                &eval.custom_setting_types,
-                &eval.custom_setting_kinds,
-                &eval.object_labels,
-                &eval.object_label_plurals,
-            );
-            try collect_custom_labels(arena.allocator(), io, path, &eval.custom_labels);
+            try load_runtime_metadata_path(arena.allocator(), io, path, &eval);
         }
     }
     try eval.load_decls(decls);
@@ -96,6 +77,48 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, source: []const u8, opts: Options
 
     arena.deinit();
     return .{ .value = value_copy, .stdout = stdout_copy, .allocator = gpa };
+}
+
+fn load_runtime_metadata_path(
+    alloc: std.mem.Allocator,
+    io: std.Io,
+    path: []const u8,
+    eval: *evaluator.Evaluator,
+) !void {
+    try collect_field_defaults(
+        alloc,
+        io,
+        path,
+        &eval.field_defaults,
+        &eval.field_types,
+        &eval.field_metadata,
+        &eval.child_relationships,
+    );
+    try collect_field_type_hints(alloc, io, path, &eval.field_types);
+    try collect_source_picklist_value_hints(
+        alloc,
+        io,
+        path,
+        &eval.field_types,
+        &eval.field_metadata,
+    );
+    try collect_child_relationship_hints(
+        alloc,
+        io,
+        path,
+        &eval.child_relationships,
+    );
+    try collect_field_sets(alloc, io, path, &eval.field_sets);
+    try collect_custom_setting_types(
+        alloc,
+        io,
+        path,
+        &eval.custom_setting_types,
+        &eval.custom_setting_kinds,
+        &eval.object_labels,
+        &eval.object_label_plurals,
+    );
+    try collect_custom_labels(alloc, io, path, &eval.custom_labels);
 }
 
 // ---------------------------------------------------------------------------
@@ -303,7 +326,6 @@ fn run_tests_filtered(
     }
 
     eval.source_paths = load_paths;
-    eval.fixture_relaxed_exceptions = paths_enable_relaxed_fixture_exceptions(load_paths);
     const load_stats = try load_test_sources(parse_alloc, io, load_paths, &eval);
     try writer.print(
         "interpret: loaded {d} Apex source file(s)\n",
@@ -342,20 +364,14 @@ fn run_tests_filtered(
     return suite;
 }
 
-fn paths_enable_relaxed_fixture_exceptions(paths: []const []const u8) bool {
-    for (paths) |path| {
-        if (std.mem.indexOf(u8, path, ".local-fixtures/apex/repos/NPSP") != null) {
-            return true;
-        }
-    }
-    return false;
-}
-
 fn expand_fixture_dependency_paths(
     alloc: std.mem.Allocator,
     paths: []const []const u8,
     expanded: *std.ArrayListUnmanaged([]const u8),
 ) !void {
+    const has_common = paths_include_fixture_repo(paths, "fflib-apex-common") or
+        paths_include_fixture_repo(paths, "fflib-apex-common-latest") or
+        paths_include_fixture_repo(paths, "fflib-apex-common-v2");
     const has_samplecode = paths_include_fixture_repo(paths, "fflib-apex-common-samplecode");
     const has_extensions = paths_include_fixture_repo(paths, "fflib-apex-extensions");
     const has_at4dx = paths_include_fixture_repo(paths, "at4dx");
@@ -373,6 +389,8 @@ fn expand_fixture_dependency_paths(
             expanded,
             ".local-fixtures/apex/repos/fflib-apex-common/sfdx-source/apex-common/main",
         );
+    }
+    if (has_common or has_samplecode or has_extensions or has_at4dx) {
         try append_unique_path(
             alloc,
             expanded,
@@ -504,6 +522,25 @@ fn load_test_metadata_path(
         &eval.field_defaults,
         &eval.field_types,
         &eval.field_metadata,
+        &eval.child_relationships,
+    ) catch {};
+    collect_field_type_hints(
+        parse_alloc,
+        io,
+        path,
+        &eval.field_types,
+    ) catch {};
+    collect_source_picklist_value_hints(
+        parse_alloc,
+        io,
+        path,
+        &eval.field_types,
+        &eval.field_metadata,
+    ) catch {};
+    collect_child_relationship_hints(
+        parse_alloc,
+        io,
+        path,
         &eval.child_relationships,
     ) catch {};
     collect_field_sets(parse_alloc, io, path, &eval.field_sets) catch {};
@@ -661,7 +698,7 @@ fn run_test_method(
     suite.total += 1;
     _ = test_arena.reset(.{ .retain_with_limit = 128 * 1024 * 1024 });
     var test_eval = evaluator.Evaluator.init(test_arena.allocator(), io) catch return;
-    copy_test_eval_context(&test_eval, base_eval, parse_alloc);
+    try copy_test_eval_context(&test_eval, base_eval, parse_alloc);
     configure_test_method(
         &test_eval,
         method_decl,
@@ -683,7 +720,7 @@ fn copy_test_eval_context(
     test_eval: *evaluator.Evaluator,
     base_eval: *evaluator.Evaluator,
     parse_alloc: std.mem.Allocator,
-) void {
+) !void {
     test_eval.classes = base_eval.classes;
     test_eval.top_level_enums = base_eval.top_level_enums;
     test_eval.class_arena = parse_alloc;
@@ -694,18 +731,104 @@ fn copy_test_eval_context(
     test_eval.trigger_sources = base_eval.trigger_sources;
     test_eval.source_paths = base_eval.source_paths;
     test_eval.fixture_relaxed_exceptions = base_eval.fixture_relaxed_exceptions;
-    test_eval.field_defaults = base_eval.field_defaults;
-    test_eval.field_types = base_eval.field_types;
-    test_eval.field_metadata = base_eval.field_metadata;
-    test_eval.child_relationships = base_eval.child_relationships;
-    test_eval.custom_setting_types = base_eval.custom_setting_types;
-    test_eval.custom_setting_kinds = base_eval.custom_setting_kinds;
-    test_eval.object_labels = base_eval.object_labels;
-    test_eval.object_label_plurals = base_eval.object_label_plurals;
-    test_eval.custom_labels = base_eval.custom_labels;
-    test_eval.field_sets = base_eval.field_sets;
-    test_eval.custom_metadata_records = base_eval.custom_metadata_records;
+    test_eval.field_defaults = try copy_nested_metadata_map(
+        Value,
+        test_eval.arena,
+        &base_eval.field_defaults,
+    );
+    test_eval.field_types = try copy_nested_metadata_map(
+        []const u8,
+        test_eval.arena,
+        &base_eval.field_types,
+    );
+    test_eval.field_metadata = try copy_nested_metadata_map(
+        evaluator.FieldMetadata,
+        test_eval.arena,
+        &base_eval.field_metadata,
+    );
+    test_eval.child_relationships = try copy_metadata_map(
+        evaluator.CustomChildRelationship,
+        test_eval.arena,
+        &base_eval.child_relationships,
+    );
+    test_eval.custom_setting_types = try copy_metadata_map(
+        void,
+        test_eval.arena,
+        &base_eval.custom_setting_types,
+    );
+    test_eval.custom_setting_kinds = try copy_metadata_map(
+        []const u8,
+        test_eval.arena,
+        &base_eval.custom_setting_kinds,
+    );
+    test_eval.object_labels = try copy_metadata_map(
+        []const u8,
+        test_eval.arena,
+        &base_eval.object_labels,
+    );
+    test_eval.object_label_plurals = try copy_metadata_map(
+        []const u8,
+        test_eval.arena,
+        &base_eval.object_label_plurals,
+    );
+    test_eval.custom_labels = try copy_metadata_map(
+        []const u8,
+        test_eval.arena,
+        &base_eval.custom_labels,
+    );
+    test_eval.field_sets = try copy_nested_metadata_map(
+        evaluator.FieldSetMetadata,
+        test_eval.arena,
+        &base_eval.field_sets,
+    );
     test_eval.custom_metadata_paths_indexed = base_eval.custom_metadata_paths_indexed;
+    try copy_custom_metadata_record_cache(test_eval, base_eval);
+}
+
+fn copy_metadata_map(
+    comptime ValueType: type,
+    arena: std.mem.Allocator,
+    src: *const std.StringArrayHashMapUnmanaged(ValueType),
+) !std.StringArrayHashMapUnmanaged(ValueType) {
+    var out: std.StringArrayHashMapUnmanaged(ValueType) = .empty;
+    var src_copy = src.*;
+    var iter = src_copy.iterator();
+    while (iter.next()) |entry| {
+        try out.put(arena, entry.key_ptr.*, entry.value_ptr.*);
+    }
+    return out;
+}
+
+fn copy_nested_metadata_map(
+    comptime ValueType: type,
+    arena: std.mem.Allocator,
+    src: *const std.StringArrayHashMapUnmanaged(std.StringArrayHashMapUnmanaged(ValueType)),
+) !std.StringArrayHashMapUnmanaged(std.StringArrayHashMapUnmanaged(ValueType)) {
+    var out: std.StringArrayHashMapUnmanaged(std.StringArrayHashMapUnmanaged(ValueType)) = .empty;
+    var src_copy = src.*;
+    var iter = src_copy.iterator();
+    while (iter.next()) |entry| {
+        var inner: std.StringArrayHashMapUnmanaged(ValueType) = .empty;
+        var inner_src = entry.value_ptr.*;
+        var inner_iter = inner_src.iterator();
+        while (inner_iter.next()) |inner_entry| {
+            try inner.put(arena, inner_entry.key_ptr.*, inner_entry.value_ptr.*);
+        }
+        try out.put(arena, entry.key_ptr.*, inner);
+    }
+    return out;
+}
+
+fn copy_custom_metadata_record_cache(
+    test_eval: *evaluator.Evaluator,
+    base_eval: *evaluator.Evaluator,
+) !void {
+    var iter = base_eval.custom_metadata_records.iterator();
+    while (iter.next()) |entry| {
+        var records: std.ArrayListUnmanaged(Value) = .empty;
+        try records.appendSlice(test_eval.arena, entry.value_ptr.items);
+        try test_eval.custom_metadata_records.put(test_eval.arena, entry.key_ptr.*, records);
+    }
 }
 
 fn configure_test_method(
@@ -970,37 +1093,56 @@ fn collect_field_defaults(
 
     while (walker.next(io) catch null) |entry| {
         if (entry.kind != .file) continue;
-        if (!std.mem.endsWith(u8, entry.basename, ".field-meta.xml")) continue;
 
-        const field_entry = parse_field_metadata_entry(entry.path, entry.basename) orelse continue;
-        const full_path = std.fs.path.join(
-            alloc,
-            &.{ path, field_entry.entry_path },
-        ) catch continue;
-        const content = std.Io.Dir.cwd().readFileAlloc(
-            io,
-            full_path,
-            alloc,
-            .limited(64 * 1024),
-        ) catch continue;
+        if (std.mem.endsWith(u8, entry.basename, ".field-meta.xml")) {
+            const field_entry =
+                parse_field_metadata_entry(entry.path, entry.basename) orelse continue;
+            const full_path = std.fs.path.join(
+                alloc,
+                &.{ path, field_entry.entry_path },
+            ) catch continue;
+            const content = std.Io.Dir.cwd().readFileAlloc(
+                io,
+                full_path,
+                alloc,
+                .limited(64 * 1024),
+            ) catch continue;
 
-        var metadata = read_field_metadata(alloc, content) catch continue;
-        store_field_type_metadata(alloc, content, field_entry, field_types) catch {};
-        store_field_reference_metadata(
-            alloc,
-            content,
-            field_entry,
-            &metadata,
-            child_relationships,
-        ) catch {};
-        store_field_metadata(alloc, field_entry, metadata, field_metadata) catch {};
-        store_picklist_default(
-            alloc,
-            field_entry,
-            metadata.picklist_values,
-            field_defaults,
-        ) catch {};
-        store_xml_default_value(alloc, content, field_entry, field_defaults) catch {};
+            try store_field_metadata_from_xml(
+                alloc,
+                content,
+                field_entry,
+                field_defaults,
+                field_types,
+                field_metadata,
+                child_relationships,
+            );
+            continue;
+        }
+
+        if (std.mem.endsWith(u8, entry.basename, legacy_object_suffix)) {
+            const object_type = parse_legacy_object_type(alloc, entry.basename) orelse continue;
+            const full_path = std.fs.path.join(
+                alloc,
+                &.{ path, entry.path },
+            ) catch continue;
+            const content = std.Io.Dir.cwd().readFileAlloc(
+                io,
+                full_path,
+                alloc,
+                .limited(512 * 1024),
+            ) catch continue;
+            try collect_legacy_object_field_metadata(
+                alloc,
+                content,
+                object_type,
+                entry.path,
+                field_defaults,
+                field_types,
+                field_metadata,
+                child_relationships,
+            );
+        }
     }
 }
 
@@ -1017,6 +1159,110 @@ fn parse_field_metadata_entry(entry_path: []const u8, basename: []const u8) ?Fie
 }
 
 const field_meta_xml_suffix = ".field-meta.xml";
+const legacy_object_suffix = ".object";
+const metadata_namespace_placeholder_percent = "%%%NAMESPACE%%%";
+const metadata_namespace_placeholder_underscores = "___NAMESPACE___";
+
+fn store_field_metadata_from_xml(
+    alloc: std.mem.Allocator,
+    content: []const u8,
+    field_entry: FieldMetadataEntry,
+    field_defaults: *FieldDefaultsMap,
+    field_types: *FieldTypesMap,
+    field_metadata: *FieldMetadataMap,
+    child_relationships: *ChildRelationshipsMap,
+) !void {
+    var metadata = read_field_metadata(alloc, content) catch return;
+    store_field_type_metadata(alloc, content, field_entry, field_types) catch {};
+    store_field_reference_metadata(
+        alloc,
+        content,
+        field_entry,
+        &metadata,
+        child_relationships,
+    ) catch {};
+    store_field_metadata(alloc, field_entry, metadata, field_metadata) catch {};
+    store_picklist_default(
+        alloc,
+        field_entry,
+        metadata.picklist_values,
+        field_defaults,
+    ) catch {};
+    store_xml_default_value(alloc, content, field_entry, field_defaults) catch {};
+}
+
+fn parse_legacy_object_type(
+    alloc: std.mem.Allocator,
+    basename: []const u8,
+) ?[]const u8 {
+    if (!std.mem.endsWith(u8, basename, legacy_object_suffix)) return null;
+    const stem = basename[0 .. basename.len - legacy_object_suffix.len];
+    if (stem.len == 0) return null;
+    return normalize_metadata_api_name(alloc, stem) catch null;
+}
+
+fn collect_legacy_object_field_metadata(
+    alloc: std.mem.Allocator,
+    content: []const u8,
+    object_type: []const u8,
+    entry_path: []const u8,
+    field_defaults: *FieldDefaultsMap,
+    field_types: *FieldTypesMap,
+    field_metadata: *FieldMetadataMap,
+    child_relationships: *ChildRelationshipsMap,
+) !void {
+    var cursor: usize = 0;
+    while (std.mem.indexOfPos(u8, content, cursor, "<fields>")) |block_start_idx| {
+        const block_start = block_start_idx + "<fields>".len;
+        const block_end = std.mem.indexOfPos(u8, content, block_start, "</fields>") orelse break;
+        cursor = block_end + "</fields>".len;
+        const block = content[block_start..block_end];
+
+        const raw_field_name = extract_xml_tag_value(block, "fullName") orelse continue;
+        if (extract_xml_tag_value(block, "type") == null) continue;
+        const field_name = try normalize_metadata_api_name(
+            alloc,
+            std.mem.trim(u8, raw_field_name, " \t\r\n"),
+        );
+        if (field_name.len == 0) continue;
+
+        try store_field_metadata_from_xml(
+            alloc,
+            block,
+            .{
+                .type_name = object_type,
+                .field_name = field_name,
+                .entry_path = entry_path,
+            },
+            field_defaults,
+            field_types,
+            field_metadata,
+            child_relationships,
+        );
+    }
+}
+
+fn normalize_metadata_api_name(
+    alloc: std.mem.Allocator,
+    raw_name: []const u8,
+) ![]const u8 {
+    const trimmed = std.mem.trim(u8, raw_name, " \t\r\n");
+    var result = std.ArrayListUnmanaged(u8).empty;
+    var idx: usize = 0;
+    while (idx < trimmed.len) {
+        if (std.mem.startsWith(u8, trimmed[idx..], metadata_namespace_placeholder_percent)) {
+            idx += metadata_namespace_placeholder_percent.len;
+            continue;
+        }
+        if (std.mem.startsWith(u8, trimmed[idx..], metadata_namespace_placeholder_underscores)) {
+            idx += metadata_namespace_placeholder_underscores.len;
+            continue;
+        }
+        try result.append(alloc, trimmed[idx]);
+        idx += 1;
+    }
+    return try alloc.dupe(u8, result.items);
+}
 
 fn read_field_metadata(alloc: std.mem.Allocator, content: []const u8) !evaluator.FieldMetadata {
     var metadata = evaluator.FieldMetadata{};
@@ -1089,8 +1335,8 @@ fn store_field_type_metadata(
     field_types: *FieldTypesMap,
 ) !void {
     const field_type = extract_xml_tag_value(content, "type") orelse return;
-    const type_key = try alloc.dupe(u8, field_entry.type_name);
-    const field_key = try alloc.dupe(u8, field_entry.field_name);
+    const type_key = try normalize_metadata_api_name(alloc, field_entry.type_name);
+    const field_key = try normalize_metadata_api_name(alloc, field_entry.field_name);
     const gop = try field_types.getOrPut(alloc, type_key);
     if (!gop.found_existing) gop.value_ptr.* = .empty;
     try gop.value_ptr.put(alloc, field_key, field_type);
@@ -1104,11 +1350,17 @@ fn store_field_reference_metadata(
     child_relationships: *ChildRelationshipsMap,
 ) !void {
     const reference_to = extract_xml_tag_value(content, "referenceTo") orelse return;
-    const parent_type = std.mem.trim(u8, reference_to, " \t\n\r");
-    metadata.reference_to = alloc.dupe(u8, parent_type) catch null;
+    const parent_type = try normalize_metadata_api_name(
+        alloc,
+        std.mem.trim(u8, reference_to, " \t\n\r"),
+    );
+    metadata.reference_to = parent_type;
 
     const raw_relationship_name = extract_xml_tag_value(content, "relationshipName") orelse return;
-    const relationship_name = std.mem.trim(u8, raw_relationship_name, " \t\n\r");
+    const relationship_name = try normalize_metadata_api_name(
+        alloc,
+        std.mem.trim(u8, raw_relationship_name, " \t\n\r"),
+    );
     put_child_relationship(
         alloc,
         child_relationships,
@@ -1138,8 +1390,8 @@ fn store_field_metadata(
     field_metadata: *FieldMetadataMap,
 ) !void {
     if (!field_metadata_has_values(metadata)) return;
-    const type_key = try alloc.dupe(u8, field_entry.type_name);
-    const field_key = try alloc.dupe(u8, field_entry.field_name);
+    const type_key = try normalize_metadata_api_name(alloc, field_entry.type_name);
+    const field_key = try normalize_metadata_api_name(alloc, field_entry.field_name);
     const gop = try field_metadata.getOrPut(alloc, type_key);
     if (!gop.found_existing) gop.value_ptr.* = .empty;
     try gop.value_ptr.put(alloc, field_key, metadata);
@@ -1208,8 +1460,8 @@ fn store_field_default_value(
     value: Value,
     field_defaults: *FieldDefaultsMap,
 ) !void {
-    const type_key = try alloc.dupe(u8, field_entry.type_name);
-    const field_key = try alloc.dupe(u8, field_entry.field_name);
+    const type_key = try normalize_metadata_api_name(alloc, field_entry.type_name);
+    const field_key = try normalize_metadata_api_name(alloc, field_entry.field_name);
     const gop = try field_defaults.getOrPut(alloc, type_key);
     if (!gop.found_existing) gop.value_ptr.* = .empty;
     try gop.value_ptr.put(alloc, field_key, value);
@@ -1343,10 +1595,18 @@ fn parse_picklist_values(
             }
             break :blk false;
         };
+        const is_active = blk: {
+            if (extract_xml_tag_value(block, "isActive")) |raw_active| {
+                const value = std.mem.trim(u8, raw_active, " \t\n\r");
+                break :blk std.ascii.eqlIgnoreCase(value, "true");
+            }
+            break :blk true;
+        };
         try values.append(alloc, .{
             .label = try decode_xml_text(alloc, std.mem.trim(u8, raw_label, " \t\n\r"), false),
             .value = try decode_xml_text(alloc, std.mem.trim(u8, raw_value, " \t\n\r"), false),
             .is_default = is_default,
+            .is_active = is_active,
         });
         search_start = block_end + "</value>".len;
     }
@@ -1361,13 +1621,820 @@ fn put_child_relationship(
     child_type: []const u8,
     fk_field: []const u8,
 ) !void {
-    const raw_key = try std.fmt.allocPrint(alloc, "{s}|{s}", .{ parent_type, relationship_name });
+    const normalized_parent_type = try normalize_metadata_api_name(alloc, parent_type);
+    const normalized_relationship_name = try normalize_metadata_api_name(alloc, relationship_name);
+    const normalized_child_type = try normalize_metadata_api_name(alloc, child_type);
+    const normalized_fk_field = try normalize_metadata_api_name(alloc, fk_field);
+    const raw_key = try std.fmt.allocPrint(
+        alloc,
+        "{s}|{s}",
+        .{ normalized_parent_type, normalized_relationship_name },
+    );
     const key = try alloc.alloc(u8, raw_key.len);
     _ = std.ascii.lowerString(key, raw_key);
     try child_relationships.put(alloc, key, .{
-        .child_type = try alloc.dupe(u8, child_type),
-        .fk_field = try alloc.dupe(u8, fk_field),
+        .child_type = normalized_child_type,
+        .fk_field = normalized_fk_field,
     });
+}
+
+fn collect_field_type_hints(
+    alloc: std.mem.Allocator,
+    io: std.Io,
+    path: []const u8,
+    field_types: *FieldTypesMap,
+) !void {
+    var dir = std.Io.Dir.cwd().openDir(io, path, .{ .iterate = true }) catch return;
+    defer dir.close(io);
+
+    var walker = dir.walk(alloc) catch return;
+    defer walker.deinit();
+
+    while (walker.next(io) catch null) |entry| {
+        if (entry.kind != .file) continue;
+
+        if (std.mem.endsWith(u8, entry.basename, ".fieldSet-meta.xml")) {
+            const object_type = metadata_object_from_path(entry.path) orelse continue;
+            try collect_field_type_hints_from_file(
+                alloc,
+                io,
+                path,
+                entry.path,
+                object_type,
+                field_types,
+            );
+        } else if (std.mem.endsWith(u8, entry.basename, ".layout-meta.xml")) {
+            const object_type = layout_parent_type_from_basename(entry.basename) orelse continue;
+            try collect_field_type_hints_from_file(
+                alloc,
+                io,
+                path,
+                entry.path,
+                object_type,
+                field_types,
+            );
+        } else if (std.mem.endsWith(u8, entry.basename, ".quickAction-meta.xml")) {
+            try collect_quick_action_field_type_hints(
+                alloc,
+                io,
+                path,
+                entry.path,
+                entry.basename,
+                field_types,
+            );
+        } else if (std.mem.endsWith(u8, entry.basename, ".cls") or
+            std.mem.endsWith(u8, entry.basename, ".trigger"))
+        {
+            try collect_apex_source_field_type_hints(
+                alloc,
+                io,
+                path,
+                entry.path,
+                field_types,
+            );
+        }
+    }
+}
+
+fn collect_field_type_hints_from_file(
+    alloc: std.mem.Allocator,
+    io: std.Io,
+    base_path: []const u8,
+    entry_path: []const u8,
+    object_type: []const u8,
+    field_types: *FieldTypesMap,
+) !void {
+    const full_path = try std.fs.path.join(alloc, &.{ base_path, entry_path });
+    const content = std.Io.Dir.cwd().readFileAlloc(
+        io,
+        full_path,
+        alloc,
+        .limited(512 * 1024),
+    ) catch return;
+    try collect_field_type_hints_from_content(alloc, content, object_type, field_types);
+}
+
+fn collect_quick_action_field_type_hints(
+    alloc: std.mem.Allocator,
+    io: std.Io,
+    base_path: []const u8,
+    entry_path: []const u8,
+    basename: []const u8,
+    field_types: *FieldTypesMap,
+) !void {
+    const full_path = try std.fs.path.join(alloc, &.{ base_path, entry_path });
+    const content = std.Io.Dir.cwd().readFileAlloc(
+        io,
+        full_path,
+        alloc,
+        .limited(128 * 1024),
+    ) catch return;
+    const object_type = if (extract_xml_tag_value(content, "targetObject")) |target|
+        std.mem.trim(u8, target, " \t\r\n")
+    else
+        quick_action_parent_type_from_basename(basename) orelse return;
+    try collect_field_type_hints_from_content(alloc, content, object_type, field_types);
+}
+
+fn collect_field_type_hints_from_content(
+    alloc: std.mem.Allocator,
+    content: []const u8,
+    object_type: []const u8,
+    field_types: *FieldTypesMap,
+) !void {
+    var cursor: usize = 0;
+    while (std.mem.indexOfPos(u8, content, cursor, "<field>")) |start_idx| {
+        const value_start = start_idx + "<field>".len;
+        const end_idx = std.mem.indexOfPos(u8, content, value_start, "</field>") orelse break;
+        cursor = end_idx + "</field>".len;
+        const field_name = std.mem.trim(u8, content[value_start..end_idx], " \t\r\n");
+        if (field_name.len == 0 or std.mem.indexOfScalar(u8, field_name, '.') != null) continue;
+        try store_field_type_hint(alloc, field_types, object_type, field_name);
+    }
+}
+
+fn collect_apex_source_field_type_hints(
+    alloc: std.mem.Allocator,
+    io: std.Io,
+    base_path: []const u8,
+    entry_path: []const u8,
+    field_types: *FieldTypesMap,
+) !void {
+    const full_path = try std.fs.path.join(alloc, &.{ base_path, entry_path });
+    const content = std.Io.Dir.cwd().readFileAlloc(
+        io,
+        full_path,
+        alloc,
+        .limited(10 * 1024 * 1024),
+    ) catch return;
+    try collect_direct_source_field_hints(alloc, content, field_types);
+    try collect_schema_fields_source_hints(alloc, content, field_types);
+}
+
+fn collect_direct_source_field_hints(
+    alloc: std.mem.Allocator,
+    content: []const u8,
+    field_types: *FieldTypesMap,
+) !void {
+    var cursor: usize = 0;
+    while (std.mem.indexOfScalarPos(u8, content, cursor, '.')) |dot| {
+        cursor = dot + 1;
+        const object_type = source_identifier_before(content, dot) orelse continue;
+        const field_name = source_identifier_after(content, dot + 1) orelse continue;
+        if (!source_field_hint_pair_is_sobject_field(object_type, field_name)) continue;
+        try store_field_type_hint(alloc, field_types, object_type, field_name);
+    }
+}
+
+fn collect_schema_fields_source_hints(
+    alloc: std.mem.Allocator,
+    content: []const u8,
+    field_types: *FieldTypesMap,
+) !void {
+    var cursor: usize = 0;
+    while (std.mem.indexOfPos(u8, content, cursor, ".fields.")) |fields_dot| {
+        cursor = fields_dot + ".fields.".len;
+        const field_name = source_identifier_after(content, cursor) orelse continue;
+        if (!source_custom_field_name(field_name)) continue;
+        const object_end = fields_dot;
+        var object_type = source_identifier_before(content, object_end) orelse continue;
+        if (std.ascii.eqlIgnoreCase(object_type, "SObjectType")) {
+            if (object_end <= object_type.len) continue;
+            const before_sobject_type = object_end - object_type.len - 1;
+            object_type = source_identifier_before(content, before_sobject_type) orelse continue;
+        }
+        if (!source_sobject_type_name(object_type)) continue;
+        try store_field_type_hint(alloc, field_types, object_type, field_name);
+    }
+}
+
+fn source_identifier_before(content: []const u8, end: usize) ?[]const u8 {
+    if (end == 0) return null;
+    var start = end;
+    while (start > 0 and source_identifier_char(content[start - 1])) : (start -= 1) {}
+    if (start == end) return null;
+    return content[start..end];
+}
+
+fn source_identifier_after(content: []const u8, start: usize) ?[]const u8 {
+    if (start >= content.len or !source_identifier_char(content[start])) return null;
+    var end = start + 1;
+    while (end < content.len and source_identifier_char(content[end])) : (end += 1) {}
+    return content[start..end];
+}
+
+fn source_identifier_char(ch: u8) bool {
+    return std.ascii.isAlphanumeric(ch) or ch == '_';
+}
+
+fn source_field_hint_pair_is_sobject_field(
+    object_type: []const u8,
+    field_name: []const u8,
+) bool {
+    return source_sobject_type_name(object_type) and source_custom_field_name(field_name);
+}
+
+fn source_sobject_type_name(name: []const u8) bool {
+    if (std.ascii.endsWithIgnoreCase(name, "__c") or
+        std.ascii.endsWithIgnoreCase(name, "__mdt") or
+        std.ascii.endsWithIgnoreCase(name, "__e"))
+    {
+        return true;
+    }
+    const standard_objects = [_][]const u8{
+        "Account",
+        "Campaign",
+        "Case",
+        "Contact",
+        "Event",
+        "Lead",
+        "Opportunity",
+        "Task",
+        "User",
+    };
+    for (standard_objects) |standard| {
+        if (std.ascii.eqlIgnoreCase(name, standard)) return true;
+    }
+    return false;
+}
+
+fn source_custom_field_name(field_name: []const u8) bool {
+    return std.ascii.endsWithIgnoreCase(field_name, "__c") or
+        std.ascii.endsWithIgnoreCase(field_name, "__r");
+}
+
+fn store_field_type_hint(
+    alloc: std.mem.Allocator,
+    field_types: *FieldTypesMap,
+    object_type: []const u8,
+    field_name: []const u8,
+) !void {
+    const type_key = try normalize_metadata_api_name(alloc, object_type);
+    const field_key = try normalize_metadata_api_name(alloc, field_name);
+    const gop = try field_types.getOrPut(alloc, type_key);
+    if (!gop.found_existing) gop.value_ptr.* = .empty;
+    for (gop.value_ptr.keys()) |known_field| {
+        if (std.ascii.eqlIgnoreCase(known_field, field_key)) return;
+    }
+    const inferred_type = builtins.infer_field_type_for_object(type_key, field_key);
+    try gop.value_ptr.put(alloc, field_key, inferred_type);
+}
+
+fn metadata_object_from_path(entry_path: []const u8) ?[]const u8 {
+    const objects_idx = std.mem.indexOf(u8, entry_path, "objects/") orelse
+        std.mem.indexOf(u8, entry_path, "objects\\") orelse return null;
+    const after_objects = entry_path[objects_idx + 8 ..];
+    const sep_idx = std.mem.indexOfAny(u8, after_objects, "/\\") orelse return null;
+    if (sep_idx == 0) return null;
+    return after_objects[0..sep_idx];
+}
+
+const SourceFieldRef = struct {
+    object_type: []const u8,
+    field_name: []const u8,
+};
+
+const SourceStringConstant = struct {
+    name: []const u8,
+    value: []const u8,
+};
+
+fn collect_source_picklist_value_hints(
+    alloc: std.mem.Allocator,
+    io: std.Io,
+    path: []const u8,
+    field_types: *FieldTypesMap,
+    field_metadata: *FieldMetadataMap,
+) !void {
+    var dir = std.Io.Dir.cwd().openDir(io, path, .{ .iterate = true }) catch return;
+    defer dir.close(io);
+
+    var walker = dir.walk(alloc) catch return;
+    defer walker.deinit();
+
+    var field_refs = std.ArrayListUnmanaged(SourceFieldRef).empty;
+    var constants = std.ArrayListUnmanaged(SourceStringConstant).empty;
+
+    while (walker.next(io) catch null) |entry| {
+        if (entry.kind != .file) continue;
+        if (!std.mem.endsWith(u8, entry.basename, ".cls") and
+            !std.mem.endsWith(u8, entry.basename, ".trigger"))
+        {
+            continue;
+        }
+        const full_path = std.fs.path.join(alloc, &.{ path, entry.path }) catch continue;
+        const content = std.Io.Dir.cwd().readFileAlloc(
+            io,
+            full_path,
+            alloc,
+            .limited(10 * 1024 * 1024),
+        ) catch continue;
+        try collect_source_field_refs_from_content(alloc, content, &field_refs);
+        try collect_source_string_constants_from_content(alloc, content, &constants);
+    }
+
+    for (field_refs.items) |field_ref| {
+        if (!source_field_ref_is_picklist(field_types, field_metadata, field_ref)) continue;
+        if (field_metadata_has_picklist_values(
+            field_metadata,
+            field_ref.object_type,
+            field_ref.field_name,
+        )) {
+            continue;
+        }
+        const prefix = try source_picklist_constant_prefix(alloc, field_ref.field_name);
+        if (prefix.len < 5) continue;
+        for (constants.items) |constant| {
+            if (!source_constant_matches_field_prefix(constant.name, prefix)) continue;
+            try append_source_picklist_metadata_value(
+                alloc,
+                field_metadata,
+                field_ref.object_type,
+                field_ref.field_name,
+                constant.value,
+            );
+        }
+    }
+}
+
+fn collect_source_field_refs_from_content(
+    alloc: std.mem.Allocator,
+    content: []const u8,
+    refs: *std.ArrayListUnmanaged(SourceFieldRef),
+) !void {
+    var cursor: usize = 0;
+    while (std.mem.indexOfScalarPos(u8, content, cursor, '.')) |dot| {
+        cursor = dot + 1;
+        const object_type = source_identifier_before(content, dot) orelse continue;
+        const field_name = source_identifier_after(content, dot + 1) orelse continue;
+        if (!source_field_hint_pair_is_sobject_field(object_type, field_name)) continue;
+        try append_source_field_ref(alloc, refs, object_type, field_name);
+    }
+
+    cursor = 0;
+    while (std.mem.indexOfPos(u8, content, cursor, ".fields.")) |fields_dot| {
+        cursor = fields_dot + ".fields.".len;
+        const field_name = source_identifier_after(content, cursor) orelse continue;
+        if (!source_custom_field_name(field_name)) continue;
+        const object_end = fields_dot;
+        var object_type = source_identifier_before(content, object_end) orelse continue;
+        if (std.ascii.eqlIgnoreCase(object_type, "SObjectType")) {
+            if (object_end <= object_type.len) continue;
+            const before_sobject_type = object_end - object_type.len - 1;
+            object_type = source_identifier_before(content, before_sobject_type) orelse continue;
+        }
+        if (!source_sobject_type_name(object_type)) continue;
+        try append_source_field_ref(alloc, refs, object_type, field_name);
+    }
+}
+
+fn append_source_field_ref(
+    alloc: std.mem.Allocator,
+    refs: *std.ArrayListUnmanaged(SourceFieldRef),
+    object_type: []const u8,
+    field_name: []const u8,
+) !void {
+    const normalized_object = try normalize_metadata_api_name(alloc, object_type);
+    const normalized_field = try normalize_metadata_api_name(alloc, field_name);
+    for (refs.items) |known| {
+        if (std.ascii.eqlIgnoreCase(known.object_type, normalized_object) and
+            std.ascii.eqlIgnoreCase(known.field_name, normalized_field))
+        {
+            return;
+        }
+    }
+    try refs.append(alloc, .{
+        .object_type = normalized_object,
+        .field_name = normalized_field,
+    });
+}
+
+fn collect_source_string_constants_from_content(
+    alloc: std.mem.Allocator,
+    content: []const u8,
+    constants: *std.ArrayListUnmanaged(SourceStringConstant),
+) !void {
+    var cursor: usize = 0;
+    while (std.mem.indexOfPos(u8, content, cursor, "String")) |string_idx| {
+        cursor = string_idx + "String".len;
+        if (string_idx > 0 and source_identifier_char(content[string_idx - 1])) continue;
+        if (cursor < content.len and source_identifier_char(content[cursor])) continue;
+
+        var name_start = cursor;
+        while (name_start < content.len and
+            std.ascii.isWhitespace(content[name_start])) : (name_start += 1)
+        {}
+        const name = source_identifier_after(content, name_start) orelse continue;
+        if (!source_constant_name_is_candidate(name)) continue;
+
+        const eq_idx =
+            std.mem.indexOfScalarPos(u8, content, name_start + name.len, '=') orelse continue;
+        const semi_idx = std.mem.indexOfScalarPos(u8, content, eq_idx, ';') orelse continue;
+        const quote_idx = std.mem.indexOfScalarPos(u8, content, eq_idx, '\'') orelse continue;
+        if (quote_idx > semi_idx) continue;
+        const value =
+            parse_apex_source_single_quoted_literal(alloc, content, quote_idx) orelse continue;
+        try append_source_string_constant(alloc, constants, name, value);
+        cursor = semi_idx + 1;
+    }
+}
+
+fn source_constant_name_is_candidate(name: []const u8) bool {
+    if (name.len == 0) return false;
+    var has_underscore = false;
+    var has_alpha = false;
+    for (name) |ch| {
+        if (ch == '_') {
+            has_underscore = true;
+            continue;
+        }
+        if (std.ascii.isAlphabetic(ch)) {
+            if (!std.ascii.isUpper(ch)) return false;
+            has_alpha = true;
+            continue;
+        }
+        if (!std.ascii.isDigit(ch)) return false;
+    }
+    return has_underscore and has_alpha;
+}
+
+fn parse_apex_source_single_quoted_literal(
+    alloc: std.mem.Allocator,
+    content: []const u8,
+    quote_idx: usize,
+) ?[]const u8 {
+    if (quote_idx >= content.len or content[quote_idx] != '\'') return null;
+    var result = std.ArrayListUnmanaged(u8).empty;
+    var idx = quote_idx + 1;
+    while (idx < content.len) {
+        const ch = content[idx];
+        if (ch == '\\' and idx + 1 < content.len) {
+            result.append(alloc, content[idx + 1]) catch return null;
+            idx += 2;
+            continue;
+        }
+        if (ch == '\'') {
+            if (idx + 1 < content.len and content[idx + 1] == '\'') {
+                result.append(alloc, '\'') catch return null;
+                idx += 2;
+                continue;
+            }
+            return alloc.dupe(u8, result.items) catch null;
+        }
+        result.append(alloc, ch) catch return null;
+        idx += 1;
+    }
+    return null;
+}
+
+fn append_source_string_constant(
+    alloc: std.mem.Allocator,
+    constants: *std.ArrayListUnmanaged(SourceStringConstant),
+    name: []const u8,
+    value: []const u8,
+) !void {
+    for (constants.items) |known| {
+        if (std.ascii.eqlIgnoreCase(known.name, name) and
+            std.mem.eql(u8, known.value, value))
+        {
+            return;
+        }
+    }
+    try constants.append(alloc, .{
+        .name = try alloc.dupe(u8, name),
+        .value = value,
+    });
+}
+
+fn source_field_ref_is_picklist(
+    field_types: *FieldTypesMap,
+    field_metadata: *FieldMetadataMap,
+    field_ref: SourceFieldRef,
+) bool {
+    if (lookup_field_type_hint(
+        field_types,
+        field_ref.object_type,
+        field_ref.field_name,
+    )) |field_type| {
+        if (metadata_field_type_is_picklist(field_type)) return true;
+    }
+    if (lookup_source_field_metadata(
+        field_metadata,
+        field_ref.object_type,
+        field_ref.field_name,
+    )) |metadata| {
+        if (metadata.field_type) |field_type| {
+            if (metadata_field_type_is_picklist(field_type)) return true;
+        }
+    }
+    return metadata_field_type_is_picklist(
+        builtins.infer_field_type_for_object(field_ref.object_type, field_ref.field_name),
+    );
+}
+
+fn metadata_field_type_is_picklist(field_type: []const u8) bool {
+    return std.ascii.eqlIgnoreCase(field_type, "Picklist") or
+        std.ascii.eqlIgnoreCase(field_type, "MultiselectPicklist") or
+        std.ascii.eqlIgnoreCase(field_type, "MULTIPICKLIST");
+}
+
+fn lookup_field_type_hint(
+    field_types: *FieldTypesMap,
+    object_type: []const u8,
+    field_name: []const u8,
+) ?[]const u8 {
+    const type_fields = field_types.get(object_type) orelse blk: {
+        var type_iter = field_types.iterator();
+        while (type_iter.next()) |entry| {
+            if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, object_type)) break :blk entry.value_ptr.*;
+        }
+        return null;
+    };
+    if (type_fields.get(field_name)) |field_type| return field_type;
+    var field_iter = type_fields.iterator();
+    while (field_iter.next()) |entry| {
+        if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, field_name)) return entry.value_ptr.*;
+    }
+    return null;
+}
+
+fn lookup_source_field_metadata(
+    field_metadata: *FieldMetadataMap,
+    object_type: []const u8,
+    field_name: []const u8,
+) ?*evaluator.FieldMetadata {
+    const type_meta = field_metadata.getPtr(object_type) orelse blk: {
+        var type_iter = field_metadata.iterator();
+        while (type_iter.next()) |entry| {
+            if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, object_type)) break :blk entry.value_ptr;
+        }
+        return null;
+    };
+    if (type_meta.getPtr(field_name)) |metadata| return metadata;
+    var field_iter = type_meta.iterator();
+    while (field_iter.next()) |entry| {
+        if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, field_name)) return entry.value_ptr;
+    }
+    return null;
+}
+
+fn field_metadata_has_picklist_values(
+    field_metadata: *FieldMetadataMap,
+    object_type: []const u8,
+    field_name: []const u8,
+) bool {
+    const metadata =
+        lookup_source_field_metadata(field_metadata, object_type, field_name) orelse return false;
+    return metadata.picklist_values.len > 0;
+}
+
+fn source_picklist_constant_prefix(
+    alloc: std.mem.Allocator,
+    field_name: []const u8,
+) ![]const u8 {
+    var local = source_simple_api_name(field_name);
+    if (source_namespaced_custom_api_name(local)) {
+        const namespace_sep = std.mem.indexOf(u8, local, "__").?;
+        local = local[namespace_sep + 2 ..];
+    }
+    if (std.ascii.endsWithIgnoreCase(local, "__c") or
+        std.ascii.endsWithIgnoreCase(local, "__r"))
+    {
+        local = local[0 .. local.len - 3];
+    }
+
+    var result = std.ArrayListUnmanaged(u8).empty;
+    var prev_was_separator = true;
+    var prev_was_lower_or_digit = false;
+    for (local) |ch| {
+        if (ch == '_') {
+            if (!prev_was_separator) {
+                try result.append(alloc, '_');
+                prev_was_separator = true;
+            }
+            prev_was_lower_or_digit = false;
+            continue;
+        }
+        if (std.ascii.isUpper(ch) and prev_was_lower_or_digit and !prev_was_separator) {
+            try result.append(alloc, '_');
+        }
+        try result.append(alloc, std.ascii.toUpper(ch));
+        prev_was_separator = false;
+        prev_was_lower_or_digit = std.ascii.isLower(ch) or std.ascii.isDigit(ch);
+    }
+    while (result.items.len > 0 and result.items[result.items.len - 1] == '_') {
+        _ = result.pop();
+    }
+    return try alloc.dupe(u8, result.items);
+}
+
+fn source_simple_api_name(field_name: []const u8) []const u8 {
+    if (std.mem.lastIndexOfScalar(u8, field_name, '.')) |dot| {
+        return field_name[dot + 1 ..];
+    }
+    return field_name;
+}
+
+fn source_namespaced_custom_api_name(name: []const u8) bool {
+    if (!std.ascii.endsWithIgnoreCase(name, "__c") and
+        !std.ascii.endsWithIgnoreCase(name, "__r"))
+    {
+        return false;
+    }
+    const namespace_sep = std.mem.indexOf(u8, name, "__") orelse return false;
+    return std.mem.indexOf(u8, name[namespace_sep + 2 ..], "__") != null;
+}
+
+fn source_constant_matches_field_prefix(
+    constant_name: []const u8,
+    field_prefix: []const u8,
+) bool {
+    return constant_name.len > field_prefix.len + 1 and
+        std.ascii.startsWithIgnoreCase(constant_name, field_prefix) and
+        constant_name[field_prefix.len] == '_';
+}
+
+fn append_source_picklist_metadata_value(
+    alloc: std.mem.Allocator,
+    field_metadata: *FieldMetadataMap,
+    object_type: []const u8,
+    field_name: []const u8,
+    value: []const u8,
+) !void {
+    const type_key = try normalize_metadata_api_name(alloc, object_type);
+    const field_key = try normalize_metadata_api_name(alloc, field_name);
+    const type_gop = try field_metadata.getOrPut(alloc, type_key);
+    if (!type_gop.found_existing) type_gop.value_ptr.* = .empty;
+    const field_gop = try type_gop.value_ptr.getOrPut(alloc, field_key);
+    if (!field_gop.found_existing) {
+        field_gop.value_ptr.* = .{ .field_type = "Picklist" };
+    }
+    for (field_gop.value_ptr.picklist_values) |known| {
+        if (std.ascii.eqlIgnoreCase(known.value, value)) return;
+    }
+    const previous = field_gop.value_ptr.picklist_values;
+    const next = try alloc.alloc(evaluator.PicklistValueMetadata, previous.len + 1);
+    @memcpy(next[0..previous.len], previous);
+    next[previous.len] = .{
+        .label = value,
+        .value = value,
+        .is_default = false,
+        .is_active = true,
+    };
+    field_gop.value_ptr.picklist_values = next;
+}
+
+fn collect_child_relationship_hints(
+    alloc: std.mem.Allocator,
+    io: std.Io,
+    path: []const u8,
+    child_relationships: *ChildRelationshipsMap,
+) !void {
+    var dir = std.Io.Dir.cwd().openDir(io, path, .{ .iterate = true }) catch return;
+    defer dir.close(io);
+
+    var walker = dir.walk(alloc) catch return;
+    defer walker.deinit();
+
+    while (walker.next(io) catch null) |entry| {
+        if (entry.kind != .file) continue;
+        if (std.mem.endsWith(u8, entry.basename, ".layout-meta.xml")) {
+            try collect_layout_child_relationship_hints(
+                alloc,
+                io,
+                path,
+                entry.path,
+                entry.basename,
+                child_relationships,
+            );
+        } else if (std.mem.endsWith(u8, entry.basename, ".quickAction-meta.xml")) {
+            try collect_quick_action_child_relationship_hint(
+                alloc,
+                io,
+                path,
+                entry.path,
+                entry.basename,
+                child_relationships,
+            );
+        }
+    }
+}
+
+fn collect_layout_child_relationship_hints(
+    alloc: std.mem.Allocator,
+    io: std.Io,
+    base_path: []const u8,
+    entry_path: []const u8,
+    basename: []const u8,
+    child_relationships: *ChildRelationshipsMap,
+) !void {
+    const parent_type = layout_parent_type_from_basename(basename) orelse return;
+    const full_path = try std.fs.path.join(alloc, &.{ base_path, entry_path });
+    const content = std.Io.Dir.cwd().readFileAlloc(
+        io,
+        full_path,
+        alloc,
+        .limited(512 * 1024),
+    ) catch return;
+
+    var cursor: usize = 0;
+    while (std.mem.indexOfPos(u8, content, cursor, "<relatedList>")) |start_idx| {
+        const value_start = start_idx + "<relatedList>".len;
+        const end_idx = std.mem.indexOfPos(u8, content, value_start, "</relatedList>") orelse break;
+        cursor = end_idx + "</relatedList>".len;
+        const value = std.mem.trim(u8, content[value_start..end_idx], " \t\r\n");
+        const dot = std.mem.indexOfScalar(u8, value, '.') orelse continue;
+        const child_type = std.mem.trim(u8, value[0..dot], " \t\r\n");
+        const fk_field = std.mem.trim(u8, value[dot + 1 ..], " \t\r\n");
+        try put_custom_child_relationship_hint(
+            alloc,
+            child_relationships,
+            parent_type,
+            child_type,
+            fk_field,
+        );
+    }
+}
+
+fn collect_quick_action_child_relationship_hint(
+    alloc: std.mem.Allocator,
+    io: std.Io,
+    base_path: []const u8,
+    entry_path: []const u8,
+    basename: []const u8,
+    child_relationships: *ChildRelationshipsMap,
+) !void {
+    const parent_type = quick_action_parent_type_from_basename(basename) orelse return;
+    const full_path = try std.fs.path.join(alloc, &.{ base_path, entry_path });
+    const content = std.Io.Dir.cwd().readFileAlloc(
+        io,
+        full_path,
+        alloc,
+        .limited(128 * 1024),
+    ) catch return;
+    const child_type = std.mem.trim(
+        u8,
+        extract_xml_tag_value(content, "targetObject") orelse return,
+        " \t\r\n",
+    );
+    const fk_field = std.mem.trim(
+        u8,
+        extract_xml_tag_value(content, "targetParentField") orelse return,
+        " \t\r\n",
+    );
+    try put_custom_child_relationship_hint(
+        alloc,
+        child_relationships,
+        parent_type,
+        child_type,
+        fk_field,
+    );
+}
+
+fn put_custom_child_relationship_hint(
+    alloc: std.mem.Allocator,
+    child_relationships: *ChildRelationshipsMap,
+    parent_type: []const u8,
+    child_type: []const u8,
+    fk_field: []const u8,
+) !void {
+    const relationship_name = custom_child_relationship_name_from_type(alloc, child_type) orelse return;
+    try put_child_relationship(
+        alloc,
+        child_relationships,
+        parent_type,
+        relationship_name,
+        child_type,
+        fk_field,
+    );
+}
+
+fn custom_child_relationship_name_from_type(
+    alloc: std.mem.Allocator,
+    child_type: []const u8,
+) ?[]const u8 {
+    if (!std.ascii.endsWithIgnoreCase(child_type, "__c")) return null;
+    return std.fmt.allocPrint(
+        alloc,
+        "{s}__r",
+        .{child_type[0 .. child_type.len - "__c".len]},
+    ) catch null;
+}
+
+fn layout_parent_type_from_basename(basename: []const u8) ?[]const u8 {
+    if (!std.mem.endsWith(u8, basename, ".layout-meta.xml")) return null;
+    const stem = basename[0 .. basename.len - ".layout-meta.xml".len];
+    const dash = std.mem.indexOfScalar(u8, stem, '-') orelse return null;
+    if (dash == 0) return null;
+    return stem[0..dash];
+}
+
+fn quick_action_parent_type_from_basename(basename: []const u8) ?[]const u8 {
+    if (!std.mem.endsWith(u8, basename, ".quickAction-meta.xml")) return null;
+    const stem = basename[0 .. basename.len - ".quickAction-meta.xml".len];
+    const dot = std.mem.indexOfScalar(u8, stem, '.') orelse return null;
+    if (dot == 0) return null;
+    return stem[0..dot];
 }
 
 /// object-meta.xml を走査し `<customSettingsType>` が含まれる SObject 名と種別を集める。
@@ -1678,6 +2745,59 @@ fn write_generic_rollup_metadata_fixture(dir: anytype) !void {
         \\    <referenceTo>Child__c</referenceTo>
         \\    <relationshipName>Grandchildren</relationshipName>
         \\    <type>MasterDetail</type>
+        \\</CustomField>
+        ,
+    });
+}
+
+fn write_numeric_child_relationship_metadata_fixture(dir: anytype) !void {
+    const tio = std.testing.io;
+    try dir.createDirPath(tio, "objects/Child__c/fields");
+    try dir.writeFile(tio, .{
+        .sub_path = "objects/Child__c/fields/Parent__c.field-meta.xml",
+        .data =
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+        \\    <fullName>Parent__c</fullName>
+        \\    <referenceTo>Parent__c</referenceTo>
+        \\    <relationshipName>apTasks1</relationshipName>
+        \\    <type>Lookup</type>
+        \\</CustomField>
+        ,
+    });
+}
+
+fn write_activity_lookup_metadata_fixture(dir: anytype) !void {
+    const tio = std.testing.io;
+    try dir.createDirPath(tio, "objects/Activity/fields");
+    try dir.writeFile(tio, .{
+        .sub_path = "objects/Activity/fields/Template__c.field-meta.xml",
+        .data =
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+        \\    <fullName>Template__c</fullName>
+        \\    <deleteConstraint>SetNull</deleteConstraint>
+        \\    <referenceTo>Template__c</referenceTo>
+        \\    <relationshipName>Tasks</relationshipName>
+        \\    <type>Lookup</type>
+        \\</CustomField>
+        ,
+    });
+}
+
+fn write_activity_task_ap_task_lookup_metadata_fixture(dir: anytype) !void {
+    const tio = std.testing.io;
+    try dir.createDirPath(tio, "objects/Activity/fields");
+    try dir.writeFile(tio, .{
+        .sub_path = "objects/Activity/fields/TaskAPTask__c.field-meta.xml",
+        .data =
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+        \\    <fullName>TaskAPTask__c</fullName>
+        \\    <deleteConstraint>SetNull</deleteConstraint>
+        \\    <referenceTo>Template__c</referenceTo>
+        \\    <relationshipName>Tasks</relationshipName>
+        \\    <type>Lookup</type>
         \\</CustomField>
         ,
     });
@@ -2547,6 +3667,20 @@ test "E2E: System.now date matches System.today" {
         \\}
     ;
     try expect_entry_string(source, "SystemNowTest", "test", "true");
+}
+
+test "E2E: System clock values are monotonic and expose epoch millis" {
+    const source =
+        \\public class SystemClockProbe {
+        \\    public static String test() {
+        \\        Long first = System.currentTimeMillis();
+        \\        Long second = System.currentTimeMillis();
+        \\        Long nowMs = System.now().getTime();
+        \\        return String.valueOf(second > first) + ':' + String.valueOf(nowMs > 0);
+        \\    }
+        \\}
+    ;
+    try expect_entry_string(source, "SystemClockProbe", "test", "true:true");
 }
 
 test "E2E: Database.query on unknown object throws QueryException" {
@@ -4433,6 +5567,19 @@ test "E2E: field assignment on static variable whose name collides with a class"
     try expect_entry_string(source, "ShadowedStaticTest", "test", "set-via-static");
 }
 
+test "E2E: static field storage is case-insensitive for class qualifiers" {
+    const source =
+        \\public class StaticCaseStorageProbe {
+        \\    public static Account cached;
+        \\    public static String test() {
+        \\        StaticCaseStorageProbe.cached = new Account(Name = 'upper-write');
+        \\        return staticcasestorageprobe.cached.Name;
+        \\    }
+        \\}
+    ;
+    try expect_entry_string(source, "StaticCaseStorageProbe", "test", "upper-write");
+}
+
 test "E2E: inherited method reaches intermediate override via virtual dispatch" {
     const source =
         \\public virtual class VirtualDispatchBase {
@@ -4829,16 +5976,16 @@ test "E2E: SOQL parent relationship resolves namespaced custom lookup" {
     const source =
         \\public class NamespacedParentLookupProbe {
         \\    public static String test() {
-        \\        Parent__c parent = new Parent__c(Name = 'Parent Name');
+        \\        pkg__Parent__c parent = new pkg__Parent__c(Name = 'Parent Name');
         \\        insert parent;
-        \\        Child__c child = new Child__c(Parent__c = parent.Id);
+        \\        Child__c child = new Child__c(pkg__Parent__c = parent.Id);
         \\        insert child;
         \\        Child__c queried = [
-        \\            SELECT npsp__Parent__r.Name
+        \\            SELECT pkg__Parent__r.Name
         \\            FROM Child__c
         \\            WHERE Id = :child.Id
         \\        ];
-        \\        return queried.Parent__r.Name;
+        \\        return queried.pkg__Parent__r.Name;
         \\    }
         \\}
     ;
@@ -4849,16 +5996,16 @@ test "E2E: SOQL parent relationship resolves namespaced managed package-style lo
     const source =
         \\public class NamespacedPackageLookupProbe {
         \\    public static String test() {
-        \\        Form_Template__c template = new Form_Template__c(Template_JSON__c = 'json');
+        \\        pkg__Form_Template__c template = new pkg__Form_Template__c(Template_JSON__c = 'json');
         \\        insert template;
-        \\        DataImportBatch__c batch = new DataImportBatch__c(Form_Template__c = template.Id);
+        \\        DataImportBatch__c batch = new DataImportBatch__c(pkg__Form_Template__c = template.Id);
         \\        insert batch;
         \\        DataImportBatch__c queried = [
-        \\            SELECT npsp__Form_Template__r.Template_JSON__c
+        \\            SELECT pkg__Form_Template__r.Template_JSON__c
         \\            FROM DataImportBatch__c
         \\            WHERE Id = :batch.Id
         \\        ];
-        \\        return queried.Form_Template__r.Template_JSON__c;
+        \\        return queried.pkg__Form_Template__r.Template_JSON__c;
         \\    }
         \\}
     ;
@@ -6726,24 +7873,24 @@ test "E2E: Type.forName returns null for names that don't resolve" {
     try expect_entry_string(source, "TypeForNameNullProbe", "test", "ok");
 }
 
-test "E2E: fflib_IDGenerator.generate provides a fake id when class source is absent" {
-    // fflib-apex-common tests reference fflib_IDGenerator from the sibling fflib-apex-mocks
-    // package, but when only fflib-apex-common is loaded the class is missing and tests
-    // crash with `null.Id` downstream. We stub the helper with a deterministic fake id —
-    // only when the user hasn't actually supplied their own fflib_IDGenerator.
-    const source =
-        \\public class FflibIdGeneratorStubProbe {
-        \\    public static String test() {
-        \\        Id a = fflib_IDGenerator.generate(Schema.Account.SObjectType);
-        \\        Id b = fflib_IDGenerator.generate(Schema.Account.SObjectType);
-        \\        if (a == null || b == null) return 'null-id';
-        \\        if (a == b) return 'duplicate-id';
-        \\        if (!String.valueOf(a).startsWith('001')) return 'bad-prefix:' + String.valueOf(a);
-        \\        return 'ok';
-        \\    }
-        \\}
-    ;
-    try expect_entry_string(source, "FflibIdGeneratorStubProbe", "test", "ok");
+test "fixture dependency expansion adds fflib mocks for apex common" {
+    var expanded: std.ArrayListUnmanaged([]const u8) = .empty;
+    try expand_fixture_dependency_paths(
+        std.testing.allocator,
+        &.{".local-fixtures/apex/repos/fflib-apex-common"},
+        &expanded,
+    );
+    defer expanded.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(usize, 2), expanded.items.len);
+    try std.testing.expectEqualStrings(
+        ".local-fixtures/apex/repos/fflib-apex-mocks/sfdx-source/apex-mocks/main",
+        expanded.items[0],
+    );
+    try std.testing.expectEqualStrings(
+        ".local-fixtures/apex/repos/fflib-apex-common",
+        expanded.items[1],
+    );
 }
 
 test "E2E: Contact exposes Tasks and Account exposes Cases as child relationships" {
@@ -6789,7 +7936,14 @@ test "E2E: relationship-style field names describe as REFERENCE" {
         \\        String refName = (refs != null && refs.size() > 0)
         \\            ? refs[0].getDescribe().getName()
         \\            : 'none';
-        \\        return String.valueOf(dt) + '|' + rel + '|' + refName;
+        \\        Schema.DescribeFieldResult master = Contact.MasterRecordId.getDescribe();
+        \\        List<Schema.SObjectType> masterRefs = master.getReferenceTo();
+        \\        String masterRefName = (masterRefs != null && masterRefs.size() > 0)
+        \\            ? masterRefs[0].getDescribe().getName()
+        \\            : 'none';
+        \\        return String.valueOf(dt) + '|' + rel + '|' + refName + '|' +
+        \\            master.getRelationshipName() + '|' + masterRefName + '|' +
+        \\            String.valueOf(master.isUpdateable());
         \\    }
         \\}
     ;
@@ -6797,7 +7951,7 @@ test "E2E: relationship-style field names describe as REFERENCE" {
         source,
         "RelationshipDescribeProbe",
         "test",
-        "REFERENCE|CreatedBy|User",
+        "REFERENCE|CreatedBy|User|MasterRecord|Contact|false",
     );
 }
 
@@ -7480,6 +8634,59 @@ test "E2E: SOQL formula field Experience_Name__c resolved from parent" {
         \\}
     ;
     try expect_entry_string(source, "FormulaFieldTest", "test", "Hiking");
+}
+
+test "E2E: formula fields support IF equality and CASESAFEID" {
+    const alloc = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try tmp_dir.dir.createDirPath(std.testing.io, "objects/Contact/fields");
+    try tmp_dir.dir.writeFile(std.testing.io, .{
+        .sub_path = "objects/Contact/fields/ParentKey__c.field-meta.xml",
+        .data =
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+        \\    <fullName>ParentKey__c</fullName>
+        \\    <formula>IF(Account.Type__c==&apos;Primary&apos;,CASESAFEID(AccountId),CASESAFEID(AlternateAccount__c))</formula>
+        \\    <label>Parent Key</label>
+        \\    <type>Text</type>
+        \\</CustomField>
+        ,
+    });
+    const tmp_path = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", alloc);
+    defer alloc.free(tmp_path);
+
+    const source =
+        \\public class FormulaIfCasesafeIdProbe {
+        \\    public static String test() {
+        \\        Account parent = new Account(
+        \\            Name = 'Parent',
+        \\            Type__c = 'Primary'
+        \\        );
+        \\        insert parent;
+        \\        Contact contact = new Contact(LastName = 'Member', AccountId = parent.Id);
+        \\        insert contact;
+        \\        List<Contact> rows = [
+        \\            SELECT ParentKey__c
+        \\            FROM Contact
+        \\            WHERE ParentKey__c != null
+        \\        ];
+        \\        return String.valueOf(rows.size()) + ':' + rows[0].ParentKey__c + ':' + parent.Id;
+        \\    }
+        \\}
+    ;
+    const result = try run(alloc, std.testing.io, source, .{
+        .entry_class = "FormulaIfCasesafeIdProbe",
+        .entry_method = "test",
+        .source_paths = &.{tmp_path},
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings(
+        "1:001000000000000001:001000000000000001",
+        result.value.string,
+    );
 }
 
 test "E2E: rollup summary fields resolve in WHERE clauses and selected records" {
@@ -8436,6 +9643,56 @@ test "E2E: hierarchy custom setting accessors return detached records" {
     try std.testing.expectEqualStrings("saved:org", result.value.string);
 }
 
+test "E2E: cached hierarchy custom setting object mutations remain visible through static facade" {
+    const alloc = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try write_generic_hierarchy_custom_setting_fixture(tmp_dir.dir);
+    const tmp_path = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", alloc);
+    defer alloc.free(tmp_path);
+
+    const source =
+        \\public class GenericSettingsFacade {
+        \\    private static AppSettings__c cached;
+        \\    public static AppSettings__c getSettings() {
+        \\        if (cached == null) {
+        \\            cached = new AppSettings__c();
+        \\        }
+        \\        return cached;
+        \\    }
+        \\}
+        \\public class GenericSettingsWrapper {
+        \\    private AppSettings__c settings {
+        \\        get {
+        \\            if (settings == null) {
+        \\                settings = GenericSettingsFacade.getSettings();
+        \\            }
+        \\            return settings;
+        \\        }
+        \\        set;
+        \\    }
+        \\    public void save(String value) {
+        \\        settings.Flag__c = value;
+        \\    }
+        \\}
+        \\public class GenericSettingsCacheMutationTest {
+        \\    public static String test() {
+        \\        new GenericSettingsWrapper().save('updated');
+        \\        return GenericSettingsFacade.getSettings().Flag__c;
+        \\    }
+        \\}
+    ;
+    const result = try run(alloc, std.testing.io, source, .{
+        .entry_class = "GenericSettingsCacheMutationTest",
+        .entry_method = "test",
+        .source_paths = &.{tmp_path},
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("updated", result.value.string);
+}
+
 test "E2E: hierarchy custom setting records are visible to later static initialization" {
     const alloc = std.testing.allocator;
     var tmp_dir = std.testing.tmpDir(.{});
@@ -8610,6 +9867,60 @@ test "E2E: test runner sees hierarchy custom settings before later class static 
         \\        settings.Flag__c = 'configured';
         \\        upsert settings;
         \\        System.Assert.areEqual('configured', ScenarioHolder.getScenario());
+        \\    }
+        \\}
+        ,
+    });
+    const tmp_path = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", alloc);
+    defer alloc.free(tmp_path);
+
+    var _null_buf: [256]u8 = undefined;
+    var _null_writer: std.Io.Writer.Discarding = .init(&_null_buf);
+    var suite = try run_test_suite(
+        alloc,
+        std.testing.io,
+        &.{tmp_path},
+        &_null_writer.writer,
+    );
+    defer suite.deinit();
+
+    try std.testing.expectEqual(@as(u32, 1), suite.total);
+    try std.testing.expectEqual(@as(u32, 1), suite.passed);
+    try std.testing.expectEqual(@as(u32, 0), suite.failed);
+    try std.testing.expectEqual(@as(u32, 0), suite.errors);
+}
+
+test "E2E: test setup static state is reset before each test method" {
+    const alloc = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try write_generic_hierarchy_custom_setting_fixture(tmp_dir.dir);
+    try tmp_dir.dir.writeFile(std.testing.io, .{
+        .sub_path = "SetupStaticReset_Tests.cls",
+        .data =
+        \\@IsTest
+        \\private class SetupStaticReset_Tests {
+        \\    private static AppSettings__c cachedSettings;
+        \\
+        \\    private static AppSettings__c getSettings() {
+        \\        if (cachedSettings == null) {
+        \\            cachedSettings = new AppSettings__c();
+        \\        }
+        \\        return cachedSettings;
+        \\    }
+        \\
+        \\    @TestSetup
+        \\    static void setupData() {
+        \\        getSettings().Flag__c = 'setup';
+        \\        insert new Account(Name = 'setup');
+        \\    }
+        \\
+        \\    @IsTest
+        \\    static void statics_start_fresh_after_setup() {
+        \\        System.Assert.areEqual(null, cachedSettings);
+        \\        getSettings().Flag__c = 'test';
+        \\        System.Assert.areEqual('test', getSettings().Flag__c);
         \\    }
         \\}
         ,
@@ -9281,22 +10592,22 @@ test "E2E: JSON serialization escapes embedded quotes in strings" {
     );
 }
 
-test "E2E: managed package data import address mapping falls back when metadata value is null" {
+test "E2E: managed package map get preserves explicit null values" {
     const source =
-        \\public class PackageAddressMappingFallbackProbe {
+        \\public class PackageMapNullProbe {
         \\    public static String test() {
         \\        Map<String, String> fields = new Map<String, String>();
-        \\        fields.put('npsp__Home_City__c', null);
-        \\        return fields.get('Home_City__c') + ':' +
-        \\            fields.get('npsp__Home_City__c');
+        \\        fields.put('pkg__Custom_Field__c', null);
+        \\        return String.valueOf(fields.get('Custom_Field__c')) + ':' +
+        \\            String.valueOf(fields.get('pkg__Custom_Field__c'));
         \\    }
         \\}
     ;
     try expect_entry_string(
         source,
-        "PackageAddressMappingFallbackProbe",
+        "PackageMapNullProbe",
         "test",
-        "MailingCity__c:MailingCity__c",
+        "null:null",
     );
 }
 
@@ -9383,27 +10694,51 @@ test "E2E: Data Import settings getInstance keeps unset fields null" {
     );
 }
 
-test "E2E: custom metadata lookup stubs expose developer and object names" {
+test "E2E: custom metadata getInstance hydrates metadata relationship parents" {
     const alloc = std.testing.allocator;
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
+    try tmp_dir.dir.createDirPath(std.testing.io, "objects/ChildThing__mdt/fields");
     try tmp_dir.dir.createDirPath(std.testing.io, "customMetadata");
     try tmp_dir.dir.writeFile(std.testing.io, .{
-        .sub_path = "customMetadata/Data_Import_Field_Mapping.Home_City.md-meta.xml",
+        .sub_path = "objects/ChildThing__mdt/fields/ParentThing__c.field-meta.xml",
+        .data =
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+        \\    <fullName>ParentThing__c</fullName>
+        \\    <referenceTo>ParentThing__mdt</referenceTo>
+        \\    <relationshipName>ChildThings</relationshipName>
+        \\    <type>MetadataRelationship</type>
+        \\</CustomField>
+        ,
+    });
+    try tmp_dir.dir.writeFile(std.testing.io, .{
+        .sub_path = "customMetadata/ParentThing.Primary.md-meta.xml",
         .data =
         \\<?xml version="1.0" encoding="UTF-8"?>
         \\<CustomMetadata xmlns="http://soap.sforce.com/2006/04/metadata"
         \\    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
         \\    xmlns:xsd="http://www.w3.org/2001/XMLSchema">
-        \\    <label>Home City</label>
+        \\    <label>Primary</label>
         \\    <values>
-        \\        <field>Data_Import_Field_Mapping_Set__c</field>
-        \\        <value xsi:type="xsd:string">Default_Field_Mapping_Set</value>
+        \\        <field>Target_API_Name__c</field>
+        \\        <value xsi:type="xsd:string">Target__c</value>
         \\    </values>
+        \\</CustomMetadata>
+        ,
+    });
+    try tmp_dir.dir.writeFile(std.testing.io, .{
+        .sub_path = "customMetadata/ChildThing.First.md-meta.xml",
+        .data =
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<CustomMetadata xmlns="http://soap.sforce.com/2006/04/metadata"
+        \\    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        \\    xmlns:xsd="http://www.w3.org/2001/XMLSchema">
+        \\    <label>First</label>
         \\    <values>
-        \\        <field>Target_Object_Mapping__c</field>
-        \\        <value xsi:type="xsd:string">Address</value>
+        \\        <field>ParentThing__c</field>
+        \\        <value xsi:type="xsd:string">Primary</value>
         \\    </values>
         \\</CustomMetadata>
         ,
@@ -9412,25 +10747,23 @@ test "E2E: custom metadata lookup stubs expose developer and object names" {
     defer alloc.free(tmp_path);
 
     const source =
-        \\public class CustomMetadataRelationshipStubProbe {
+        \\public class CustomMetadataRelationshipParentProbe {
         \\    public static String test() {
-        \\        Data_Import_Field_Mapping__mdt mapping =
-        \\            Data_Import_Field_Mapping__mdt.getInstance('Home_City');
-        \\        return mapping.Data_Import_Field_Mapping_Set__r.DeveloperName + ':' +
-        \\            mapping.Target_Object_Mapping__r.DeveloperName + ':' +
-        \\            mapping.Target_Object_Mapping__r.Object_API_Name__c;
+        \\        ChildThing__mdt child = ChildThing__mdt.getInstance('First');
+        \\        return child.ParentThing__r.DeveloperName + ':' +
+        \\            child.ParentThing__r.Target_API_Name__c;
         \\    }
         \\}
     ;
     const result = try run(std.testing.allocator, std.testing.io, source, .{
-        .entry_class = "CustomMetadataRelationshipStubProbe",
+        .entry_class = "CustomMetadataRelationshipParentProbe",
         .entry_method = "test",
         .source_paths = &.{tmp_path},
     });
     defer result.deinit();
 
     try std.testing.expectEqualStrings(
-        "Default_Field_Mapping_Set:Address:Address__c",
+        "Primary:Target__c",
         result.value.string,
     );
 }
@@ -9975,9 +11308,9 @@ test "E2E: enhanced recurring donation start date defaults before insert trigger
     try expect_entry_string(source, "RDDefaultProbe", "test", "true:true");
 }
 
-test "E2E: missing managed package payment child relationship defaults to empty list" {
+test "E2E: missing custom package child relationship defaults to empty list" {
     const source =
-        \\public class PackagePaymentChildRelationshipTest {
+        \\public class PackageChildRelationshipTest {
         \\    public static String test() {
         \\        Opportunity opp = new Opportunity(
         \\            Name = 'Gift',
@@ -9986,25 +11319,43 @@ test "E2E: missing managed package payment child relationship defaults to empty 
         \\        );
         \\        insert opp;
         \\        Opportunity queried = [SELECT Id FROM Opportunity WHERE Id = :opp.Id];
-        \\        return String.valueOf(queried.npe01__OppPayment__r.isEmpty());
+        \\        return String.valueOf(queried.pkg__Payment__r.isEmpty());
         \\    }
         \\}
     ;
-    try expect_entry_string(source, "PackagePaymentChildRelationshipTest", "test", "true");
+    try expect_entry_string(source, "PackageChildRelationshipTest", "test", "true");
 }
 
-test "E2E: managed package payment relationship appears in Opportunity describe" {
+test "E2E: layout relatedList custom relationship appears in Opportunity describe" {
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try tmp_dir.dir.createDirPath(std.testing.io, "layouts");
+    try tmp_dir.dir.writeFile(std.testing.io, .{
+        .sub_path = "layouts/Opportunity-Test.layout-meta.xml",
+        .data =
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<Layout xmlns="http://soap.sforce.com/2006/04/metadata">
+        \\    <relatedLists>
+        \\        <relatedList>pkg__Payment__c.pkg__Opportunity__c</relatedList>
+        \\    </relatedLists>
+        \\</Layout>
+        ,
+    });
+    const tmp_path = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(tmp_path);
+
     const source =
-        \\public class PackagePaymentDescribeRelationshipTest {
+        \\public class PackageDescribeRelationshipTest {
         \\    public static String test() {
         \\        Boolean found = false;
         \\        List<Schema.ChildRelationship> rels =
         \\            Opportunity.SObjectType.getDescribe().getChildRelationships();
         \\        for (Schema.ChildRelationship rel : rels) {
         \\            if (
-        \\                rel.getRelationshipName() == 'npe01__OppPayment__r' &&
-        \\                rel.getField().getDescribe().getName() == 'npe01__Opportunity__c' &&
-        \\                String.valueOf(rel.getChildSObject()) == 'npe01__OppPayment__c'
+        \\                rel.getRelationshipName() == 'pkg__Payment__r' &&
+        \\                rel.getField().getDescribe().getName() == 'pkg__Opportunity__c' &&
+        \\                String.valueOf(rel.getChildSObject()) == 'pkg__Payment__c'
         \\            ) {
         \\                found = true;
         \\            }
@@ -10013,7 +11364,14 @@ test "E2E: managed package payment relationship appears in Opportunity describe"
         \\    }
         \\}
     ;
-    try expect_entry_string(source, "PackagePaymentDescribeRelationshipTest", "test", "true");
+    var result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "PackageDescribeRelationshipTest",
+        .entry_method = "test",
+        .source_paths = &.{tmp_path},
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("true", result.value.string);
 }
 
 test "E2E: missing standard Opportunity child relationships default to empty lists" {
@@ -10116,6 +11474,32 @@ test "E2E: static property getter can update its backing value repeatedly" {
         \\}
     ;
     try expect_entry_string(source, "StaticPropertyIncrementProbe", "test", "1:2:3");
+}
+
+test "E2E: instance property getter can update its backing value repeatedly" {
+    const source =
+        \\public class InstancePropertyIncrementProbe {
+        \\    private Integer counter {
+        \\        get {
+        \\            if (counter == null) {
+        \\                counter = 0;
+        \\            }
+        \\            counter++;
+        \\            return counter;
+        \\        }
+        \\        set;
+        \\    }
+        \\    public static String test() {
+        \\        InstancePropertyIncrementProbe probe = new InstancePropertyIncrementProbe();
+        \\        Integer first = probe.counter;
+        \\        Integer second = probe.counter;
+        \\        Integer third = probe.counter;
+        \\        return String.valueOf(first) + ':' +
+        \\            String.valueOf(second) + ':' + String.valueOf(third);
+        \\    }
+        \\}
+    ;
+    try expect_entry_string(source, "InstancePropertyIncrementProbe", "test", "1:2:3");
 }
 
 test "E2E: instance property setter can assign through same property name" {
@@ -11390,6 +12774,376 @@ test "E2E: child relationship subquery ignores From inside field names" {
     try std.testing.expectEqualStrings("1:2", result.value.string);
 }
 
+test "E2E: custom child subquery resolves numeric relationship names case-insensitively" {
+    const alloc = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try write_numeric_child_relationship_metadata_fixture(tmp_dir.dir);
+    const tmp_path = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", alloc);
+    defer alloc.free(tmp_path);
+
+    const source =
+        \\public class NumericChildRelationshipSubqueryTest {
+        \\    public static String test() {
+        \\        Parent__c parentRecord = new Parent__c(Name = 'Acme');
+        \\        insert parentRecord;
+        \\        insert new Child__c(
+        \\            Parent__c = parentRecord.Id,
+        \\            Name = 'First',
+        \\            Index__c = 1
+        \\        );
+        \\        Map<Id, Child__c> childByParentId = new Map<Id, Child__c>();
+        \\        for (Child__c childRecord : [
+        \\            SELECT Id, Parent__c
+        \\            FROM Child__c
+        \\            WHERE Parent__c = :parentRecord.Id
+        \\        ]) {
+        \\            childByParentId.put(childRecord.Parent__c, childRecord);
+        \\        }
+        \\        Parent__c queried = [
+        \\            SELECT Id, (SELECT Id, Parent__c, Index__c FROM APTasks1__r)
+        \\            FROM Parent__c
+        \\            WHERE Id IN :childByParentId.keySet()
+        \\        ];
+        \\        return String.valueOf(queried.APTasks1__r.size());
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "NumericChildRelationshipSubqueryTest",
+        .entry_method = "test",
+        .source_paths = &.{tmp_path},
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("1", result.value.string);
+}
+
+test "E2E: before delete trigger creates dependent records through child subquery" {
+    const alloc = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try write_numeric_child_relationship_metadata_fixture(tmp_dir.dir);
+    const tmp_path = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", alloc);
+    defer alloc.free(tmp_path);
+
+    const source =
+        \\public class BeforeDeleteDependentWork {
+        \\    public static void handle(List<Work__c> oldRows) {
+        \\        Set<Id> controllerIds = new Set<Id>();
+        \\        for (Work__c row : oldRows) {
+        \\            if (row.Child__c != null) controllerIds.add(row.Child__c);
+        \\        }
+        \\        Map<Id, Child__c> childByParentId = new Map<Id, Child__c>();
+        \\        for (Child__c childRecord : [
+        \\            SELECT Id, Parent__c, TaskIndex__c
+        \\            FROM Child__c
+        \\            WHERE Id IN :controllerIds
+        \\        ]) {
+        \\            childByParentId.put(childRecord.Parent__c, childRecord);
+        \\        }
+        \\        for (Parent__c parentRecord : [
+        \\            SELECT Id, (
+        \\                SELECT Id, Parent__c, TaskIndex__c, Controller__c
+        \\                FROM APTasks1__r
+        \\            )
+        \\            FROM Parent__c
+        \\            WHERE Id IN :childByParentId.keySet()
+        \\        ]) {
+        \\            Child__c controller = childByParentId.get(parentRecord.Id);
+        \\            createDependent(parentRecord.APTasks1__r, controller.TaskIndex__c);
+        \\        }
+        \\    }
+        \\    private static void createDependent(List<Child__c> children, Decimal removedIndex) {
+        \\        Set<Id> closed = new Set<Id>();
+        \\        for (Child__c childRecord : children) {
+        \\            if (childRecord.TaskIndex__c == removedIndex) closed.add(childRecord.Id);
+        \\        }
+        \\        List<Work__c> rows = new List<Work__c>();
+        \\        for (Child__c childRecord : [
+        \\            SELECT Id
+        \\            FROM Child__c
+        \\            WHERE Controller__c IN :closed
+        \\        ]) {
+        \\            rows.add(new Work__c(Name = 'Generated', Child__c = childRecord.Id));
+        \\        }
+        \\        Database.DMLOptions options = new Database.DMLOptions();
+        \\        options.EmailHeader.triggerUserEmail = true;
+        \\        Database.insert(rows, options);
+        \\    }
+        \\}
+        \\trigger BeforeDeleteDependentWorkTrigger on Work__c (before delete) {
+        \\    BeforeDeleteDependentWork.handle(Trigger.old);
+        \\}
+        \\public class BeforeDeleteDependentWorkTest {
+        \\    public static String test() {
+        \\        Parent__c parentRecord = new Parent__c(Name = 'Parent');
+        \\        insert parentRecord;
+        \\        Child__c first = new Child__c(
+        \\            Parent__c = parentRecord.Id,
+        \\            Name = 'First',
+        \\            TaskIndex__c = 0
+        \\        );
+        \\        insert first;
+        \\        Child__c second = new Child__c(
+        \\            Parent__c = parentRecord.Id,
+        \\            Name = 'Second',
+        \\            Controller__c = first.Id,
+        \\            TaskIndex__c = 1
+        \\        );
+        \\        insert second;
+        \\        Work__c work = new Work__c(Name = 'Original', Child__c = first.Id);
+        \\        insert work;
+        \\        delete work;
+        \\        return String.valueOf([
+        \\            SELECT COUNT()
+        \\            FROM Work__c
+        \\            WHERE Child__c = :second.Id
+        \\        ]);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "BeforeDeleteDependentWorkTest",
+        .entry_method = "test",
+        .source_paths = &.{tmp_path},
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("1", result.value.string);
+}
+
+test "E2E: Task lookup delete query with trigger oldMap keySet preserves nonmatching tasks" {
+    const alloc = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try write_activity_lookup_metadata_fixture(tmp_dir.dir);
+    const tmp_path = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", alloc);
+    defer alloc.free(tmp_path);
+
+    const source =
+        \\trigger TemplateDeleteProbeTrigger on Template__c (before delete) {
+        \\    Database.delete([
+        \\        SELECT Id
+        \\        FROM Task
+        \\        WHERE Template__c IN :Trigger.oldMap.keySet()
+        \\        AND IsClosed = FALSE
+        \\        AND IsDeleted = FALSE
+        \\    ]);
+        \\}
+        \\public class TemplateDeleteProbeTest {
+        \\    public static String test() {
+        \\        Template__c first = new Template__c(Name = 'First');
+        \\        Template__c second = new Template__c(Name = 'Second');
+        \\        insert new List<Template__c>{ first, second };
+        \\        insert new Task(Subject = 'Keep', Template__c = second.Id);
+        \\        delete first;
+        \\        Integer activeSecond = [
+        \\            SELECT COUNT()
+        \\            FROM Task
+        \\            WHERE Template__c = :second.Id
+        \\        ];
+        \\        Integer allSecond = [
+        \\            SELECT COUNT()
+        \\            FROM Task
+        \\            WHERE Template__c = :second.Id
+        \\            ALL ROWS
+        \\        ];
+        \\        return String.valueOf(activeSecond) + ':' + String.valueOf(allSecond);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "TemplateDeleteProbeTest",
+        .entry_method = "test",
+        .source_paths = &.{tmp_path},
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("1:1", result.value.string);
+}
+
+test "E2E: Task lookup delete query with map parameter keySet preserves nonmatching tasks" {
+    const alloc = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try write_activity_lookup_metadata_fixture(tmp_dir.dir);
+    const tmp_path = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", alloc);
+    defer alloc.free(tmp_path);
+
+    const source =
+        \\public class TemplateDeleteProbeHandler {
+        \\    public static void handle(Map<Id, Template__c> oldRowsById) {
+        \\        Database.delete([
+        \\            SELECT Id
+        \\            FROM Task
+        \\            WHERE Template__c IN :oldRowsById.keyset()
+        \\            AND IsClosed = FALSE
+        \\            AND IsDeleted = FALSE
+        \\        ]);
+        \\    }
+        \\}
+        \\trigger TemplateDeleteProbeTrigger on Template__c (before delete) {
+        \\    TemplateDeleteProbeHandler.handle(Trigger.oldMap);
+        \\}
+        \\public class TemplateDeleteProbeTest {
+        \\    public static String test() {
+        \\        Template__c first = new Template__c(Name = 'First');
+        \\        Template__c second = new Template__c(Name = 'Second');
+        \\        insert new List<Template__c>{ first, second };
+        \\        insert new Task(Subject = 'Keep', Template__c = second.Id);
+        \\        delete first;
+        \\        Integer activeSecond = [
+        \\            SELECT COUNT()
+        \\            FROM Task
+        \\            WHERE Template__c = :second.Id
+        \\        ];
+        \\        Integer allSecond = [
+        \\            SELECT COUNT()
+        \\            FROM Task
+        \\            WHERE Template__c = :second.Id
+        \\            ALL ROWS
+        \\        ];
+        \\        return String.valueOf(activeSecond) + ':' + String.valueOf(allSecond);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "TemplateDeleteProbeTest",
+        .entry_method = "test",
+        .source_paths = &.{tmp_path},
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("1:1", result.value.string);
+}
+
+test "E2E: TaskAPTask lookup delete query preserves nonmatching tasks" {
+    const alloc = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try write_activity_task_ap_task_lookup_metadata_fixture(tmp_dir.dir);
+    const tmp_path = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", alloc);
+    defer alloc.free(tmp_path);
+
+    const source =
+        \\public class TemplateDeleteProbeHandler {
+        \\    public static void handle(Map<Id, Template__c> oldRowsById) {
+        \\        Database.delete([
+        \\            SELECT Id
+        \\            FROM Task
+        \\            WHERE TaskAPTask__c IN :oldRowsById.keyset()
+        \\            AND IsClosed = FALSE
+        \\            AND IsDeleted = FALSE
+        \\        ]);
+        \\    }
+        \\}
+        \\trigger TemplateDeleteProbeTrigger on Template__c (before delete) {
+        \\    TemplateDeleteProbeHandler.handle(Trigger.oldMap);
+        \\}
+        \\public class TemplateDeleteProbeTest {
+        \\    public static String test() {
+        \\        Template__c first = new Template__c(Name = 'First');
+        \\        Template__c second = new Template__c(Name = 'Second');
+        \\        insert new List<Template__c>{ first, second };
+        \\        insert new Task(Subject = 'Keep', TaskAPTask__c = second.Id);
+        \\        delete first;
+        \\        Integer activeSecond = [
+        \\            SELECT COUNT()
+        \\            FROM Task
+        \\            WHERE TaskAPTask__c = :second.Id
+        \\        ];
+        \\        Integer allSecond = [
+        \\            SELECT COUNT()
+        \\            FROM Task
+        \\            WHERE TaskAPTask__c = :second.Id
+        \\            ALL ROWS
+        \\        ];
+        \\        return String.valueOf(activeSecond) + ':' + String.valueOf(allSecond);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "TemplateDeleteProbeTest",
+        .entry_method = "test",
+        .source_paths = &.{tmp_path},
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("1:1", result.value.string);
+}
+
+test "E2E: Activity child subquery hydrates Task computed fields" {
+    const alloc = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try write_activity_task_ap_task_lookup_metadata_fixture(tmp_dir.dir);
+    const tmp_path = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", alloc);
+    defer alloc.free(tmp_path);
+
+    const source =
+        \\public class ActivityChildSubqueryComputedFieldTest {
+        \\    public static String test() {
+        \\        Template__c templateRecord = new Template__c(Name = 'Template');
+        \\        insert templateRecord;
+        \\        insert new Task(
+        \\            Subject = 'Done',
+        \\            Status = 'Completed',
+        \\            TaskAPTask__c = templateRecord.Id
+        \\        );
+        \\        Template__c queried = [
+        \\            SELECT Id, (SELECT Id, IsClosed FROM Tasks__r)
+        \\            FROM Template__c
+        \\            WHERE Id = :templateRecord.Id
+        \\        ];
+        \\        return String.valueOf(queried.Tasks__r.size()) + ':' +
+        \\            String.valueOf(queried.Tasks__r[0].IsClosed);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "ActivityChildSubqueryComputedFieldTest",
+        .entry_method = "test",
+        .source_paths = &.{tmp_path},
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("1:true", result.value.string);
+}
+
+test "E2E: hard-deleted Task remains non-undeletable in recycle bin tombstone" {
+    const source =
+        \\public class HardDeletedTaskTombstoneTest {
+        \\    public static String test() {
+        \\        Task taskRecord = new Task(Subject = 'Delete');
+        \\        insert taskRecord;
+        \\        delete taskRecord;
+        \\        Database.emptyRecycleBin(taskRecord);
+        \\        Integer allRows = [
+        \\            SELECT COUNT()
+        \\            FROM Task
+        \\            WHERE Id = :taskRecord.Id
+        \\            ALL ROWS
+        \\        ];
+        \\        String caught = 'none';
+        \\        try {
+        \\            undelete taskRecord;
+        \\        } catch (DmlException e) {
+        \\            caught = 'dml';
+        \\        }
+        \\        return String.valueOf(allRows) + ':' + caught;
+        \\    }
+        \\}
+    ;
+    try expect_entry_string(source, "HardDeletedTaskTombstoneTest", "test", "1:dml");
+}
+
 test "E2E: Case and Contract inserts populate auto-number fields" {
     const source =
         \\public class AutoNumberInsertProbe {
@@ -11553,6 +13307,129 @@ test "E2E: SOQL parent relationship field in WHERE" {
         \\}
     ;
     try expect_entry_string(source, "SoqlParentRefTest", "test", "1");
+}
+
+test "E2E: SOQL IN bind accepts map keySet call expressions" {
+    const source =
+        \\public class SoqlInMapKeySetProbe {
+        \\    public static String test() {
+        \\        Account accountRecord = new Account(Name = 'Acme');
+        \\        insert accountRecord;
+        \\        Map<Id, Account> recordsById = new Map<Id, Account>();
+        \\        recordsById.put(accountRecord.Id, accountRecord);
+        \\        Integer matched = [
+        \\            SELECT COUNT()
+        \\            FROM Account
+        \\            WHERE Id IN :recordsById.keyset()
+        \\        ];
+        \\        return String.valueOf(matched);
+        \\    }
+        \\}
+    ;
+    try expect_entry_string(source, "SoqlInMapKeySetProbe", "test", "1");
+}
+
+test "E2E: SOQL IN bind accepts map keySet call expressions from parameters" {
+    const source =
+        \\public class SoqlInMapKeySetParamProbe {
+        \\    public static Integer countMatches(Map<Id, Account> recordsById) {
+        \\        return [
+        \\            SELECT COUNT()
+        \\            FROM Account
+        \\            WHERE Id IN :recordsById.keyset()
+        \\        ];
+        \\    }
+        \\    public static String test() {
+        \\        Account accountRecord = new Account(Name = 'Acme');
+        \\        insert accountRecord;
+        \\        Map<Id, Account> recordsById = new Map<Id, Account>();
+        \\        recordsById.put(accountRecord.Id, accountRecord);
+        \\        return String.valueOf(countMatches(recordsById));
+        \\    }
+        \\}
+    ;
+    try expect_entry_string(source, "SoqlInMapKeySetParamProbe", "test", "1");
+}
+
+test "E2E: DML delete accepts SOQL query results filtered by IN bind" {
+    const source =
+        \\public class DeleteQueryInBindProbe {
+        \\    public static String test() {
+        \\        Account accountRecord = new Account(Name = 'Acme');
+        \\        insert accountRecord;
+        \\        Contact contactRecord = new Contact(
+        \\            LastName = 'Tester',
+        \\            AccountId = accountRecord.Id
+        \\        );
+        \\        insert contactRecord;
+        \\        Set<Id> accountIds = new Set<Id>{ accountRecord.Id };
+        \\        delete [
+        \\            SELECT Id
+        \\            FROM Contact
+        \\            WHERE AccountId IN :accountIds
+        \\        ];
+        \\        return String.valueOf([SELECT COUNT() FROM Contact]);
+        \\    }
+        \\}
+    ;
+    try expect_entry_string(source, "DeleteQueryInBindProbe", "test", "0");
+}
+
+test "E2E: Trigger.operationType switches inside helper methods" {
+    const source =
+        \\public class TriggerOperationSwitchHelper {
+        \\    public static Integer beforeDeletes = 0;
+        \\    public static void handle(System.TriggerOperation op) {
+        \\        switch on op {
+        \\            when BEFORE_DELETE {
+        \\                beforeDeletes++;
+        \\            }
+        \\            when else {
+        \\            }
+        \\        }
+        \\    }
+        \\}
+        \\trigger TriggerOperationSwitchProbeTrigger on Account (before delete) {
+        \\    TriggerOperationSwitchHelper.handle(Trigger.operationType);
+        \\}
+        \\public class TriggerOperationSwitchProbe {
+        \\    public static String test() {
+        \\        Account accountRecord = new Account(Name = 'Acme');
+        \\        insert accountRecord;
+        \\        delete accountRecord;
+        \\        return String.valueOf(TriggerOperationSwitchHelper.beforeDeletes);
+        \\    }
+        \\}
+    ;
+    try expect_entry_string(source, "TriggerOperationSwitchProbe", "test", "1");
+}
+
+test "E2E: before delete trigger can Database.insert records with DmlOptions" {
+    const source =
+        \\public class BeforeDeleteDmlOptionsProbe {
+        \\    public static void createContacts(List<Account> oldRows) {
+        \\        List<Contact> contacts = new List<Contact>();
+        \\        for (Account row : oldRows) {
+        \\            contacts.add(new Contact(LastName = 'Generated'));
+        \\        }
+        \\        Database.DMLOptions options = new Database.DMLOptions();
+        \\        options.EmailHeader.triggerUserEmail = true;
+        \\        Database.insert(contacts, options);
+        \\    }
+        \\}
+        \\trigger BeforeDeleteDmlOptionsProbeTrigger on Account (before delete) {
+        \\    BeforeDeleteDmlOptionsProbe.createContacts(Trigger.old);
+        \\}
+        \\public class BeforeDeleteDmlOptionsProbeTest {
+        \\    public static String test() {
+        \\        Account accountRecord = new Account(Name = 'Acme');
+        \\        insert accountRecord;
+        \\        delete accountRecord;
+        \\        return String.valueOf([SELECT COUNT() FROM Contact]);
+        \\    }
+        \\}
+    ;
+    try expect_entry_string(source, "BeforeDeleteDmlOptionsProbeTest", "test", "1");
 }
 
 test "E2E: null != empty string is true" {
@@ -13378,8 +15255,8 @@ test "E2E: Schema custom object getSObjectType supports describe key prefix" {
     const source =
         \\public class SchemaCustomObjectTokenProbe {
         \\    public static String test() {
-        \\        return Schema.APTask__c.getSObjectType().getDescribe().getKeyPrefix()
-        \\            + ':' + Schema.APTask__c.getDescribe().getName();
+        \\        return Schema.Widget__c.getSObjectType().getDescribe().getKeyPrefix()
+        \\            + ':' + Schema.Widget__c.getDescribe().getName();
         \\    }
         \\}
     ;
@@ -13389,7 +15266,7 @@ test "E2E: Schema custom object getSObjectType supports describe key prefix" {
     });
     defer result.deinit();
 
-    try std.testing.expectEqualStrings("atU:APTask__c", result.value.string);
+    try std.testing.expectEqualStrings("aLA:Widget__c", result.value.string);
 }
 
 test "E2E: cached DescribeSObjectResult record type info survives selective map clears" {
@@ -14320,19 +16197,47 @@ test "E2E: JSON deserialize unwraps relationship records for typed child access"
     );
 }
 
+test "E2E: JSON deserialize keeps nested parent relationship SObjects" {
+    const source =
+        \\public class JsonParentRelationshipRoundTripTest {
+        \\    public static String test() {
+        \\        Contact contactRecord = new Contact(LastName = 'Smith');
+        \\        Account accountRecord = new Account(
+        \\            Id = '001000000000001AAA',
+        \\            Name = 'Acme'
+        \\        );
+        \\        String serializedContact = JSON.serialize(contactRecord);
+        \\        String combined = serializedContact.left(serializedContact.length() - 1) +
+        \\            ',"Account":' + JSON.serialize(accountRecord) + '}';
+        \\        SObject parsed = (SObject) JSON.deserialize(combined, SObject.class);
+        \\        Contact typed = (Contact) parsed;
+        \\        return String.valueOf(parsed.get('Account') instanceof SObject) + ':' +
+        \\            String.valueOf(parsed.getSObject('Account').get('Name')) + ':' +
+        \\            typed.Account.Name;
+        \\    }
+        \\}
+    ;
+    try expect_entry_string(
+        source,
+        "JsonParentRelationshipRoundTripTest",
+        "test",
+        "true:Acme:Acme",
+    );
+}
+
 test "E2E: JSON relationship records without attributes infer child SObject type" {
     const source =
         \\public class JsonInferredRelationshipRecordTypeTest {
         \\    public static String test() {
         \\        String json =
         \\            '{"Id":"006000000000001AAA","Name":"Gift",' +
-        \\            '"npe01__OppPayment__r":{"totalSize":1,"done":true,"records":[' +
-        \\            '{"Id":"a2f000000000001AAA","npe01__Paid__c":false,' +
-        \\            '"npe01__Opportunity__c":"006000000000001AAA"}]}}';
+        \\            '"pkg__Payment__r":{"totalSize":1,"done":true,"records":[' +
+        \\            '{"Id":"a2f000000000001AAA","pkg__Paid__c":false,' +
+        \\            '"pkg__Opportunity__c":"006000000000001AAA"}]}}';
         \\        Opportunity opportunity = (Opportunity) JSON.deserialize(json, Opportunity.class);
-        \\        return String.valueOf(opportunity.npe01__OppPayment__r.size()) + ':' +
-        \\            opportunity.npe01__OppPayment__r[0].getSObjectType().getDescribe().getName() + ':' +
-        \\            String.valueOf(opportunity.npe01__OppPayment__r[0].npe01__Paid__c);
+        \\        return String.valueOf(opportunity.pkg__Payment__r.size()) + ':' +
+        \\            opportunity.pkg__Payment__r[0].getSObjectType().getDescribe().getName() + ':' +
+        \\            String.valueOf(opportunity.pkg__Payment__r[0].pkg__Paid__c);
         \\    }
         \\}
     ;
@@ -14340,7 +16245,7 @@ test "E2E: JSON relationship records without attributes infer child SObject type
         source,
         "JsonInferredRelationshipRecordTypeTest",
         "test",
-        "1:npe01__OppPayment__c:false",
+        "1:pkg__Payment__c:false",
     );
 }
 
@@ -17469,6 +19374,30 @@ test "E2E: Database DmlOptions allOrNone false returns partial save results" {
     try expect_entry_string(source, "DatabaseDmlOptionsTest", "test", "true:false:true:false");
 }
 
+test "E2E: partial DML static snapshot preserves shared object aliases" {
+    const source =
+        \\public class PartialDmlStaticAliasBox {
+        \\    public Account value;
+        \\}
+        \\public class PartialDmlStaticAliasProbe {
+        \\    public static Account shared;
+        \\    public static PartialDmlStaticAliasBox box;
+        \\    public static String test() {
+        \\        shared = new Account(Name = 'before');
+        \\        box = new PartialDmlStaticAliasBox();
+        \\        box.value = shared;
+        \\        List<Account> rows = new List<Account>{ new Account() };
+        \\        List<Database.SaveResult> results = Database.insert(rows, false);
+        \\        box.value.Name = 'after';
+        \\        return String.valueOf(results[0].isSuccess()) + ':' +
+        \\            shared.Name + ':' +
+        \\            box.value.Name;
+        \\    }
+        \\}
+    ;
+    try expect_entry_string(source, "PartialDmlStaticAliasProbe", "test", "false:after:after");
+}
+
 test "E2E: update uses reassigned SObject Id field" {
     const source =
         \\public class ReassignedIdUpdateTest {
@@ -18035,6 +19964,39 @@ test "E2E: collection casts reject non-collection values" {
     try std.testing.expectEqualStrings(
         "Invalid conversion from runtime type String to Set<Id>",
         result.value.string,
+    );
+}
+
+test "E2E: primitive casts reject incompatible object values" {
+    const source =
+        \\public class PrimitiveCastTypeProbe {
+        \\    public static String test() {
+        \\        Map<String, Object> values = new Map<String, Object>{
+        \\            'String' => true,
+        \\            'Boolean' => 'not-bool'
+        \\        };
+        \\        String result = '';
+        \\        try {
+        \\            String text = (String) values.get('String');
+        \\            result += 'string-ok:' + text;
+        \\        } catch (System.TypeException ex) {
+        \\            result += 'string-type';
+        \\        }
+        \\        try {
+        \\            Boolean flag = (Boolean) values.get('Boolean');
+        \\            result += ':boolean-ok:' + String.valueOf(flag);
+        \\        } catch (System.TypeException ex) {
+        \\            result += ':boolean-type';
+        \\        }
+        \\        return result;
+        \\    }
+        \\}
+    ;
+    try expect_entry_string(
+        source,
+        "PrimitiveCastTypeProbe",
+        "test",
+        "string-type:boolean-type",
     );
 }
 
@@ -18900,6 +20862,25 @@ test "E2E: Map<Id, SObject>.values() preserves homogeneous SObjectType for gener
     try expect_entry_string(source, "MapValuesSObjectTypeProbe", "test", "Account");
 }
 
+test "E2E: List<SObject> with concrete rows prefers concrete list overload" {
+    const source =
+        \\public class ConcreteListOverloadProbe {
+        \\    public static String choose(Account row) {
+        \\        return 'single';
+        \\    }
+        \\    public static String choose(List<Account> rows) {
+        \\        return 'list:' + rows.size();
+        \\    }
+        \\    public static String test() {
+        \\        List<SObject> rows = new List<SObject>();
+        \\        rows.add(new Account(Name = 'Acme'));
+        \\        return choose(rows);
+        \\    }
+        \\}
+    ;
+    try expect_entry_string(source, "ConcreteListOverloadProbe", "test", "list:1");
+}
+
 test "E2E: concrete typed list reports its SObjectType" {
     const source =
         \\public class ConcreteListTypeProbe {
@@ -19435,6 +21416,38 @@ test "E2E: overloaded constructor uses declared local type for custom class argu
     try expect_entry_string(source, "ConstructorDeclaredTypeProbe", "test", "expected:expected");
 }
 
+test "E2E: overloaded constructor uses declared local type for typed null SObject arguments" {
+    const source =
+        \\public class ConstructorTypedNullSObjectProbe {
+        \\    public class Wrapper {
+        \\        public String branch;
+        \\        public Account accountValue;
+        \\        public Wrapper(Account accountRecord) {
+        \\            this.branch = 'account';
+        \\            this.accountValue = accountRecord;
+        \\        }
+        \\        public Wrapper(Contact contactRecord) {
+        \\            this.branch = 'contact';
+        \\        }
+        \\        public Wrapper(String textValue) {
+        \\            this.branch = 'string';
+        \\        }
+        \\    }
+        \\    public static String test() {
+        \\        Account accountRecord = null;
+        \\        Wrapper wrapper = new Wrapper(accountRecord);
+        \\        return wrapper.branch + ':' + String.valueOf(wrapper.accountValue == null);
+        \\    }
+        \\}
+    ;
+    try expect_entry_string(
+        source,
+        "ConstructorTypedNullSObjectProbe",
+        "test",
+        "account:true",
+    );
+}
+
 test "E2E: Type.forName SObject + empty list DML integration" {
     const source =
         \\public class IntegrationTest {
@@ -19497,6 +21510,7 @@ test "E2E: global describe includes source-path custom objects" {
     defer tmp.cleanup();
 
     try tmp.dir.createDirPath(std.testing.io, "force-app/main/default/objects/Widget__c/fields");
+    try tmp.dir.createDirPath(std.testing.io, "force-app/main/default/classes");
     try tmp.dir.writeFile(std.testing.io, .{
         .sub_path = "force-app/main/default/objects/Widget__c/fields/Amount__c.field-meta.xml",
         .data =
@@ -19510,6 +21524,16 @@ test "E2E: global describe includes source-path custom objects" {
         \\</CustomField>
         ,
     });
+    try tmp.dir.writeFile(std.testing.io, .{
+        .sub_path = "force-app/main/default/classes/SourcePathFieldHintProbe.cls",
+        .data =
+        \\public class SourcePathFieldHintProbe {
+        \\    public static void mark() {
+        \\        Object ignored = Account.pkg__Managed_Field__c;
+        \\    }
+        \\}
+        ,
+    });
     const source_path = try tmp.dir.realPathFileAlloc(std.testing.io, ".", alloc);
     defer alloc.free(source_path);
 
@@ -19521,6 +21545,8 @@ test "E2E: global describe includes source-path custom objects" {
         \\        Map<String, Schema.SObjectField> fields = describe.fields.getMap();
         \\        return String.valueOf(gd.containsKey('widget__c')) + ':' +
         \\            describe.getName() + ':' +
+        \\            String.valueOf(Account.SObjectType.getDescribe().fields.getMap()
+        \\                .keySet().contains('pkg__Managed_Field__c')) + ':' +
         \\            String.valueOf(fields.containsKey('pkg__Managed_Field__c')) + ':' +
         \\            fields.get('pkg__Managed_Field__c').getDescribe().getName() + ':' +
         \\            String.valueOf(fields.get('Amount__c').getDescribe().getDefaultValueFormula()) + ':' +
@@ -19536,28 +21562,88 @@ test "E2E: global describe includes source-path custom objects" {
     defer result.deinit();
 
     try std.testing.expectEqualStrings(
-        "true:Widget__c:true:Pkg__Managed_Field__c:42:Widget.Amount",
+        "true:Widget__c:true:true:pkg__Managed_Field__c:42:Widget.Amount",
         result.value.string,
     );
 }
 
-test "E2E: managed open ended status picklist has known values" {
+test "E2E: legacy object metadata picklist values feed describe" {
+    const alloc = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try tmp_dir.dir.createDirPath(std.testing.io, "objects/Thing__c");
+    try tmp_dir.dir.writeFile(std.testing.io, .{
+        .sub_path = "objects/Thing__c/Thing__c.object",
+        .data =
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<CustomObject xmlns="http://soap.sforce.com/2006/04/metadata">
+        \\    <fields>
+        \\        <fullName>Status__c</fullName>
+        \\        <label>Status</label>
+        \\        <type>Picklist</type>
+        \\        <valueSet>
+        \\            <valueSetDefinition>
+        \\                <value>
+        \\                    <fullName>First</fullName>
+        \\                    <default>true</default>
+        \\                    <label>First</label>
+        \\                </value>
+        \\                <value>
+        \\                    <fullName>Second</fullName>
+        \\                    <default>false</default>
+        \\                    <isActive>false</isActive>
+        \\                    <label>Second</label>
+        \\                </value>
+        \\            </valueSetDefinition>
+        \\        </valueSet>
+        \\    </fields>
+        \\    <fields>
+        \\        <fullName>%%%NAMESPACE%%%Legacy_Status__c</fullName>
+        \\        <label>Legacy Status</label>
+        \\        <type>Picklist</type>
+        \\        <valueSet>
+        \\            <valueSetDefinition>
+        \\                <value>
+        \\                    <fullName>Enabled</fullName>
+        \\                    <default>true</default>
+        \\                    <label>Enabled</label>
+        \\                </value>
+        \\            </valueSetDefinition>
+        \\        </valueSet>
+        \\    </fields>
+        \\</CustomObject>
+        ,
+    });
+    const tmp_path = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", alloc);
+    defer alloc.free(tmp_path);
+
     const source =
-        \\public class ManagedPicklistProbe {
+        \\public class LegacyObjectPicklistProbe {
         \\    public static String test() {
         \\        Schema.SObjectField field =
-        \\            npe03__Recurring_Donation__c.npe03__Open_Ended_Status__c;
+        \\            Thing__c.Status__c;
         \\        Schema.DescribeFieldResult describe =
         \\            field.getDescribe();
         \\        List<Schema.PicklistEntry> values =
         \\            describe.getPicklistValues();
+        \\        Schema.DescribeFieldResult legacyDescribe =
+        \\            Thing__c.Legacy_Status__c.getDescribe();
         \\        return values.get(0).getValue() + ':' +
         \\            values.get(1).getValue() + ':' +
-        \\            values.get(2).getValue();
+        \\            String.valueOf(values.get(1).isActive()) + ':' +
+        \\            legacyDescribe.getPicklistValues().get(0).getValue();
         \\    }
         \\}
     ;
-    try expect_entry_string(source, "ManagedPicklistProbe", "test", "Open:Closed:None");
+    const result = try run(alloc, std.testing.io, source, .{
+        .entry_class = "LegacyObjectPicklistProbe",
+        .entry_method = "test",
+        .source_paths = &.{tmp_path},
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("First:Second:false:Enabled", result.value.string);
 }
 
 test "E2E: JSON.deserializeUntyped throws on malformed root input" {
@@ -19742,6 +21828,33 @@ test "E2E: SObjectType newSObject two-arg overload treats first arg as RecordTyp
         "NewSObjectRecordTypeIdProbe",
         "test",
         "null:012000000000003AAA:Not Started",
+    );
+}
+
+test "E2E: RecordType SOQL mirrors describe record types for queried standard object" {
+    const source =
+        \\public class RecordTypeSoqlDescribeProbe {
+        \\    public static String test() {
+        \\        Integer countValue = [
+        \\            SELECT COUNT()
+        \\            FROM RecordType
+        \\            WHERE SObjectType = 'Task' AND IsActive = TRUE
+        \\        ];
+        \\        List<RecordType> records = [
+        \\            SELECT Id, Name
+        \\            FROM RecordType
+        \\            WHERE SObjectType = 'Task' AND IsActive = TRUE
+        \\            ORDER BY Name ASC
+        \\        ];
+        \\        return String.valueOf(countValue) + ':' + records[0].Name + ':' + records[1].Name;
+        \\    }
+        \\}
+    ;
+    try expect_entry_string(
+        source,
+        "RecordTypeSoqlDescribeProbe",
+        "test",
+        "2:Default:Master",
     );
 }
 
@@ -20154,7 +22267,7 @@ test "E2E: System.Location.newInstance + getDistance match real-platform values"
 }
 
 test "E2E: Schema describe stubs cover tabs and common standards" {
-    // Anonymized probe: ActionPlansV4's SectionHeader utility iterates
+    // Anonymized probe: package UI utility code iterates
     //   for (Schema.DescribeTabSetResult tsr : Schema.describeTabs()) {...}
     // before falling back to a default icon, and queries
     //   Schema.getGlobalDescribe().get(name.toLowerCase()).getDescribe().isCustom()
@@ -20183,7 +22296,7 @@ test "E2E: Schema describe stubs cover tabs and common standards" {
 }
 
 test "E2E: User insert defaults IsActive to true and WHERE PermissionsX = TRUE matches" {
-    // Anonymized probe: ActionPlansV4's @TestSetup queries
+    // Anonymized probe: package @TestSetup code queries
     //   SELECT ... FROM Profile WHERE PermissionsModifyAllData = TRUE AND UserType = 'Standard'
     // and then inserts a User without setting IsActive, later asserting
     //   SELECT ... FROM User WHERE Email = 'x' AND IsActive = TRUE
@@ -20264,7 +22377,7 @@ test "E2E: SUM aggregate SOQL with ALL ROWS sums active store + recycle bin" {
 }
 
 test "E2E: COUNT() ALL ROWS includes trashed records, not just the active store" {
-    // Anonymized probe: ActionPlansV4's trigger tests assert that a deleted
+    // Anonymized probe: trigger tests assert that a deleted
     // object's dependent records still live in the recycle bin by running
     //   SELECT COUNT() FROM X WHERE IsDeleted = TRUE ALL ROWS
     // Our plain-COUNT path only walked `self.store`, so the count was 0
@@ -20288,7 +22401,7 @@ test "E2E: COUNT() ALL ROWS includes trashed records, not just the active store"
 }
 
 test "E2E: AFTER_UNDELETE addError rolls back undelete and raises DmlException" {
-    // Anonymized probe: ActionPlansV4-style trigger uses addError() in
+    // Anonymized probe: package trigger code uses addError() in
     // AFTER_UNDELETE to abort the restore when a platform condition fails.
     // Real Apex raises a DmlException and rolls back so a retry can undelete
     // again. Before: our undelete returned cleanly and the stale `errors`
