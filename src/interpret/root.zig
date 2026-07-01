@@ -55,38 +55,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, source: []const u8, opts: Options
     if (opts.source_paths.len > 0) {
         eval.source_paths = opts.source_paths;
         for (opts.source_paths) |path| {
-            try collect_field_defaults(
-                arena.allocator(),
-                io,
-                path,
-                &eval.field_defaults,
-                &eval.field_types,
-                &eval.field_metadata,
-                &eval.child_relationships,
-            );
-            try collect_field_type_hints(
-                arena.allocator(),
-                io,
-                path,
-                &eval.field_types,
-            );
-            try collect_child_relationship_hints(
-                arena.allocator(),
-                io,
-                path,
-                &eval.child_relationships,
-            );
-            try collect_field_sets(arena.allocator(), io, path, &eval.field_sets);
-            try collect_custom_setting_types(
-                arena.allocator(),
-                io,
-                path,
-                &eval.custom_setting_types,
-                &eval.custom_setting_kinds,
-                &eval.object_labels,
-                &eval.object_label_plurals,
-            );
-            try collect_custom_labels(arena.allocator(), io, path, &eval.custom_labels);
+            try load_runtime_metadata_path(arena.allocator(), io, path, &eval);
         }
     }
     try eval.load_decls(decls);
@@ -108,6 +77,48 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, source: []const u8, opts: Options
 
     arena.deinit();
     return .{ .value = value_copy, .stdout = stdout_copy, .allocator = gpa };
+}
+
+fn load_runtime_metadata_path(
+    alloc: std.mem.Allocator,
+    io: std.Io,
+    path: []const u8,
+    eval: *evaluator.Evaluator,
+) !void {
+    try collect_field_defaults(
+        alloc,
+        io,
+        path,
+        &eval.field_defaults,
+        &eval.field_types,
+        &eval.field_metadata,
+        &eval.child_relationships,
+    );
+    try collect_field_type_hints(alloc, io, path, &eval.field_types);
+    try collect_source_picklist_value_hints(
+        alloc,
+        io,
+        path,
+        &eval.field_types,
+        &eval.field_metadata,
+    );
+    try collect_child_relationship_hints(
+        alloc,
+        io,
+        path,
+        &eval.child_relationships,
+    );
+    try collect_field_sets(alloc, io, path, &eval.field_sets);
+    try collect_custom_setting_types(
+        alloc,
+        io,
+        path,
+        &eval.custom_setting_types,
+        &eval.custom_setting_kinds,
+        &eval.object_labels,
+        &eval.object_label_plurals,
+    );
+    try collect_custom_labels(alloc, io, path, &eval.custom_labels);
 }
 
 // ---------------------------------------------------------------------------
@@ -513,6 +524,13 @@ fn load_test_metadata_path(
         io,
         path,
         &eval.field_types,
+    ) catch {};
+    collect_source_picklist_value_hints(
+        parse_alloc,
+        io,
+        path,
+        &eval.field_types,
+        &eval.field_metadata,
     ) catch {};
     collect_child_relationship_hints(
         parse_alloc,
@@ -1070,37 +1088,56 @@ fn collect_field_defaults(
 
     while (walker.next(io) catch null) |entry| {
         if (entry.kind != .file) continue;
-        if (!std.mem.endsWith(u8, entry.basename, ".field-meta.xml")) continue;
 
-        const field_entry = parse_field_metadata_entry(entry.path, entry.basename) orelse continue;
-        const full_path = std.fs.path.join(
-            alloc,
-            &.{ path, field_entry.entry_path },
-        ) catch continue;
-        const content = std.Io.Dir.cwd().readFileAlloc(
-            io,
-            full_path,
-            alloc,
-            .limited(64 * 1024),
-        ) catch continue;
+        if (std.mem.endsWith(u8, entry.basename, ".field-meta.xml")) {
+            const field_entry =
+                parse_field_metadata_entry(entry.path, entry.basename) orelse continue;
+            const full_path = std.fs.path.join(
+                alloc,
+                &.{ path, field_entry.entry_path },
+            ) catch continue;
+            const content = std.Io.Dir.cwd().readFileAlloc(
+                io,
+                full_path,
+                alloc,
+                .limited(64 * 1024),
+            ) catch continue;
 
-        var metadata = read_field_metadata(alloc, content) catch continue;
-        store_field_type_metadata(alloc, content, field_entry, field_types) catch {};
-        store_field_reference_metadata(
-            alloc,
-            content,
-            field_entry,
-            &metadata,
-            child_relationships,
-        ) catch {};
-        store_field_metadata(alloc, field_entry, metadata, field_metadata) catch {};
-        store_picklist_default(
-            alloc,
-            field_entry,
-            metadata.picklist_values,
-            field_defaults,
-        ) catch {};
-        store_xml_default_value(alloc, content, field_entry, field_defaults) catch {};
+            try store_field_metadata_from_xml(
+                alloc,
+                content,
+                field_entry,
+                field_defaults,
+                field_types,
+                field_metadata,
+                child_relationships,
+            );
+            continue;
+        }
+
+        if (std.mem.endsWith(u8, entry.basename, legacy_object_suffix)) {
+            const object_type = parse_legacy_object_type(alloc, entry.basename) orelse continue;
+            const full_path = std.fs.path.join(
+                alloc,
+                &.{ path, entry.path },
+            ) catch continue;
+            const content = std.Io.Dir.cwd().readFileAlloc(
+                io,
+                full_path,
+                alloc,
+                .limited(512 * 1024),
+            ) catch continue;
+            try collect_legacy_object_field_metadata(
+                alloc,
+                content,
+                object_type,
+                entry.path,
+                field_defaults,
+                field_types,
+                field_metadata,
+                child_relationships,
+            );
+        }
     }
 }
 
@@ -1117,6 +1154,110 @@ fn parse_field_metadata_entry(entry_path: []const u8, basename: []const u8) ?Fie
 }
 
 const field_meta_xml_suffix = ".field-meta.xml";
+const legacy_object_suffix = ".object";
+const metadata_namespace_placeholder_percent = "%%%NAMESPACE%%%";
+const metadata_namespace_placeholder_underscores = "___NAMESPACE___";
+
+fn store_field_metadata_from_xml(
+    alloc: std.mem.Allocator,
+    content: []const u8,
+    field_entry: FieldMetadataEntry,
+    field_defaults: *FieldDefaultsMap,
+    field_types: *FieldTypesMap,
+    field_metadata: *FieldMetadataMap,
+    child_relationships: *ChildRelationshipsMap,
+) !void {
+    var metadata = read_field_metadata(alloc, content) catch return;
+    store_field_type_metadata(alloc, content, field_entry, field_types) catch {};
+    store_field_reference_metadata(
+        alloc,
+        content,
+        field_entry,
+        &metadata,
+        child_relationships,
+    ) catch {};
+    store_field_metadata(alloc, field_entry, metadata, field_metadata) catch {};
+    store_picklist_default(
+        alloc,
+        field_entry,
+        metadata.picklist_values,
+        field_defaults,
+    ) catch {};
+    store_xml_default_value(alloc, content, field_entry, field_defaults) catch {};
+}
+
+fn parse_legacy_object_type(
+    alloc: std.mem.Allocator,
+    basename: []const u8,
+) ?[]const u8 {
+    if (!std.mem.endsWith(u8, basename, legacy_object_suffix)) return null;
+    const stem = basename[0 .. basename.len - legacy_object_suffix.len];
+    if (stem.len == 0) return null;
+    return normalize_metadata_api_name(alloc, stem) catch null;
+}
+
+fn collect_legacy_object_field_metadata(
+    alloc: std.mem.Allocator,
+    content: []const u8,
+    object_type: []const u8,
+    entry_path: []const u8,
+    field_defaults: *FieldDefaultsMap,
+    field_types: *FieldTypesMap,
+    field_metadata: *FieldMetadataMap,
+    child_relationships: *ChildRelationshipsMap,
+) !void {
+    var cursor: usize = 0;
+    while (std.mem.indexOfPos(u8, content, cursor, "<fields>")) |block_start_idx| {
+        const block_start = block_start_idx + "<fields>".len;
+        const block_end = std.mem.indexOfPos(u8, content, block_start, "</fields>") orelse break;
+        cursor = block_end + "</fields>".len;
+        const block = content[block_start..block_end];
+
+        const raw_field_name = extract_xml_tag_value(block, "fullName") orelse continue;
+        if (extract_xml_tag_value(block, "type") == null) continue;
+        const field_name = try normalize_metadata_api_name(
+            alloc,
+            std.mem.trim(u8, raw_field_name, " \t\r\n"),
+        );
+        if (field_name.len == 0) continue;
+
+        try store_field_metadata_from_xml(
+            alloc,
+            block,
+            .{
+                .type_name = object_type,
+                .field_name = field_name,
+                .entry_path = entry_path,
+            },
+            field_defaults,
+            field_types,
+            field_metadata,
+            child_relationships,
+        );
+    }
+}
+
+fn normalize_metadata_api_name(
+    alloc: std.mem.Allocator,
+    raw_name: []const u8,
+) ![]const u8 {
+    const trimmed = std.mem.trim(u8, raw_name, " \t\r\n");
+    var result = std.ArrayListUnmanaged(u8).empty;
+    var idx: usize = 0;
+    while (idx < trimmed.len) {
+        if (std.mem.startsWith(u8, trimmed[idx..], metadata_namespace_placeholder_percent)) {
+            idx += metadata_namespace_placeholder_percent.len;
+            continue;
+        }
+        if (std.mem.startsWith(u8, trimmed[idx..], metadata_namespace_placeholder_underscores)) {
+            idx += metadata_namespace_placeholder_underscores.len;
+            continue;
+        }
+        try result.append(alloc, trimmed[idx]);
+        idx += 1;
+    }
+    return try alloc.dupe(u8, result.items);
+}
 
 fn read_field_metadata(alloc: std.mem.Allocator, content: []const u8) !evaluator.FieldMetadata {
     var metadata = evaluator.FieldMetadata{};
@@ -1189,8 +1330,8 @@ fn store_field_type_metadata(
     field_types: *FieldTypesMap,
 ) !void {
     const field_type = extract_xml_tag_value(content, "type") orelse return;
-    const type_key = try alloc.dupe(u8, field_entry.type_name);
-    const field_key = try alloc.dupe(u8, field_entry.field_name);
+    const type_key = try normalize_metadata_api_name(alloc, field_entry.type_name);
+    const field_key = try normalize_metadata_api_name(alloc, field_entry.field_name);
     const gop = try field_types.getOrPut(alloc, type_key);
     if (!gop.found_existing) gop.value_ptr.* = .empty;
     try gop.value_ptr.put(alloc, field_key, field_type);
@@ -1204,11 +1345,17 @@ fn store_field_reference_metadata(
     child_relationships: *ChildRelationshipsMap,
 ) !void {
     const reference_to = extract_xml_tag_value(content, "referenceTo") orelse return;
-    const parent_type = std.mem.trim(u8, reference_to, " \t\n\r");
-    metadata.reference_to = alloc.dupe(u8, parent_type) catch null;
+    const parent_type = try normalize_metadata_api_name(
+        alloc,
+        std.mem.trim(u8, reference_to, " \t\n\r"),
+    );
+    metadata.reference_to = parent_type;
 
     const raw_relationship_name = extract_xml_tag_value(content, "relationshipName") orelse return;
-    const relationship_name = std.mem.trim(u8, raw_relationship_name, " \t\n\r");
+    const relationship_name = try normalize_metadata_api_name(
+        alloc,
+        std.mem.trim(u8, raw_relationship_name, " \t\n\r"),
+    );
     put_child_relationship(
         alloc,
         child_relationships,
@@ -1238,8 +1385,8 @@ fn store_field_metadata(
     field_metadata: *FieldMetadataMap,
 ) !void {
     if (!field_metadata_has_values(metadata)) return;
-    const type_key = try alloc.dupe(u8, field_entry.type_name);
-    const field_key = try alloc.dupe(u8, field_entry.field_name);
+    const type_key = try normalize_metadata_api_name(alloc, field_entry.type_name);
+    const field_key = try normalize_metadata_api_name(alloc, field_entry.field_name);
     const gop = try field_metadata.getOrPut(alloc, type_key);
     if (!gop.found_existing) gop.value_ptr.* = .empty;
     try gop.value_ptr.put(alloc, field_key, metadata);
@@ -1308,8 +1455,8 @@ fn store_field_default_value(
     value: Value,
     field_defaults: *FieldDefaultsMap,
 ) !void {
-    const type_key = try alloc.dupe(u8, field_entry.type_name);
-    const field_key = try alloc.dupe(u8, field_entry.field_name);
+    const type_key = try normalize_metadata_api_name(alloc, field_entry.type_name);
+    const field_key = try normalize_metadata_api_name(alloc, field_entry.field_name);
     const gop = try field_defaults.getOrPut(alloc, type_key);
     if (!gop.found_existing) gop.value_ptr.* = .empty;
     try gop.value_ptr.put(alloc, field_key, value);
@@ -1443,10 +1590,18 @@ fn parse_picklist_values(
             }
             break :blk false;
         };
+        const is_active = blk: {
+            if (extract_xml_tag_value(block, "isActive")) |raw_active| {
+                const value = std.mem.trim(u8, raw_active, " \t\n\r");
+                break :blk std.ascii.eqlIgnoreCase(value, "true");
+            }
+            break :blk true;
+        };
         try values.append(alloc, .{
             .label = try decode_xml_text(alloc, std.mem.trim(u8, raw_label, " \t\n\r"), false),
             .value = try decode_xml_text(alloc, std.mem.trim(u8, raw_value, " \t\n\r"), false),
             .is_default = is_default,
+            .is_active = is_active,
         });
         search_start = block_end + "</value>".len;
     }
@@ -1461,12 +1616,20 @@ fn put_child_relationship(
     child_type: []const u8,
     fk_field: []const u8,
 ) !void {
-    const raw_key = try std.fmt.allocPrint(alloc, "{s}|{s}", .{ parent_type, relationship_name });
+    const normalized_parent_type = try normalize_metadata_api_name(alloc, parent_type);
+    const normalized_relationship_name = try normalize_metadata_api_name(alloc, relationship_name);
+    const normalized_child_type = try normalize_metadata_api_name(alloc, child_type);
+    const normalized_fk_field = try normalize_metadata_api_name(alloc, fk_field);
+    const raw_key = try std.fmt.allocPrint(
+        alloc,
+        "{s}|{s}",
+        .{ normalized_parent_type, normalized_relationship_name },
+    );
     const key = try alloc.alloc(u8, raw_key.len);
     _ = std.ascii.lowerString(key, raw_key);
     try child_relationships.put(alloc, key, .{
-        .child_type = try alloc.dupe(u8, child_type),
-        .fk_field = try alloc.dupe(u8, fk_field),
+        .child_type = normalized_child_type,
+        .fk_field = normalized_fk_field,
     });
 }
 
@@ -1701,14 +1864,14 @@ fn store_field_type_hint(
     object_type: []const u8,
     field_name: []const u8,
 ) !void {
-    const type_key = try alloc.dupe(u8, object_type);
-    const field_key = try alloc.dupe(u8, field_name);
+    const type_key = try normalize_metadata_api_name(alloc, object_type);
+    const field_key = try normalize_metadata_api_name(alloc, field_name);
     const gop = try field_types.getOrPut(alloc, type_key);
     if (!gop.found_existing) gop.value_ptr.* = .empty;
     for (gop.value_ptr.keys()) |known_field| {
-        if (std.ascii.eqlIgnoreCase(known_field, field_name)) return;
+        if (std.ascii.eqlIgnoreCase(known_field, field_key)) return;
     }
-    const inferred_type = builtins.infer_field_type_for_object(object_type, field_name);
+    const inferred_type = builtins.infer_field_type_for_object(type_key, field_key);
     try gop.value_ptr.put(alloc, field_key, inferred_type);
 }
 
@@ -1719,6 +1882,401 @@ fn metadata_object_from_path(entry_path: []const u8) ?[]const u8 {
     const sep_idx = std.mem.indexOfAny(u8, after_objects, "/\\") orelse return null;
     if (sep_idx == 0) return null;
     return after_objects[0..sep_idx];
+}
+
+const SourceFieldRef = struct {
+    object_type: []const u8,
+    field_name: []const u8,
+};
+
+const SourceStringConstant = struct {
+    name: []const u8,
+    value: []const u8,
+};
+
+fn collect_source_picklist_value_hints(
+    alloc: std.mem.Allocator,
+    io: std.Io,
+    path: []const u8,
+    field_types: *FieldTypesMap,
+    field_metadata: *FieldMetadataMap,
+) !void {
+    var dir = std.Io.Dir.cwd().openDir(io, path, .{ .iterate = true }) catch return;
+    defer dir.close(io);
+
+    var walker = dir.walk(alloc) catch return;
+    defer walker.deinit();
+
+    var field_refs = std.ArrayListUnmanaged(SourceFieldRef).empty;
+    var constants = std.ArrayListUnmanaged(SourceStringConstant).empty;
+
+    while (walker.next(io) catch null) |entry| {
+        if (entry.kind != .file) continue;
+        if (!std.mem.endsWith(u8, entry.basename, ".cls") and
+            !std.mem.endsWith(u8, entry.basename, ".trigger"))
+        {
+            continue;
+        }
+        const full_path = std.fs.path.join(alloc, &.{ path, entry.path }) catch continue;
+        const content = std.Io.Dir.cwd().readFileAlloc(
+            io,
+            full_path,
+            alloc,
+            .limited(10 * 1024 * 1024),
+        ) catch continue;
+        try collect_source_field_refs_from_content(alloc, content, &field_refs);
+        try collect_source_string_constants_from_content(alloc, content, &constants);
+    }
+
+    for (field_refs.items) |field_ref| {
+        if (!source_field_ref_is_picklist(field_types, field_metadata, field_ref)) continue;
+        if (field_metadata_has_picklist_values(
+            field_metadata,
+            field_ref.object_type,
+            field_ref.field_name,
+        )) {
+            continue;
+        }
+        const prefix = try source_picklist_constant_prefix(alloc, field_ref.field_name);
+        if (prefix.len < 5) continue;
+        for (constants.items) |constant| {
+            if (!source_constant_matches_field_prefix(constant.name, prefix)) continue;
+            try append_source_picklist_metadata_value(
+                alloc,
+                field_metadata,
+                field_ref.object_type,
+                field_ref.field_name,
+                constant.value,
+            );
+        }
+    }
+}
+
+fn collect_source_field_refs_from_content(
+    alloc: std.mem.Allocator,
+    content: []const u8,
+    refs: *std.ArrayListUnmanaged(SourceFieldRef),
+) !void {
+    var cursor: usize = 0;
+    while (std.mem.indexOfScalarPos(u8, content, cursor, '.')) |dot| {
+        cursor = dot + 1;
+        const object_type = source_identifier_before(content, dot) orelse continue;
+        const field_name = source_identifier_after(content, dot + 1) orelse continue;
+        if (!source_field_hint_pair_is_sobject_field(object_type, field_name)) continue;
+        try append_source_field_ref(alloc, refs, object_type, field_name);
+    }
+
+    cursor = 0;
+    while (std.mem.indexOfPos(u8, content, cursor, ".fields.")) |fields_dot| {
+        cursor = fields_dot + ".fields.".len;
+        const field_name = source_identifier_after(content, cursor) orelse continue;
+        if (!source_custom_field_name(field_name)) continue;
+        const object_end = fields_dot;
+        var object_type = source_identifier_before(content, object_end) orelse continue;
+        if (std.ascii.eqlIgnoreCase(object_type, "SObjectType")) {
+            if (object_end <= object_type.len) continue;
+            const before_sobject_type = object_end - object_type.len - 1;
+            object_type = source_identifier_before(content, before_sobject_type) orelse continue;
+        }
+        if (!source_sobject_type_name(object_type)) continue;
+        try append_source_field_ref(alloc, refs, object_type, field_name);
+    }
+}
+
+fn append_source_field_ref(
+    alloc: std.mem.Allocator,
+    refs: *std.ArrayListUnmanaged(SourceFieldRef),
+    object_type: []const u8,
+    field_name: []const u8,
+) !void {
+    const normalized_object = try normalize_metadata_api_name(alloc, object_type);
+    const normalized_field = try normalize_metadata_api_name(alloc, field_name);
+    for (refs.items) |known| {
+        if (std.ascii.eqlIgnoreCase(known.object_type, normalized_object) and
+            std.ascii.eqlIgnoreCase(known.field_name, normalized_field))
+        {
+            return;
+        }
+    }
+    try refs.append(alloc, .{
+        .object_type = normalized_object,
+        .field_name = normalized_field,
+    });
+}
+
+fn collect_source_string_constants_from_content(
+    alloc: std.mem.Allocator,
+    content: []const u8,
+    constants: *std.ArrayListUnmanaged(SourceStringConstant),
+) !void {
+    var cursor: usize = 0;
+    while (std.mem.indexOfPos(u8, content, cursor, "String")) |string_idx| {
+        cursor = string_idx + "String".len;
+        if (string_idx > 0 and source_identifier_char(content[string_idx - 1])) continue;
+        if (cursor < content.len and source_identifier_char(content[cursor])) continue;
+
+        var name_start = cursor;
+        while (name_start < content.len and
+            std.ascii.isWhitespace(content[name_start])) : (name_start += 1)
+        {}
+        const name = source_identifier_after(content, name_start) orelse continue;
+        if (!source_constant_name_is_candidate(name)) continue;
+
+        const eq_idx =
+            std.mem.indexOfScalarPos(u8, content, name_start + name.len, '=') orelse continue;
+        const semi_idx = std.mem.indexOfScalarPos(u8, content, eq_idx, ';') orelse continue;
+        const quote_idx = std.mem.indexOfScalarPos(u8, content, eq_idx, '\'') orelse continue;
+        if (quote_idx > semi_idx) continue;
+        const value =
+            parse_apex_source_single_quoted_literal(alloc, content, quote_idx) orelse continue;
+        try append_source_string_constant(alloc, constants, name, value);
+        cursor = semi_idx + 1;
+    }
+}
+
+fn source_constant_name_is_candidate(name: []const u8) bool {
+    if (name.len == 0) return false;
+    var has_underscore = false;
+    var has_alpha = false;
+    for (name) |ch| {
+        if (ch == '_') {
+            has_underscore = true;
+            continue;
+        }
+        if (std.ascii.isAlphabetic(ch)) {
+            if (!std.ascii.isUpper(ch)) return false;
+            has_alpha = true;
+            continue;
+        }
+        if (!std.ascii.isDigit(ch)) return false;
+    }
+    return has_underscore and has_alpha;
+}
+
+fn parse_apex_source_single_quoted_literal(
+    alloc: std.mem.Allocator,
+    content: []const u8,
+    quote_idx: usize,
+) ?[]const u8 {
+    if (quote_idx >= content.len or content[quote_idx] != '\'') return null;
+    var result = std.ArrayListUnmanaged(u8).empty;
+    var idx = quote_idx + 1;
+    while (idx < content.len) {
+        const ch = content[idx];
+        if (ch == '\\' and idx + 1 < content.len) {
+            result.append(alloc, content[idx + 1]) catch return null;
+            idx += 2;
+            continue;
+        }
+        if (ch == '\'') {
+            if (idx + 1 < content.len and content[idx + 1] == '\'') {
+                result.append(alloc, '\'') catch return null;
+                idx += 2;
+                continue;
+            }
+            return alloc.dupe(u8, result.items) catch null;
+        }
+        result.append(alloc, ch) catch return null;
+        idx += 1;
+    }
+    return null;
+}
+
+fn append_source_string_constant(
+    alloc: std.mem.Allocator,
+    constants: *std.ArrayListUnmanaged(SourceStringConstant),
+    name: []const u8,
+    value: []const u8,
+) !void {
+    for (constants.items) |known| {
+        if (std.ascii.eqlIgnoreCase(known.name, name) and
+            std.mem.eql(u8, known.value, value))
+        {
+            return;
+        }
+    }
+    try constants.append(alloc, .{
+        .name = try alloc.dupe(u8, name),
+        .value = value,
+    });
+}
+
+fn source_field_ref_is_picklist(
+    field_types: *FieldTypesMap,
+    field_metadata: *FieldMetadataMap,
+    field_ref: SourceFieldRef,
+) bool {
+    if (lookup_field_type_hint(
+        field_types,
+        field_ref.object_type,
+        field_ref.field_name,
+    )) |field_type| {
+        if (metadata_field_type_is_picklist(field_type)) return true;
+    }
+    if (lookup_source_field_metadata(
+        field_metadata,
+        field_ref.object_type,
+        field_ref.field_name,
+    )) |metadata| {
+        if (metadata.field_type) |field_type| {
+            if (metadata_field_type_is_picklist(field_type)) return true;
+        }
+    }
+    return metadata_field_type_is_picklist(
+        builtins.infer_field_type_for_object(field_ref.object_type, field_ref.field_name),
+    );
+}
+
+fn metadata_field_type_is_picklist(field_type: []const u8) bool {
+    return std.ascii.eqlIgnoreCase(field_type, "Picklist") or
+        std.ascii.eqlIgnoreCase(field_type, "MultiselectPicklist") or
+        std.ascii.eqlIgnoreCase(field_type, "MULTIPICKLIST");
+}
+
+fn lookup_field_type_hint(
+    field_types: *FieldTypesMap,
+    object_type: []const u8,
+    field_name: []const u8,
+) ?[]const u8 {
+    const type_fields = field_types.get(object_type) orelse blk: {
+        var type_iter = field_types.iterator();
+        while (type_iter.next()) |entry| {
+            if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, object_type)) break :blk entry.value_ptr.*;
+        }
+        return null;
+    };
+    if (type_fields.get(field_name)) |field_type| return field_type;
+    var field_iter = type_fields.iterator();
+    while (field_iter.next()) |entry| {
+        if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, field_name)) return entry.value_ptr.*;
+    }
+    return null;
+}
+
+fn lookup_source_field_metadata(
+    field_metadata: *FieldMetadataMap,
+    object_type: []const u8,
+    field_name: []const u8,
+) ?*evaluator.FieldMetadata {
+    const type_meta = field_metadata.getPtr(object_type) orelse blk: {
+        var type_iter = field_metadata.iterator();
+        while (type_iter.next()) |entry| {
+            if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, object_type)) break :blk entry.value_ptr;
+        }
+        return null;
+    };
+    if (type_meta.getPtr(field_name)) |metadata| return metadata;
+    var field_iter = type_meta.iterator();
+    while (field_iter.next()) |entry| {
+        if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, field_name)) return entry.value_ptr;
+    }
+    return null;
+}
+
+fn field_metadata_has_picklist_values(
+    field_metadata: *FieldMetadataMap,
+    object_type: []const u8,
+    field_name: []const u8,
+) bool {
+    const metadata =
+        lookup_source_field_metadata(field_metadata, object_type, field_name) orelse return false;
+    return metadata.picklist_values.len > 0;
+}
+
+fn source_picklist_constant_prefix(
+    alloc: std.mem.Allocator,
+    field_name: []const u8,
+) ![]const u8 {
+    var local = source_simple_api_name(field_name);
+    if (source_namespaced_custom_api_name(local)) {
+        const namespace_sep = std.mem.indexOf(u8, local, "__").?;
+        local = local[namespace_sep + 2 ..];
+    }
+    if (std.ascii.endsWithIgnoreCase(local, "__c") or
+        std.ascii.endsWithIgnoreCase(local, "__r"))
+    {
+        local = local[0 .. local.len - 3];
+    }
+
+    var result = std.ArrayListUnmanaged(u8).empty;
+    var prev_was_separator = true;
+    var prev_was_lower_or_digit = false;
+    for (local) |ch| {
+        if (ch == '_') {
+            if (!prev_was_separator) {
+                try result.append(alloc, '_');
+                prev_was_separator = true;
+            }
+            prev_was_lower_or_digit = false;
+            continue;
+        }
+        if (std.ascii.isUpper(ch) and prev_was_lower_or_digit and !prev_was_separator) {
+            try result.append(alloc, '_');
+        }
+        try result.append(alloc, std.ascii.toUpper(ch));
+        prev_was_separator = false;
+        prev_was_lower_or_digit = std.ascii.isLower(ch) or std.ascii.isDigit(ch);
+    }
+    while (result.items.len > 0 and result.items[result.items.len - 1] == '_') {
+        _ = result.pop();
+    }
+    return try alloc.dupe(u8, result.items);
+}
+
+fn source_simple_api_name(field_name: []const u8) []const u8 {
+    if (std.mem.lastIndexOfScalar(u8, field_name, '.')) |dot| {
+        return field_name[dot + 1 ..];
+    }
+    return field_name;
+}
+
+fn source_namespaced_custom_api_name(name: []const u8) bool {
+    if (!std.ascii.endsWithIgnoreCase(name, "__c") and
+        !std.ascii.endsWithIgnoreCase(name, "__r"))
+    {
+        return false;
+    }
+    const namespace_sep = std.mem.indexOf(u8, name, "__") orelse return false;
+    return std.mem.indexOf(u8, name[namespace_sep + 2 ..], "__") != null;
+}
+
+fn source_constant_matches_field_prefix(
+    constant_name: []const u8,
+    field_prefix: []const u8,
+) bool {
+    return constant_name.len > field_prefix.len + 1 and
+        std.ascii.startsWithIgnoreCase(constant_name, field_prefix) and
+        constant_name[field_prefix.len] == '_';
+}
+
+fn append_source_picklist_metadata_value(
+    alloc: std.mem.Allocator,
+    field_metadata: *FieldMetadataMap,
+    object_type: []const u8,
+    field_name: []const u8,
+    value: []const u8,
+) !void {
+    const type_key = try normalize_metadata_api_name(alloc, object_type);
+    const field_key = try normalize_metadata_api_name(alloc, field_name);
+    const type_gop = try field_metadata.getOrPut(alloc, type_key);
+    if (!type_gop.found_existing) type_gop.value_ptr.* = .empty;
+    const field_gop = try type_gop.value_ptr.getOrPut(alloc, field_key);
+    if (!field_gop.found_existing) {
+        field_gop.value_ptr.* = .{ .field_type = "Picklist" };
+    }
+    for (field_gop.value_ptr.picklist_values) |known| {
+        if (std.ascii.eqlIgnoreCase(known.value, value)) return;
+    }
+    const previous = field_gop.value_ptr.picklist_values;
+    const next = try alloc.alloc(evaluator.PicklistValueMetadata, previous.len + 1);
+    @memcpy(next[0..previous.len], previous);
+    next[previous.len] = .{
+        .label = value,
+        .value = value,
+        .is_default = false,
+        .is_active = true,
+    };
+    field_gop.value_ptr.picklist_values = next;
 }
 
 fn collect_child_relationship_hints(
@@ -20179,23 +20737,83 @@ test "E2E: global describe includes source-path custom objects" {
     );
 }
 
-test "E2E: managed open ended status picklist has known values" {
+test "E2E: legacy object metadata picklist values feed describe" {
+    const alloc = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try tmp_dir.dir.createDirPath(std.testing.io, "objects/Thing__c");
+    try tmp_dir.dir.writeFile(std.testing.io, .{
+        .sub_path = "objects/Thing__c/Thing__c.object",
+        .data =
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<CustomObject xmlns="http://soap.sforce.com/2006/04/metadata">
+        \\    <fields>
+        \\        <fullName>Status__c</fullName>
+        \\        <label>Status</label>
+        \\        <type>Picklist</type>
+        \\        <valueSet>
+        \\            <valueSetDefinition>
+        \\                <value>
+        \\                    <fullName>First</fullName>
+        \\                    <default>true</default>
+        \\                    <label>First</label>
+        \\                </value>
+        \\                <value>
+        \\                    <fullName>Second</fullName>
+        \\                    <default>false</default>
+        \\                    <isActive>false</isActive>
+        \\                    <label>Second</label>
+        \\                </value>
+        \\            </valueSetDefinition>
+        \\        </valueSet>
+        \\    </fields>
+        \\    <fields>
+        \\        <fullName>%%%NAMESPACE%%%Legacy_Status__c</fullName>
+        \\        <label>Legacy Status</label>
+        \\        <type>Picklist</type>
+        \\        <valueSet>
+        \\            <valueSetDefinition>
+        \\                <value>
+        \\                    <fullName>Enabled</fullName>
+        \\                    <default>true</default>
+        \\                    <label>Enabled</label>
+        \\                </value>
+        \\            </valueSetDefinition>
+        \\        </valueSet>
+        \\    </fields>
+        \\</CustomObject>
+        ,
+    });
+    const tmp_path = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", alloc);
+    defer alloc.free(tmp_path);
+
     const source =
-        \\public class ManagedPicklistProbe {
+        \\public class LegacyObjectPicklistProbe {
         \\    public static String test() {
         \\        Schema.SObjectField field =
-        \\            npe03__Recurring_Donation__c.npe03__Open_Ended_Status__c;
+        \\            Thing__c.Status__c;
         \\        Schema.DescribeFieldResult describe =
         \\            field.getDescribe();
         \\        List<Schema.PicklistEntry> values =
         \\            describe.getPicklistValues();
+        \\        Schema.DescribeFieldResult legacyDescribe =
+        \\            Thing__c.Legacy_Status__c.getDescribe();
         \\        return values.get(0).getValue() + ':' +
         \\            values.get(1).getValue() + ':' +
-        \\            values.get(2).getValue();
+        \\            String.valueOf(values.get(1).isActive()) + ':' +
+        \\            legacyDescribe.getPicklistValues().get(0).getValue();
         \\    }
         \\}
     ;
-    try expect_entry_string(source, "ManagedPicklistProbe", "test", "Open:Closed:None");
+    const result = try run(alloc, std.testing.io, source, .{
+        .entry_class = "LegacyObjectPicklistProbe",
+        .entry_method = "test",
+        .source_paths = &.{tmp_path},
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("First:Second:false:Enabled", result.value.string);
 }
 
 test "E2E: JSON.deserializeUntyped throws on malformed root input" {

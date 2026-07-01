@@ -7673,78 +7673,27 @@ fn dispatch_describe_field_picklist_values(
     const list = try ctx.arena.create(types.ListValue);
     list.* = .{};
     if (object_type != null and field_name.len > 0) {
-        if (try append_known_object_picklist_values(ctx, list, object_type.?, field_name)) {
-            // The local metadata for managed packages can contain placeholder or
-            // org-specific values without matching custom metadata records.
-        } else {
-            if (lookup_field_metadata(ctx, object_type.?, field_name)) |metadata| {
-                for (metadata.picklist_values) |picklist_value| {
-                    try append_picklist_entry(
-                        ctx,
-                        list,
-                        picklist_value.label,
-                        picklist_value.value,
-                    );
-                }
+        if (lookup_field_metadata(ctx, object_type.?, field_name)) |metadata| {
+            for (metadata.picklist_values) |picklist_value| {
+                try append_picklist_entry(
+                    ctx,
+                    list,
+                    picklist_value.label,
+                    picklist_value.value,
+                    picklist_value.is_active,
+                );
             }
-            if (list.items.items.len == 0) {
-                _ = try load_picklist_from_metadata(ctx, list, object_type.?, field_name);
-            }
-            try append_picklist_values_from_store(ctx, list, object_type.?, field_name);
         }
         if (list.items.items.len == 0) {
-            try append_known_managed_picklist_values(ctx, list, field_name);
+            _ = try load_picklist_from_metadata(ctx, list, object_type.?, field_name);
         }
+        try append_picklist_values_from_store(ctx, list, object_type.?, field_name);
     }
     // Ensure at least one entry so that get(0) doesn't fail
     if (list.items.items.len == 0) {
-        try append_picklist_entry(ctx, list, "Default", "Default");
+        try append_picklist_entry(ctx, list, "Default", "Default", true);
     }
     return Value{ .list = list };
-}
-
-fn append_known_object_picklist_values(
-    ctx: *BuiltinContext,
-    list: *types.ListValue,
-    object_type: []const u8,
-    field_name: []const u8,
-) !bool {
-    if (std.ascii.eqlIgnoreCase(object_type, "npe03__Recurring_Donation__c") and
-        std.ascii.eqlIgnoreCase(simple_field_api_name(field_name), "Status__c"))
-    {
-        try append_picklist_entry(ctx, list, "Active", "Active");
-        try append_picklist_entry(ctx, list, "Lapsed", "Lapsed");
-        try append_picklist_entry(ctx, list, "Closed", "Closed");
-        try append_picklist_entry(ctx, list, "Paused", "Paused");
-        try append_picklist_entry(ctx, list, "Failing", "Failing");
-        return true;
-    }
-    if (std.ascii.eqlIgnoreCase(object_type, "npe03__Recurring_Donation__c") and
-        field_api_name_matches(field_name, "npe03__Installment_Period__c"))
-    {
-        try append_picklist_entry(ctx, list, "Monthly", "Monthly");
-        try append_picklist_entry(ctx, list, "Weekly", "Weekly");
-        try append_picklist_entry(ctx, list, "Quarterly", "Quarterly");
-        try append_picklist_entry(ctx, list, "1st and 15th", "1st and 15th");
-        try append_picklist_entry(ctx, list, "Yearly", "Yearly");
-        return true;
-    }
-    if (std.ascii.eqlIgnoreCase(object_type, "npe03__Recurring_Donation__c") and
-        field_api_name_matches(field_name, "npe03__Open_Ended_Status__c"))
-    {
-        try append_picklist_entry(ctx, list, "Open", "Open");
-        try append_picklist_entry(ctx, list, "Closed", "Closed");
-        try append_picklist_entry(ctx, list, "None", "None");
-        return true;
-    }
-    if (std.ascii.eqlIgnoreCase(object_type, "npe03__Recurring_Donation__c") and
-        field_api_name_matches(field_name, "npe03__Schedule_Type__c"))
-    {
-        try append_picklist_entry(ctx, list, "Multiply By", "Multiply By");
-        try append_picklist_entry(ctx, list, "Divide By", "Divide By");
-        return true;
-    }
-    return false;
 }
 
 fn simple_field_api_name(field_name: []const u8) []const u8 {
@@ -7765,26 +7714,14 @@ fn field_api_name_matches(field_name: []const u8, canonical: []const u8) bool {
     return false;
 }
 
-fn append_known_managed_picklist_values(
-    ctx: *BuiltinContext,
-    list: *types.ListValue,
-    field_name: []const u8,
-) !void {
-    if (std.ascii.endsWithIgnoreCase(field_name, "Open_Ended_Status__c")) {
-        try append_picklist_entry(ctx, list, "Open", "Open");
-        try append_picklist_entry(ctx, list, "Closed", "Closed");
-        try append_picklist_entry(ctx, list, "None", "None");
-    }
-}
-
 fn describe_field_default_value(
     ctx: *BuiltinContext,
     obj: *types.ObjectInstance,
     object_type: ?[]const u8,
     field_name: []const u8,
 ) Value {
-    // Resolve field-meta.xml <defaultValue> first. NPSP package-detection code
-    // reads text defaults through getDefaultValueFormula().
+    // Resolve metadata <defaultValue> first; Apex exposes text defaults through
+    // getDefaultValueFormula().
     if (object_type) |obj_name| {
         if (lookup_field_default(ctx, obj_name, field_name)) |default_val| {
             return default_val;
@@ -10960,6 +10897,7 @@ fn append_picklist_entry(
     list: *types.ListValue,
     label: []const u8,
     value: []const u8,
+    is_active: bool,
 ) !void {
     for (list.items.items) |existing| {
         if (existing != .object) continue;
@@ -10977,7 +10915,7 @@ fn append_picklist_entry(
     pe.* = .{ .class_name = "Schema.PicklistEntry" };
     try pe.fields.put(ctx.arena, "label", Value{ .string = label });
     try pe.fields.put(ctx.arena, "value", Value{ .string = value });
-    try pe.fields.put(ctx.arena, "active", Value{ .boolean = true });
+    try pe.fields.put(ctx.arena, "active", Value{ .boolean = is_active });
     try list.items.append(ctx.arena, Value{ .object = pe });
 }
 
@@ -10994,7 +10932,7 @@ fn append_picklist_values_from_store(
             if (record != .sobject) continue;
             if (utils.sobject_get(&record.sobject.fields, field_name)) |val| {
                 if (val == .string) {
-                    try append_picklist_entry(ctx, list, val.string, val.string);
+                    try append_picklist_entry(ctx, list, val.string, val.string, true);
                 }
             }
         }
@@ -11112,11 +11050,26 @@ fn parse_picklist_xml(ctx: *BuiltinContext, list: *types.ListValue, content: []c
         }
 
         if (label) |lbl| {
-            try append_picklist_entry(ctx, list, lbl, api_name orelse lbl);
+            try append_picklist_entry(
+                ctx,
+                list,
+                lbl,
+                api_name orelse lbl,
+                picklist_xml_value_is_active(block),
+            );
         }
 
         pos = value_end + value_end_tag.len;
     }
+}
+
+fn picklist_xml_value_is_active(block: []const u8) bool {
+    const start_tag = "<isActive>";
+    const end_tag = "</isActive>";
+    const start = std.mem.indexOf(u8, block, start_tag) orelse return true;
+    const value_start = start + start_tag.len;
+    const end = std.mem.indexOfPos(u8, block, value_start, end_tag) orelse return true;
+    return std.ascii.eqlIgnoreCase(std.mem.trim(u8, block[value_start..end], " \t\r\n"), "true");
 }
 
 fn decode_xml_entities(arena: std.mem.Allocator, s: []const u8) ![]const u8 {

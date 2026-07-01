@@ -40,6 +40,7 @@ pub const PicklistValueMetadata = struct {
     label: []const u8,
     value: []const u8,
     is_default: bool = false,
+    is_active: bool = true,
 };
 
 pub const FieldMetadata = struct {
