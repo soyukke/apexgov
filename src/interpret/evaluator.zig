@@ -20845,11 +20845,6 @@ pub const Evaluator = struct {
         object_type: []const u8,
         ref: []const u8,
     ) ?[]const u8 {
-        if (std.ascii.eqlIgnoreCase(object_type, "Contact") and
-            std.ascii.eqlIgnoreCase(ref, "npo02__Household__r"))
-        {
-            return "npo02__Household__c";
-        }
         if (self.custom_metadata_parent_type_for_ref(object_type, ref)) |target| return target;
         const fk_field = self.parent_ref_to_fk(ref);
         if (self.get_field_metadata(object_type, fk_field)) |meta| {
@@ -20867,7 +20862,15 @@ pub const Evaluator = struct {
                 return object_type;
             }
         }
-        return self.parent_ref_to_type(ref);
+        return self.parent_ref_to_type(ref) orelse self.custom_parent_type_from_relationship_ref(ref);
+    }
+
+    fn custom_parent_type_from_relationship_ref(
+        self: *Evaluator,
+        ref: []const u8,
+    ) ?[]const u8 {
+        if (ref.len <= 3 or !std.ascii.eqlIgnoreCase(ref[ref.len - 3 ..], "__r")) return null;
+        return std.fmt.allocPrint(self.arena, "{s}__c", .{ref[0 .. ref.len - 3]}) catch null;
     }
 
     fn custom_metadata_parent_type_for_ref(

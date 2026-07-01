@@ -4919,16 +4919,16 @@ test "E2E: SOQL parent relationship resolves namespaced custom lookup" {
     const source =
         \\public class NamespacedParentLookupProbe {
         \\    public static String test() {
-        \\        Parent__c parent = new Parent__c(Name = 'Parent Name');
+        \\        pkg__Parent__c parent = new pkg__Parent__c(Name = 'Parent Name');
         \\        insert parent;
-        \\        Child__c child = new Child__c(Parent__c = parent.Id);
+        \\        Child__c child = new Child__c(pkg__Parent__c = parent.Id);
         \\        insert child;
         \\        Child__c queried = [
-        \\            SELECT npsp__Parent__r.Name
+        \\            SELECT pkg__Parent__r.Name
         \\            FROM Child__c
         \\            WHERE Id = :child.Id
         \\        ];
-        \\        return queried.Parent__r.Name;
+        \\        return queried.pkg__Parent__r.Name;
         \\    }
         \\}
     ;
@@ -4939,16 +4939,16 @@ test "E2E: SOQL parent relationship resolves namespaced managed package-style lo
     const source =
         \\public class NamespacedPackageLookupProbe {
         \\    public static String test() {
-        \\        Form_Template__c template = new Form_Template__c(Template_JSON__c = 'json');
+        \\        pkg__Form_Template__c template = new pkg__Form_Template__c(Template_JSON__c = 'json');
         \\        insert template;
-        \\        DataImportBatch__c batch = new DataImportBatch__c(Form_Template__c = template.Id);
+        \\        DataImportBatch__c batch = new DataImportBatch__c(pkg__Form_Template__c = template.Id);
         \\        insert batch;
         \\        DataImportBatch__c queried = [
-        \\            SELECT npsp__Form_Template__r.Template_JSON__c
+        \\            SELECT pkg__Form_Template__r.Template_JSON__c
         \\            FROM DataImportBatch__c
         \\            WHERE Id = :batch.Id
         \\        ];
-        \\        return queried.Form_Template__r.Template_JSON__c;
+        \\        return queried.pkg__Form_Template__r.Template_JSON__c;
         \\    }
         \\}
     ;
