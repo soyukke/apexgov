@@ -34305,9 +34305,6 @@ pub const Evaluator = struct {
         if (try self.eval_npsp_rd2_pause_schedule_handler_method(obj, method, args)) |result| {
             return result;
         }
-        if (try self.eval_npsp_rd2_status_automation_service_method(obj, method, args)) |result| {
-            return result;
-        }
         if (try self.eval_npsp_rd2_settings_method(obj, method, args)) |result| {
             return result;
         }
@@ -36422,57 +36419,6 @@ pub const Evaluator = struct {
             Value{ .integer = records_failed },
         );
         return Value.void_val;
-    }
-
-    fn eval_npsp_rd2_status_automation_service_method(
-        self: *Evaluator,
-        obj: Value,
-        method: []const u8,
-        args: []const Value,
-    ) !?Value {
-        if (!self.fixture_relaxed_exceptions) return null;
-        if (!(obj == .object and std.ascii.eqlIgnoreCase(obj.object.class_name, "RD2_StatusAutomationService"))) {
-            return null;
-        }
-        const closed_mode = std.ascii.eqlIgnoreCase(method, "shouldMarkRDAsClosed");
-        const lapsed_mode = std.ascii.eqlIgnoreCase(method, "shouldMarkRDAsLapsed");
-        if (!closed_mode and !lapsed_mode) return null;
-        if (args.len == 0 or args[0] != .object) return Value{ .boolean = false };
-        const rd_value = self.get_object_field_case_insensitive(args[0].object, "rd") orelse return Value{ .boolean = false };
-        if (rd_value != .sobject) return Value{ .boolean = false };
-        const rd = rd_value.sobject;
-        if (self.npsp_recurring_donation_is_closed(rd)) return Value{ .boolean = false };
-        if (self.npsp_recurring_donation_is_paused(rd)) return Value{ .boolean = false };
-
-        var schedules: std.ArrayListUnmanaged(NpspRdSchedule) = .empty;
-        try self.collect_npsp_recurring_donation_schedules(rd, &schedules);
-        if (schedules.items.len == 0) return Value{ .boolean = false };
-
-        const threshold_days = if (closed_mode)
-            self.npsp_status_automation_threshold_days("StatusAutomationDaysForClosed__c")
-        else
-            self.npsp_status_automation_threshold_days("StatusAutomationDaysForLapsed__c");
-        const days = threshold_days orelse return Value{ .boolean = false };
-
-        const expected = try self.npsp_rd2_expected_missing_donation_date_from_schedules(rd) orelse
-            return Value{ .boolean = false };
-        const threshold_date = date_add_days(expected, days);
-        const current_value = self.npsp_recurring_donation_current_date() orelse
-            try builtins.make_date_value(self.arena, try builtins.current_date_string(self.arena));
-        const current_str = builtins.extract_date_string(current_value) orelse return Value{ .boolean = false };
-        const current = parse_iso_date(current_str) orelse return Value{ .boolean = false };
-        return Value{ .boolean = compare_iso_dates(threshold_date, current) < 0 };
-    }
-
-    fn npsp_status_automation_threshold_days(
-        self: *Evaluator,
-        field_name: []const u8,
-    ) ?i64 {
-        const settings = self.npsp_cached_recurring_donation_settings() orelse
-            self.first_custom_setting_record("npe03__Recurring_Donations_Settings__c") orelse
-            return null;
-        const value = self.get_s_object_field_value_case_insensitive(settings, field_name) orelse return null;
-        return npsp_numeric_i64(value);
     }
 
     fn npsp_recurring_donation_is_paused(
