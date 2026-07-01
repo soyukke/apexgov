@@ -303,7 +303,6 @@ fn run_tests_filtered(
     }
 
     eval.source_paths = load_paths;
-    eval.fixture_relaxed_exceptions = paths_enable_relaxed_fixture_exceptions(load_paths);
     const load_stats = try load_test_sources(parse_alloc, io, load_paths, &eval);
     try writer.print(
         "interpret: loaded {d} Apex source file(s)\n",
@@ -340,15 +339,6 @@ fn run_tests_filtered(
     // 所有権 move: ここまでくれば caller が deinit で arena を解放する。
     suite.arena = parse_arena;
     return suite;
-}
-
-fn paths_enable_relaxed_fixture_exceptions(paths: []const []const u8) bool {
-    for (paths) |path| {
-        if (std.mem.indexOf(u8, path, ".local-fixtures/apex/repos/NPSP") != null) {
-            return true;
-        }
-    }
-    return false;
 }
 
 fn expand_fixture_dependency_paths(
