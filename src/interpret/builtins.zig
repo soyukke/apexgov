@@ -5566,44 +5566,17 @@ fn infer_field_type_for_object(
 ) []const u8 {
     if (object_type.len > 0) {
         if (infer_standard_picklist_type(object_type, field_name)) |t| return t;
-        if (std.ascii.eqlIgnoreCase(object_type, "npe03__Recurring_Donation__c") and
-            std.ascii.eqlIgnoreCase(field_name, "npe03__Amount__c"))
-        {
-            return "Currency";
-        }
-        if (std.ascii.eqlIgnoreCase(object_type, "npe03__Recurring_Donation__c") and
-            std.ascii.eqlIgnoreCase(field_name, "npe03__Installment_Period__c"))
-        {
-            return "Picklist";
-        }
-        if (std.ascii.eqlIgnoreCase(object_type, "npe03__Recurring_Donation__c") and
-            (field_api_name_matches(field_name, "npe03__Open_Ended_Status__c") or
-                field_api_name_matches(field_name, "npe03__Schedule_Type__c")))
-        {
-            return "Picklist";
-        }
         if (std.ascii.eqlIgnoreCase(object_type, "Opportunity") and
             field_api_name_matches(field_name, "Primary_Contact__c"))
         {
             return "Reference";
-        }
-        if (std.ascii.eqlIgnoreCase(object_type, "npe01__OppPayment__c") and
-            (std.ascii.eqlIgnoreCase(field_name, "npe01__Paid__c") or
-                std.ascii.eqlIgnoreCase(field_name, "npe01__Written_Off__c")))
-        {
-            return "Boolean";
-        }
-        if ((std.ascii.eqlIgnoreCase(object_type, "Account") or
-            std.ascii.eqlIgnoreCase(object_type, "Contact")) and
-            std.ascii.eqlIgnoreCase(field_name, "npo02__OppsClosedThisYear__c"))
-        {
-            return "Double";
         }
         if (std.ascii.eqlIgnoreCase(object_type, "Opportunity")) {
             if (std.ascii.eqlIgnoreCase(field_name, "CloseDate")) return "Date";
             if (std.ascii.eqlIgnoreCase(field_name, "Amount")) return "Currency";
         }
     }
+    if (infer_custom_field_type_by_name(field_name)) |t| return t;
     if (std.ascii.eqlIgnoreCase(field_name, "NumberOfEmployees") or
         std.ascii.eqlIgnoreCase(field_name, "TotalSize"))
         return "Integer";
@@ -5636,6 +5609,41 @@ fn infer_field_type_for_object(
         return "DateTime";
     if (type_matches_any(field_name, &.{ "Priority", "Status" })) return "Picklist";
     return "String";
+}
+
+fn infer_custom_field_type_by_name(field_name: []const u8) ?[]const u8 {
+    const local = local_custom_field_name(field_name);
+    if (!std.ascii.endsWithIgnoreCase(local, "__c")) return null;
+    if (std.ascii.endsWithIgnoreCase(local, "Amount__c")) return "Currency";
+    if (std.ascii.endsWithIgnoreCase(local, "Status__c") or
+        std.ascii.endsWithIgnoreCase(local, "Type__c") or
+        std.ascii.endsWithIgnoreCase(local, "Period__c"))
+    {
+        return "Picklist";
+    }
+    if (std.ascii.eqlIgnoreCase(local, "Paid__c") or
+        std.ascii.eqlIgnoreCase(local, "Written_Off__c") or
+        std.ascii.startsWithIgnoreCase(local, "Is") or
+        std.ascii.startsWithIgnoreCase(local, "Has"))
+    {
+        return "Boolean";
+    }
+    if ((std.mem.indexOf(u8, local, "Closed") != null and
+        std.mem.indexOf(u8, local, "Year") != null) or
+        std.ascii.startsWithIgnoreCase(local, "NumberOf") or
+        std.ascii.endsWithIgnoreCase(local, "Count__c"))
+    {
+        return "Double";
+    }
+    return null;
+}
+
+fn local_custom_field_name(field_name: []const u8) []const u8 {
+    const simple = simple_field_api_name(field_name);
+    const namespace_sep = std.mem.indexOf(u8, simple, "__") orelse return simple;
+    const after_namespace = simple[namespace_sep + 2 ..];
+    if (std.mem.indexOf(u8, after_namespace, "__") == null) return simple;
+    return after_namespace;
 }
 
 /// Return the xml-form type for well-known standard picklists ("Account.Rating" etc.).
