@@ -13375,11 +13375,7 @@ pub const Evaluator = struct {
     ) !bool {
         if (!self.fixture_relaxed_exceptions) return false;
         if (!std.mem.endsWith(u8, obj.type_name, "__c")) return false;
-        const kind = self.custom_setting_kind(obj.type_name) orelse
-            if (std.ascii.eqlIgnoreCase(obj.type_name, "Customizable_Rollup_Settings__c"))
-                "Hierarchy"
-            else
-                return false;
+        const kind = self.custom_setting_kind(obj.type_name) orelse return false;
         if (obj.id != null) return false;
         if (self.get_s_object_field_value_case_insensitive(obj, "Id")) |id_value| {
             if (id_value != .null_val) return false;
@@ -13966,14 +13962,7 @@ pub const Evaluator = struct {
         obj: *types.SObject,
     ) !bool {
         if (!std.mem.endsWith(u8, obj.type_name, "__c")) return false;
-        if (std.ascii.eqlIgnoreCase(obj.type_name, "Customizable_Rollup_Settings__c")) {
-            return false;
-        }
-        const kind = self.custom_setting_kind(obj.type_name) orelse
-            if (std.ascii.eqlIgnoreCase(obj.type_name, "Customizable_Rollup_Settings__c"))
-                "Hierarchy"
-            else
-                return false;
+        const kind = self.custom_setting_kind(obj.type_name) orelse return false;
         if (obj.id != null) return false;
         if (self.get_s_object_field_value_case_insensitive(obj, "Id")) |id_value| {
             if (id_value != .null_val) return false;
@@ -34294,9 +34283,6 @@ pub const Evaluator = struct {
         if (try self.eval_formula_filter_instance_method(obj, method, args)) |result| {
             return result;
         }
-        if (try self.eval_npsp_crlp_rollup_metadata_handler_method(obj, method, args)) |result| {
-            return result;
-        }
         if (try self.eval_fflib_dynamic_domain_factory_method(obj, method, args)) |result| {
             return result;
         }
@@ -34537,51 +34523,6 @@ pub const Evaluator = struct {
         try result.fields.put(self.arena, "triggerNew", trigger_new);
         try result.fields.put(self.arena, "triggerOld", trigger_old);
         return Value{ .object = result };
-    }
-
-    fn eval_npsp_crlp_rollup_metadata_handler_method(
-        self: *Evaluator,
-        obj: Value,
-        method: []const u8,
-        args: []const Value,
-    ) !?Value {
-        if (obj != .object or
-            std.ascii.indexOfIgnoreCase(obj.object.class_name, "RollupMetadataHandler") == null or
-            !std.ascii.eqlIgnoreCase(method, "performSuccessHandler"))
-        {
-            return null;
-        }
-
-        const settings_value = try self.custom_setting_get_org_defaults(
-            "Customizable_Rollup_Settings__c",
-            true,
-        );
-        if (settings_value == .sobject) {
-            try utils.sobject_put(
-                &settings_value.sobject.fields,
-                self.arena,
-                "CMT_API_Status__c",
-                if (args.len >= 2) args[1] else Value.null_val,
-            );
-            try utils.sobject_put(
-                &settings_value.sobject.fields,
-                self.arena,
-                "Customizable_Rollups_Enabled__c",
-                Value{ .boolean = true },
-            );
-            _ = try self.update_relaxed_custom_setting_without_id(settings_value.sobject);
-        }
-
-        var schedule_jobs = true;
-        if (args.len >= 1 and args[0] == .map) {
-            if (args[0].map.entries.get("ScheduleJobs")) |value| {
-                if (value == .boolean) schedule_jobs = value.boolean;
-            }
-        }
-        if (schedule_jobs) {
-            _ = try self.create_async_apex_job("ScheduledApex", "CRLP_RollupScheduler", "execute");
-        }
-        return Value.void_val;
     }
 
     fn eval_install_context_instance_method(
