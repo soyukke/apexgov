@@ -5628,6 +5628,7 @@ pub fn normalize_s_object_field_assignment(
     value: Value,
 ) !Value {
     if (value == .null_val) return value;
+    if (value == .sobject and is_parent_relationship_field_name(field_name)) return value;
 
     const display_type = get_s_object_field_display_type(ctx, sob, field_name);
 
@@ -5667,6 +5668,13 @@ pub fn normalize_s_object_field_assignment(
     }
 
     return value;
+}
+
+fn is_parent_relationship_field_name(field_name: []const u8) bool {
+    if (std.mem.endsWith(u8, field_name, "__r")) return true;
+    if (std.mem.endsWith(u8, field_name, "__c")) return false;
+    if (std.mem.endsWith(u8, field_name, "Id")) return false;
+    return standard_reference_target_for_field_name(field_name) != null;
 }
 
 fn normalize_boolean_field_assignment(ctx: *BuiltinContext, value: Value) !Value {

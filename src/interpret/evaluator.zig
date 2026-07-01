@@ -2126,13 +2126,6 @@ pub const Evaluator = struct {
         )) |result| {
             return result;
         }
-        if (try self.handle_fflib_mock_sobject_util_static_method(
-            class_name,
-            method_name,
-            args,
-        )) |result| {
-            return result;
-        }
         if (try self.handle_datacloud_static_method(class_name, method_name, args)) |result| {
             return result;
         }
@@ -29252,31 +29245,6 @@ pub const Evaluator = struct {
             }
         }
         return null;
-    }
-
-    fn handle_fflib_mock_sobject_util_static_method(
-        self: *Evaluator,
-        class_name: []const u8,
-        method_name: []const u8,
-        args: []const Value,
-    ) !?Value {
-        if (!std.ascii.eqlIgnoreCase(class_name, "fflib_MockSObjectUtil") or
-            !std.ascii.eqlIgnoreCase(method_name, "addRelatedParentObject") or
-            args.len < 3 or
-            args[0] != .sobject or
-            args[1] != .sobject or
-            args[2] != .string)
-        {
-            return null;
-        }
-        const clone = try self.arena.create(types.SObject);
-        clone.* = .{ .type_name = args[0].sobject.type_name };
-        clone.id = args[0].sobject.id;
-        for (args[0].sobject.fields.keys(), args[0].sobject.fields.values()) |key, value| {
-            try clone.fields.put(self.arena, key, value);
-        }
-        try clone.fields.put(self.arena, args[2].string, args[1]);
-        return Value{ .sobject = clone };
     }
 
     fn handle_datacloud_static_method(

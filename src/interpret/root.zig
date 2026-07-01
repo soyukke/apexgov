@@ -15508,6 +15508,34 @@ test "E2E: JSON deserialize unwraps relationship records for typed child access"
     );
 }
 
+test "E2E: JSON deserialize keeps nested parent relationship SObjects" {
+    const source =
+        \\public class JsonParentRelationshipRoundTripTest {
+        \\    public static String test() {
+        \\        Contact contactRecord = new Contact(LastName = 'Smith');
+        \\        Account accountRecord = new Account(
+        \\            Id = '001000000000001AAA',
+        \\            Name = 'Acme'
+        \\        );
+        \\        String serializedContact = JSON.serialize(contactRecord);
+        \\        String combined = serializedContact.left(serializedContact.length() - 1) +
+        \\            ',"Account":' + JSON.serialize(accountRecord) + '}';
+        \\        SObject parsed = (SObject) JSON.deserialize(combined, SObject.class);
+        \\        Contact typed = (Contact) parsed;
+        \\        return String.valueOf(parsed.get('Account') instanceof SObject) + ':' +
+        \\            String.valueOf(parsed.getSObject('Account').get('Name')) + ':' +
+        \\            typed.Account.Name;
+        \\    }
+        \\}
+    ;
+    try expect_entry_string(
+        source,
+        "JsonParentRelationshipRoundTripTest",
+        "test",
+        "true:Acme:Acme",
+    );
+}
+
 test "E2E: JSON relationship records without attributes infer child SObject type" {
     const source =
         \\public class JsonInferredRelationshipRecordTypeTest {
