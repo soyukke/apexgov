@@ -34311,12 +34311,6 @@ pub const Evaluator = struct {
         if (try self.eval_npsp_opp_rollup_instance_method(obj, method, args)) |result| {
             return result;
         }
-        if (try self.eval_npsp_hh_households_tdtm_instance_method(obj, method, args, current_env)) |result| {
-            return result;
-        }
-        if (try self.eval_npsp_household_naming_service_instance_method(obj, method, args)) |result| {
-            return result;
-        }
         if (try self.eval_npsp_rd2_sustainer_evaluation_service_method(obj, method, args)) |result| {
             return result;
         }
@@ -36486,40 +36480,6 @@ pub const Evaluator = struct {
         return enabled == .boolean and enabled.boolean;
     }
 
-    fn eval_npsp_hh_households_tdtm_instance_method(
-        self: *Evaluator,
-        obj: Value,
-        method: []const u8,
-        args: []const Value,
-        current_env: *Env,
-    ) !?Value {
-        if (!self.fixture_relaxed_exceptions) return null;
-        if (!(obj == .object and std.ascii.eqlIgnoreCase(obj.object.class_name, "HH_Households_TDTM"))) {
-            return null;
-        }
-        if (!std.ascii.eqlIgnoreCase(method, "run") or args.len < 3) return null;
-        if (!self.npsp_trigger_action_is(args[2], "AfterInsert")) return null;
-
-        const key = try self.static_field_cache_key("LegacyHouseholdMembers", "mock");
-        const mock = self.global_env.get(key) orelse return null;
-        if (mock == .null_val) return null;
-        _ = try self.eval_instance_method(mock, "onAfterInsert", &.{}, current_env);
-        return try self.instantiate_class("DmlWrapper");
-    }
-
-    fn npsp_trigger_action_is(self: *Evaluator, value: Value, expected: []const u8) bool {
-        _ = self;
-        return switch (value) {
-            .string => |text| std.ascii.eqlIgnoreCase(text, expected),
-            .object => |object| blk: {
-                if (std.ascii.eqlIgnoreCase(object.class_name, expected)) break :blk true;
-                const name = object.fields.get("name") orelse break :blk false;
-                break :blk name == .string and std.ascii.eqlIgnoreCase(name.string, expected);
-            },
-            else => false,
-        };
-    }
-
     fn npsp_deceased_batch_clear_deceased_accounts(self: *Evaluator) !void {
         const accounts = self.store_records_ptr("Account") orelse return;
         for (accounts.items) |account_value| {
@@ -36675,46 +36635,6 @@ pub const Evaluator = struct {
         while (existing_jobs < target_jobs) : (existing_jobs += 1) {
             _ = try self.create_async_apex_job("BatchApex", batch_obj.class_name, "execute");
         }
-    }
-
-    fn eval_npsp_household_naming_service_instance_method(
-        self: *Evaluator,
-        obj: Value,
-        method: []const u8,
-        args: []const Value,
-    ) !?Value {
-        if (!self.fixture_relaxed_exceptions) return null;
-        if (obj != .object) return null;
-        if (std.ascii.indexOfIgnoreCase(obj.object.class_name, "HouseholdNamingService") == null) {
-            return null;
-        }
-        if (!std.ascii.eqlIgnoreCase(method, "setAllMembersDeceasedFlag")) return null;
-        if (args.len == 0 or args[0] != .list) return Value.void_val;
-
-        for (args[0].list.items.items) |account_value| {
-            if (account_value != .sobject) continue;
-            const account = account_value.sobject;
-            if (!std.ascii.eqlIgnoreCase(account.type_name, "Account")) continue;
-            const account_id = account.id orelse continue;
-            var members_value = if (args.len > 1 and args[1] == .map)
-                try self.eval_map_get(args[1].map, Value{ .string = account_id })
-            else
-                Value.null_val;
-            if (members_value == .null_val and args.len > 1 and args[1] == .map and
-                args[1].map.entries.count() == 1)
-            {
-                members_value = args[1].map.entries.values()[0];
-            }
-            const all_deceased = self.npsp_members_value_all_deceased(members_value);
-            const desired = Value{ .boolean = all_deceased };
-            const original =
-                self.get_s_object_field_value_case_insensitive(account, "All_Members_Deceased__c") orelse
-                Value.null_val;
-            if (utils.value_eql(original, desired)) continue;
-            try utils.sobject_put(&account.fields, self.arena, "All_Members_Deceased__c", desired);
-            try self.npsp_household_naming_service_register_dirty(obj.object, account_value);
-        }
-        return Value.void_val;
     }
 
     fn eval_npsp_rd2_sustainer_evaluation_service_method(
@@ -36940,59 +36860,6 @@ pub const Evaluator = struct {
         const contact_account =
             self.get_s_object_field_value_case_insensitive(contact, "AccountId") orelse return false;
         return contact_account == .string and std.ascii.eqlIgnoreCase(contact_account.string, account_id);
-    }
-
-    fn npsp_members_value_all_deceased(
-        self: *Evaluator,
-        members_value: Value,
-    ) bool {
-        if (members_value != .list) return false;
-        for (members_value.list.items.items) |member_value| {
-            if (member_value != .sobject) return false;
-            const deceased = self.get_s_object_field_value_case_insensitive(
-                member_value.sobject,
-                "Deceased__c",
-            ) orelse Value{ .boolean = false };
-            if (deceased != .boolean or !deceased.boolean) return false;
-        }
-        return members_value.list.items.items.len > 0;
-    }
-
-    fn npsp_household_naming_service_register_dirty(
-        self: *Evaluator,
-        service: *types.ObjectInstance,
-        account_value: Value,
-    ) !void {
-        const unit_of_work = try self.npsp_household_naming_service_unit_of_work(service);
-        const updates_value = unit_of_work.fields.get("objectsToUpdate") orelse blk: {
-            const updates = try self.arena.create(types.ListValue);
-            updates.* = .{};
-            const value = Value{ .list = updates };
-            try unit_of_work.fields.put(self.arena, "objectsToUpdate", value);
-            break :blk value;
-        };
-        if (updates_value != .list) return;
-        try updates_value.list.items.append(self.arena, account_value);
-    }
-
-    fn npsp_household_naming_service_unit_of_work(
-        self: *Evaluator,
-        service: *types.ObjectInstance,
-    ) !*types.ObjectInstance {
-        if (service.fields.get("unitOfWork")) |value| {
-            if (value == .object) return value.object;
-        }
-        const unit_of_work = try self.arena.create(types.ObjectInstance);
-        unit_of_work.* = .{ .class_name = "fflib_SObjectUnitOfWork" };
-        const updates = try self.arena.create(types.ListValue);
-        updates.* = .{};
-        try unit_of_work.fields.put(
-            self.arena,
-            "objectsToUpdate",
-            Value{ .list = updates },
-        );
-        try service.fields.put(self.arena, "unitOfWork", Value{ .object = unit_of_work });
-        return unit_of_work;
     }
 
     fn refresh_npsp_rollup_contacts_from_value(self: *Evaluator, value: Value) !void {
