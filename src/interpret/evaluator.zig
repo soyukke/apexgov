@@ -34428,9 +34428,6 @@ pub const Evaluator = struct {
         if (try self.eval_npsp_rd2_data_migration_mapper_method(obj, method)) |result| {
             return result;
         }
-        if (try self.eval_npsp_bdi_migration_mapping_helper_method(obj, method, args)) |result| {
-            return result;
-        }
         if (try self.eval_npsp_callable_api_parameters_method(obj, method, args)) |result| {
             return result;
         }
@@ -37286,94 +37283,6 @@ pub const Evaluator = struct {
         );
         try service.fields.put(self.arena, "unitOfWork", Value{ .object = unit_of_work });
         return unit_of_work;
-    }
-
-    fn eval_npsp_bdi_migration_mapping_helper_method(
-        self: *Evaluator,
-        obj: Value,
-        method: []const u8,
-        args: []const Value,
-    ) !?Value {
-        if (!self.fixture_relaxed_exceptions or obj != .object) return null;
-        if (!std.ascii.eqlIgnoreCase(obj.object.class_name, "BDI_MigrationMappingHelper")) {
-            return null;
-        }
-
-        if (std.ascii.eqlIgnoreCase(method, "getObjectMappingsBySetDeveloperName")) {
-            if (!npsp_bdi_helper_arg_equals(args, "Default_Object_Mapping_Set")) {
-                return null;
-            }
-            const map = try self.arena.create(types.MapValue);
-            map.* = .{};
-            try map.entries.put(
-                self.arena,
-                "Account_1",
-                try self.npsp_bdi_object_mapping_stub(),
-            );
-            return Value{ .map = map };
-        }
-
-        if (std.ascii.eqlIgnoreCase(method, "getFieldMappingsByFieldMappingSetDeveloperName") or
-            std.ascii.eqlIgnoreCase(method, "getFieldMappingStringsBySetDeveloperName"))
-        {
-            if (!npsp_bdi_helper_arg_equals(args, "Default_Field_Mapping_Set")) {
-                return null;
-            }
-            const map = try self.arena.create(types.MapValue);
-            map.* = .{};
-            try map.entries.put(
-                self.arena,
-                "Account.Account_1.BillingCity",
-                try self.npsp_bdi_field_mapping_stub(),
-            );
-            return Value{ .map = map };
-        }
-
-        if (std.ascii.eqlIgnoreCase(method, "getFieldMappingKeysByDeveloperName")) {
-            if (args.len < 2 or args[1] != .string or
-                !std.ascii.eqlIgnoreCase(args[1].string, "Default_Field_Mapping_Set"))
-            {
-                return null;
-            }
-            const list = try self.arena.create(types.ListValue);
-            list.* = .{ .element_type = "String" };
-            try list.items.append(self.arena, Value{ .string = "Account.Account_1.BillingCity.Account_1_City" });
-            return Value{ .list = list };
-        }
-
-        return null;
-    }
-
-    fn npsp_bdi_helper_arg_equals(args: []const Value, expected: []const u8) bool {
-        return args.len > 0 and args[0] == .string and std.ascii.eqlIgnoreCase(args[0].string, expected);
-    }
-
-    fn npsp_bdi_object_mapping_stub(self: *Evaluator) !Value {
-        const sob = try self.arena.create(types.SObject);
-        sob.* = .{ .type_name = "Data_Import_Object_Mapping__mdt" };
-        sob.id = "m000000000000001";
-        try sob.fields.put(self.arena, "Id", Value{ .string = sob.id.? });
-        try sob.fields.put(self.arena, "Label", Value{ .string = "Account 1" });
-        try sob.fields.put(self.arena, "DeveloperName", Value{ .string = "Account_1" });
-        try sob.fields.put(self.arena, "Object_API_Name__c", Value{ .string = "Account" });
-        try sob.fields.put(self.arena, "Legacy_Data_Import_Object_Name__c", Value{ .string = "Account_1" });
-        try sob.fields.put(self.arena, "Is_Deleted__c", Value{ .boolean = false });
-        return Value{ .sobject = sob };
-    }
-
-    fn npsp_bdi_field_mapping_stub(self: *Evaluator) !Value {
-        const sob = try self.arena.create(types.SObject);
-        sob.* = .{ .type_name = "Data_Import_Field_Mapping__mdt" };
-        sob.id = "m000000000000002";
-        try sob.fields.put(self.arena, "Id", Value{ .string = sob.id.? });
-        try sob.fields.put(self.arena, "Label", Value{ .string = "Account 1 City" });
-        try sob.fields.put(self.arena, "MasterLabel", Value{ .string = "Account 1 City" });
-        try sob.fields.put(self.arena, "DeveloperName", Value{ .string = "Account_1_City" });
-        try sob.fields.put(self.arena, "Source_Field_API_Name__c", Value{ .string = "Account_1_City" });
-        try sob.fields.put(self.arena, "Target_Field_API_Name__c", Value{ .string = "BillingCity" });
-        try sob.fields.put(self.arena, "Is_Deleted__c", Value{ .boolean = false });
-        try sob.fields.put(self.arena, "Target_Object_Mapping__r", try self.npsp_bdi_object_mapping_stub());
-        return Value{ .sobject = sob };
     }
 
     fn eval_npsp_callable_api_parameters_method(
