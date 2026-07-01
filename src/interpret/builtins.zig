@@ -614,17 +614,14 @@ fn dispatch_static_system(
         return .void_val;
     }
     if (std.ascii.eqlIgnoreCase(method_name, "currentTimeMillis")) {
-        if (ctx.eval.fixture_relaxed_exceptions) {
-            return Value{ .long = next_logical_millis(ctx) };
-        }
-        return Value{ .integer = 1000 };
+        return Value{ .long = next_logical_millis(ctx) };
     }
     if (std.ascii.eqlIgnoreCase(method_name, "now")) {
         const result = try make_datetime_value(
             ctx.arena,
             try current_date_time_string(ctx.arena),
         );
-        if (ctx.eval.fixture_relaxed_exceptions and result == .object) {
+        if (result == .object) {
             try result.object.fields.put(
                 ctx.arena,
                 "epoch_millis",

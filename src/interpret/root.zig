@@ -2539,6 +2539,20 @@ test "E2E: System.now date matches System.today" {
     try expect_entry_string(source, "SystemNowTest", "test", "true");
 }
 
+test "E2E: System clock values are monotonic and expose epoch millis" {
+    const source =
+        \\public class SystemClockProbe {
+        \\    public static String test() {
+        \\        Long first = System.currentTimeMillis();
+        \\        Long second = System.currentTimeMillis();
+        \\        Long nowMs = System.now().getTime();
+        \\        return String.valueOf(second > first) + ':' + String.valueOf(nowMs > 0);
+        \\    }
+        \\}
+    ;
+    try expect_entry_string(source, "SystemClockProbe", "test", "true:true");
+}
+
 test "E2E: Database.query on unknown object throws QueryException" {
     const source =
         \\public class UnknownObjTest {
