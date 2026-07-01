@@ -64,6 +64,12 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, source: []const u8, opts: Options
                 &eval.field_metadata,
                 &eval.child_relationships,
             );
+            try collect_child_relationship_hints(
+                arena.allocator(),
+                io,
+                path,
+                &eval.child_relationships,
+            );
             try collect_field_sets(arena.allocator(), io, path, &eval.field_sets);
             try collect_custom_setting_types(
                 arena.allocator(),
@@ -494,6 +500,12 @@ fn load_test_metadata_path(
         &eval.field_defaults,
         &eval.field_types,
         &eval.field_metadata,
+        &eval.child_relationships,
+    ) catch {};
+    collect_child_relationship_hints(
+        parse_alloc,
+        io,
+        path,
         &eval.child_relationships,
     ) catch {};
     collect_field_sets(parse_alloc, io, path, &eval.field_sets) catch {};
@@ -1444,6 +1456,159 @@ fn put_child_relationship(
         .child_type = try alloc.dupe(u8, child_type),
         .fk_field = try alloc.dupe(u8, fk_field),
     });
+}
+
+fn collect_child_relationship_hints(
+    alloc: std.mem.Allocator,
+    io: std.Io,
+    path: []const u8,
+    child_relationships: *ChildRelationshipsMap,
+) !void {
+    var dir = std.Io.Dir.cwd().openDir(io, path, .{ .iterate = true }) catch return;
+    defer dir.close(io);
+
+    var walker = dir.walk(alloc) catch return;
+    defer walker.deinit();
+
+    while (walker.next(io) catch null) |entry| {
+        if (entry.kind != .file) continue;
+        if (std.mem.endsWith(u8, entry.basename, ".layout-meta.xml")) {
+            try collect_layout_child_relationship_hints(
+                alloc,
+                io,
+                path,
+                entry.path,
+                entry.basename,
+                child_relationships,
+            );
+        } else if (std.mem.endsWith(u8, entry.basename, ".quickAction-meta.xml")) {
+            try collect_quick_action_child_relationship_hint(
+                alloc,
+                io,
+                path,
+                entry.path,
+                entry.basename,
+                child_relationships,
+            );
+        }
+    }
+}
+
+fn collect_layout_child_relationship_hints(
+    alloc: std.mem.Allocator,
+    io: std.Io,
+    base_path: []const u8,
+    entry_path: []const u8,
+    basename: []const u8,
+    child_relationships: *ChildRelationshipsMap,
+) !void {
+    const parent_type = layout_parent_type_from_basename(basename) orelse return;
+    const full_path = try std.fs.path.join(alloc, &.{ base_path, entry_path });
+    const content = std.Io.Dir.cwd().readFileAlloc(
+        io,
+        full_path,
+        alloc,
+        .limited(512 * 1024),
+    ) catch return;
+
+    var cursor: usize = 0;
+    while (std.mem.indexOfPos(u8, content, cursor, "<relatedList>")) |start_idx| {
+        const value_start = start_idx + "<relatedList>".len;
+        const end_idx = std.mem.indexOfPos(u8, content, value_start, "</relatedList>") orelse break;
+        cursor = end_idx + "</relatedList>".len;
+        const value = std.mem.trim(u8, content[value_start..end_idx], " \t\r\n");
+        const dot = std.mem.indexOfScalar(u8, value, '.') orelse continue;
+        const child_type = std.mem.trim(u8, value[0..dot], " \t\r\n");
+        const fk_field = std.mem.trim(u8, value[dot + 1 ..], " \t\r\n");
+        try put_custom_child_relationship_hint(
+            alloc,
+            child_relationships,
+            parent_type,
+            child_type,
+            fk_field,
+        );
+    }
+}
+
+fn collect_quick_action_child_relationship_hint(
+    alloc: std.mem.Allocator,
+    io: std.Io,
+    base_path: []const u8,
+    entry_path: []const u8,
+    basename: []const u8,
+    child_relationships: *ChildRelationshipsMap,
+) !void {
+    const parent_type = quick_action_parent_type_from_basename(basename) orelse return;
+    const full_path = try std.fs.path.join(alloc, &.{ base_path, entry_path });
+    const content = std.Io.Dir.cwd().readFileAlloc(
+        io,
+        full_path,
+        alloc,
+        .limited(128 * 1024),
+    ) catch return;
+    const child_type = std.mem.trim(
+        u8,
+        extract_xml_tag_value(content, "targetObject") orelse return,
+        " \t\r\n",
+    );
+    const fk_field = std.mem.trim(
+        u8,
+        extract_xml_tag_value(content, "targetParentField") orelse return,
+        " \t\r\n",
+    );
+    try put_custom_child_relationship_hint(
+        alloc,
+        child_relationships,
+        parent_type,
+        child_type,
+        fk_field,
+    );
+}
+
+fn put_custom_child_relationship_hint(
+    alloc: std.mem.Allocator,
+    child_relationships: *ChildRelationshipsMap,
+    parent_type: []const u8,
+    child_type: []const u8,
+    fk_field: []const u8,
+) !void {
+    const relationship_name = custom_child_relationship_name_from_type(alloc, child_type) orelse return;
+    try put_child_relationship(
+        alloc,
+        child_relationships,
+        parent_type,
+        relationship_name,
+        child_type,
+        fk_field,
+    );
+}
+
+fn custom_child_relationship_name_from_type(
+    alloc: std.mem.Allocator,
+    child_type: []const u8,
+) ?[]const u8 {
+    if (!std.ascii.endsWithIgnoreCase(child_type, "__c")) return null;
+    return std.fmt.allocPrint(
+        alloc,
+        "{s}__r",
+        .{child_type[0 .. child_type.len - "__c".len]},
+    ) catch null;
+}
+
+fn layout_parent_type_from_basename(basename: []const u8) ?[]const u8 {
+    if (!std.mem.endsWith(u8, basename, ".layout-meta.xml")) return null;
+    const stem = basename[0 .. basename.len - ".layout-meta.xml".len];
+    const dash = std.mem.indexOfScalar(u8, stem, '-') orelse return null;
+    if (dash == 0) return null;
+    return stem[0..dash];
+}
+
+fn quick_action_parent_type_from_basename(basename: []const u8) ?[]const u8 {
+    if (!std.mem.endsWith(u8, basename, ".quickAction-meta.xml")) return null;
+    const stem = basename[0 .. basename.len - ".quickAction-meta.xml".len];
+    const dot = std.mem.indexOfScalar(u8, stem, '.') orelse return null;
+    if (dot == 0) return null;
+    return stem[0..dot];
 }
 
 /// object-meta.xml を走査し `<customSettingsType>` が含まれる SObject 名と種別を集める。
@@ -10140,9 +10305,9 @@ test "E2E: enhanced recurring donation start date defaults before insert trigger
     try expect_entry_string(source, "RDDefaultProbe", "test", "true:true");
 }
 
-test "E2E: missing managed package payment child relationship defaults to empty list" {
+test "E2E: missing custom package child relationship defaults to empty list" {
     const source =
-        \\public class PackagePaymentChildRelationshipTest {
+        \\public class PackageChildRelationshipTest {
         \\    public static String test() {
         \\        Opportunity opp = new Opportunity(
         \\            Name = 'Gift',
@@ -10151,25 +10316,43 @@ test "E2E: missing managed package payment child relationship defaults to empty 
         \\        );
         \\        insert opp;
         \\        Opportunity queried = [SELECT Id FROM Opportunity WHERE Id = :opp.Id];
-        \\        return String.valueOf(queried.npe01__OppPayment__r.isEmpty());
+        \\        return String.valueOf(queried.pkg__Payment__r.isEmpty());
         \\    }
         \\}
     ;
-    try expect_entry_string(source, "PackagePaymentChildRelationshipTest", "test", "true");
+    try expect_entry_string(source, "PackageChildRelationshipTest", "test", "true");
 }
 
-test "E2E: managed package payment relationship appears in Opportunity describe" {
+test "E2E: layout relatedList custom relationship appears in Opportunity describe" {
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try tmp_dir.dir.createDirPath(std.testing.io, "layouts");
+    try tmp_dir.dir.writeFile(std.testing.io, .{
+        .sub_path = "layouts/Opportunity-Test.layout-meta.xml",
+        .data =
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<Layout xmlns="http://soap.sforce.com/2006/04/metadata">
+        \\    <relatedLists>
+        \\        <relatedList>pkg__Payment__c.pkg__Opportunity__c</relatedList>
+        \\    </relatedLists>
+        \\</Layout>
+        ,
+    });
+    const tmp_path = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(tmp_path);
+
     const source =
-        \\public class PackagePaymentDescribeRelationshipTest {
+        \\public class PackageDescribeRelationshipTest {
         \\    public static String test() {
         \\        Boolean found = false;
         \\        List<Schema.ChildRelationship> rels =
         \\            Opportunity.SObjectType.getDescribe().getChildRelationships();
         \\        for (Schema.ChildRelationship rel : rels) {
         \\            if (
-        \\                rel.getRelationshipName() == 'npe01__OppPayment__r' &&
-        \\                rel.getField().getDescribe().getName() == 'npe01__Opportunity__c' &&
-        \\                String.valueOf(rel.getChildSObject()) == 'npe01__OppPayment__c'
+        \\                rel.getRelationshipName() == 'pkg__Payment__r' &&
+        \\                rel.getField().getDescribe().getName() == 'pkg__Opportunity__c' &&
+        \\                String.valueOf(rel.getChildSObject()) == 'pkg__Payment__c'
         \\            ) {
         \\                found = true;
         \\            }
@@ -10178,7 +10361,14 @@ test "E2E: managed package payment relationship appears in Opportunity describe"
         \\    }
         \\}
     ;
-    try expect_entry_string(source, "PackagePaymentDescribeRelationshipTest", "test", "true");
+    var result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "PackageDescribeRelationshipTest",
+        .entry_method = "test",
+        .source_paths = &.{tmp_path},
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("true", result.value.string);
 }
 
 test "E2E: missing standard Opportunity child relationships default to empty lists" {

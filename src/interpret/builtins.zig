@@ -4320,12 +4320,6 @@ const standard_child_relationships = [_]ChildRelationshipSpec{
         .fk = "OpportunityId",
         .relationship = "OpportunityContactRoles",
     },
-    .{
-        .parent = "Opportunity",
-        .child = "npe01__OppPayment__c",
-        .fk = "npe01__Opportunity__c",
-        .relationship = "npe01__OppPayment__r",
-    },
     .{ .parent = "Opportunity", .child = "Event", .fk = "WhatId", .relationship = "Events" },
     .{ .parent = "Opportunity", .child = "Task", .fk = "WhatId", .relationship = "Tasks" },
     .{ .parent = "Opportunity", .child = "Quote", .fk = "OpportunityId", .relationship = "Quotes" },
