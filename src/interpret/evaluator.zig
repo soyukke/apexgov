@@ -20363,11 +20363,6 @@ pub const Evaluator = struct {
         {
             return "Opportunity";
         }
-        if (std.ascii.eqlIgnoreCase(parent_type, "npe03__Recurring_Donation__c") and
-            std.ascii.eqlIgnoreCase(relationship, "RecurringDonationSchedules__r"))
-        {
-            return "RecurringDonationSchedule__c";
-        }
         const parent_base = type_base_name(strip_type_namespace(parent_type));
         if (!std.mem.endsWith(u8, parent_base, "__c")) {
             if (custom_child_type_from_relationship_name(self.arena, relationship)) |child_type| {
@@ -20438,12 +20433,6 @@ pub const Evaluator = struct {
             std.ascii.eqlIgnoreCase(relationship, "npe03__Donations__r"))
         {
             return "npe03__Recurring_Donation__c";
-        }
-        if (std.ascii.eqlIgnoreCase(parent_type, "npe03__Recurring_Donation__c") and
-            std.ascii.eqlIgnoreCase(child_type, "RecurringDonationSchedule__c") and
-            std.ascii.eqlIgnoreCase(relationship, "RecurringDonationSchedules__r"))
-        {
-            return "RecurringDonation__c";
         }
         if (custom_foreign_key_from_relationship_name(
             self.arena,
