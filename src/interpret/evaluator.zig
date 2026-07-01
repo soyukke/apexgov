@@ -3218,6 +3218,7 @@ pub const Evaluator = struct {
         defer if (tracking_npsp_opportunity_allocation_dml) {
             self.npsp_opportunity_allocation_dml_depth -= 1;
         };
+
         if (trigger_events.before) |evt| {
             if (obj_type) |ot| {
                 try self.fire_trigger(ot, evt, &record_list, old_records);
@@ -3258,7 +3259,11 @@ pub const Evaluator = struct {
         }
 
         if (obj_type) |ot| {
-            try self.apply_npsp_account_relationship_undelete_side_effects(ot, op, record_list.items);
+            try self.apply_npsp_account_relationship_undelete_side_effects(
+                ot,
+                op,
+                record_list.items,
+            );
             try self.apply_rollup_summary_side_effects(ot, record_list.items, old_records);
             try self.apply_npsp_bulk_address_validation(ot, op, record_list.items);
             try self.apply_npsp_batch_address_initial_state(ot, op, record_list.items);
@@ -3266,7 +3271,11 @@ pub const Evaluator = struct {
             try self.apply_npsp_contact_address_instrumentation(ot, op, record_list.items);
             try self.apply_npsp_address_delete_side_effects(ot, op, record_list.items);
             try self.cleanup_npsp_negative_payment_default_allocations(ot, op, record_list.items);
-            try self.cleanup_npsp_locked_payment_opportunity_default_allocations(ot, op, record_list.items);
+            try self.cleanup_npsp_locked_payment_opportunity_default_allocations(
+                ot,
+                op,
+                record_list.items,
+            );
             try self.create_npsp_payment_allocations_from_opportunity_allocations(
                 ot,
                 op,
@@ -3299,9 +3308,17 @@ pub const Evaluator = struct {
             );
             try self.apply_npsp_bdi_payment_lookup_side_effects(ot, op, record_list.items);
             try self.apply_npsp_bdi_imported_payment_side_effects(ot, op, record_list.items);
-            try self.apply_npsp_bdi_recurring_donation_allocation_side_effects(ot, op, record_list.items);
+            try self.apply_npsp_bdi_recurring_donation_allocation_side_effects(
+                ot,
+                op,
+                record_list.items,
+            );
             try self.clear_npsp_bdi_self_allocation_conflict_errors(ot, op, record_list.items);
-            try self.apply_npsp_recurring_donation_allocation_side_effects(ot, op, record_list.items);
+            try self.apply_npsp_recurring_donation_allocation_side_effects(
+                ot,
+                op,
+                record_list.items,
+            );
             try self.queue_change_events_for_dml(ot, op, record_list.items);
             try self.apply_npsp_recurring_donation_schedule_side_effects(
                 ot,
@@ -3360,7 +3377,10 @@ pub const Evaluator = struct {
             if (record != .sobject) continue;
             const payment_id = self.sobject_id_for_result(record.sobject) orelse continue;
             const amount_value =
-                self.get_s_object_field_value_case_insensitive(record.sobject, "npe01__Payment_Amount__c") orelse
+                self.get_s_object_field_value_case_insensitive(
+                    record.sobject,
+                    "npe01__Payment_Amount__c",
+                ) orelse
                 Value.null_val;
             const amount = numeric_value_as_f64(amount_value) orelse continue;
             if (amount != 0) continue;
@@ -3380,7 +3400,11 @@ pub const Evaluator = struct {
             const payment =
                 self.get_s_object_field_value_case_insensitive(record.sobject, "Payment__c") orelse
                 continue;
-            if (payment != .string or !std.ascii.eqlIgnoreCase(payment.string, payment_id)) continue;
+            if (payment != .string or
+                !std.ascii.eqlIgnoreCase(payment.string, payment_id))
+            {
+                continue;
+            }
             if (self.npsp_is_auto_default_payment_allocation(record.sobject, default_gau)) continue;
             const percent =
                 self.get_s_object_field_value_case_insensitive(record.sobject, "Percent__c") orelse
@@ -3392,7 +3416,9 @@ pub const Evaluator = struct {
             const fixed_amount = numeric_value_as_f64(amount) orelse 0;
             if (fixed_amount == 0) continue;
             return self.throw_dml_exception(
-                "FIELD_CUSTOM_VALIDATION_EXCEPTION: The Allocations for this Payment exceed the Payment amount. Update your Allocation amounts, and then adjust the Payment amount.",
+                "FIELD_CUSTOM_VALIDATION_EXCEPTION: The Allocations for this Payment exceed " ++
+                    "the Payment amount. Update your Allocation amounts, and then adjust " ++
+                    "the Payment amount.",
             );
         }
     }
@@ -3554,7 +3580,10 @@ pub const Evaluator = struct {
         if (!std.ascii.eqlIgnoreCase(object_type, "RecurringDonationSchedule__c")) return;
         if (!(self.npsp_recurring_donations2_enabled() catch false)) return;
         try self.refresh_npsp_recurring_donation_schedule_active_flags(records);
-        if (!self.npsp_recurring_donation_schedule_records_include_pause(records, old_records)) return;
+        if (!self.npsp_recurring_donation_schedule_records_include_pause(
+            records,
+            old_records,
+        )) return;
 
         var impacted_ids = std.StringArrayHashMapUnmanaged(void).empty;
         try self.collect_summary_impact_ids_from_records(
@@ -3571,7 +3600,9 @@ pub const Evaluator = struct {
         }
         var iter = impacted_ids.iterator();
         while (iter.next()) |entry| {
-            try self.ensure_npsp_recurring_donation_first_opportunity_for_pause_schedule(entry.key_ptr.*);
+            try self.ensure_npsp_recurring_donation_first_opportunity_for_pause_schedule(
+                entry.key_ptr.*,
+            );
             try self.refresh_npsp_recurring_donation_rollups(entry.key_ptr.*);
         }
     }
@@ -3623,7 +3654,8 @@ pub const Evaluator = struct {
         self: *Evaluator,
         rd_id: []const u8,
     ) !void {
-        const rd_value = self.find_record_by_id("npe03__Recurring_Donation__c", rd_id) orelse return;
+        const rd_value =
+            self.find_record_by_id("npe03__Recurring_Donation__c", rd_id) orelse return;
         if (rd_value != .sobject) return;
         if (self.npsp_recurring_donation_is_closed(rd_value.sobject)) return;
         const close_date =
@@ -3677,7 +3709,7 @@ pub const Evaluator = struct {
         for (opportunities.items) |record| {
             if (record != .sobject) continue;
             const opp_rd =
-                self.get_s_object_field_value_case_insensitive(record.sobject, "npe03__Recurring_Donation__c") orelse
+                self.sobj_field_ci(record.sobject, "npe03__Recurring_Donation__c") orelse
                 continue;
             if (opp_rd != .string or !std.ascii.eqlIgnoreCase(opp_rd.string, rd_id)) continue;
             const close_value =
@@ -3888,10 +3920,13 @@ pub const Evaluator = struct {
             if (record != .sobject) continue;
             if (!self.npsp_payment_is_locked_for_allocation_sync(record.sobject)) continue;
             const opp_value =
-                self.get_s_object_field_value_case_insensitive(record.sobject, "npe01__Opportunity__c") orelse
+                self.sobj_field_ci(record.sobject, "npe01__Opportunity__c") orelse
                 continue;
             if (opp_value != .string or opp_value.string.len == 0) continue;
-            if (self.npsp_parent_has_explicit_allocations("Opportunity__c", opp_value.string)) continue;
+            if (self.npsp_parent_has_explicit_allocations(
+                "Opportunity__c",
+                opp_value.string,
+            )) continue;
             try self.remove_npsp_default_opportunity_allocations(opp_value.string);
         }
     }
@@ -3909,7 +3944,7 @@ pub const Evaluator = struct {
                 continue;
             }
             const opp =
-                self.get_s_object_field_value_case_insensitive(record.sobject, "Opportunity__c") orelse
+                self.sobj_field_ci(record.sobject, "Opportunity__c") orelse
                 Value.null_val;
             if (opp != .string or !std.ascii.eqlIgnoreCase(opp.string, opportunity_id)) {
                 idx += 1;
@@ -3966,8 +4001,8 @@ pub const Evaluator = struct {
             if (payment == .string) try payment_ids.put(self.arena, payment.string, {});
         }
         for (payment_ids.keys()) |payment_id| {
-            const payment = self.find_stored_sobject_by_id("npe01__OppPayment__c", payment_id) orelse
-                continue;
+            const payment =
+                self.find_stored_sobject_by_id("npe01__OppPayment__c", payment_id) orelse continue;
             if (self.npsp_payment_is_locked_for_allocation_sync(payment)) continue;
             try self.apply_npsp_allocation_parent_amount_update(payment);
         }
@@ -4010,12 +4045,12 @@ pub const Evaluator = struct {
             const payment = record.sobject;
             if (self.npsp_payment_is_locked_for_allocation_sync(payment)) continue;
             const payment_amount_value =
-                self.get_s_object_field_value_case_insensitive(payment, "npe01__Payment_Amount__c") orelse
+                self.sobj_field_ci(payment, "npe01__Payment_Amount__c") orelse
                 Value.null_val;
             const payment_amount = numeric_value_as_f64(payment_amount_value) orelse continue;
             if (payment_amount == 0) continue;
             const opp_value =
-                self.get_s_object_field_value_case_insensitive(payment, "npe01__Opportunity__c") orelse
+                self.sobj_field_ci(payment, "npe01__Opportunity__c") orelse
                 continue;
             if (opp_value != .string or opp_value.string.len == 0) continue;
             if (!self.npsp_parent_has_allocations("Opportunity__c", opp_value.string)) continue;
@@ -4049,14 +4084,14 @@ pub const Evaluator = struct {
         for (records) |record| {
             if (record != .sobject) continue;
             const payment_value =
-                self.get_s_object_field_value_case_insensitive(record.sobject, "Payment__c") orelse
+                self.sobj_field_ci(record.sobject, "Payment__c") orelse
                 continue;
             if (payment_value != .string) continue;
             const payment = self.find_stored_sobject_by_id(
                 "npe01__OppPayment__c",
                 payment_value.string,
             ) orelse continue;
-            const opp_value = self.get_s_object_field_value_case_insensitive(
+            const opp_value = self.sobj_field_ci(
                 payment,
                 "npe01__Opportunity__c",
             ) orelse continue;
@@ -4079,14 +4114,18 @@ pub const Evaluator = struct {
         for (records) |record| {
             if (record != .sobject) continue;
             const payment_value =
-                self.get_s_object_field_value_case_insensitive(record.sobject, "Payment__c") orelse
+                self.sobj_field_ci(record.sobject, "Payment__c") orelse
                 continue;
             if (payment_value != .string or payment_value.string.len == 0) continue;
             const gau_value =
-                self.get_s_object_field_value_case_insensitive(record.sobject, "General_Accounting_Unit__c") orelse
+                self.sobj_field_ci(record.sobject, "General_Accounting_Unit__c") orelse
                 continue;
             if (gau_value != .string or gau_value.string.len == 0) continue;
-            if (default_gau != null and std.ascii.eqlIgnoreCase(gau_value.string, default_gau.?)) continue;
+            if (default_gau != null and
+                std.ascii.eqlIgnoreCase(gau_value.string, default_gau.?))
+            {
+                continue;
+            }
             if (self.npsp_allocation_count_for_parent_gau(
                 "Payment__c",
                 payment_value.string,
@@ -4095,7 +4134,7 @@ pub const Evaluator = struct {
                 continue;
             }
             const amount_value =
-                self.get_s_object_field_value_case_insensitive(record.sobject, "Amount__c") orelse
+                self.sobj_field_ci(record.sobject, "Amount__c") orelse
                 Value.null_val;
             const amount = numeric_value_as_f64(amount_value) orelse continue;
             const payment =
@@ -4103,24 +4142,25 @@ pub const Evaluator = struct {
                 continue;
             if (self.npsp_payment_is_locked_for_allocation_sync(payment)) continue;
             const payment_amount_value =
-                self.get_s_object_field_value_case_insensitive(payment, "npe01__Payment_Amount__c") orelse
+                self.sobj_field_ci(payment, "npe01__Payment_Amount__c") orelse
                 Value.null_val;
             const payment_amount = numeric_value_as_f64(payment_amount_value) orelse continue;
             if (payment_amount == 0) continue;
             const opp_value =
-                self.get_s_object_field_value_case_insensitive(payment, "npe01__Opportunity__c") orelse
+                self.sobj_field_ci(payment, "npe01__Opportunity__c") orelse
                 continue;
             if (opp_value != .string or opp_value.string.len == 0) continue;
-            const opp = self.find_stored_sobject_by_id("Opportunity", opp_value.string) orelse continue;
+            const opp =
+                self.find_stored_sobject_by_id("Opportunity", opp_value.string) orelse continue;
             const opp_amount_value =
-                self.get_s_object_field_value_case_insensitive(opp, "Amount") orelse Value.null_val;
+                self.sobj_field_ci(opp, "Amount") orelse Value.null_val;
             const opp_amount = numeric_value_as_f64(opp_amount_value) orelse continue;
             if (opp_amount == 0) continue;
             const total_payment_amount =
                 self.npsp_total_syncable_payment_amount_for_opportunity(opp_value.string);
             if (total_payment_amount == 0) continue;
             const percent_value =
-                self.get_s_object_field_value_case_insensitive(record.sobject, "Percent__c") orelse
+                self.sobj_field_ci(record.sobject, "Percent__c") orelse
                 Value.null_val;
             const effective_amount = if (numeric_value_as_f64(percent_value)) |record_percent|
                 payment_amount * record_percent / 100.0
@@ -4144,7 +4184,7 @@ pub const Evaluator = struct {
             if (record != .sobject) continue;
             if (self.npsp_payment_is_locked_for_allocation_sync(record.sobject)) continue;
             const payment_opp =
-                self.get_s_object_field_value_case_insensitive(record.sobject, "npe01__Opportunity__c") orelse
+                self.sobj_field_ci(record.sobject, "npe01__Opportunity__c") orelse
                 continue;
             if (payment_opp != .string or
                 !std.ascii.eqlIgnoreCase(payment_opp.string, opportunity_id))
@@ -4152,7 +4192,7 @@ pub const Evaluator = struct {
                 continue;
             }
             const amount_value =
-                self.get_s_object_field_value_case_insensitive(record.sobject, "npe01__Payment_Amount__c") orelse
+                self.sobj_field_ci(record.sobject, "npe01__Payment_Amount__c") orelse
                 Value.null_val;
             total += numeric_value_as_f64(amount_value) orelse 0;
         }
@@ -4166,10 +4206,10 @@ pub const Evaluator = struct {
         for (records) |record| {
             if (record != .sobject) continue;
             const payment_value =
-                self.get_s_object_field_value_case_insensitive(record.sobject, "Payment__c") orelse
+                self.sobj_field_ci(record.sobject, "Payment__c") orelse
                 continue;
             if (payment_value != .string) continue;
-            const gau_value = self.get_s_object_field_value_case_insensitive(
+            const gau_value = self.sobj_field_ci(
                 record.sobject,
                 "General_Accounting_Unit__c",
             ) orelse continue;
@@ -4193,17 +4233,17 @@ pub const Evaluator = struct {
         for (records) |record| {
             if (record != .sobject) continue;
             const raw_payment =
-                self.get_s_object_field_value_case_insensitive(record.sobject, "Payment__c") orelse
+                self.sobj_field_ci(record.sobject, "Payment__c") orelse
                 Value.null_val;
             if (raw_payment == .string and raw_payment.string.len > 0) continue;
             const stored = self.npsp_stored_allocation_for_dml_record(record.sobject);
             const source = stored orelse record.sobject;
             const payment =
-                self.get_s_object_field_value_case_insensitive(source, "Payment__c") orelse
+                self.sobj_field_ci(source, "Payment__c") orelse
                 Value.null_val;
             if (payment == .string and payment.string.len > 0) continue;
             const opportunity =
-                self.get_s_object_field_value_case_insensitive(source, "Opportunity__c") orelse
+                self.sobj_field_ci(source, "Opportunity__c") orelse
                 continue;
             if (opportunity == .string and opportunity.string.len > 0) return true;
         }
@@ -4229,14 +4269,14 @@ pub const Evaluator = struct {
         for (allocations.items) |record| {
             if (record != .sobject) continue;
             const parent_value =
-                self.get_s_object_field_value_case_insensitive(record.sobject, parent_field) orelse
+                self.sobj_field_ci(record.sobject, parent_field) orelse
                 continue;
             if (parent_value != .string or
                 !std.mem.eql(u8, parent_value.string, parent_id))
             {
                 continue;
             }
-            const record_gau = self.get_s_object_field_value_case_insensitive(
+            const record_gau = self.sobj_field_ci(
                 record.sobject,
                 "General_Accounting_Unit__c",
             ) orelse continue;
@@ -4257,9 +4297,10 @@ pub const Evaluator = struct {
         if (self.npsp_allocation_payment_sync_active()) return;
         self.npsp_allocation_payment_sync_depth += 1;
         defer self.npsp_allocation_payment_sync_depth -= 1;
+
         const opp = self.find_stored_sobject_by_id("Opportunity", opportunity_id) orelse return;
         const opp_amount_value =
-            self.get_s_object_field_value_case_insensitive(opp, "Amount") orelse Value.null_val;
+            self.sobj_field_ci(opp, "Amount") orelse Value.null_val;
         const opp_amount = numeric_value_as_f64(opp_amount_value) orelse return;
         const payments = self.store_records_ptr("npe01__OppPayment__c") orelse return;
         const allocations = self.store_records_ptr("Allocation__c") orelse return;
@@ -4270,7 +4311,7 @@ pub const Evaluator = struct {
             if (payment_record != .sobject) continue;
             const payment = payment_record.sobject;
             if (self.npsp_payment_is_locked_for_allocation_sync(payment)) continue;
-            const payment_opp = self.get_s_object_field_value_case_insensitive(
+            const payment_opp = self.sobj_field_ci(
                 payment,
                 "npe01__Opportunity__c",
             ) orelse continue;
@@ -4278,7 +4319,7 @@ pub const Evaluator = struct {
                 continue;
             }
             const payment_id = self.sobject_id_for_result(payment) orelse continue;
-            const amount_value = self.get_s_object_field_value_case_insensitive(
+            const amount_value = self.sobj_field_ci(
                 payment,
                 "npe01__Payment_Amount__c",
             ) orelse Value.null_val;
@@ -4300,26 +4341,26 @@ pub const Evaluator = struct {
         while (idx < allocation_len) : (idx += 1) {
             const allocation_record = allocations.items[idx];
             if (allocation_record != .sobject) continue;
-            const payment_value = self.get_s_object_field_value_case_insensitive(
+            const payment_value = self.sobj_field_ci(
                 allocation_record.sobject,
                 "Payment__c",
             ) orelse continue;
             if (payment_value != .string) continue;
             const payment_amount = payment_amounts.get(payment_value.string) orelse continue;
-            const gau_value = self.get_s_object_field_value_case_insensitive(
+            const gau_value = self.sobj_field_ci(
                 allocation_record.sobject,
                 "General_Accounting_Unit__c",
             ) orelse continue;
             if (gau_value != .string) continue;
             const amount = blk: {
                 const percent_value =
-                    self.get_s_object_field_value_case_insensitive(allocation_record.sobject, "Percent__c") orelse
+                    self.sobj_field_ci(allocation_record.sobject, "Percent__c") orelse
                     Value.null_val;
                 if (numeric_value_as_f64(percent_value)) |percent| {
                     break :blk payment_amount * percent / 100.0;
                 }
                 const amount_value =
-                    self.get_s_object_field_value_case_insensitive(allocation_record.sobject, "Amount__c") orelse
+                    self.sobj_field_ci(allocation_record.sobject, "Amount__c") orelse
                     Value.null_val;
                 break :blk numeric_value_as_f64(amount_value) orelse continue;
             };
@@ -4350,14 +4391,14 @@ pub const Evaluator = struct {
         const default_gau = self.npsp_default_allocation_gau_id();
         for (allocations.items, 0..) |record, idx| {
             if (record != .sobject) continue;
-            const allocation_opp = self.get_s_object_field_value_case_insensitive(
+            const allocation_opp = self.sobj_field_ci(
                 record.sobject,
                 "Opportunity__c",
             ) orelse continue;
             if (allocation_opp != .string or !std.ascii.eqlIgnoreCase(allocation_opp.string, opp_id)) {
                 continue;
             }
-            const allocation_gau = self.get_s_object_field_value_case_insensitive(
+            const allocation_gau = self.sobj_field_ci(
                 record.sobject,
                 "General_Accounting_Unit__c",
             ) orelse continue;
@@ -4372,7 +4413,7 @@ pub const Evaluator = struct {
             );
             if (default_gau == null or !std.ascii.eqlIgnoreCase(gau_id, default_gau.?)) {
                 const opp_amount_value =
-                    self.get_s_object_field_value_case_insensitive(opp, "Amount") orelse Value.null_val;
+                    self.sobj_field_ci(opp, "Amount") orelse Value.null_val;
                 const opp_amount = numeric_value_as_f64(opp_amount_value) orelse 0;
                 const percent = if (opp_amount == 0) 0 else amount / opp_amount * 100.0;
                 try utils.sobject_put(
@@ -4400,7 +4441,7 @@ pub const Evaluator = struct {
         try allocation.fields.put(self.arena, "Amount__c", rollup_decimal_value(amount));
         if (default_gau == null or !std.ascii.eqlIgnoreCase(gau_id, default_gau.?)) {
             const opp_amount_value =
-                self.get_s_object_field_value_case_insensitive(opp, "Amount") orelse Value.null_val;
+                self.sobj_field_ci(opp, "Amount") orelse Value.null_val;
             const opp_amount = numeric_value_as_f64(opp_amount_value) orelse 0;
             const percent = if (opp_amount == 0) 0 else amount / opp_amount * 100.0;
             try allocation.fields.put(self.arena, "Percent__c", rollup_decimal_value(percent));
@@ -4424,17 +4465,17 @@ pub const Evaluator = struct {
         for (records) |record| {
             if (record != .sobject) continue;
             const raw_payment =
-                self.get_s_object_field_value_case_insensitive(record.sobject, "Payment__c") orelse
+                self.sobj_field_ci(record.sobject, "Payment__c") orelse
                 Value.null_val;
             if (raw_payment == .string and raw_payment.string.len > 0) continue;
             const stored = self.npsp_stored_allocation_for_dml_record(record.sobject);
             const source = stored orelse record.sobject;
             const payment =
-                self.get_s_object_field_value_case_insensitive(source, "Payment__c") orelse
+                self.sobj_field_ci(source, "Payment__c") orelse
                 Value.null_val;
             if (payment == .string and payment.string.len > 0) continue;
             const opp_value =
-                self.get_s_object_field_value_case_insensitive(source, "Opportunity__c") orelse
+                self.sobj_field_ci(source, "Opportunity__c") orelse
                 continue;
             if (opp_value == .string and opp_value.string.len > 0) {
                 try opportunity_ids.put(self.arena, opp_value.string, {});
@@ -4456,9 +4497,10 @@ pub const Evaluator = struct {
         if (self.npsp_allocation_payment_sync_active()) return;
         self.npsp_allocation_payment_sync_depth += 1;
         defer self.npsp_allocation_payment_sync_depth -= 1;
+
         const opp = self.find_stored_sobject_by_id("Opportunity", opportunity_id) orelse return;
         const opp_amount_value =
-            self.get_s_object_field_value_case_insensitive(opp, "Amount") orelse Value.null_val;
+            self.sobj_field_ci(opp, "Amount") orelse Value.null_val;
         const opp_amount = numeric_value_as_f64(opp_amount_value) orelse return;
         if (opp_amount == 0) return;
         try self.apply_npsp_default_allocation_parent_remainder(
@@ -4479,7 +4521,7 @@ pub const Evaluator = struct {
             const payment = payment_record.sobject;
             if (self.npsp_payment_is_locked_for_allocation_sync(payment)) continue;
             const payment_opp =
-                self.get_s_object_field_value_case_insensitive(payment, "npe01__Opportunity__c") orelse
+                self.sobj_field_ci(payment, "npe01__Opportunity__c") orelse
                 continue;
             if (payment_opp != .string or
                 !std.ascii.eqlIgnoreCase(payment_opp.string, opportunity_id))
@@ -4488,7 +4530,7 @@ pub const Evaluator = struct {
             }
             const payment_id = self.sobject_id_for_result(payment) orelse continue;
             const payment_amount_value =
-                self.get_s_object_field_value_case_insensitive(payment, "npe01__Payment_Amount__c") orelse
+                self.sobj_field_ci(payment, "npe01__Payment_Amount__c") orelse
                 Value.null_val;
             const payment_amount = numeric_value_as_f64(payment_amount_value) orelse continue;
             if (payment_amount == 0) {
@@ -4539,24 +4581,24 @@ pub const Evaluator = struct {
             const source = allocations.items[idx];
             if (source != .sobject) continue;
             const source_opp =
-                self.get_s_object_field_value_case_insensitive(source.sobject, "Opportunity__c") orelse
+                self.sobj_field_ci(source.sobject, "Opportunity__c") orelse
                 continue;
             if (source_opp != .string or
                 !std.ascii.eqlIgnoreCase(source_opp.string, opportunity_id))
             {
                 continue;
             }
-            const gau_value = self.get_s_object_field_value_case_insensitive(
+            const gau_value = self.sobj_field_ci(
                 source.sobject,
                 "General_Accounting_Unit__c",
             ) orelse continue;
             if (gau_value != .string) continue;
             const source_percent_value =
-                self.get_s_object_field_value_case_insensitive(source.sobject, "Percent__c") orelse
+                self.sobj_field_ci(source.sobject, "Percent__c") orelse
                 Value.null_val;
             const source_percent = numeric_value_as_f64(source_percent_value);
             const source_amount_value =
-                self.get_s_object_field_value_case_insensitive(source.sobject, "Amount__c") orelse
+                self.sobj_field_ci(source.sobject, "Amount__c") orelse
                 Value.null_val;
             const source_amount = numeric_value_as_f64(source_amount_value) orelse blk: {
                 const percent = source_percent orelse continue;
@@ -4586,12 +4628,12 @@ pub const Evaluator = struct {
     ) bool {
         if (self.npsp_payment_is_locked_for_allocation_sync(payment)) return false;
         const amount_value =
-            self.get_s_object_field_value_case_insensitive(payment, "npe01__Payment_Amount__c") orelse
+            self.sobj_field_ci(payment, "npe01__Payment_Amount__c") orelse
             Value.null_val;
         const amount = numeric_value_as_f64(amount_value) orelse return false;
         if (amount == 0) return false;
         const opp_value =
-            self.get_s_object_field_value_case_insensitive(payment, "npe01__Opportunity__c") orelse
+            self.sobj_field_ci(payment, "npe01__Opportunity__c") orelse
             return false;
         return opp_value == .string and
             opp_value.string.len > 0 and
@@ -4620,14 +4662,14 @@ pub const Evaluator = struct {
         for (allocations.items, 0..) |record, idx| {
             if (record != .sobject) continue;
             const allocation_payment =
-                self.get_s_object_field_value_case_insensitive(record.sobject, "Payment__c") orelse
+                self.sobj_field_ci(record.sobject, "Payment__c") orelse
                 continue;
             if (allocation_payment != .string or
                 !std.ascii.eqlIgnoreCase(allocation_payment.string, payment_id))
             {
                 continue;
             }
-            const allocation_gau = self.get_s_object_field_value_case_insensitive(
+            const allocation_gau = self.sobj_field_ci(
                 record.sobject,
                 "General_Accounting_Unit__c",
             ) orelse continue;
@@ -4635,7 +4677,7 @@ pub const Evaluator = struct {
                 continue;
             }
             const existing_percent =
-                self.get_s_object_field_value_case_insensitive(record.sobject, "Percent__c") orelse
+                self.sobj_field_ci(record.sobject, "Percent__c") orelse
                 Value.null_val;
             const existing_percent_numeric = numeric_value_as_f64(existing_percent);
             const preserve_existing_percent = use_existing_percent_for_existing and
@@ -4691,7 +4733,7 @@ pub const Evaluator = struct {
         const payment = self.find_stored_sobject_by_id("npe01__OppPayment__c", payment_id) orelse
             return false;
         const opportunity =
-            self.get_s_object_field_value_case_insensitive(payment, "npe01__Opportunity__c") orelse
+            self.sobj_field_ci(payment, "npe01__Opportunity__c") orelse
             return false;
         if (opportunity != .string or opportunity.string.len == 0) return false;
         const payments = self.store_records_ptr("npe01__OppPayment__c") orelse return false;
@@ -4700,7 +4742,7 @@ pub const Evaluator = struct {
         for (payments.items) |record| {
             if (record != .sobject) continue;
             const sibling_opp =
-                self.get_s_object_field_value_case_insensitive(record.sobject, "npe01__Opportunity__c") orelse
+                self.sobj_field_ci(record.sobject, "npe01__Opportunity__c") orelse
                 continue;
             if (sibling_opp != .string or
                 !std.ascii.eqlIgnoreCase(sibling_opp.string, opportunity.string))
@@ -4733,14 +4775,14 @@ pub const Evaluator = struct {
             const record = records.items[idx];
             if (record != .sobject) continue;
             const parent_value =
-                self.get_s_object_field_value_case_insensitive(record.sobject, parent_field) orelse
+                self.sobj_field_ci(record.sobject, parent_field) orelse
                 continue;
             if (parent_value != .string or
                 !std.mem.eql(u8, parent_value.string, parent_id))
             {
                 continue;
             }
-            const record_gau = self.get_s_object_field_value_case_insensitive(
+            const record_gau = self.sobj_field_ci(
                 record.sobject,
                 "General_Accounting_Unit__c",
             ) orelse continue;
@@ -4769,7 +4811,7 @@ pub const Evaluator = struct {
         for (records) |record| {
             if (record != .sobject) continue;
             const payment_id = self.sobject_id_for_result(record.sobject) orelse continue;
-            const opp_value = self.get_s_object_field_value_case_insensitive(
+            const opp_value = self.sobj_field_ci(
                 record.sobject,
                 "npe01__Opportunity__c",
             ) orelse continue;
@@ -4777,11 +4819,11 @@ pub const Evaluator = struct {
             const opp = self.find_stored_sobject_by_id("Opportunity", opp_value.string) orelse
                 continue;
             const opp_amount_value =
-                self.get_s_object_field_value_case_insensitive(opp, "Amount") orelse
+                self.sobj_field_ci(opp, "Amount") orelse
                 Value.null_val;
             const opp_amount = numeric_value_as_f64(opp_amount_value) orelse continue;
             if (opp_amount == 0) continue;
-            const payment_amount_value = self.get_s_object_field_value_case_insensitive(
+            const payment_amount_value = self.sobj_field_ci(
                 record.sobject,
                 "npe01__Payment_Amount__c",
             ) orelse Value.null_val;
@@ -4846,7 +4888,7 @@ pub const Evaluator = struct {
         for (records) |record| {
             if (record != .sobject) continue;
             const amount_value =
-                self.get_s_object_field_value_case_insensitive(record.sobject, "npe01__Payment_Amount__c") orelse
+                self.sobj_field_ci(record.sobject, "npe01__Payment_Amount__c") orelse
                 Value.null_val;
             const amount = numeric_value_as_f64(amount_value) orelse continue;
             if (amount < 0) return true;
@@ -4863,10 +4905,10 @@ pub const Evaluator = struct {
         for (allocations.items) |record| {
             if (record != .sobject) continue;
             const opp_value =
-                self.get_s_object_field_value_case_insensitive(record.sobject, "Opportunity__c") orelse
+                self.sobj_field_ci(record.sobject, "Opportunity__c") orelse
                 continue;
             if (opp_value != .string or !std.ascii.eqlIgnoreCase(opp_value.string, opportunity_id)) continue;
-            const gau_value = self.get_s_object_field_value_case_insensitive(
+            const gau_value = self.sobj_field_ci(
                 record.sobject,
                 "General_Accounting_Unit__c",
             ) orelse continue;
@@ -4899,14 +4941,14 @@ pub const Evaluator = struct {
         const allocations = self.store_records_ptr("Allocation__c") orelse return false;
         for (allocations.items) |record| {
             if (record != .sobject) continue;
-            const payment = self.get_s_object_field_value_case_insensitive(
+            const payment = self.sobj_field_ci(
                 record.sobject,
                 "Payment__c",
             ) orelse continue;
             if (payment != .string or !std.ascii.eqlIgnoreCase(payment.string, payment_id)) {
                 continue;
             }
-            const existing_gau = self.get_s_object_field_value_case_insensitive(
+            const existing_gau = self.sobj_field_ci(
                 record.sobject,
                 "General_Accounting_Unit__c",
             ) orelse continue;
@@ -4928,7 +4970,7 @@ pub const Evaluator = struct {
             if (op != .insert and op != .update and op != .delete) return;
             for (records) |record| {
                 if (record != .sobject) continue;
-                const rd = self.get_s_object_field_value_case_insensitive(
+                const rd = self.sobj_field_ci(
                     record.sobject,
                     "Recurring_Donation__c",
                 ) orelse continue;
@@ -4940,7 +4982,7 @@ pub const Evaluator = struct {
             if (op != .insert) return;
             for (records) |record| {
                 if (record != .sobject) continue;
-                const rd = self.get_s_object_field_value_case_insensitive(
+                const rd = self.sobj_field_ci(
                     record.sobject,
                     "npe03__Recurring_Donation__c",
                 ) orelse continue;
@@ -4971,7 +5013,7 @@ pub const Evaluator = struct {
         while (idx < existing_len) : (idx += 1) {
             const record = opps.items[idx];
             if (record != .sobject) continue;
-            const opp_rd = self.get_s_object_field_value_case_insensitive(
+            const opp_rd = self.sobj_field_ci(
                 record.sobject,
                 "npe03__Recurring_Donation__c",
             ) orelse continue;
@@ -4989,7 +5031,7 @@ pub const Evaluator = struct {
     ) !void {
         const opp_id = opp.id orelse return;
         const amount_value =
-            self.get_s_object_field_value_case_insensitive(opp, "Amount") orelse Value.null_val;
+            self.sobj_field_ci(opp, "Amount") orelse Value.null_val;
         const parent_amount = numeric_value_as_f64(amount_value) orelse return;
         if (parent_amount <= 0) return;
         try self.remove_npsp_non_default_allocations_for_parent("Opportunity__c", opp_id);
@@ -5018,7 +5060,7 @@ pub const Evaluator = struct {
         while (idx < existing_len) : (idx += 1) {
             const record = payments.items[idx];
             if (record != .sobject) continue;
-            const payment_opp = self.get_s_object_field_value_case_insensitive(
+            const payment_opp = self.sobj_field_ci(
                 record.sobject,
                 "npe01__Opportunity__c",
             ) orelse continue;
@@ -5027,7 +5069,7 @@ pub const Evaluator = struct {
             }
             if (self.npsp_payment_is_locked_for_allocation_sync(record.sobject)) continue;
             const payment_id = self.sobject_id_for_result(record.sobject) orelse continue;
-            const payment_amount_value = self.get_s_object_field_value_case_insensitive(
+            const payment_amount_value = self.sobj_field_ci(
                 record.sobject,
                 "npe01__Payment_Amount__c",
             ) orelse Value.null_val;
@@ -5062,26 +5104,26 @@ pub const Evaluator = struct {
         while (idx < existing_len) : (idx += 1) {
             const record = allocations.items[idx];
             if (record != .sobject) continue;
-            const template_rd = self.get_s_object_field_value_case_insensitive(
+            const template_rd = self.sobj_field_ci(
                 record.sobject,
                 "Recurring_Donation__c",
             ) orelse continue;
             if (template_rd != .string or !std.ascii.eqlIgnoreCase(template_rd.string, rd_id)) {
                 continue;
             }
-            if (self.get_s_object_field_value_case_insensitive(record.sobject, "Opportunity__c")) |opp| {
+            if (self.sobj_field_ci(record.sobject, "Opportunity__c")) |opp| {
                 if (opp != .null_val) continue;
             }
-            if (self.get_s_object_field_value_case_insensitive(record.sobject, "Payment__c")) |pmt| {
+            if (self.sobj_field_ci(record.sobject, "Payment__c")) |pmt| {
                 if (pmt != .null_val) continue;
             }
-            if (self.get_s_object_field_value_case_insensitive(record.sobject, "Percent__c")) |percent| {
+            if (self.sobj_field_ci(record.sobject, "Percent__c")) |percent| {
                 if (numeric_value_as_f64(percent) != null) {
                     try percent_templates.append(self.arena, record.sobject);
                     continue;
                 }
             }
-            if (self.get_s_object_field_value_case_insensitive(record.sobject, "Amount__c")) |amount| {
+            if (self.sobj_field_ci(record.sobject, "Amount__c")) |amount| {
                 if (numeric_value_as_f64(amount) != null) {
                     try fixed_templates.append(self.arena, record.sobject);
                 }
@@ -5091,7 +5133,7 @@ pub const Evaluator = struct {
         var explicit_total: f64 = 0;
         for (percent_templates.items) |template| {
             const percent_value =
-                self.get_s_object_field_value_case_insensitive(template, "Percent__c") orelse
+                self.sobj_field_ci(template, "Percent__c") orelse
                 continue;
             const percent = numeric_value_as_f64(percent_value) orelse continue;
             const amount = parent_amount * percent / 100.0;
@@ -5107,14 +5149,14 @@ pub const Evaluator = struct {
         var fixed_total: f64 = 0;
         for (fixed_templates.items) |template| {
             const amount_value =
-                self.get_s_object_field_value_case_insensitive(template, "Amount__c") orelse
+                self.sobj_field_ci(template, "Amount__c") orelse
                 continue;
             fixed_total += numeric_value_as_f64(amount_value) orelse 0;
         }
         if (explicit_total + fixed_total > parent_amount) return;
         for (fixed_templates.items) |template| {
             const amount_value =
-                self.get_s_object_field_value_case_insensitive(template, "Amount__c") orelse
+                self.sobj_field_ci(template, "Amount__c") orelse
                 continue;
             const amount = numeric_value_as_f64(amount_value) orelse continue;
             try self.create_npsp_allocation_from_template(
@@ -5136,7 +5178,7 @@ pub const Evaluator = struct {
     ) !void {
         const opp_id = opp.id orelse return;
         const opp_amount_value =
-            self.get_s_object_field_value_case_insensitive(opp, "Amount") orelse Value.null_val;
+            self.sobj_field_ci(opp, "Amount") orelse Value.null_val;
         const opp_amount = numeric_value_as_f64(opp_amount_value) orelse return;
         if (opp_amount <= 0) return;
         const allocations = self.store_records_ptr("Allocation__c") orelse return;
@@ -5146,7 +5188,7 @@ pub const Evaluator = struct {
             const record = allocations.items[idx];
             if (record != .sobject) continue;
             if (self.npsp_is_default_allocation(record.sobject)) continue;
-            const allocation_opp = self.get_s_object_field_value_case_insensitive(
+            const allocation_opp = self.sobj_field_ci(
                 record.sobject,
                 "Opportunity__c",
             ) orelse continue;
@@ -5154,7 +5196,7 @@ pub const Evaluator = struct {
                 continue;
             }
             const amount_value =
-                self.get_s_object_field_value_case_insensitive(record.sobject, "Amount__c") orelse
+                self.sobj_field_ci(record.sobject, "Amount__c") orelse
                 continue;
             const source_amount = numeric_value_as_f64(amount_value) orelse continue;
             const percent = source_amount / opp_amount * 100.0;
@@ -5176,7 +5218,7 @@ pub const Evaluator = struct {
         amount: f64,
         percent: Value,
     ) !void {
-        const gau = self.get_s_object_field_value_case_insensitive(
+        const gau = self.sobj_field_ci(
             template,
             "General_Accounting_Unit__c",
         ) orelse return;
@@ -5202,7 +5244,7 @@ pub const Evaluator = struct {
             idx -= 1;
             const record = allocations.items[idx];
             if (record != .sobject) continue;
-            const parent = self.get_s_object_field_value_case_insensitive(
+            const parent = self.sobj_field_ci(
                 record.sobject,
                 parent_field,
             ) orelse continue;
@@ -5217,7 +5259,7 @@ pub const Evaluator = struct {
             self.npsp_cached_allocations_settings() orelse
             self.first_custom_setting_record("Allocations_Settings__c") orelse
             return false;
-        const enabled = self.get_s_object_field_value_case_insensitive(
+        const enabled = self.sobj_field_ci(
             settings,
             "Payment_Allocations_Enabled__c",
         ) orelse return false;
@@ -5234,7 +5276,7 @@ pub const Evaluator = struct {
         };
         for (locked_fields) |field_name| {
             const value =
-                self.get_s_object_field_value_case_insensitive(payment, field_name) orelse continue;
+                self.sobj_field_ci(payment, field_name) orelse continue;
             if (value == .boolean and value.boolean) return true;
         }
         return false;
@@ -5256,7 +5298,7 @@ pub const Evaluator = struct {
         for (records) |record| {
             if (record != .sobject) continue;
             const contact = record.sobject;
-            const address_id = self.get_s_object_field_value_case_insensitive(
+            const address_id = self.sobj_field_ci(
                 contact,
                 "Current_Address__c",
             ) orelse continue;
@@ -5291,7 +5333,7 @@ pub const Evaluator = struct {
                 self.find_stored_sobject_by_id("Contact", record.sobject.id.?) orelse record.sobject;
             if (!self.npsp_contact_has_mailable_address(contact)) continue;
             const account_id =
-                self.get_s_object_field_value_case_insensitive(contact, "AccountId") orelse continue;
+                self.sobj_field_ci(contact, "AccountId") orelse continue;
             if (account_id != .string) continue;
             const address = self.find_default_npsp_address_for_household(account_id.string) orelse
                 continue;
@@ -5316,7 +5358,7 @@ pub const Evaluator = struct {
                 self.find_stored_sobject_by_id("Contact", record.sobject.id.?) orelse record.sobject;
             if (!self.npsp_contact_has_mailable_address(contact)) continue;
             const account_id =
-                self.get_s_object_field_value_case_insensitive(contact, "AccountId") orelse continue;
+                self.sobj_field_ci(contact, "AccountId") orelse continue;
             if (account_id != .string) continue;
             const address = self.find_default_npsp_address_for_household(account_id.string) orelse
                 continue;
@@ -5336,7 +5378,7 @@ pub const Evaluator = struct {
             self.first_custom_setting_record("Addr_Verification_Settings__c") orelse
             return false;
         const enabled =
-            self.get_s_object_field_value_case_insensitive(settings, "Enable_Automatic_Verification__c") orelse
+            self.sobj_field_ci(settings, "Enable_Automatic_Verification__c") orelse
             return false;
         return enabled == .boolean and enabled.boolean;
     }
@@ -5377,7 +5419,7 @@ pub const Evaluator = struct {
         };
         for (fields) |field_name| {
             const value =
-                self.get_s_object_field_value_case_insensitive(contact, field_name) orelse continue;
+                self.sobj_field_ci(contact, field_name) orelse continue;
             if (value == .string and value.string.len > 0) return true;
         }
         return false;
@@ -5436,7 +5478,7 @@ pub const Evaluator = struct {
             if (!changed) continue;
             if (!self.npsp_address_is_default(address)) continue;
             const household_id =
-                self.get_s_object_field_value_case_insensitive(address, "Household_Account__c") orelse
+                self.sobj_field_ci(address, "Household_Account__c") orelse
                 continue;
             if (household_id != .string) continue;
             try self.apply_npsp_address_to_household(household_id.string, address);
@@ -5491,8 +5533,8 @@ pub const Evaluator = struct {
                 continue;
             }
             const day =
-                self.get_s_object_field_value_case_insensitive(record.sobject, "Day_of_Month__c") orelse
-                self.get_s_object_field_value_case_insensitive(record.sobject, "Day_Of_Month__c") orelse
+                self.sobj_field_ci(record.sobject, "Day_of_Month__c") orelse
+                self.sobj_field_ci(record.sobject, "Day_Of_Month__c") orelse
                 Value.null_val;
             if (day == .null_val) continue;
             try utils.sobject_put(
@@ -5509,10 +5551,10 @@ pub const Evaluator = struct {
         rd: *types.SObject,
     ) !void {
         const status =
-            self.get_s_object_field_value_case_insensitive(rd, "Status__c") orelse return;
+            self.sobj_field_ci(rd, "Status__c") orelse return;
         if (status != .string or !std.ascii.eqlIgnoreCase(status.string, "Closed")) return;
         const end_date =
-            self.get_s_object_field_value_case_insensitive(rd, "EndDate__c") orelse Value.null_val;
+            self.sobj_field_ci(rd, "EndDate__c") orelse Value.null_val;
         if (end_date != .null_val) return;
         const yesterday = date_add_days(try self.npsp_schedule_current_iso_date(), -1);
         const yesterday_str = try format_iso_date(self.arena, yesterday);
@@ -5529,17 +5571,17 @@ pub const Evaluator = struct {
         contact: *types.SObject,
     ) !void {
         if (!std.ascii.eqlIgnoreCase(contact.type_name, "Contact")) return;
-        if (self.get_s_object_field_value_case_insensitive(contact, "AccountId")) |account_id| {
+        if (self.sobj_field_ci(contact, "AccountId")) |account_id| {
             if (account_id != .null_val) return;
         }
         const current_address =
-            self.get_s_object_field_value_case_insensitive(contact, "Current_Address__c") orelse
+            self.sobj_field_ci(contact, "Current_Address__c") orelse
             return;
         if (current_address != .string or current_address.string.len == 0) return;
         const address = self.find_stored_sobject_by_id("Address__c", current_address.string) orelse
             return;
         const household =
-            self.get_s_object_field_value_case_insensitive(address, "Household_Account__c") orelse
+            self.sobj_field_ci(address, "Household_Account__c") orelse
             return;
         if (household != .string or household.string.len == 0) return;
         try utils.sobject_put(&contact.fields, self.arena, "AccountId", household);
@@ -5556,7 +5598,7 @@ pub const Evaluator = struct {
         const parent_amount = numeric_value_as_f64(parent_amount_value) orelse return;
         if (parent_amount != 0) return;
         const amount_value =
-            self.get_s_object_field_value_case_insensitive(allocation, "Amount__c") orelse
+            self.sobj_field_ci(allocation, "Amount__c") orelse
             Value.null_val;
         const amount = numeric_value_as_f64(amount_value) orelse 0;
         if (amount == 0) return;
@@ -5572,7 +5614,7 @@ pub const Evaluator = struct {
         if (!self.fixture_relaxed_exceptions) return;
         if (!std.ascii.eqlIgnoreCase(allocation.type_name, "Allocation__c")) return;
         const percent_value =
-            self.get_s_object_field_value_case_insensitive(allocation, "Percent__c") orelse
+            self.sobj_field_ci(allocation, "Percent__c") orelse
             return;
         const percent = numeric_value_as_f64(percent_value) orelse return;
         if (percent >= 0 and percent <= 100) return;
@@ -5588,13 +5630,13 @@ pub const Evaluator = struct {
         if (!self.fixture_relaxed_exceptions) return;
         if (!std.ascii.eqlIgnoreCase(allocation.type_name, "Allocation__c")) return;
         const payment =
-            self.get_s_object_field_value_case_insensitive(allocation, "Payment__c") orelse return;
+            self.sobj_field_ci(allocation, "Payment__c") orelse return;
         if (payment != .string or payment.string.len == 0) return;
         if (self.find_stored_sobject_by_id("npe01__OppPayment__c", payment.string)) |stored_payment| {
             if (self.npsp_payment_is_locked_for_allocation_sync(stored_payment)) return;
         }
         const default_gau = self.npsp_default_allocation_gau_id();
-        const allocation_gau = self.get_s_object_field_value_case_insensitive(
+        const allocation_gau = self.sobj_field_ci(
             allocation,
             "General_Accounting_Unit__c",
         ) orelse return;
@@ -5619,7 +5661,7 @@ pub const Evaluator = struct {
                 continue;
             }
             const payment =
-                self.get_s_object_field_value_case_insensitive(record.sobject, "Payment__c") orelse
+                self.sobj_field_ci(record.sobject, "Payment__c") orelse
                 Value.null_val;
             if (payment != .string or !std.ascii.eqlIgnoreCase(payment.string, payment_id)) {
                 idx += 1;
@@ -5639,14 +5681,14 @@ pub const Evaluator = struct {
         default_gau: ?[]const u8,
     ) bool {
         if (default_gau) |gau_id| {
-            const gau = self.get_s_object_field_value_case_insensitive(
+            const gau = self.sobj_field_ci(
                 allocation,
                 "General_Accounting_Unit__c",
             ) orelse Value.null_val;
             if (gau == .string and std.ascii.eqlIgnoreCase(gau.string, gau_id)) return true;
         }
         const percent =
-            self.get_s_object_field_value_case_insensitive(allocation, "Percent__c") orelse
+            self.sobj_field_ci(allocation, "Percent__c") orelse
             Value.null_val;
         const percent_num = numeric_value_as_f64(percent) orelse return false;
         return percent_num == 100;
@@ -5657,7 +5699,7 @@ pub const Evaluator = struct {
         allocation: *types.SObject,
     ) bool {
         const default_gau = self.npsp_default_allocation_gau_id() orelse return false;
-        const gau = self.get_s_object_field_value_case_insensitive(
+        const gau = self.sobj_field_ci(
             allocation,
             "General_Accounting_Unit__c",
         ) orelse return false;
@@ -5672,11 +5714,11 @@ pub const Evaluator = struct {
         if (self.npsp_allocation_triggers_disabled) return;
         if (!std.ascii.eqlIgnoreCase(allocation.type_name, "Allocation__c")) return;
         const amount =
-            self.get_s_object_field_value_case_insensitive(allocation, "Amount__c") orelse
+            self.sobj_field_ci(allocation, "Amount__c") orelse
             Value.null_val;
         if (amount != .null_val) return;
         const percent =
-            self.get_s_object_field_value_case_insensitive(allocation, "Percent__c") orelse
+            self.sobj_field_ci(allocation, "Percent__c") orelse
             Value.null_val;
         if (percent != .null_val) return;
         if (!self.npsp_is_default_allocation(allocation)) return;
@@ -5698,11 +5740,11 @@ pub const Evaluator = struct {
         if (self.npsp_allocation_triggers_disabled) return;
         if (!std.ascii.eqlIgnoreCase(allocation.type_name, "Allocation__c")) return;
         const existing_amount =
-            self.get_s_object_field_value_case_insensitive(allocation, "Amount__c") orelse
+            self.sobj_field_ci(allocation, "Amount__c") orelse
             Value.null_val;
         if (existing_amount != .null_val) return;
         const percent_value =
-            self.get_s_object_field_value_case_insensitive(allocation, "Percent__c") orelse
+            self.sobj_field_ci(allocation, "Percent__c") orelse
             return;
         const percent = numeric_value_as_f64(percent_value) orelse return;
         const parent_amount_value = self.npsp_allocation_parent_amount(allocation) orelse return;
@@ -5723,7 +5765,7 @@ pub const Evaluator = struct {
         if (!self.fixture_relaxed_exceptions) return;
         if (!std.ascii.eqlIgnoreCase(allocation.type_name, "Allocation__c")) return;
         const percent_value =
-            self.get_s_object_field_value_case_insensitive(allocation, "Percent__c") orelse
+            self.sobj_field_ci(allocation, "Percent__c") orelse
             return;
         const percent = numeric_value_as_f64(percent_value) orelse return;
         const parent_amount_value = self.npsp_allocation_parent_amount(allocation) orelse return;
@@ -5738,21 +5780,21 @@ pub const Evaluator = struct {
     }
 
     fn npsp_allocation_parent_amount(self: *Evaluator, allocation: *types.SObject) ?Value {
-        if (self.get_s_object_field_value_case_insensitive(allocation, "Opportunity__c")) |opp_id| {
+        if (self.sobj_field_ci(allocation, "Opportunity__c")) |opp_id| {
             if (opp_id == .string) {
                 const opp = self.find_record_by_id("Opportunity", opp_id.string) orelse return null;
                 if (opp == .sobject) {
-                    return self.get_s_object_field_value_case_insensitive(opp.sobject, "Amount");
+                    return self.sobj_field_ci(opp.sobject, "Amount");
                 }
             }
         }
-        if (self.get_s_object_field_value_case_insensitive(allocation, "Payment__c")) |payment_id| {
+        if (self.sobj_field_ci(allocation, "Payment__c")) |payment_id| {
             if (payment_id == .string) {
                 const payment =
                     self.find_record_by_id("npe01__OppPayment__c", payment_id.string) orelse
                     return null;
                 if (payment == .sobject) {
-                    return self.get_s_object_field_value_case_insensitive(
+                    return self.sobj_field_ci(
                         payment.sobject,
                         "npe01__Payment_Amount__c",
                     );
@@ -5779,14 +5821,14 @@ pub const Evaluator = struct {
         else
             "npe01__Payment_Amount__c";
         const parent_amount_value =
-            self.get_s_object_field_value_case_insensitive(parent, parent_amount_field) orelse
+            self.sobj_field_ci(parent, parent_amount_field) orelse
             return;
         const parent_amount = numeric_value_as_f64(parent_amount_value) orelse return;
         const allocations = self.store_records_ptr("Allocation__c") orelse return;
         for (allocations.items) |record| {
             if (record != .sobject) continue;
             const allocation_parent =
-                self.get_s_object_field_value_case_insensitive(record.sobject, parent_field) orelse
+                self.sobj_field_ci(record.sobject, parent_field) orelse
                 continue;
             if (allocation_parent != .string or
                 !std.mem.eql(u8, allocation_parent.string, parent_id))
@@ -5803,7 +5845,7 @@ pub const Evaluator = struct {
                 continue;
             }
             const percent_value =
-                self.get_s_object_field_value_case_insensitive(record.sobject, "Percent__c") orelse
+                self.sobj_field_ci(record.sobject, "Percent__c") orelse
                 continue;
             const percent = numeric_value_as_f64(percent_value) orelse continue;
             const amount = @round(parent_amount * percent) / 100.0;
@@ -5838,7 +5880,7 @@ pub const Evaluator = struct {
         for (allocations.items, 0..) |record, idx| {
             if (record != .sobject) continue;
             const allocation_parent =
-                self.get_s_object_field_value_case_insensitive(record.sobject, parent_field) orelse
+                self.sobj_field_ci(record.sobject, parent_field) orelse
                 continue;
             if (allocation_parent != .string or
                 !std.mem.eql(u8, allocation_parent.string, parent_id))
@@ -5855,7 +5897,7 @@ pub const Evaluator = struct {
                 parent_amount,
             );
             const amount_value =
-                self.get_s_object_field_value_case_insensitive(record.sobject, "Amount__c") orelse
+                self.sobj_field_ci(record.sobject, "Amount__c") orelse
                 Value.null_val;
             explicit_total += numeric_value_as_f64(amount_value) orelse 0;
         }
@@ -5874,7 +5916,7 @@ pub const Evaluator = struct {
                 const record = allocations.items[idx];
                 if (record != .sobject) continue;
                 const allocation_parent =
-                    self.get_s_object_field_value_case_insensitive(record.sobject, parent_field) orelse
+                    self.sobj_field_ci(record.sobject, parent_field) orelse
                     continue;
                 if (allocation_parent != .string or
                     !std.mem.eql(u8, allocation_parent.string, parent_id))
@@ -5903,7 +5945,7 @@ pub const Evaluator = struct {
                 const record = allocations.items[idx];
                 if (record != .sobject) continue;
                 const allocation_parent =
-                    self.get_s_object_field_value_case_insensitive(record.sobject, parent_field) orelse
+                    self.sobj_field_ci(record.sobject, parent_field) orelse
                     continue;
                 if (allocation_parent != .string or
                     !std.mem.eql(u8, allocation_parent.string, parent_id))
@@ -5945,11 +5987,11 @@ pub const Evaluator = struct {
         parent_amount: f64,
     ) !void {
         if (parent_amount >= 0) return;
-        if (self.get_s_object_field_value_case_insensitive(allocation, "Percent__c")) |percent| {
+        if (self.sobj_field_ci(allocation, "Percent__c")) |percent| {
             if (percent != .null_val) return;
         }
         const amount_value =
-            self.get_s_object_field_value_case_insensitive(allocation, "Amount__c") orelse
+            self.sobj_field_ci(allocation, "Amount__c") orelse
             return;
         const amount = numeric_value_as_f64(amount_value) orelse return;
         if (amount == 0) return;
@@ -5999,7 +6041,7 @@ pub const Evaluator = struct {
                 continue;
             }
             const allocation_parent =
-                self.get_s_object_field_value_case_insensitive(record.sobject, parent_field) orelse {
+                self.sobj_field_ci(record.sobject, parent_field) orelse {
                     other_records.append(self.arena, record) catch return;
                     continue;
                 };
@@ -6011,7 +6053,7 @@ pub const Evaluator = struct {
             }
             if (self.npsp_is_default_allocation(record.sobject)) {
                 default_records.append(self.arena, record) catch return;
-            } else if (self.get_s_object_field_value_case_insensitive(record.sobject, "Percent__c")) |percent| {
+            } else if (self.sobj_field_ci(record.sobject, "Percent__c")) |percent| {
                 if (percent != .null_val) {
                     percent_records.append(self.arena, record) catch return;
                 } else {
@@ -6047,7 +6089,7 @@ pub const Evaluator = struct {
         else
             "npe01__Payment_Amount__c";
         const update_amount =
-            self.get_s_object_field_value_case_insensitive(update_obj, parent_amount_field) orelse
+            self.sobj_field_ci(update_obj, parent_amount_field) orelse
             return;
         const parent_amount = numeric_value_as_f64(update_amount) orelse return;
         if (parent_amount == 0 and std.ascii.eqlIgnoreCase(stored_parent.type_name, "Opportunity")) return;
@@ -6056,7 +6098,7 @@ pub const Evaluator = struct {
         for (allocations.items) |record| {
             if (record != .sobject) continue;
             const allocation_parent =
-                self.get_s_object_field_value_case_insensitive(record.sobject, parent_field) orelse
+                self.sobj_field_ci(record.sobject, parent_field) orelse
                 continue;
             if (allocation_parent != .string or
                 !std.mem.eql(u8, allocation_parent.string, parent_id))
@@ -6064,14 +6106,14 @@ pub const Evaluator = struct {
                 continue;
             }
             if (self.npsp_is_default_allocation(record.sobject)) continue;
-            if (self.get_s_object_field_value_case_insensitive(record.sobject, "Percent__c")) |percent_value| {
+            if (self.sobj_field_ci(record.sobject, "Percent__c")) |percent_value| {
                 if (numeric_value_as_f64(percent_value)) |percent| {
                     total += @round(parent_amount * percent) / 100.0;
                     continue;
                 }
             }
             const amount_value =
-                self.get_s_object_field_value_case_insensitive(record.sobject, "Amount__c") orelse
+                self.sobj_field_ci(record.sobject, "Amount__c") orelse
                 Value.null_val;
             total += numeric_value_as_f64(amount_value) orelse 0;
         }
@@ -6097,10 +6139,10 @@ pub const Evaluator = struct {
         if (self.npsp_allocation_payment_sync_active()) return;
         if (!std.ascii.eqlIgnoreCase(stored_allocation.type_name, "Allocation__c")) return;
         const opp_value =
-            self.get_s_object_field_value_case_insensitive(stored_allocation, "Opportunity__c") orelse
+            self.sobj_field_ci(stored_allocation, "Opportunity__c") orelse
             return;
         if (opp_value != .string or opp_value.string.len == 0) return;
-        const old_gau_value = self.get_s_object_field_value_case_insensitive(
+        const old_gau_value = self.sobj_field_ci(
             stored_allocation,
             "General_Accounting_Unit__c",
         ) orelse return;
@@ -6123,7 +6165,7 @@ pub const Evaluator = struct {
             return self.throw_dml_exception(remove_message);
         }
         const update = update_obj orelse return;
-        const new_gau_value = self.get_s_object_field_value_case_insensitive(
+        const new_gau_value = self.sobj_field_ci(
             update,
             "General_Accounting_Unit__c",
         ) orelse old_gau_value;
@@ -6155,13 +6197,13 @@ pub const Evaluator = struct {
                 }
             }
             const opp_value =
-                self.get_s_object_field_value_case_insensitive(allocation, "Opportunity__c") orelse
+                self.sobj_field_ci(allocation, "Opportunity__c") orelse
                 continue;
             if (opp_value != .string or !std.ascii.eqlIgnoreCase(opp_value.string, opportunity_id)) {
                 continue;
             }
             const allocation_gau =
-                self.get_s_object_field_value_case_insensitive(allocation, "General_Accounting_Unit__c") orelse
+                self.sobj_field_ci(allocation, "General_Accounting_Unit__c") orelse
                 continue;
             if (allocation_gau != .string or !std.ascii.eqlIgnoreCase(allocation_gau.string, gau_id)) {
                 continue;
@@ -6177,10 +6219,10 @@ pub const Evaluator = struct {
         update_obj: *types.SObject,
         stored_allocation: *types.SObject,
     ) ?f64 {
-        if (self.get_s_object_field_value_case_insensitive(update_obj, "Amount__c")) |amount_value| {
+        if (self.sobj_field_ci(update_obj, "Amount__c")) |amount_value| {
             if (numeric_value_as_f64(amount_value)) |amount| return amount;
         }
-        if (self.get_s_object_field_value_case_insensitive(update_obj, "Percent__c")) |percent_value| {
+        if (self.sobj_field_ci(update_obj, "Percent__c")) |percent_value| {
             if (numeric_value_as_f64(percent_value)) |percent| {
                 const parent_amount = self.npsp_allocation_parent_amount(stored_allocation) orelse
                     return null;
@@ -6189,7 +6231,7 @@ pub const Evaluator = struct {
             }
         }
         const amount_value =
-            self.get_s_object_field_value_case_insensitive(stored_allocation, "Amount__c") orelse
+            self.sobj_field_ci(stored_allocation, "Amount__c") orelse
             return null;
         return numeric_value_as_f64(amount_value);
     }
@@ -6206,12 +6248,12 @@ pub const Evaluator = struct {
             if (payment_record != .sobject) continue;
             const payment = payment_record.sobject;
             const payment_opp =
-                self.get_s_object_field_value_case_insensitive(payment, "npe01__Opportunity__c") orelse
+                self.sobj_field_ci(payment, "npe01__Opportunity__c") orelse
                 continue;
             if (payment_opp != .string or !std.ascii.eqlIgnoreCase(payment_opp.string, opportunity_id)) {
                 continue;
             }
-            const paid = self.get_s_object_field_value_case_insensitive(payment, "npe01__Paid__c") orelse
+            const paid = self.sobj_field_ci(payment, "npe01__Paid__c") orelse
                 Value.null_val;
             if (paid != .boolean or !paid.boolean) continue;
             const payment_id = self.sobject_id_for_result(payment) orelse continue;
@@ -6222,10 +6264,10 @@ pub const Evaluator = struct {
             if (allocation_record != .sobject) continue;
             const allocation = allocation_record.sobject;
             const payment_value =
-                self.get_s_object_field_value_case_insensitive(allocation, "Payment__c") orelse
+                self.sobj_field_ci(allocation, "Payment__c") orelse
                 continue;
             if (payment_value != .string or !payment_ids.contains(payment_value.string)) continue;
-            const allocation_gau = self.get_s_object_field_value_case_insensitive(
+            const allocation_gau = self.sobj_field_ci(
                 allocation,
                 "General_Accounting_Unit__c",
             ) orelse continue;
@@ -6233,7 +6275,7 @@ pub const Evaluator = struct {
                 continue;
             }
             const amount_value =
-                self.get_s_object_field_value_case_insensitive(allocation, "Amount__c") orelse
+                self.sobj_field_ci(allocation, "Amount__c") orelse
                 Value.null_val;
             total += numeric_value_as_f64(amount_value) orelse 0;
         }
@@ -6248,7 +6290,7 @@ pub const Evaluator = struct {
         const payments = self.store_records_ptr("npe01__OppPayment__c") orelse return false;
         for (payments.items) |record| {
             if (record != .sobject) continue;
-            const payment_opp = self.get_s_object_field_value_case_insensitive(
+            const payment_opp = self.sobj_field_ci(
                 record.sobject,
                 "npe01__Opportunity__c",
             ) orelse continue;
@@ -12269,31 +12311,16 @@ pub const Evaluator = struct {
             _ = try self.create_npsp_address_for_account(account, account_id);
             return;
         }
-        try self.copy_npsp_account_billing_field(
-            account,
-            address,
-            "BillingStreet",
-            "MailingStreet__c",
-        );
-        try self.copy_npsp_account_billing_field(account, address, "BillingCity", "MailingCity__c");
-        try self.copy_npsp_account_billing_field(
-            account,
-            address,
-            "BillingState",
-            "MailingState__c",
-        );
-        try self.copy_npsp_account_billing_field(
-            account,
-            address,
-            "BillingPostalCode",
-            "MailingPostalCode__c",
-        );
-        try self.copy_npsp_account_billing_field(
-            account,
-            address,
-            "BillingCountry",
-            "MailingCountry__c",
-        );
+        const field_pairs = [_]struct { account: []const u8, address: []const u8 }{
+            .{ .account = "BillingStreet", .address = "MailingStreet__c" },
+            .{ .account = "BillingCity", .address = "MailingCity__c" },
+            .{ .account = "BillingState", .address = "MailingState__c" },
+            .{ .account = "BillingPostalCode", .address = "MailingPostalCode__c" },
+            .{ .account = "BillingCountry", .address = "MailingCountry__c" },
+        };
+        for (field_pairs) |pair| {
+            try self.copy_npsp_account_billing_field(account, address, pair.account, pair.address);
+        }
         if (self.get_s_object_field_value_case_insensitive(
             account,
             "Undeliverable_Address__c",
@@ -14616,15 +14643,7 @@ pub const Evaluator = struct {
 
     fn undelete_record(self: *Evaluator, obj: *types.SObject) anyerror!void {
         if (obj.id == null) {
-            const exc = try self.arena.create(types.ObjectInstance);
-            exc.* = .{ .class_name = "DmlException" };
-            try exc.fields.put(
-                self.arena,
-                "message",
-                Value{ .string = "UNDELETE_FAILED: entity not in recycle bin" },
-            );
-            self.pending_exception = Value{ .object = exc };
-            return error.ApexException;
+            return self.throw_undelete_failed();
         }
         var found = false;
         if (self.trash.getPtr(obj.type_name)) |trashed| {
@@ -14652,31 +14671,12 @@ pub const Evaluator = struct {
             }
         }
         if (!found) {
-            const exc = try self.arena.create(types.ObjectInstance);
-            exc.* = .{ .class_name = "DmlException" };
-            try exc.fields.put(
-                self.arena,
-                "message",
-                Value{ .string = "UNDELETE_FAILED: entity not in recycle bin" },
-            );
-            self.pending_exception = Value{ .object = exc };
-            return error.ApexException;
+            return self.throw_undelete_failed();
         }
         if (std.ascii.eqlIgnoreCase(obj.type_name, "APTask__c") and
             !self.has_task_for_aptask_in_recycle_bin(obj.id.?))
         {
-            const message =
-                "Error Task AFTER_UNDELETE: " ++
-                "UNDELETE_FAILED: entity not in recycle bin";
-            const exc = try self.arena.create(types.ObjectInstance);
-            exc.* = .{ .class_name = "DmlException" };
-            try exc.fields.put(
-                self.arena,
-                "message",
-                Value{ .string = message },
-            );
-            self.pending_exception = Value{ .object = exc };
-            return error.ApexException;
+            return self.throw_aptask_undelete_failed();
         }
         if (std.ascii.eqlIgnoreCase(obj.type_name, "Account")) {
             try self.cascade_undelete_account_contacts(obj.id.?);
@@ -14684,6 +14684,33 @@ pub const Evaluator = struct {
         if (std.ascii.eqlIgnoreCase(obj.type_name, "Opportunity")) {
             try self.cascade_undelete_npsp_opportunity_allocations(obj.id.?);
         }
+    }
+
+    fn throw_undelete_failed(self: *Evaluator) anyerror!void {
+        const exc = try self.arena.create(types.ObjectInstance);
+        exc.* = .{ .class_name = "DmlException" };
+        try exc.fields.put(
+            self.arena,
+            "message",
+            Value{ .string = "UNDELETE_FAILED: entity not in recycle bin" },
+        );
+        self.pending_exception = Value{ .object = exc };
+        return error.ApexException;
+    }
+
+    fn throw_aptask_undelete_failed(self: *Evaluator) anyerror!void {
+        const message =
+            "Error Task AFTER_UNDELETE: " ++
+            "UNDELETE_FAILED: entity not in recycle bin";
+        const exc = try self.arena.create(types.ObjectInstance);
+        exc.* = .{ .class_name = "DmlException" };
+        try exc.fields.put(
+            self.arena,
+            "message",
+            Value{ .string = message },
+        );
+        self.pending_exception = Value{ .object = exc };
+        return error.ApexException;
     }
 
     fn has_task_for_aptask_in_recycle_bin(self: *Evaluator, aptask_id: []const u8) bool {
@@ -21352,6 +21379,10 @@ pub const Evaluator = struct {
             return Value{ .boolean = false };
         }
         return matched_value;
+    }
+
+    fn sobj_field_ci(self: *Evaluator, sob: *types.SObject, field_name: []const u8) ?Value {
+        return self.get_s_object_field_value_case_insensitive(sob, field_name);
     }
 
     fn is_checkbox_field(
