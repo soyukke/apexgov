@@ -28495,6 +28495,7 @@ pub const Evaluator = struct {
         const trimmed = std.mem.trim(u8, formula, " \t\n\r");
         if (trimmed.len == 0) return null;
         if (self.compute_active_date_range_formula(sob, trimmed)) |value| return value;
+        if (self.compute_if_formula_field_value(sob, trimmed)) |value| return value;
 
         if (std.mem.indexOfScalar(u8, trimmed, '+')) |_| {
             var total: i64 = 0;
@@ -28544,6 +28545,94 @@ pub const Evaluator = struct {
         }
 
         return self.get_s_object_field_value_case_insensitive(sob, trimmed);
+    }
+
+    fn compute_if_formula_field_value(
+        self: *Evaluator,
+        sob: *types.SObject,
+        formula: []const u8,
+    ) ?Value {
+        const inner = formula_function_inner(formula, "IF") orelse return null;
+        var args: [3][]const u8 = undefined;
+        const count = split_formula_args(inner, args[0..]);
+        if (count != 3) return null;
+        const condition = self.evaluate_formula_condition(sob, args[0]) orelse return null;
+        return self.evaluate_formula_value_expr(sob, if (condition) args[1] else args[2]) orelse
+            Value.null_val;
+    }
+
+    fn evaluate_formula_condition(
+        self: *Evaluator,
+        sob: *types.SObject,
+        raw_expr: []const u8,
+    ) ?bool {
+        const expr = std.mem.trim(u8, raw_expr, " \t\n\r");
+        if (find_formula_operator(expr, "!=")) |idx| {
+            const left = self.evaluate_formula_value_expr(sob, expr[0..idx]) orelse Value.null_val;
+            const right = self.evaluate_formula_value_expr(sob, expr[idx + 2 ..]) orelse Value.null_val;
+            return !formula_values_equal(left, right);
+        }
+        if (find_formula_operator(expr, "==")) |idx| {
+            const left = self.evaluate_formula_value_expr(sob, expr[0..idx]) orelse Value.null_val;
+            const right = self.evaluate_formula_value_expr(sob, expr[idx + 2 ..]) orelse Value.null_val;
+            return formula_values_equal(left, right);
+        }
+        if (find_formula_operator(expr, "=")) |idx| {
+            const left = self.evaluate_formula_value_expr(sob, expr[0..idx]) orelse Value.null_val;
+            const right = self.evaluate_formula_value_expr(sob, expr[idx + 1 ..]) orelse Value.null_val;
+            return formula_values_equal(left, right);
+        }
+        const value = self.evaluate_formula_value_expr(sob, expr) orelse return null;
+        return switch (value) {
+            .boolean => |b| b,
+            .null_val => false,
+            .string => |s| s.len > 0,
+            else => null,
+        };
+    }
+
+    fn evaluate_formula_value_expr(
+        self: *Evaluator,
+        sob: *types.SObject,
+        raw_expr: []const u8,
+    ) ?Value {
+        const expr = std.mem.trim(u8, raw_expr, " \t\n\r");
+        if (expr.len == 0) return Value.null_val;
+        if (std.ascii.eqlIgnoreCase(expr, "null")) return Value.null_val;
+        if (std.ascii.eqlIgnoreCase(expr, "true")) return Value{ .boolean = true };
+        if (std.ascii.eqlIgnoreCase(expr, "false")) return Value{ .boolean = false };
+        if (formula_string_literal(expr)) |literal| return Value{ .string = literal };
+        if (self.compute_if_formula_field_value(sob, expr)) |value| return value;
+        if (formula_function_inner(expr, "CASESAFEID")) |inner| {
+            const value = self.evaluate_formula_value_expr(sob, inner) orelse Value.null_val;
+            return formula_case_safe_id_value(self.arena, value) catch Value.null_val;
+        }
+        if (std.mem.indexOfScalar(u8, expr, '.')) |_| {
+            return self.resolve_field_path_value(sob, expr) orelse Value.null_val;
+        }
+        return self.get_s_object_field_value_case_insensitive(sob, expr) orelse Value.null_val;
+    }
+
+    fn formula_case_safe_id_value(arena: std.mem.Allocator, value: Value) !Value {
+        if (value == .null_val) return Value.null_val;
+        const id = switch (value) {
+            .string => |s| s,
+            else => return value,
+        };
+        if (id.len != 15) return value;
+        const suffix_alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ012345";
+        var suffix: [3]u8 = undefined;
+        for (0..3) |chunk| {
+            var flags: u5 = 0;
+            for (0..5) |offset| {
+                const ch = id[chunk * 5 + offset];
+                if (ch >= 'A' and ch <= 'Z') {
+                    flags |= @as(u5, 1) << @intCast(offset);
+                }
+            }
+            suffix[chunk] = suffix_alphabet[flags];
+        }
+        return Value{ .string = try std.fmt.allocPrint(arena, "{s}{s}", .{ id, suffix }) };
     }
 
     fn compute_active_date_range_formula(
@@ -28598,6 +28687,118 @@ pub const Evaluator = struct {
             }
         }
         return null;
+    }
+
+    fn formula_function_inner(formula: []const u8, name: []const u8) ?[]const u8 {
+        const trimmed = std.mem.trim(u8, formula, " \t\n\r");
+        if (trimmed.len < name.len + 2) return null;
+        if (!std.ascii.startsWithIgnoreCase(trimmed, name)) return null;
+        var pos = name.len;
+        while (pos < trimmed.len and is_soql_whitespace(trimmed[pos])) pos += 1;
+        if (pos >= trimmed.len or trimmed[pos] != '(') return null;
+        const inner_start = pos + 1;
+        var depth: usize = 1;
+        var in_string = false;
+        pos = inner_start;
+        while (pos < trimmed.len) : (pos += 1) {
+            const ch = trimmed[pos];
+            if (ch == '\'' and (pos == inner_start or trimmed[pos - 1] != '\\')) {
+                in_string = !in_string;
+                continue;
+            }
+            if (in_string) continue;
+            if (ch == '(') {
+                depth += 1;
+                continue;
+            }
+            if (ch == ')') {
+                depth -= 1;
+                if (depth == 0) {
+                    const tail = std.mem.trim(u8, trimmed[pos + 1 ..], " \t\n\r");
+                    if (tail.len != 0) return null;
+                    return std.mem.trim(u8, trimmed[inner_start..pos], " \t\n\r");
+                }
+            }
+        }
+        return null;
+    }
+
+    fn split_formula_args(input: []const u8, out: [][]const u8) usize {
+        var count: usize = 0;
+        var start: usize = 0;
+        var depth: usize = 0;
+        var in_string = false;
+        var idx: usize = 0;
+        while (idx < input.len) : (idx += 1) {
+            const ch = input[idx];
+            if (ch == '\'' and (idx == 0 or input[idx - 1] != '\\')) {
+                in_string = !in_string;
+                continue;
+            }
+            if (in_string) continue;
+            if (ch == '(') {
+                depth += 1;
+                continue;
+            }
+            if (ch == ')') {
+                if (depth > 0) depth -= 1;
+                continue;
+            }
+            if (ch == ',' and depth == 0) {
+                if (count >= out.len) return count;
+                out[count] = std.mem.trim(u8, input[start..idx], " \t\n\r");
+                count += 1;
+                start = idx + 1;
+            }
+        }
+        if (count < out.len) {
+            out[count] = std.mem.trim(u8, input[start..], " \t\n\r");
+            count += 1;
+        }
+        return count;
+    }
+
+    fn find_formula_operator(expr: []const u8, operator: []const u8) ?usize {
+        var depth: usize = 0;
+        var in_string = false;
+        var idx: usize = 0;
+        while (idx + operator.len <= expr.len) : (idx += 1) {
+            const ch = expr[idx];
+            if (ch == '\'' and (idx == 0 or expr[idx - 1] != '\\')) {
+                in_string = !in_string;
+                continue;
+            }
+            if (in_string) continue;
+            if (ch == '(') {
+                depth += 1;
+                continue;
+            }
+            if (ch == ')') {
+                if (depth > 0) depth -= 1;
+                continue;
+            }
+            if (depth == 0 and std.mem.eql(u8, expr[idx .. idx + operator.len], operator)) {
+                return idx;
+            }
+        }
+        return null;
+    }
+
+    fn formula_string_literal(expr: []const u8) ?[]const u8 {
+        const trimmed = std.mem.trim(u8, expr, " \t\n\r");
+        if (trimmed.len < 2) return null;
+        if (trimmed[0] != '\'' or trimmed[trimmed.len - 1] != '\'') return null;
+        return trimmed[1 .. trimmed.len - 1];
+    }
+
+    fn formula_values_equal(left: Value, right: Value) bool {
+        if (left == .null_val or right == .null_val) return left == .null_val and right == .null_val;
+        if (left == .string and right == .string) return std.mem.eql(u8, left.string, right.string);
+        if (left == .boolean and right == .boolean) return left.boolean == right.boolean;
+        if (numeric_value_as_f64(left)) |left_num| {
+            if (numeric_value_as_f64(right)) |right_num| return @abs(left_num - right_num) < 0.000001;
+        }
+        return false;
     }
 
     /// Create a shallow clone of an SObject (copies the fields map).

@@ -7486,6 +7486,59 @@ test "E2E: SOQL formula field Experience_Name__c resolved from parent" {
     try expect_entry_string(source, "FormulaFieldTest", "test", "Hiking");
 }
 
+test "E2E: formula fields support IF equality and CASESAFEID" {
+    const alloc = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try tmp_dir.dir.createDirPath(std.testing.io, "objects/Contact/fields");
+    try tmp_dir.dir.writeFile(std.testing.io, .{
+        .sub_path = "objects/Contact/fields/ParentKey__c.field-meta.xml",
+        .data =
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+        \\    <fullName>ParentKey__c</fullName>
+        \\    <formula>IF(Account.Type__c==&apos;Primary&apos;,CASESAFEID(AccountId),CASESAFEID(AlternateAccount__c))</formula>
+        \\    <label>Parent Key</label>
+        \\    <type>Text</type>
+        \\</CustomField>
+        ,
+    });
+    const tmp_path = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", alloc);
+    defer alloc.free(tmp_path);
+
+    const source =
+        \\public class FormulaIfCasesafeIdProbe {
+        \\    public static String test() {
+        \\        Account parent = new Account(
+        \\            Name = 'Parent',
+        \\            Type__c = 'Primary'
+        \\        );
+        \\        insert parent;
+        \\        Contact contact = new Contact(LastName = 'Member', AccountId = parent.Id);
+        \\        insert contact;
+        \\        List<Contact> rows = [
+        \\            SELECT ParentKey__c
+        \\            FROM Contact
+        \\            WHERE ParentKey__c != null
+        \\        ];
+        \\        return String.valueOf(rows.size()) + ':' + rows[0].ParentKey__c + ':' + parent.Id;
+        \\    }
+        \\}
+    ;
+    const result = try run(alloc, std.testing.io, source, .{
+        .entry_class = "FormulaIfCasesafeIdProbe",
+        .entry_method = "test",
+        .source_paths = &.{tmp_path},
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings(
+        "1:001000000000000001:001000000000000001",
+        result.value.string,
+    );
+}
+
 test "E2E: rollup summary fields resolve in WHERE clauses and selected records" {
     const alloc = std.testing.allocator;
     var tmp_dir = std.testing.tmpDir(.{});
