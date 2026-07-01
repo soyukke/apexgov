@@ -1883,9 +1883,6 @@ pub const Evaluator = struct {
         if (self.call_depth > self.max_call_depth) {
             return .null_val;
         }
-        if (self.should_skip_npsp_disabled_allocation_handler(class_name)) {
-            return Value.void_val;
-        }
         if (try self.eval_compat_static_method(class_name, method_name, args)) |result| {
             return result;
         }
@@ -2121,9 +2118,6 @@ pub const Evaluator = struct {
         )) |result| {
             return result;
         }
-        if (self.handle_npsp_allocations_util_static_method(class_name, method_name, args)) |result| {
-            return result;
-        }
         if (try self.handle_crlp_rollup_svc_static_method(
             class_name,
             method_name,
@@ -2141,63 +2135,6 @@ pub const Evaluator = struct {
         if (try self.handle_datacloud_static_method(class_name, method_name, args)) |result| {
             return result;
         }
-        if (try self.handle_npsp_potential_duplicates_static_method(
-            class_name,
-            method_name,
-            args,
-        )) |result| {
-            return result;
-        }
-        if (try self.handle_npsp_unit_test_data_static_method(
-            class_name,
-            method_name,
-            args,
-        )) |result| {
-            return result;
-        }
-        if (try self.handle_npsp_legacy_household_members_static_method(
-            class_name,
-            method_name,
-            args,
-        )) |result| {
-            return result;
-        }
-        if (try self.handle_npsp_contact_adapter_static_method(
-            class_name,
-            method_name,
-            args,
-        )) |result| {
-            return result;
-        }
-        if (try self.handle_npsp_household_naming_static_method(
-            class_name,
-            method_name,
-            args,
-        )) |result| {
-            return result;
-        }
-        if (try self.handle_npsp_opportunity_naming_static_method(
-            class_name,
-            method_name,
-            args,
-        )) |result| {
-            return result;
-        }
-        if (try self.handle_npsp_household_container_static_method(
-            class_name,
-            method_name,
-            args,
-        )) |result| {
-            return result;
-        }
-        if (try self.handle_npsp_visualize_schedule_static_method(
-            class_name,
-            method_name,
-            args,
-        )) |result| {
-            return result;
-        }
-
         const user_class_lookup = self.find_class_with_name(class_name);
 
         // Database methods that need store access. Preserve user-defined classes named
@@ -2322,25 +2259,6 @@ pub const Evaluator = struct {
         method: *ast.MethodDecl,
         args: []const Value,
     ) anyerror!Value {
-        if (self.current_class) |class_name| {
-            if (self.should_skip_npsp_disabled_allocation_handler(class_name)) {
-                return Value.void_val;
-            }
-        }
-        if (self.fixture_relaxed_exceptions and
-            self.current_class != null and
-            std.ascii.eqlIgnoreCase(self.current_class.?, "ALLO_AllocationsUtil"))
-        {
-            if (std.ascii.eqlIgnoreCase(method.name, "disableAllocationTriggers")) {
-                self.npsp_allocation_triggers_disabled = true;
-            } else if (std.ascii.eqlIgnoreCase(method.name, "enableAllocationTriggers")) {
-                self.npsp_allocation_triggers_disabled = false;
-            } else if (std.ascii.eqlIgnoreCase(method.name, "updateAllocationTriggersState") and
-                args.len >= 1 and args[0] == .boolean)
-            {
-                self.npsp_allocation_triggers_disabled = !args[0].boolean;
-            }
-        }
         if (method_has_annotation(method, "@future")) self.active_future_depth += 1;
         defer {
             if (method_has_annotation(method, "@future")) self.active_future_depth -= 1;
@@ -30857,59 +30775,7 @@ pub const Evaluator = struct {
         )) |result| {
             return result;
         }
-        if (self.handle_npsp_allocations_util_static_method(class_name, method_name, args)) |result| {
-            return result;
-        }
         if (try self.handle_crlp_rollup_svc_static_method(
-            class_name,
-            method_name,
-            args,
-        )) |result| {
-            return result;
-        }
-        if (try self.handle_npsp_unit_test_data_static_method(
-            class_name,
-            method_name,
-            args,
-        )) |result| {
-            return result;
-        }
-        if (try self.handle_npsp_legacy_household_members_static_method(
-            class_name,
-            method_name,
-            args,
-        )) |result| {
-            return result;
-        }
-        if (try self.handle_npsp_contact_adapter_static_method(
-            class_name,
-            method_name,
-            args,
-        )) |result| {
-            return result;
-        }
-        if (try self.handle_npsp_household_naming_static_method(
-            class_name,
-            method_name,
-            args,
-        )) |result| {
-            return result;
-        }
-        if (try self.handle_npsp_opportunity_naming_static_method(
-            class_name,
-            method_name,
-            args,
-        )) |result| {
-            return result;
-        }
-        if (try self.handle_npsp_household_container_static_method(
-            class_name,
-            method_name,
-            args,
-        )) |result| {
-            return result;
-        }
-        if (try self.handle_npsp_visualize_schedule_static_method(
             class_name,
             method_name,
             args,
@@ -33540,9 +33406,6 @@ pub const Evaluator = struct {
             return result;
         }
         if (try self.handle_tdtm_process_control_static_method(class_name, method, args)) |result| {
-            return result;
-        }
-        if (self.handle_npsp_allocations_util_static_method(class_name, method, args)) |result| {
             return result;
         }
         if (try self.eval_user_enum_static_method(class_name, method, args)) |result| {
@@ -51737,11 +51600,6 @@ pub const Evaluator = struct {
         if (self.call_depth > self.max_call_depth) {
             return .null_val;
         }
-        if (self.should_skip_npsp_disabled_allocation_handler(instance.class_name) or
-            self.should_skip_npsp_disabled_allocation_handler(class_decl.name))
-        {
-            return Value.void_val;
-        }
         // Push call frame for stack trace generation (use current_call_line set by caller)
         const frame_line = self.current_call_line;
         self.current_call_line = 0;
@@ -51751,27 +51609,6 @@ pub const Evaluator = struct {
         if (class_decl.super_class) |sc| self.ensure_static_init(sc.name);
         if (try self.handle_sfdo_instrumentation_log_instance_method(
             class_decl.name,
-            method_name,
-            args,
-        )) |result| {
-            return result;
-        }
-        if (try self.handle_npsp_household_naming_static_method(
-            class_decl.name,
-            method_name,
-            args,
-        )) |result| {
-            return result;
-        }
-        if (try self.eval_npsp_deceased_batch_instance_method(
-            Value{ .object = instance },
-            method_name,
-            args,
-        )) |result| {
-            return result;
-        }
-        if (try self.eval_npsp_abstract_chunking_ldv_mock_method(
-            instance,
             method_name,
             args,
         )) |result| {
@@ -51865,11 +51702,6 @@ pub const Evaluator = struct {
     ) anyerror!Value {
         const owner_decl = resolved.owner;
         const method = resolved.method;
-        if (self.should_skip_npsp_disabled_allocation_handler(owner_decl.name) or
-            self.should_skip_npsp_disabled_allocation_handler(instance.class_name))
-        {
-            return Value.void_val;
-        }
         const frame_class_name = instance_method_frame_class_name(
             instance.class_name,
             owner_decl.name,
