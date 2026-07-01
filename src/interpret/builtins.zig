@@ -2251,9 +2251,8 @@ fn dispatch_static_schema(
         return try dispatch_schema_describe_s_objects(ctx, args);
     }
     // Minimal Schema.describeTabs() stub: return an empty list so utility
-    // code (e.g. ActionPlansV4's SectionHeader controller) that iterates
-    // `for (DescribeTabSetResult tsr : Schema.describeTabs())` falls through
-    // to its default-icon branch instead of NPE-ing on a null return.
+    // code that iterates `for (DescribeTabSetResult tsr : Schema.describeTabs())`
+    // falls through to default handling instead of NPE-ing on a null return.
     if (std.ascii.eqlIgnoreCase(method_name, "describeTabs")) {
         const list = try ctx.arena.create(types.ListValue);
         list.* = .{};

@@ -1371,40 +1371,86 @@ pub const Evaluator = struct {
         try records.append(self.arena, Value{ .sobject = rt });
     }
 
-    fn seed_task_record_types_for_query(self: *Evaluator, soql: []const u8) !void {
-        if (std.ascii.indexOfIgnoreCase(soql, "SObjectType = 'Task'") == null and
-            std.ascii.indexOfIgnoreCase(soql, "SobjectType = 'Task'") == null)
-        {
-            return;
-        }
-        const forced = self.resolve_static_field_value_on_class(
-            "ActionPlansTestUtilities",
-            "forceHasRecordType",
-        ) orelse Value.null_val;
-        if (!(forced == .boolean and forced.boolean)) return;
+    fn seed_describe_record_types_for_query(self: *Evaluator, soql: []const u8) !void {
+        const obj_name = self.extract_record_type_sobject_literal(soql) orelse return;
+        const obj_idx = self.synthetic_record_type_index(obj_name) orelse return;
         const records = self.store_records_ptr("RecordType") orelse return;
+        if (self.record_type_store_has_sobject(records, obj_name)) return;
+
+        const master_id = try std.fmt.allocPrint(
+            self.arena,
+            "0120000000000{d:0>2}AAA",
+            .{obj_idx},
+        );
+        try self.append_synthetic_record_type(records, obj_name, master_id, "Master", "Master");
+
+        const default_id = try std.fmt.allocPrint(
+            self.arena,
+            "0120000000001{d:0>2}AAA",
+            .{obj_idx},
+        );
+        try self.append_synthetic_record_type(records, obj_name, default_id, "Default", "Default");
+    }
+
+    fn record_type_store_has_sobject(
+        self: *Evaluator,
+        records: *const std.ArrayListUnmanaged(Value),
+        obj_name: []const u8,
+    ) bool {
         for (records.items) |record| {
             if (record != .sobject) continue;
             const sobj = self.get_s_object_field_value_case_insensitive(
                 record.sobject,
                 "SObjectType",
             ) orelse continue;
-            if (sobj == .string and std.ascii.eqlIgnoreCase(sobj.string, "Task")) return;
+            if (sobj == .string and std.ascii.eqlIgnoreCase(sobj.string, obj_name)) return true;
         }
-        try self.append_synthetic_record_type(
-            records,
-            "Task",
-            "012000000000003AAA",
-            "Master",
-            "Master",
-        );
-        try self.append_synthetic_record_type(
-            records,
-            "Task",
-            "012000000000103AAA",
-            "Default",
-            "Default",
-        );
+        return false;
+    }
+
+    fn extract_record_type_sobject_literal(self: *Evaluator, soql: []const u8) ?[]const u8 {
+        _ = self;
+        const where_clause = extract_where_clause(soql) orelse soql;
+        var search_start: usize = 0;
+        while (std.ascii.indexOfIgnoreCasePos(
+            where_clause,
+            search_start,
+            "SObjectType",
+        )) |field_pos| {
+            const after_field = field_pos + "SObjectType".len;
+            var pos = after_field;
+            while (pos < where_clause.len and is_soql_whitespace(where_clause[pos])) : (pos += 1) {}
+            if (pos >= where_clause.len or where_clause[pos] != '=') {
+                search_start = after_field;
+                continue;
+            }
+            pos += 1;
+            while (pos < where_clause.len and is_soql_whitespace(where_clause[pos])) : (pos += 1) {}
+            if (pos >= where_clause.len or where_clause[pos] != '\'') {
+                search_start = after_field;
+                continue;
+            }
+            pos += 1;
+            const value_start = pos;
+            while (pos < where_clause.len and where_clause[pos] != '\'') : (pos += 1) {}
+            if (pos > value_start and pos < where_clause.len) {
+                return std.mem.trim(u8, where_clause[value_start..pos], " \t\r\n");
+            }
+            return null;
+        }
+        return null;
+    }
+
+    fn synthetic_record_type_index(self: *Evaluator, obj_name: []const u8) ?usize {
+        _ = self;
+        const known_types = [_][]const u8{
+            "Account",  "Contact",  "Opportunity", "Task", "Lead", "Case", "User",
+            "Solution", "Campaign", "Event",
+        };
+        for (known_types, 0..) |kt, i| {
+            if (std.ascii.eqlIgnoreCase(obj_name, kt)) return i;
+        }
+        return null;
     }
 
     /// Convert picklist field values from API name (fullName) to label on custom objects.
@@ -3243,7 +3289,6 @@ pub const Evaluator = struct {
                 record_list.items,
                 old_records,
             );
-            try self.apply_actionplans_after_dml_side_effects(ot, op, record_list.items);
             try self.cleanup_npsp_zero_payment_default_allocations_after_update(
                 ot,
                 op,
@@ -3259,20 +3304,6 @@ pub const Evaluator = struct {
         }
         self.cleanup_dml_side_effects(op, obj_type);
         rollback_insert_on_error = false;
-    }
-
-    fn apply_actionplans_after_dml_side_effects(
-        self: *Evaluator,
-        object_type: []const u8,
-        op: ast.DmlOp,
-        records: []const Value,
-    ) !void {
-        if (op != .update or !std.ascii.eqlIgnoreCase(object_type, "Task")) return;
-        for (records) |record| {
-            if (record == .sobject) {
-                try self.apply_actionplans_task_after_update_side_effect(record.sobject);
-            }
-        }
     }
 
     fn cleanup_npsp_zero_payment_default_allocations_after_update(
@@ -13130,11 +13161,6 @@ pub const Evaluator = struct {
             try self.apply_false_default(obj, "npe01__Paid__c");
             try self.apply_false_default(obj, "npe01__Written_Off__c");
         }
-        if (std.ascii.eqlIgnoreCase(obj.type_name, "APTask__c")) {
-            try self.apply_string_default(obj, "Status__c", "Not Started");
-            try self.apply_string_default(obj, "Priority__c", "Normal");
-            try self.apply_string_default(obj, "Type__c", "");
-        }
         if (std.ascii.eqlIgnoreCase(obj.type_name, "npe03__Recurring_Donation__c")) {
             try self.apply_npsp_recurring_donation_defaults(obj);
         }
@@ -13193,16 +13219,6 @@ pub const Evaluator = struct {
     fn apply_false_default(self: *Evaluator, obj: *types.SObject, field_name: []const u8) !void {
         if (self.get_s_object_field_value_case_insensitive(obj, field_name) != null) return;
         try utils.sobject_put(&obj.fields, self.arena, field_name, Value{ .boolean = false });
-    }
-
-    fn apply_string_default(
-        self: *Evaluator,
-        obj: *types.SObject,
-        field_name: []const u8,
-        value: []const u8,
-    ) !void {
-        if (self.get_s_object_field_value_case_insensitive(obj, field_name) != null) return;
-        try utils.sobject_put(&obj.fields, self.arena, field_name, Value{ .string = value });
     }
 
     fn update_record(
@@ -13273,32 +13289,6 @@ pub const Evaluator = struct {
             try self.apply_npsp_address_update(obj, found_rec.?, old_address);
             try self.apply_npsp_account_address_update(found_rec.?, old_record);
             try self.apply_npsp_account_deceased_update(found_rec.?);
-        }
-    }
-
-    fn apply_actionplans_task_after_update_side_effect(
-        self: *Evaluator,
-        task: *types.SObject,
-    ) !void {
-        if (!std.ascii.eqlIgnoreCase(task.type_name, "Task")) return;
-        if (!task_status_is_closed(task)) return;
-        const aptask_id_val =
-            self.get_s_object_field_value_case_insensitive(task, "TaskAPTask__c") orelse return;
-        if (aptask_id_val != .string) return;
-        try self.create_actionplans_dependent_tasks_for_controller(aptask_id_val.string);
-    }
-
-    fn create_actionplans_dependent_tasks_for_controller(
-        self: *Evaluator,
-        controller_id: []const u8,
-    ) !void {
-        const aptasks = self.store_records_ptr("APTask__c") orelse return;
-        for (aptasks.items) |item| {
-            if (item != .sobject) continue;
-            if (!self.actionplans_task_depends_on(item.sobject, controller_id)) continue;
-            const dep_id = item.sobject.id orelse continue;
-            if (self.active_task_for_aptask_exists(dep_id)) continue;
-            try self.insert_actionplans_task_for_aptask(item.sobject, dep_id);
         }
     }
 
@@ -14036,7 +14026,6 @@ pub const Evaluator = struct {
         if (self.store_records_ptr(obj.type_name)) |records| {
             if (obj.id) |record_id| {
                 if (self.find_stored_sobject_by_id(obj.type_name, record_id)) |stored| {
-                    try self.apply_actionplans_task_before_delete_side_effect(stored);
                     try self.validate_npsp_paid_payment_opportunity_allocation_change(
                         null,
                         stored,
@@ -14068,100 +14057,6 @@ pub const Evaluator = struct {
         if (std.ascii.eqlIgnoreCase(obj.type_name, "Opportunity")) {
             try self.cascade_delete_npsp_opportunity_allocations(obj.id.?);
         }
-        if (std.ascii.eqlIgnoreCase(obj.type_name, "ActionPlan__c")) {
-            try self.cascade_delete_actionplans_tasks(obj.id.?);
-        }
-    }
-
-    fn apply_actionplans_task_before_delete_side_effect(
-        self: *Evaluator,
-        task: *types.SObject,
-    ) !void {
-        if (!std.ascii.eqlIgnoreCase(task.type_name, "Task")) return;
-        const aptask_id_val =
-            self.get_s_object_field_value_case_insensitive(task, "TaskAPTask__c") orelse return;
-        if (aptask_id_val != .string) return;
-        const aptasks = self.store_records_ptr("APTask__c") orelse return;
-        for (aptasks.items) |item| {
-            if (item != .sobject) continue;
-            if (!self.actionplans_task_depends_on(item.sobject, aptask_id_val.string)) continue;
-            const dep_id = item.sobject.id orelse continue;
-            if (self.active_task_for_aptask_exists(dep_id)) continue;
-            try self.insert_actionplans_task_for_aptask(item.sobject, dep_id);
-        }
-    }
-
-    fn insert_actionplans_task_for_aptask(
-        self: *Evaluator,
-        aptask: *types.SObject,
-        aptask_id: []const u8,
-    ) !void {
-        const new_task = try self.arena.create(types.SObject);
-        new_task.* = .{ .type_name = "Task" };
-        try self.copy_actionplans_task_field(aptask, new_task, "Subject__c", "Subject");
-        try self.copy_actionplans_task_field(aptask, new_task, "Priority__c", "Priority");
-        try self.copy_actionplans_task_field(aptask, new_task, "Status__c", "Status");
-        try self.copy_actionplans_task_field(aptask, new_task, "User__c", "OwnerId");
-        try utils.sobject_put(
-            &new_task.fields,
-            self.arena,
-            "TaskAPTask__c",
-            Value{ .string = aptask_id },
-        );
-        try self.insert_record(new_task);
-    }
-
-    fn actionplans_task_depends_on(
-        self: *Evaluator,
-        aptask: *types.SObject,
-        controller_id: []const u8,
-    ) bool {
-        if (self.get_s_object_field_value_case_insensitive(
-            aptask,
-            "Controller__c",
-        )) |controller| {
-            if (controller == .string and
-                std.ascii.eqlIgnoreCase(controller.string, controller_id))
-            {
-                return true;
-            }
-        }
-        const dependent =
-            self.get_s_object_field_value_case_insensitive(aptask, "Dependent__c") orelse
-            return false;
-        return dependent == .string and dependent.string.len > 0 and
-            !std.ascii.eqlIgnoreCase(dependent.string, "None");
-    }
-
-    fn active_task_for_aptask_exists(self: *Evaluator, aptask_id: []const u8) bool {
-        const tasks = self.store_records_ptr("Task") orelse return false;
-        for (tasks.items) |item| {
-            if (item != .sobject) continue;
-            const link =
-                self.get_s_object_field_value_case_insensitive(
-                    item.sobject,
-                    "TaskAPTask__c",
-                ) orelse
-                continue;
-            if (link == .string and
-                std.ascii.eqlIgnoreCase(link.string, aptask_id))
-            {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    fn copy_actionplans_task_field(
-        self: *Evaluator,
-        source: *types.SObject,
-        target: *types.SObject,
-        source_field: []const u8,
-        target_field: []const u8,
-    ) !void {
-        const value =
-            self.get_s_object_field_value_case_insensitive(source, source_field) orelse return;
-        try utils.sobject_put(&target.fields, self.arena, target_field, value);
     }
 
     fn delete_record_from_store_records(
@@ -14242,32 +14137,6 @@ pub const Evaluator = struct {
         }
     }
 
-    fn cascade_delete_actionplans_tasks(self: *Evaluator, action_plan_id: []const u8) !void {
-        var aptask_ids: std.ArrayListUnmanaged([]const u8) = .empty;
-        if (self.store_records_ptr("APTask__c")) |aptasks| {
-            for (aptasks.items) |item| {
-                if (item != .sobject) continue;
-                const parent =
-                    self.get_s_object_field_value_case_insensitive(
-                        item.sobject,
-                        "Action_Plan__c",
-                    ) orelse
-                    continue;
-                if (parent != .string or
-                    !std.ascii.eqlIgnoreCase(parent.string, action_plan_id))
-                {
-                    continue;
-                }
-                if (item.sobject.id) |aptask_id| {
-                    try aptask_ids.append(self.arena, aptask_id);
-                }
-            }
-        }
-        for (aptask_ids.items) |aptask_id| {
-            try self.delete_open_tasks_for_aptask(aptask_id);
-        }
-    }
-
     fn cascade_delete_npsp_opportunity_allocations(
         self: *Evaluator,
         opportunity_id: []const u8,
@@ -14335,45 +14204,6 @@ pub const Evaluator = struct {
             self.get_s_object_field_value_case_insensitive(allocation, "Payment__c") orelse
             Value.null_val;
         return payment == .string and payment_ids.contains(payment.string);
-    }
-
-    fn delete_open_tasks_for_aptask(self: *Evaluator, aptask_id: []const u8) !void {
-        const records = self.store_records_ptr("Task") orelse return;
-        const trash_gop = try self.trash.getOrPut(self.arena, "Task");
-        if (!trash_gop.found_existing) trash_gop.value_ptr.* = .empty;
-
-        var i: usize = 0;
-        while (i < records.items.len) {
-            const record = records.items[i];
-            if (record != .sobject) {
-                i += 1;
-                continue;
-            }
-            const link =
-                self.get_s_object_field_value_case_insensitive(
-                    record.sobject,
-                    "TaskAPTask__c",
-                ) orelse {
-                    i += 1;
-                    continue;
-                };
-            if (link != .string or !std.ascii.eqlIgnoreCase(link.string, aptask_id) or
-                task_status_is_closed(record.sobject))
-            {
-                i += 1;
-                continue;
-            }
-            const removed = records.orderedRemove(i);
-            if (removed == .sobject) {
-                try utils.sobject_put(
-                    &removed.sobject.fields,
-                    self.arena,
-                    "IsDeleted",
-                    Value{ .boolean = true },
-                );
-            }
-            try trash_gop.value_ptr.append(self.arena, removed);
-        }
     }
 
     fn apply_delete_set_null_lookups_for_records(
@@ -14554,6 +14384,9 @@ pub const Evaluator = struct {
                 if (trashed.items[i] == .sobject and trashed.items[i].sobject.id != null and
                     std.mem.eql(u8, trashed.items[i].sobject.id.?, obj.id.?))
                 {
+                    if (self.trashed_record_is_hard_deleted(trashed.items[i].sobject)) {
+                        return self.throw_undelete_failed();
+                    }
                     const restored = trashed.orderedRemove(i);
                     if (restored == .sobject) {
                         try restored.sobject.fields.put(
@@ -14575,17 +14408,17 @@ pub const Evaluator = struct {
         if (!found) {
             return self.throw_undelete_failed();
         }
-        if (std.ascii.eqlIgnoreCase(obj.type_name, "APTask__c") and
-            !self.has_task_for_aptask_in_recycle_bin(obj.id.?))
-        {
-            return self.throw_aptask_undelete_failed();
-        }
         if (std.ascii.eqlIgnoreCase(obj.type_name, "Account")) {
             try self.cascade_undelete_account_contacts(obj.id.?);
         }
         if (std.ascii.eqlIgnoreCase(obj.type_name, "Opportunity")) {
             try self.cascade_undelete_npsp_opportunity_allocations(obj.id.?);
         }
+    }
+
+    fn trashed_record_is_hard_deleted(_: *Evaluator, obj: *types.SObject) bool {
+        const flag = utils.sobject_get(&obj.fields, "__apexgov_hard_deleted") orelse return false;
+        return flag == .boolean and flag.boolean;
     }
 
     fn throw_undelete_failed(self: *Evaluator) anyerror!void {
@@ -14598,34 +14431,6 @@ pub const Evaluator = struct {
         );
         self.pending_exception = Value{ .object = exc };
         return error.ApexException;
-    }
-
-    fn throw_aptask_undelete_failed(self: *Evaluator) anyerror!void {
-        const message =
-            "Error Task AFTER_UNDELETE: " ++
-            "UNDELETE_FAILED: entity not in recycle bin";
-        const exc = try self.arena.create(types.ObjectInstance);
-        exc.* = .{ .class_name = "DmlException" };
-        try exc.fields.put(
-            self.arena,
-            "message",
-            Value{ .string = message },
-        );
-        self.pending_exception = Value{ .object = exc };
-        return error.ApexException;
-    }
-
-    fn has_task_for_aptask_in_recycle_bin(self: *Evaluator, aptask_id: []const u8) bool {
-        const trashed = self.trash.get("Task") orelse return false;
-        for (trashed.items) |item| {
-            if (item != .sobject) continue;
-            const link = self.get_s_object_field_value_case_insensitive(
-                item.sobject,
-                "TaskAPTask__c",
-            ) orelse continue;
-            if (link == .string and std.ascii.eqlIgnoreCase(link.string, aptask_id)) return true;
-        }
-        return false;
     }
 
     fn cascade_undelete_account_contacts(self: *Evaluator, account_id: []const u8) !void {
@@ -15018,6 +14823,10 @@ pub const Evaluator = struct {
         include_all_rows: bool,
     ) !Value {
         const from_type = extract_from_type(soql) orelse return Value{ .integer = 0 };
+        if (std.ascii.eqlIgnoreCase(from_type, "RecordType")) {
+            try self.seed_record_type_store();
+            try self.seed_describe_record_types_for_query(soql);
+        }
         var count: i64 = 0;
         var store_iter = self.store.iterator();
         while (store_iter.next()) |entry| {
@@ -15938,7 +15747,7 @@ pub const Evaluator = struct {
         }
         if (std.ascii.eqlIgnoreCase(from_type, "RecordType")) {
             try self.seed_record_type_store();
-            try self.seed_task_record_types_for_query(soql);
+            try self.seed_describe_record_types_for_query(soql);
             try self.append_matching_store_records("RecordType", soql, current_env, records);
             return;
         }
@@ -16518,42 +16327,17 @@ pub const Evaluator = struct {
                 null;
             var child_records: std.ArrayListUnmanaged(Value) = .empty;
             if (child_type) |ct| {
-                if (std.mem.endsWith(u8, ct, "__mdt")) self.ensure_custom_metadata_loaded(ct);
-                var child_iter = self.store.iterator();
-                while (child_iter.next()) |child_entry| {
-                    if (std.ascii.eqlIgnoreCase(child_entry.key_ptr.*, ct)) {
-                        const fk_field = self.resolve_foreign_key(ct, from_type, rel_name);
-                        for (child_entry.value_ptr.items) |child_rec| {
-                            if (child_rec == .sobject) {
-                                if (utils.sobject_get(
-                                    &child_rec.sobject.fields,
-                                    fk_field,
-                                )) |fk_val| {
-                                    if (fk_val == .string) {
-                                        const matches_id =
-                                            std.ascii.eqlIgnoreCase(fk_val.string, parent_id);
-                                        const matches_developer_name =
-                                            parent_developer_name != null and
-                                            parent_developer_name.? == .string and
-                                            std.ascii.eqlIgnoreCase(
-                                                fk_val.string,
-                                                parent_developer_name.?.string,
-                                            );
-                                        if (matches_id or matches_developer_name) {
-                                            if (sub_query_requires_where_filter(sub_info.query) and
-                                                !self.matches_where(child_rec, sub_info.query, current_env))
-                                            {
-                                                continue;
-                                            }
-                                            try child_records.append(self.arena, child_rec);
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        break;
-                    }
-                }
+                try self.append_soql_sub_query_children(
+                    from_type,
+                    rel_name,
+                    ct,
+                    parent_id,
+                    parent_developer_name,
+                    sub_info.query,
+                    current_env,
+                    &child_records,
+                );
+                try self.ensure_selected_soql_fields(sub_info.query, &child_records);
                 try self.apply_parent_field_lookups(sub_info.query, ct, &child_records);
                 try self.resolve_formula_fields(sub_info.query, &child_records);
                 self.sort_soql_records(sub_info.query, &child_records);
@@ -16564,6 +16348,110 @@ pub const Evaluator = struct {
             child_list.* = .{ .items = child_records };
             try rec.sobject.fields.put(self.arena, rel_name, Value{ .list = child_list });
         }
+    }
+
+    fn append_soql_sub_query_children(
+        self: *Evaluator,
+        parent_type: []const u8,
+        relationship: []const u8,
+        child_type: []const u8,
+        parent_id: []const u8,
+        parent_developer_name: ?Value,
+        sub_query: []const u8,
+        current_env: *Env,
+        child_records: *std.ArrayListUnmanaged(Value),
+    ) !void {
+        if (std.ascii.eqlIgnoreCase(child_type, "Activity")) {
+            try self.append_soql_sub_query_children_for_type(
+                parent_type,
+                relationship,
+                "Task",
+                parent_id,
+                parent_developer_name,
+                sub_query,
+                current_env,
+                child_records,
+            );
+            try self.append_soql_sub_query_children_for_type(
+                parent_type,
+                relationship,
+                "Event",
+                parent_id,
+                parent_developer_name,
+                sub_query,
+                current_env,
+                child_records,
+            );
+            return;
+        }
+        try self.append_soql_sub_query_children_for_type(
+            parent_type,
+            relationship,
+            child_type,
+            parent_id,
+            parent_developer_name,
+            sub_query,
+            current_env,
+            child_records,
+        );
+    }
+
+    fn append_soql_sub_query_children_for_type(
+        self: *Evaluator,
+        parent_type: []const u8,
+        relationship: []const u8,
+        concrete_child_type: []const u8,
+        parent_id: []const u8,
+        parent_developer_name: ?Value,
+        sub_query: []const u8,
+        current_env: *Env,
+        child_records: *std.ArrayListUnmanaged(Value),
+    ) !void {
+        if (std.mem.endsWith(u8, concrete_child_type, "__mdt")) {
+            self.ensure_custom_metadata_loaded(concrete_child_type);
+        }
+        const records = self.store_records_ptr(concrete_child_type) orelse return;
+        const fk_field = self.resolve_sub_query_foreign_key(
+            parent_type,
+            relationship,
+            concrete_child_type,
+        );
+        for (records.items) |child_rec| {
+            if (child_rec != .sobject) continue;
+            const fk_val =
+                utils.sobject_get(&child_rec.sobject.fields, fk_field) orelse continue;
+            if (fk_val != .string) continue;
+            const matches_id = std.ascii.eqlIgnoreCase(fk_val.string, parent_id);
+            const matches_developer_name =
+                parent_developer_name != null and
+                parent_developer_name.? == .string and
+                std.ascii.eqlIgnoreCase(fk_val.string, parent_developer_name.?.string);
+            if (!matches_id and !matches_developer_name) continue;
+            if (sub_query_requires_where_filter(sub_query) and
+                !self.matches_where(child_rec, sub_query, current_env))
+            {
+                continue;
+            }
+            try child_records.append(self.arena, child_rec);
+        }
+    }
+
+    fn resolve_sub_query_foreign_key(
+        self: *Evaluator,
+        parent_type: []const u8,
+        relationship: []const u8,
+        concrete_child_type: []const u8,
+    ) []const u8 {
+        if (self.resolve_custom_child_relationship(parent_type, relationship)) |custom| {
+            if (std.ascii.eqlIgnoreCase(custom.child_type, concrete_child_type) or
+                (std.ascii.eqlIgnoreCase(custom.child_type, "Activity") and
+                    (std.ascii.eqlIgnoreCase(concrete_child_type, "Task") or
+                        std.ascii.eqlIgnoreCase(concrete_child_type, "Event"))))
+            {
+                return custom.fk_field;
+            }
+        }
+        return self.resolve_foreign_key(concrete_child_type, parent_type, relationship);
     }
 
     fn sub_query_requires_where_filter(query: []const u8) bool {
@@ -45488,29 +45376,28 @@ pub const Evaluator = struct {
             .sobject => |sob| {
                 const id = sob.id orelse return;
                 if (!std.ascii.eqlIgnoreCase(sob.type_name, "Task")) return;
-                self.remove_trashed_record(sob.type_name, id);
+                self.mark_trashed_record_hard_deleted(sob.type_name, id);
             },
             .string => |id| {
                 const type_name = self.sobject_type_from_id_or_map(id);
                 if (!std.ascii.eqlIgnoreCase(type_name, "Task")) return;
-                self.remove_trashed_record(type_name, id);
+                self.mark_trashed_record_hard_deleted(type_name, id);
             },
             else => {},
         }
     }
 
-    fn remove_trashed_record(self: *Evaluator, type_name: []const u8, id: []const u8) void {
+    fn mark_trashed_record_hard_deleted(self: *Evaluator, type_name: []const u8, id: []const u8) void {
         const trashed = self.trash.getPtr(type_name) orelse return;
-        var idx: usize = 0;
-        while (idx < trashed.items.len) {
-            const item = trashed.items[idx];
-            if (item == .sobject and item.sobject.id != null and
-                std.ascii.eqlIgnoreCase(item.sobject.id.?, id))
-            {
-                _ = trashed.orderedRemove(idx);
-                continue;
-            }
-            idx += 1;
+        for (trashed.items) |item| {
+            if (item != .sobject or item.sobject.id == null) continue;
+            if (!std.ascii.eqlIgnoreCase(item.sobject.id.?, id)) continue;
+            utils.sobject_put(
+                &item.sobject.fields,
+                self.arena,
+                "__apexgov_hard_deleted",
+                Value{ .boolean = true },
+            ) catch {};
         }
     }
 

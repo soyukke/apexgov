@@ -2750,6 +2750,59 @@ fn write_generic_rollup_metadata_fixture(dir: anytype) !void {
     });
 }
 
+fn write_numeric_child_relationship_metadata_fixture(dir: anytype) !void {
+    const tio = std.testing.io;
+    try dir.createDirPath(tio, "objects/Child__c/fields");
+    try dir.writeFile(tio, .{
+        .sub_path = "objects/Child__c/fields/Parent__c.field-meta.xml",
+        .data =
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+        \\    <fullName>Parent__c</fullName>
+        \\    <referenceTo>Parent__c</referenceTo>
+        \\    <relationshipName>apTasks1</relationshipName>
+        \\    <type>Lookup</type>
+        \\</CustomField>
+        ,
+    });
+}
+
+fn write_activity_lookup_metadata_fixture(dir: anytype) !void {
+    const tio = std.testing.io;
+    try dir.createDirPath(tio, "objects/Activity/fields");
+    try dir.writeFile(tio, .{
+        .sub_path = "objects/Activity/fields/Template__c.field-meta.xml",
+        .data =
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+        \\    <fullName>Template__c</fullName>
+        \\    <deleteConstraint>SetNull</deleteConstraint>
+        \\    <referenceTo>Template__c</referenceTo>
+        \\    <relationshipName>Tasks</relationshipName>
+        \\    <type>Lookup</type>
+        \\</CustomField>
+        ,
+    });
+}
+
+fn write_activity_task_ap_task_lookup_metadata_fixture(dir: anytype) !void {
+    const tio = std.testing.io;
+    try dir.createDirPath(tio, "objects/Activity/fields");
+    try dir.writeFile(tio, .{
+        .sub_path = "objects/Activity/fields/TaskAPTask__c.field-meta.xml",
+        .data =
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+        \\    <fullName>TaskAPTask__c</fullName>
+        \\    <deleteConstraint>SetNull</deleteConstraint>
+        \\    <referenceTo>Template__c</referenceTo>
+        \\    <relationshipName>Tasks</relationshipName>
+        \\    <type>Lookup</type>
+        \\</CustomField>
+        ,
+    });
+}
+
 /// Parent__c の rollup summary フィールド 3 つ (Open/Closed/Total) を書き出す。
 /// `write_generic_rollup_metadata_fixture` が長すぎるので分離した。
 fn write_parent_summary_fields_fixture(dir: anytype) !void {
@@ -12578,6 +12631,376 @@ test "E2E: child relationship subquery ignores From inside field names" {
     try std.testing.expectEqualStrings("1:2", result.value.string);
 }
 
+test "E2E: custom child subquery resolves numeric relationship names case-insensitively" {
+    const alloc = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try write_numeric_child_relationship_metadata_fixture(tmp_dir.dir);
+    const tmp_path = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", alloc);
+    defer alloc.free(tmp_path);
+
+    const source =
+        \\public class NumericChildRelationshipSubqueryTest {
+        \\    public static String test() {
+        \\        Parent__c parentRecord = new Parent__c(Name = 'Acme');
+        \\        insert parentRecord;
+        \\        insert new Child__c(
+        \\            Parent__c = parentRecord.Id,
+        \\            Name = 'First',
+        \\            Index__c = 1
+        \\        );
+        \\        Map<Id, Child__c> childByParentId = new Map<Id, Child__c>();
+        \\        for (Child__c childRecord : [
+        \\            SELECT Id, Parent__c
+        \\            FROM Child__c
+        \\            WHERE Parent__c = :parentRecord.Id
+        \\        ]) {
+        \\            childByParentId.put(childRecord.Parent__c, childRecord);
+        \\        }
+        \\        Parent__c queried = [
+        \\            SELECT Id, (SELECT Id, Parent__c, Index__c FROM APTasks1__r)
+        \\            FROM Parent__c
+        \\            WHERE Id IN :childByParentId.keySet()
+        \\        ];
+        \\        return String.valueOf(queried.APTasks1__r.size());
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "NumericChildRelationshipSubqueryTest",
+        .entry_method = "test",
+        .source_paths = &.{tmp_path},
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("1", result.value.string);
+}
+
+test "E2E: before delete trigger creates dependent records through child subquery" {
+    const alloc = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try write_numeric_child_relationship_metadata_fixture(tmp_dir.dir);
+    const tmp_path = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", alloc);
+    defer alloc.free(tmp_path);
+
+    const source =
+        \\public class BeforeDeleteDependentWork {
+        \\    public static void handle(List<Work__c> oldRows) {
+        \\        Set<Id> controllerIds = new Set<Id>();
+        \\        for (Work__c row : oldRows) {
+        \\            if (row.Child__c != null) controllerIds.add(row.Child__c);
+        \\        }
+        \\        Map<Id, Child__c> childByParentId = new Map<Id, Child__c>();
+        \\        for (Child__c childRecord : [
+        \\            SELECT Id, Parent__c, TaskIndex__c
+        \\            FROM Child__c
+        \\            WHERE Id IN :controllerIds
+        \\        ]) {
+        \\            childByParentId.put(childRecord.Parent__c, childRecord);
+        \\        }
+        \\        for (Parent__c parentRecord : [
+        \\            SELECT Id, (
+        \\                SELECT Id, Parent__c, TaskIndex__c, Controller__c
+        \\                FROM APTasks1__r
+        \\            )
+        \\            FROM Parent__c
+        \\            WHERE Id IN :childByParentId.keySet()
+        \\        ]) {
+        \\            Child__c controller = childByParentId.get(parentRecord.Id);
+        \\            createDependent(parentRecord.APTasks1__r, controller.TaskIndex__c);
+        \\        }
+        \\    }
+        \\    private static void createDependent(List<Child__c> children, Decimal removedIndex) {
+        \\        Set<Id> closed = new Set<Id>();
+        \\        for (Child__c childRecord : children) {
+        \\            if (childRecord.TaskIndex__c == removedIndex) closed.add(childRecord.Id);
+        \\        }
+        \\        List<Work__c> rows = new List<Work__c>();
+        \\        for (Child__c childRecord : [
+        \\            SELECT Id
+        \\            FROM Child__c
+        \\            WHERE Controller__c IN :closed
+        \\        ]) {
+        \\            rows.add(new Work__c(Name = 'Generated', Child__c = childRecord.Id));
+        \\        }
+        \\        Database.DMLOptions options = new Database.DMLOptions();
+        \\        options.EmailHeader.triggerUserEmail = true;
+        \\        Database.insert(rows, options);
+        \\    }
+        \\}
+        \\trigger BeforeDeleteDependentWorkTrigger on Work__c (before delete) {
+        \\    BeforeDeleteDependentWork.handle(Trigger.old);
+        \\}
+        \\public class BeforeDeleteDependentWorkTest {
+        \\    public static String test() {
+        \\        Parent__c parentRecord = new Parent__c(Name = 'Parent');
+        \\        insert parentRecord;
+        \\        Child__c first = new Child__c(
+        \\            Parent__c = parentRecord.Id,
+        \\            Name = 'First',
+        \\            TaskIndex__c = 0
+        \\        );
+        \\        insert first;
+        \\        Child__c second = new Child__c(
+        \\            Parent__c = parentRecord.Id,
+        \\            Name = 'Second',
+        \\            Controller__c = first.Id,
+        \\            TaskIndex__c = 1
+        \\        );
+        \\        insert second;
+        \\        Work__c work = new Work__c(Name = 'Original', Child__c = first.Id);
+        \\        insert work;
+        \\        delete work;
+        \\        return String.valueOf([
+        \\            SELECT COUNT()
+        \\            FROM Work__c
+        \\            WHERE Child__c = :second.Id
+        \\        ]);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "BeforeDeleteDependentWorkTest",
+        .entry_method = "test",
+        .source_paths = &.{tmp_path},
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("1", result.value.string);
+}
+
+test "E2E: Task lookup delete query with trigger oldMap keySet preserves nonmatching tasks" {
+    const alloc = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try write_activity_lookup_metadata_fixture(tmp_dir.dir);
+    const tmp_path = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", alloc);
+    defer alloc.free(tmp_path);
+
+    const source =
+        \\trigger TemplateDeleteProbeTrigger on Template__c (before delete) {
+        \\    Database.delete([
+        \\        SELECT Id
+        \\        FROM Task
+        \\        WHERE Template__c IN :Trigger.oldMap.keySet()
+        \\        AND IsClosed = FALSE
+        \\        AND IsDeleted = FALSE
+        \\    ]);
+        \\}
+        \\public class TemplateDeleteProbeTest {
+        \\    public static String test() {
+        \\        Template__c first = new Template__c(Name = 'First');
+        \\        Template__c second = new Template__c(Name = 'Second');
+        \\        insert new List<Template__c>{ first, second };
+        \\        insert new Task(Subject = 'Keep', Template__c = second.Id);
+        \\        delete first;
+        \\        Integer activeSecond = [
+        \\            SELECT COUNT()
+        \\            FROM Task
+        \\            WHERE Template__c = :second.Id
+        \\        ];
+        \\        Integer allSecond = [
+        \\            SELECT COUNT()
+        \\            FROM Task
+        \\            WHERE Template__c = :second.Id
+        \\            ALL ROWS
+        \\        ];
+        \\        return String.valueOf(activeSecond) + ':' + String.valueOf(allSecond);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "TemplateDeleteProbeTest",
+        .entry_method = "test",
+        .source_paths = &.{tmp_path},
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("1:1", result.value.string);
+}
+
+test "E2E: Task lookup delete query with map parameter keySet preserves nonmatching tasks" {
+    const alloc = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try write_activity_lookup_metadata_fixture(tmp_dir.dir);
+    const tmp_path = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", alloc);
+    defer alloc.free(tmp_path);
+
+    const source =
+        \\public class TemplateDeleteProbeHandler {
+        \\    public static void handle(Map<Id, Template__c> oldRowsById) {
+        \\        Database.delete([
+        \\            SELECT Id
+        \\            FROM Task
+        \\            WHERE Template__c IN :oldRowsById.keyset()
+        \\            AND IsClosed = FALSE
+        \\            AND IsDeleted = FALSE
+        \\        ]);
+        \\    }
+        \\}
+        \\trigger TemplateDeleteProbeTrigger on Template__c (before delete) {
+        \\    TemplateDeleteProbeHandler.handle(Trigger.oldMap);
+        \\}
+        \\public class TemplateDeleteProbeTest {
+        \\    public static String test() {
+        \\        Template__c first = new Template__c(Name = 'First');
+        \\        Template__c second = new Template__c(Name = 'Second');
+        \\        insert new List<Template__c>{ first, second };
+        \\        insert new Task(Subject = 'Keep', Template__c = second.Id);
+        \\        delete first;
+        \\        Integer activeSecond = [
+        \\            SELECT COUNT()
+        \\            FROM Task
+        \\            WHERE Template__c = :second.Id
+        \\        ];
+        \\        Integer allSecond = [
+        \\            SELECT COUNT()
+        \\            FROM Task
+        \\            WHERE Template__c = :second.Id
+        \\            ALL ROWS
+        \\        ];
+        \\        return String.valueOf(activeSecond) + ':' + String.valueOf(allSecond);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "TemplateDeleteProbeTest",
+        .entry_method = "test",
+        .source_paths = &.{tmp_path},
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("1:1", result.value.string);
+}
+
+test "E2E: TaskAPTask lookup delete query preserves nonmatching tasks" {
+    const alloc = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try write_activity_task_ap_task_lookup_metadata_fixture(tmp_dir.dir);
+    const tmp_path = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", alloc);
+    defer alloc.free(tmp_path);
+
+    const source =
+        \\public class TemplateDeleteProbeHandler {
+        \\    public static void handle(Map<Id, Template__c> oldRowsById) {
+        \\        Database.delete([
+        \\            SELECT Id
+        \\            FROM Task
+        \\            WHERE TaskAPTask__c IN :oldRowsById.keyset()
+        \\            AND IsClosed = FALSE
+        \\            AND IsDeleted = FALSE
+        \\        ]);
+        \\    }
+        \\}
+        \\trigger TemplateDeleteProbeTrigger on Template__c (before delete) {
+        \\    TemplateDeleteProbeHandler.handle(Trigger.oldMap);
+        \\}
+        \\public class TemplateDeleteProbeTest {
+        \\    public static String test() {
+        \\        Template__c first = new Template__c(Name = 'First');
+        \\        Template__c second = new Template__c(Name = 'Second');
+        \\        insert new List<Template__c>{ first, second };
+        \\        insert new Task(Subject = 'Keep', TaskAPTask__c = second.Id);
+        \\        delete first;
+        \\        Integer activeSecond = [
+        \\            SELECT COUNT()
+        \\            FROM Task
+        \\            WHERE TaskAPTask__c = :second.Id
+        \\        ];
+        \\        Integer allSecond = [
+        \\            SELECT COUNT()
+        \\            FROM Task
+        \\            WHERE TaskAPTask__c = :second.Id
+        \\            ALL ROWS
+        \\        ];
+        \\        return String.valueOf(activeSecond) + ':' + String.valueOf(allSecond);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "TemplateDeleteProbeTest",
+        .entry_method = "test",
+        .source_paths = &.{tmp_path},
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("1:1", result.value.string);
+}
+
+test "E2E: Activity child subquery hydrates Task computed fields" {
+    const alloc = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try write_activity_task_ap_task_lookup_metadata_fixture(tmp_dir.dir);
+    const tmp_path = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", alloc);
+    defer alloc.free(tmp_path);
+
+    const source =
+        \\public class ActivityChildSubqueryComputedFieldTest {
+        \\    public static String test() {
+        \\        Template__c templateRecord = new Template__c(Name = 'Template');
+        \\        insert templateRecord;
+        \\        insert new Task(
+        \\            Subject = 'Done',
+        \\            Status = 'Completed',
+        \\            TaskAPTask__c = templateRecord.Id
+        \\        );
+        \\        Template__c queried = [
+        \\            SELECT Id, (SELECT Id, IsClosed FROM Tasks__r)
+        \\            FROM Template__c
+        \\            WHERE Id = :templateRecord.Id
+        \\        ];
+        \\        return String.valueOf(queried.Tasks__r.size()) + ':' +
+        \\            String.valueOf(queried.Tasks__r[0].IsClosed);
+        \\    }
+        \\}
+    ;
+    const result = try run(std.testing.allocator, std.testing.io, source, .{
+        .entry_class = "ActivityChildSubqueryComputedFieldTest",
+        .entry_method = "test",
+        .source_paths = &.{tmp_path},
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("1:true", result.value.string);
+}
+
+test "E2E: hard-deleted Task remains non-undeletable in recycle bin tombstone" {
+    const source =
+        \\public class HardDeletedTaskTombstoneTest {
+        \\    public static String test() {
+        \\        Task taskRecord = new Task(Subject = 'Delete');
+        \\        insert taskRecord;
+        \\        delete taskRecord;
+        \\        Database.emptyRecycleBin(taskRecord);
+        \\        Integer allRows = [
+        \\            SELECT COUNT()
+        \\            FROM Task
+        \\            WHERE Id = :taskRecord.Id
+        \\            ALL ROWS
+        \\        ];
+        \\        String caught = 'none';
+        \\        try {
+        \\            undelete taskRecord;
+        \\        } catch (DmlException e) {
+        \\            caught = 'dml';
+        \\        }
+        \\        return String.valueOf(allRows) + ':' + caught;
+        \\    }
+        \\}
+    ;
+    try expect_entry_string(source, "HardDeletedTaskTombstoneTest", "test", "1:dml");
+}
+
 test "E2E: Case and Contract inserts populate auto-number fields" {
     const source =
         \\public class AutoNumberInsertProbe {
@@ -12741,6 +13164,129 @@ test "E2E: SOQL parent relationship field in WHERE" {
         \\}
     ;
     try expect_entry_string(source, "SoqlParentRefTest", "test", "1");
+}
+
+test "E2E: SOQL IN bind accepts map keySet call expressions" {
+    const source =
+        \\public class SoqlInMapKeySetProbe {
+        \\    public static String test() {
+        \\        Account accountRecord = new Account(Name = 'Acme');
+        \\        insert accountRecord;
+        \\        Map<Id, Account> recordsById = new Map<Id, Account>();
+        \\        recordsById.put(accountRecord.Id, accountRecord);
+        \\        Integer matched = [
+        \\            SELECT COUNT()
+        \\            FROM Account
+        \\            WHERE Id IN :recordsById.keyset()
+        \\        ];
+        \\        return String.valueOf(matched);
+        \\    }
+        \\}
+    ;
+    try expect_entry_string(source, "SoqlInMapKeySetProbe", "test", "1");
+}
+
+test "E2E: SOQL IN bind accepts map keySet call expressions from parameters" {
+    const source =
+        \\public class SoqlInMapKeySetParamProbe {
+        \\    public static Integer countMatches(Map<Id, Account> recordsById) {
+        \\        return [
+        \\            SELECT COUNT()
+        \\            FROM Account
+        \\            WHERE Id IN :recordsById.keyset()
+        \\        ];
+        \\    }
+        \\    public static String test() {
+        \\        Account accountRecord = new Account(Name = 'Acme');
+        \\        insert accountRecord;
+        \\        Map<Id, Account> recordsById = new Map<Id, Account>();
+        \\        recordsById.put(accountRecord.Id, accountRecord);
+        \\        return String.valueOf(countMatches(recordsById));
+        \\    }
+        \\}
+    ;
+    try expect_entry_string(source, "SoqlInMapKeySetParamProbe", "test", "1");
+}
+
+test "E2E: DML delete accepts SOQL query results filtered by IN bind" {
+    const source =
+        \\public class DeleteQueryInBindProbe {
+        \\    public static String test() {
+        \\        Account accountRecord = new Account(Name = 'Acme');
+        \\        insert accountRecord;
+        \\        Contact contactRecord = new Contact(
+        \\            LastName = 'Tester',
+        \\            AccountId = accountRecord.Id
+        \\        );
+        \\        insert contactRecord;
+        \\        Set<Id> accountIds = new Set<Id>{ accountRecord.Id };
+        \\        delete [
+        \\            SELECT Id
+        \\            FROM Contact
+        \\            WHERE AccountId IN :accountIds
+        \\        ];
+        \\        return String.valueOf([SELECT COUNT() FROM Contact]);
+        \\    }
+        \\}
+    ;
+    try expect_entry_string(source, "DeleteQueryInBindProbe", "test", "0");
+}
+
+test "E2E: Trigger.operationType switches inside helper methods" {
+    const source =
+        \\public class TriggerOperationSwitchHelper {
+        \\    public static Integer beforeDeletes = 0;
+        \\    public static void handle(System.TriggerOperation op) {
+        \\        switch on op {
+        \\            when BEFORE_DELETE {
+        \\                beforeDeletes++;
+        \\            }
+        \\            when else {
+        \\            }
+        \\        }
+        \\    }
+        \\}
+        \\trigger TriggerOperationSwitchProbeTrigger on Account (before delete) {
+        \\    TriggerOperationSwitchHelper.handle(Trigger.operationType);
+        \\}
+        \\public class TriggerOperationSwitchProbe {
+        \\    public static String test() {
+        \\        Account accountRecord = new Account(Name = 'Acme');
+        \\        insert accountRecord;
+        \\        delete accountRecord;
+        \\        return String.valueOf(TriggerOperationSwitchHelper.beforeDeletes);
+        \\    }
+        \\}
+    ;
+    try expect_entry_string(source, "TriggerOperationSwitchProbe", "test", "1");
+}
+
+test "E2E: before delete trigger can Database.insert records with DmlOptions" {
+    const source =
+        \\public class BeforeDeleteDmlOptionsProbe {
+        \\    public static void createContacts(List<Account> oldRows) {
+        \\        List<Contact> contacts = new List<Contact>();
+        \\        for (Account row : oldRows) {
+        \\            contacts.add(new Contact(LastName = 'Generated'));
+        \\        }
+        \\        Database.DMLOptions options = new Database.DMLOptions();
+        \\        options.EmailHeader.triggerUserEmail = true;
+        \\        Database.insert(contacts, options);
+        \\    }
+        \\}
+        \\trigger BeforeDeleteDmlOptionsProbeTrigger on Account (before delete) {
+        \\    BeforeDeleteDmlOptionsProbe.createContacts(Trigger.old);
+        \\}
+        \\public class BeforeDeleteDmlOptionsProbeTest {
+        \\    public static String test() {
+        \\        Account accountRecord = new Account(Name = 'Acme');
+        \\        insert accountRecord;
+        \\        delete accountRecord;
+        \\        return String.valueOf([SELECT COUNT() FROM Contact]);
+        \\    }
+        \\}
+    ;
+    try expect_entry_string(source, "BeforeDeleteDmlOptionsProbeTest", "test", "1");
 }
 
 test "E2E: null != empty string is true" {
@@ -14566,8 +15112,8 @@ test "E2E: Schema custom object getSObjectType supports describe key prefix" {
     const source =
         \\public class SchemaCustomObjectTokenProbe {
         \\    public static String test() {
-        \\        return Schema.APTask__c.getSObjectType().getDescribe().getKeyPrefix()
-        \\            + ':' + Schema.APTask__c.getDescribe().getName();
+        \\        return Schema.Widget__c.getSObjectType().getDescribe().getKeyPrefix()
+        \\            + ':' + Schema.Widget__c.getDescribe().getName();
         \\    }
         \\}
     ;
@@ -14577,7 +15123,7 @@ test "E2E: Schema custom object getSObjectType supports describe key prefix" {
     });
     defer result.deinit();
 
-    try std.testing.expectEqualStrings("atU:APTask__c", result.value.string);
+    try std.testing.expectEqualStrings("aLA:Widget__c", result.value.string);
 }
 
 test "E2E: cached DescribeSObjectResult record type info survives selective map clears" {
@@ -21034,6 +21580,33 @@ test "E2E: SObjectType newSObject two-arg overload treats first arg as RecordTyp
     );
 }
 
+test "E2E: RecordType SOQL mirrors describe record types for queried standard object" {
+    const source =
+        \\public class RecordTypeSoqlDescribeProbe {
+        \\    public static String test() {
+        \\        Integer countValue = [
+        \\            SELECT COUNT()
+        \\            FROM RecordType
+        \\            WHERE SObjectType = 'Task' AND IsActive = TRUE
+        \\        ];
+        \\        List<RecordType> records = [
+        \\            SELECT Id, Name
+        \\            FROM RecordType
+        \\            WHERE SObjectType = 'Task' AND IsActive = TRUE
+        \\            ORDER BY Name ASC
+        \\        ];
+        \\        return String.valueOf(countValue) + ':' + records[0].Name + ':' + records[1].Name;
+        \\    }
+        \\}
+    ;
+    try expect_entry_string(
+        source,
+        "RecordTypeSoqlDescribeProbe",
+        "test",
+        "2:Default:Master",
+    );
+}
+
 test "E2E: Report SOQL is a known standard object" {
     const source =
         \\public class ReportQueryKnownTypeTest {
@@ -21443,7 +22016,7 @@ test "E2E: System.Location.newInstance + getDistance match real-platform values"
 }
 
 test "E2E: Schema describe stubs cover tabs and common standards" {
-    // Anonymized probe: ActionPlansV4's SectionHeader utility iterates
+    // Anonymized probe: package UI utility code iterates
     //   for (Schema.DescribeTabSetResult tsr : Schema.describeTabs()) {...}
     // before falling back to a default icon, and queries
     //   Schema.getGlobalDescribe().get(name.toLowerCase()).getDescribe().isCustom()
@@ -21472,7 +22045,7 @@ test "E2E: Schema describe stubs cover tabs and common standards" {
 }
 
 test "E2E: User insert defaults IsActive to true and WHERE PermissionsX = TRUE matches" {
-    // Anonymized probe: ActionPlansV4's @TestSetup queries
+    // Anonymized probe: package @TestSetup code queries
     //   SELECT ... FROM Profile WHERE PermissionsModifyAllData = TRUE AND UserType = 'Standard'
     // and then inserts a User without setting IsActive, later asserting
     //   SELECT ... FROM User WHERE Email = 'x' AND IsActive = TRUE
@@ -21553,7 +22126,7 @@ test "E2E: SUM aggregate SOQL with ALL ROWS sums active store + recycle bin" {
 }
 
 test "E2E: COUNT() ALL ROWS includes trashed records, not just the active store" {
-    // Anonymized probe: ActionPlansV4's trigger tests assert that a deleted
+    // Anonymized probe: trigger tests assert that a deleted
     // object's dependent records still live in the recycle bin by running
     //   SELECT COUNT() FROM X WHERE IsDeleted = TRUE ALL ROWS
     // Our plain-COUNT path only walked `self.store`, so the count was 0
@@ -21577,7 +22150,7 @@ test "E2E: COUNT() ALL ROWS includes trashed records, not just the active store"
 }
 
 test "E2E: AFTER_UNDELETE addError rolls back undelete and raises DmlException" {
-    // Anonymized probe: ActionPlansV4-style trigger uses addError() in
+    // Anonymized probe: package trigger code uses addError() in
     // AFTER_UNDELETE to abort the restore when a platform condition fails.
     // Real Apex raises a DmlException and rolls back so a retry can undelete
     // again. Before: our undelete returned cleanly and the stale `errors`
