@@ -41821,8 +41821,7 @@ pub const Evaluator = struct {
         }
         try self.init_new_user_class_fields(class_decl, instance);
 
-        var ctor_eval = try self.evaluate_new_constructor_args(ne, current_env);
-        try self.normalize_npsp_address_constructor_args(class_decl.name, &ctor_eval.args);
+        const ctor_eval = try self.evaluate_new_constructor_args(ne, current_env);
         const prev_ctor_hints = self.cast_type_hints;
         self.cast_type_hints = ctor_eval.hints.items;
         defer self.cast_type_hints = prev_ctor_hints;
@@ -41888,18 +41887,6 @@ pub const Evaluator = struct {
             std.mem.endsWith(u8, class_decl.name, "Exception");
         if (!is_exception) return;
         try instance.fields.put(self.arena, "message", args[0]);
-    }
-
-    fn normalize_npsp_address_constructor_args(
-        self: *Evaluator,
-        class_name: []const u8,
-        args: *std.ArrayListUnmanaged(Value),
-    ) !void {
-        if (!std.ascii.eqlIgnoreCase(class_name, "NPSP_Address")) return;
-        if (args.items.len != 1 or args.items[0] != .null_val) return;
-        const sob = try self.arena.create(types.SObject);
-        sob.* = .{ .type_name = "Address__c" };
-        args.items[0] = Value{ .sobject = sob };
     }
 
     fn new_user_exception_without_constructor(

@@ -21197,6 +21197,38 @@ test "E2E: overloaded constructor uses declared local type for custom class argu
     try expect_entry_string(source, "ConstructorDeclaredTypeProbe", "test", "expected:expected");
 }
 
+test "E2E: overloaded constructor uses declared local type for typed null SObject arguments" {
+    const source =
+        \\public class ConstructorTypedNullSObjectProbe {
+        \\    public class Wrapper {
+        \\        public String branch;
+        \\        public Account accountValue;
+        \\        public Wrapper(Account accountRecord) {
+        \\            this.branch = 'account';
+        \\            this.accountValue = accountRecord;
+        \\        }
+        \\        public Wrapper(Contact contactRecord) {
+        \\            this.branch = 'contact';
+        \\        }
+        \\        public Wrapper(String textValue) {
+        \\            this.branch = 'string';
+        \\        }
+        \\    }
+        \\    public static String test() {
+        \\        Account accountRecord = null;
+        \\        Wrapper wrapper = new Wrapper(accountRecord);
+        \\        return wrapper.branch + ':' + String.valueOf(wrapper.accountValue == null);
+        \\    }
+        \\}
+    ;
+    try expect_entry_string(
+        source,
+        "ConstructorTypedNullSObjectProbe",
+        "test",
+        "account:true",
+    );
+}
+
 test "E2E: Type.forName SObject + empty list DML integration" {
     const source =
         \\public class IntegrationTest {
