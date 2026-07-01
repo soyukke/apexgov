@@ -5781,6 +5781,7 @@ fn normalize_boolean_field_assignment(ctx: *BuiltinContext, value: Value) !Value
 fn normalize_integer_field_assignment(ctx: *BuiltinContext, value: Value) !Value {
     return switch (value) {
         .integer => value,
+        .long => value,
         .double => |d| Value{ .integer = @intFromFloat(d) },
         .string => |s| blk: {
             const parsed = std.fmt.parseInt(i64, s, 10) catch {
@@ -5799,6 +5800,7 @@ fn normalize_integer_field_assignment(ctx: *BuiltinContext, value: Value) !Value
 fn normalize_decimal_field_assignment(ctx: *BuiltinContext, value: Value) !Value {
     return switch (value) {
         .integer => value,
+        .long => value,
         .double => value,
         .string => |s| blk: {
             const parsed = std.fmt.parseFloat(f64, s) catch {
@@ -10152,6 +10154,33 @@ test "String.valueOf converts integer" {
     const result = try dispatch_static(&ctx, "String", "valueOf", &.{Value{ .integer = 42 }});
     try std.testing.expect(result != null);
     try std.testing.expectEqualStrings("42", result.?.string);
+}
+
+test "numeric field assignment accepts Long values" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var stdout: std.ArrayListUnmanaged(u8) = .empty;
+    var pending_exception: ?Value = null;
+    var ctx = BuiltinContext{
+        .arena = arena.allocator(),
+        .stdout = &stdout,
+        .pending_exception = &pending_exception,
+    };
+
+    const decimal_value = try normalize_decimal_field_assignment(
+        &ctx,
+        Value{ .long = 1_777_593_600_000 },
+    );
+    try std.testing.expect(decimal_value == .long);
+    try std.testing.expectEqual(@as(i64, 1_777_593_600_000), decimal_value.long);
+
+    const integer_value = try normalize_integer_field_assignment(
+        &ctx,
+        Value{ .long = 42 },
+    );
+    try std.testing.expect(integer_value == .long);
+    try std.testing.expectEqual(@as(i64, 42), integer_value.long);
 }
 
 test "String.escapeSingleQuotes escapes embedded quotes" {
