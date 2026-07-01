@@ -34282,7 +34282,7 @@ pub const Evaluator = struct {
         }
         if (try self.eval_install_context_instance_method(obj, method)) |result| return result;
         if (try self.eval_version_instance_method(obj, method, args)) |result| return result;
-        if (try self.eval_npsp_opp_rollup_instance_method(obj, method, args)) |result| {
+        if (try self.eval_npsp_legacy_opp_rollup_map_instance_method(obj, method, args)) |result| {
             return result;
         }
         if (try self.eval_time_instance_method(obj, method)) |result| return result;
@@ -36293,7 +36293,7 @@ pub const Evaluator = struct {
         return status == .string and std.ascii.indexOfIgnoreCase(status.string, "Paused") != null;
     }
 
-    fn eval_npsp_opp_rollup_instance_method(
+    fn eval_npsp_legacy_opp_rollup_map_instance_method(
         self: *Evaluator,
         obj: Value,
         method: []const u8,
@@ -36302,49 +36302,20 @@ pub const Evaluator = struct {
         if (!(obj == .object and std.ascii.eqlIgnoreCase(obj.object.class_name, "RLLP_OppRollup"))) {
             return null;
         }
-        if (std.ascii.eqlIgnoreCase(method, "rollupAll")) {
-            try self.refresh_all_npsp_primary_contact_opportunity_rollups();
-            if (self.npsp_soft_credit_rollups_enabled()) {
-                try self.run_npsp_soft_credit_rollup_batch_side_effect(true);
-            }
-            return Value.void_val;
-        }
+        if (args.len == 0 or args[0] != .map) return null;
         if (std.ascii.eqlIgnoreCase(method, "rollupContacts")) {
-            if (self.npsp_opp_rollup_customizable_enabled(obj.object)) {
-                _ = try self.create_async_apex_job("Queueable", "CRLP_RollupQueueable", null);
-            }
-            if (args.len > 0) {
-                try self.refresh_npsp_rollup_contacts_from_value(args[0]);
-            } else {
-                try self.refresh_all_npsp_primary_contact_opportunity_rollups();
-            }
+            try self.refresh_npsp_rollup_contacts_from_value(args[0]);
             return Value.void_val;
         }
         if (std.ascii.eqlIgnoreCase(method, "rollupAccounts")) {
-            if (self.npsp_opp_rollup_customizable_enabled(obj.object)) {
-                _ = try self.create_async_apex_job("Queueable", "CRLP_RollupQueueable", null);
-            }
-            if (args.len > 0) {
-                try self.refresh_npsp_rollup_accounts_from_value(args[0]);
-            }
+            try self.refresh_npsp_rollup_accounts_from_value(args[0]);
             return Value.void_val;
         }
         if (std.ascii.eqlIgnoreCase(method, "rollupHouseholds")) {
-            if (args.len > 0) {
-                try self.refresh_npsp_rollup_households_from_value(args[0]);
-            }
+            try self.refresh_npsp_rollup_households_from_value(args[0]);
             return Value.void_val;
         }
         return null;
-    }
-
-    fn npsp_opp_rollup_customizable_enabled(
-        self: *Evaluator,
-        obj: *types.ObjectInstance,
-    ) bool {
-        _ = self;
-        const enabled = obj.fields.get("isCustomizableRollupsEnabled") orelse return false;
-        return enabled == .boolean and enabled.boolean;
     }
 
     fn npsp_deceased_batch_clear_deceased_accounts(self: *Evaluator) !void {
