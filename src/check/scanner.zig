@@ -193,9 +193,9 @@ fn contains_class_decl(line: []const u8) bool {
     return false;
 }
 
-/// SOQL for ループ (`for (X : [SELECT ...])`) かどうかを判定する。
-/// `Database.query()` 等は対象外（チャンク取得されないため）。
-fn is_soql_for_loop(trimmed: []const u8) bool {
+/// SOQL を iterable にする for ループかどうかを判定する。
+/// 例: `for (X : [SELECT ...])`, `for (X : Database.query(q))`
+fn is_soql_iterable_for_loop(trimmed: []const u8) bool {
     const lower = blk: {
         var buf: [512]u8 = undefined;
         if (trimmed.len > buf.len) break :blk trimmed;
@@ -210,7 +210,10 @@ fn is_soql_for_loop(trimmed: []const u8) bool {
     const colon_pos = std.mem.indexOfScalar(u8, lower, ':') orelse return false;
     const after_colon = lower[colon_pos + 1 ..];
     const after_trimmed = std.mem.trimStart(u8, after_colon, " \t");
-    return std.mem.startsWith(u8, after_trimmed, "[select ");
+    return std.mem.startsWith(u8, after_trimmed, "[select ") or
+        std.mem.startsWith(u8, after_trimmed, "database.query(") or
+        std.mem.startsWith(u8, after_trimmed, "database.querywithbinds(") or
+        std.mem.startsWith(u8, after_trimmed, "database.getquerylocator(");
 }
 
 /// 全検出器を実行し、各操作の直接検出カウント (0 or 1) を返す。
@@ -476,7 +479,11 @@ fn emit_ag002_to_ag011(
     // SOQL for ループ除外: `for (X : [SELECT ...])` のループ開始行では
     // iterable の SOQL はループ本体内の SOQL ではない（1回だけ発行される）。
     // ただしネスト（loop_level > 0）の場合は外側ループ内の SOQL なので除外しない。
-    if (loop_started and direct.soql > 0 and loop_level == 0 and is_soql_for_loop(trimmed)) {
+    if (loop_started and
+        direct.soql > 0 and
+        loop_level == 0 and
+        is_soql_iterable_for_loop(trimmed))
+    {
         direct.soql = 0;
     }
 

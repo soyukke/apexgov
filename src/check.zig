@@ -1348,6 +1348,30 @@ test "SOQL for loop does not trigger AG002" {
     try std.testing.expect(find_finding_by_rule(findings.items, "AG009") == null);
 }
 
+test "Database.query iterable for loop does not trigger AG002" {
+    const source =
+        \\public with sharing class DynamicQueryForLoopService {
+        \\    public static Integer countMatches(String query) {
+        \\        Integer count = 0;
+        \\        for (SObject record : Database.query(query)) {
+        \\            count++;
+        \\        }
+        \\        return count;
+        \\    }
+        \\}
+    ;
+
+    var findings = try run_check_on_temp_source(
+        std.testing.allocator,
+        source,
+        config.Config.defaults(),
+    );
+    defer model.deinit_findings(std.testing.allocator, &findings);
+
+    try std.testing.expect(find_finding_by_rule(findings.items, "AG002") == null);
+    try std.testing.expect(find_finding_by_rule(findings.items, "AG009") == null);
+}
+
 test "nested SOQL for loop inside outer loop triggers AG002" {
     const source =
         \\public with sharing class NestedSoqlForService {
@@ -1355,6 +1379,29 @@ test "nested SOQL for loop inside outer loop triggers AG002" {
         \\        for (Account acct : [SELECT Id FROM Account]) {
         \\            for (Contact c : [SELECT Id FROM Contact WHERE AccountId = :acct.Id]) {
         \\                System.debug(c);
+        \\            }
+        \\        }
+        \\    }
+        \\}
+    ;
+
+    var findings = try run_check_on_temp_source(
+        std.testing.allocator,
+        source,
+        config.Config.defaults(),
+    );
+    defer model.deinit_findings(std.testing.allocator, &findings);
+
+    try std.testing.expect(find_finding_by_rule(findings.items, "AG002") != null);
+}
+
+test "nested Database.query iterable for loop inside outer loop triggers AG002" {
+    const source =
+        \\public with sharing class NestedDynamicQueryForService {
+        \\    public static void run(List<String> queries) {
+        \\        for (String query : queries) {
+        \\            for (SObject record : Database.query(query)) {
+        \\                System.debug(record);
         \\            }
         \\        }
         \\    }
