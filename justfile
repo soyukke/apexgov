@@ -65,6 +65,39 @@ build-fast:
 lsp-smoke: build-fast
     node tools/lsp_smoke.js --server ./zig-out/bin/apexgov
 
+# VS Code extension package
+vsce-package:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd editors/vscode
+    version="$(node -p "require('./package.json').version")"
+    npx vsce package --out "apexgov-$version.vsix"
+
+# Verify Visual Studio Marketplace publishing auth via Azure CLI / Entra.
+vsce-azure-verify:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    azure_dir="${AZURE_CONFIG_DIR:-$HOME/.local/state/azure/apexgov-vsce}"
+    mkdir -p "$azure_dir"
+    chmod 700 "$azure_dir"
+    cd editors/vscode
+    publisher="$(node -p "require('./package.json').publisher")"
+    AZURE_CONFIG_DIR="$azure_dir" npx vsce verify-pat "$publisher" --azure-credential
+
+# Publish the current VSIX via Azure CLI / Entra. Run `az-apexgov-login` first.
+vsce-azure-publish: vsce-package
+    #!/usr/bin/env bash
+    set -euo pipefail
+    azure_dir="${AZURE_CONFIG_DIR:-$HOME/.local/state/azure/apexgov-vsce}"
+    mkdir -p "$azure_dir"
+    chmod 700 "$azure_dir"
+    cd editors/vscode
+    version="$(node -p "require('./package.json').version")"
+    publisher="$(node -p "require('./package.json').publisher")"
+    vsix="apexgov-$version.vsix"
+    AZURE_CONFIG_DIR="$azure_dir" npx vsce verify-pat "$publisher" --azure-credential
+    AZURE_CONFIG_DIR="$azure_dir" npx vsce publish --azure-credential --packagePath "$vsix"
+
 # 単一リポジトリで interpret test を実行 (time -l で計測)
 # usage: just bench NebulaLogger
 bench REPO: build-fast
