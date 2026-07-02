@@ -611,15 +611,22 @@ pub const Server = struct {
             try self.transport.send_response(self.allocator, id, null);
             return;
         };
+        const cached = try self.store.ensure_parsed(ctx.uri) orelse {
+            try self.transport.send_response(self.allocator, id, null);
+            return;
+        };
         const br = try self.store.ensure_bound(ctx.uri) orelse {
             try self.transport.send_response(self.allocator, id, null);
             return;
         };
         const doc = self.store.get(ctx.uri) orelse return;
-        const result = try signature_help_mod.get_signature_help(
+        const result = try signature_help_mod.get_signature_help_cross_file(
             br,
+            cached.tokens,
             doc.text,
+            ctx.uri,
             ctx.offset,
+            &self.store,
             self.allocator,
         );
         try self.transport.send_response(self.allocator, id, result);
@@ -662,15 +669,22 @@ pub const Server = struct {
             try self.transport.send_response(self.allocator, id, null);
             return;
         };
+        const cached = try self.store.ensure_parsed(ctx.uri) orelse {
+            try self.transport.send_response(self.allocator, id, null);
+            return;
+        };
         const br = try self.store.ensure_bound(ctx.uri) orelse {
             try self.transport.send_response(self.allocator, id, null);
             return;
         };
         const doc = self.store.get(ctx.uri) orelse return;
-        const hl = try document_highlight_mod.get_highlights(
+        const hl = try document_highlight_mod.get_highlights_cross_file(
             br,
+            cached.tokens,
             doc.text,
+            ctx.uri,
             ctx.offset,
+            &self.store,
             self.allocator,
         );
         defer self.allocator.free(hl);

@@ -138,6 +138,7 @@ async function main() {
     await checkReferences(client, docs, report);
     await checkHover(client, docs, report);
     await checkCompletion(client, docs, report);
+    await checkLanguageServices(client, docs, report);
     await checkWorkspaceSymbol(client, report);
     await checkRename(client, docs, report);
     await checkDiagnosticsAndCodeAction(client, docs, report);
@@ -159,17 +160,28 @@ function syntheticDocuments() {
       text: [
         "public class Foo {",
         "    private Integer recordCount;",
+        "    public static Integer staticCount;",
+        "    public class Inner {",
+        "        public void nestedRun() {",
+        "            nestedHelper();",
+        "        }",
+        "        private void nestedHelper() {}",
+        "    }",
         "    public void run(Id recordId, List<SObject> records) {",
         "        Integer localValue = 1;",
         "        Integer copy = localValue;",
         "        this.recordCount = localValue;",
-        "        helper();",
-        "        this.helper();",
-        "        Foo.helper();",
+        "        recordCount = copy;",
+        "        Foo.staticCount = this.recordCount;",
+        "        helper('local');",
+        "        this.helper('this');",
+        "        Foo.helper('qualified');",
         "        recordId.getSObjectType();",
         "        records[0]?.getSObjectType();",
         "        Account.getSObjectType();",
         "        Schema.getGlobalDescribe();",
+        "        Type dynamicMapType = Type.forName('Map<Id,' + String.valueOf(recordId) + '>');",
+        "        System.debug(dynamicMapType);",
         "    }",
         "    /**",
         "     * Computes a value.",
@@ -187,6 +199,7 @@ function syntheticDocuments() {
         "public class Caller {",
         "    public void run() {",
         "        Foo.helper('x');",
+        "        Foo.staticCount = 2;",
         "    }",
         "}",
         "",
@@ -209,6 +222,19 @@ function syntheticDocuments() {
       uri: pathToFileURL(path.join(root, "EditProbe.cls")).toString(),
       text: "public class EditProbe { public void run() { Integer beforeName = 1; System.debug(beforeName); } }",
     },
+    {
+      uri: pathToFileURL(path.join(root, "TestProbe.cls")).toString(),
+      text: [
+        "@IsTest",
+        "private class TestProbe {",
+        "    @IsTest",
+        "    static void shouldPass() {",
+        "        System.assert(true);",
+        "    }",
+        "}",
+        "",
+      ].join("\n"),
+    },
   ];
 }
 
@@ -217,8 +243,23 @@ async function checkDefinition(client, docs, report) {
   const fieldDef = await definitionAt(client, foo, "recordCount = localValue");
   assertLine(fieldDef, foo, "recordCount;", "this.field definition");
 
-  const helperDef = await definitionAt(client, foo, "helper();");
+  const bareFieldDef = await definitionAt(client, foo, "recordCount = copy");
+  assertLine(bareFieldDef, foo, "recordCount;", "bare field definition");
+
+  const staticFieldDef = await definitionAt(client, docs[1], "staticCount = 2");
+  assertLine(staticFieldDef, foo, "staticCount;", "cross-file static field definition");
+
+  const localDef = await definitionAt(client, foo, "dynamicMapType);");
+  assertLine(localDef, foo, "dynamicMapType = Type.forName", "Type local variable definition");
+
+  const helperDef = await definitionAt(client, foo, "helper('local')");
   assertLine(helperDef, foo, "helper(String label)", "bare same-class method definition");
+
+  const thisHelperDef = await definitionAt(client, foo, "helper('this')");
+  assertLine(thisHelperDef, foo, "helper(String label)", "this.method definition");
+
+  const innerHelperDef = await definitionAt(client, foo, "nestedHelper();");
+  assertLine(innerHelperDef, foo, "nestedHelper() {}", "inner-class method definition");
 
   const caller = docs[1];
   const qualifiedDef = await definitionAt(client, caller, "helper('x')");
@@ -230,11 +271,24 @@ async function checkReferences(client, docs, report) {
   const foo = docs[0];
   const refsFromDef = await referencesAt(client, foo, "helper(String label)");
   assertEqual(refsFromDef.length, 5, "helper references from definition");
-  const refsFromCall = await referencesAt(client, foo, "helper();");
-  assertEqual(refsFromCall.length, 5, "helper references from call");
+  const refsFromCall = await referencesAt(client, foo, "helper('local')");
+  assertEqual(refsFromCall.length, 5, "helper references from bare call");
+  const refsFromThisCall = await referencesAt(client, foo, "helper('this')");
+  assertEqual(refsFromThisCall.length, 5, "helper references from this call");
+  const refsFromQualifiedCall = await referencesAt(client, docs[1], "helper('x')");
+  assertEqual(refsFromQualifiedCall.length, 5, "helper references from cross-file call");
+
+  const innerRefs = await referencesAt(client, foo, "nestedHelper() {}");
+  assertEqual(innerRefs.length, 2, "inner-class method references");
+
+  const refsFromDynamicType = await referencesAt(client, foo, "dynamicMapType);");
+  assertEqual(refsFromDynamicType.length, 2, "Type local variable references");
+
+  const refsFromStaticField = await referencesAt(client, docs[1], "staticCount = 2");
+  assertEqual(refsFromStaticField.length, 3, "static field references");
 
   const fieldRefs = await referencesAt(client, foo, "recordCount;");
-  assertEqual(fieldRefs.length, 2, "field references");
+  assertEqual(fieldRefs.length, 4, "field references");
   report.push("references: OK");
 }
 
@@ -245,6 +299,20 @@ async function checkHover(client, docs, report) {
   assertIncludes(value, "(method) helper: Integer", "hover signature");
   assertIncludes(value, "**Parameters**", "hover @param section");
   assertIncludes(value, "**Returns**", "hover @return section");
+
+  const usageHover = await hoverAt(client, foo, "helper('local')");
+  const usageValue = usageHover && usageHover.contents && usageHover.contents.value;
+  assertIncludes(usageValue, "(method) helper: Integer", "hover on same-class call");
+  assertIncludes(usageValue, "**Returns**", "hover docs on same-class call");
+
+  const crossFileHover = await hoverAt(client, docs[1], "helper('x')");
+  const crossFileValue = crossFileHover && crossFileHover.contents && crossFileHover.contents.value;
+  assertIncludes(crossFileValue, "(method) helper: Integer", "hover on cross-file call");
+  assertIncludes(crossFileValue, "**Parameters**", "hover docs on cross-file call");
+
+  const fieldHover = await hoverAt(client, foo, "recordCount = copy");
+  const fieldValue = fieldHover && fieldHover.contents && fieldHover.contents.value;
+  assertIncludes(fieldValue, "(field) recordCount: Integer", "hover on bare field");
   report.push("hover: OK");
 }
 
@@ -254,7 +322,65 @@ async function checkCompletion(client, docs, report) {
   await expectCompletionLabels(client, foo, "records[0]?.", ["getSObjectType"]);
   await expectCompletionLabels(client, foo, "Account.", ["getSObjectType", "SObjectType"]);
   await expectCompletionLabels(client, foo, "Schema.", ["getGlobalDescribe", "describeSObjects"]);
+  await expectCompletionLabels(client, foo, "Type.", ["forName", "newInstance"]);
   report.push("completion: OK");
+}
+
+async function checkLanguageServices(client, docs, report) {
+  const foo = docs[0];
+
+  const docSymbols = await client.request("textDocument/documentSymbol", {
+    textDocument: { uri: foo.uri },
+  });
+  assert(docSymbols.some((s) => s.name === "Foo"), "documentSymbol includes Foo");
+  const fooSymbol = docSymbols.find((s) => s.name === "Foo");
+  const childNames = (fooSymbol.children || []).map((s) => s.name);
+  assert(childNames.includes("Inner"), "documentSymbol includes inner class");
+  assert(childNames.includes("helper"), "documentSymbol includes helper method");
+
+  const semantic = await client.request("textDocument/semanticTokens/full", {
+    textDocument: { uri: foo.uri },
+  });
+  assert(Array.isArray(semantic.data) && semantic.data.length > 0, "semanticTokens returns data");
+
+  const folds = await client.request("textDocument/foldingRange", {
+    textDocument: { uri: foo.uri },
+  });
+  assert(folds.length >= 3, "foldingRange returns nested ranges");
+
+  const edits = await client.request("textDocument/formatting", {
+    textDocument: { uri: foo.uri },
+    options: { tabSize: 4, insertSpaces: true },
+  });
+  assert(Array.isArray(edits) && edits.length === 1, "formatting returns one full-document edit");
+  assertIncludes(edits[0].newText, "public class Foo", "formatting edit contains source");
+
+  const signature = await client.request("textDocument/signatureHelp", {
+    textDocument: { uri: foo.uri },
+    position: positionAfter(foo.text, "helper('"),
+  });
+  assert(signature && signature.signatures && signature.signatures.length > 0, "signatureHelp returns helper signature");
+  assertIncludes(signature.signatures[0].label, "helper", "signatureHelp labels helper");
+
+  const highlights = await client.request("textDocument/documentHighlight", {
+    textDocument: { uri: foo.uri },
+    position: positionOf(foo.text, "helper('local')"),
+  });
+  assertEqual(highlights.length, 4, "documentHighlight returns same-file helper occurrences");
+
+  const lenses = await client.request("textDocument/codeLens", {
+    textDocument: { uri: docs[4].uri },
+  });
+  assert(lenses.some((l) => l.command && l.command.command === "apexgov.runTest"), "codeLens includes runTest");
+  assert(lenses.some((l) => l.command && l.command.command === "apexgov.runAllTests"), "codeLens includes runAllTests");
+
+  const commandResult = await client.request("workspace/executeCommand", {
+    command: "apexgov.unknownCommand",
+    arguments: [],
+  });
+  assert(commandResult === null || commandResult === undefined, "executeCommand ignores unknown command");
+
+  report.push("languageServices: OK");
 }
 
 async function checkWorkspaceSymbol(client, report) {
@@ -289,6 +415,22 @@ async function checkRename(client, docs, report) {
     1,
     "cross-file member rename edit count"
   );
+
+  const fieldEdit = await client.request("textDocument/rename", {
+    textDocument: { uri: foo.uri },
+    position: positionOf(foo.text, "recordCount;"),
+    newName: "renamedCount",
+  });
+  assertEqual(editCount(fieldEdit, foo.uri), 4, "field rename edit count");
+
+  const staticFieldEdit = await client.request("textDocument/rename", {
+    textDocument: { uri: foo.uri },
+    position: positionOf(foo.text, "staticCount;"),
+    newName: "renamedStaticCount",
+  });
+  assertEqual(editCount(staticFieldEdit, foo.uri), 2, "same-file static field rename edit count");
+  assertEqual(editCount(staticFieldEdit, docs[1].uri), 1, "cross-file static field rename edit count");
+
   report.push("rename: OK");
 }
 
