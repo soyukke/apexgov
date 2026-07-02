@@ -104,17 +104,25 @@ fn apex_doc_before(
 }
 
 fn clean_apex_doc(raw: []const u8, allocator: std.mem.Allocator) !?[]const u8 {
-    var lines = std.mem.splitScalar(u8, raw, '\n');
-    var out: std.ArrayList(u8) = .empty;
-    while (lines.next()) |line| {
+    var raw_lines = std.mem.splitScalar(u8, raw, '\n');
+    var cleaned: std.ArrayList([]const u8) = .empty;
+    defer cleaned.deinit(allocator);
+
+    while (raw_lines.next()) |line| {
         var text = std.mem.trim(u8, line, " \t\r");
         if (std.mem.startsWith(u8, text, "*")) {
             text = std.mem.trim(u8, text[1..], " \t");
         }
-        if (out.items.len == 0 and text.len == 0) continue;
-        if (out.items.len > 0) try out.append(allocator, '\n');
-        try append_apex_doc_line(&out, allocator, text);
+        if (cleaned.items.len == 0 and text.len == 0) continue;
+        try cleaned.append(allocator, text);
     }
+    while (cleaned.items.len > 0 and cleaned.items[cleaned.items.len - 1].len == 0) {
+        _ = cleaned.pop();
+    }
+    if (cleaned.items.len == 0) return null;
+
+    var out: std.ArrayList(u8) = .empty;
+    try append_apex_doc_lines(&out, allocator, cleaned.items);
     while (out.items.len > 0 and std.ascii.isWhitespace(out.items[out.items.len - 1])) {
         _ = out.pop();
     }
@@ -125,34 +133,149 @@ fn clean_apex_doc(raw: []const u8, allocator: std.mem.Allocator) !?[]const u8 {
     return try out.toOwnedSlice(allocator);
 }
 
-fn append_apex_doc_line(
-    out: *std.ArrayList(u8),
-    allocator: std.mem.Allocator,
-    text: []const u8,
-) !void {
-    if (!std.mem.startsWith(u8, text, "@")) {
-        try out.appendSlice(allocator, text);
-        return;
-    }
+const ApexDocFormatState = struct {
+    wrote_parameters: bool = false,
+    wrote_throws: bool = false,
+    wrote_see: bool = false,
+};
 
+const TaggedDocLine = struct {
+    tag: []const u8,
+    rest: []const u8,
+    kind: ApexDocTagKind,
+};
+
+fn parse_apex_doc_tag(text: []const u8) ?TaggedDocLine {
+    if (!std.mem.startsWith(u8, text, "@")) return null;
     const tag_end = for (text, 0..) |c, i| {
         if (std.ascii.isWhitespace(c)) break i;
     } else text.len;
     const tag = text[0..tag_end];
     const rest = std.mem.trim(u8, text[tag_end..], " \t");
+    return .{ .tag = tag, .rest = rest, .kind = classify_apex_doc_tag(tag) };
+}
 
-    try append_doc_tag(out, allocator, tag);
-    switch (classify_apex_doc_tag(tag)) {
-        .param => try append_tag_rest(out, allocator, rest, append_param_doc_rest),
-        .return_value => try append_tag_rest(out, allocator, rest, append_return_doc_rest),
-        .throws_value => try append_tag_rest(out, allocator, rest, append_throws_doc_rest),
-        else => {
-            if (rest.len > 0) {
+fn append_apex_doc_lines(
+    out: *std.ArrayList(u8),
+    allocator: std.mem.Allocator,
+    lines: []const []const u8,
+) !void {
+    var state = ApexDocFormatState{};
+    for (lines) |text| {
+        if (text.len == 0) {
+            try append_blank_line(out, allocator);
+            continue;
+        }
+
+        if (parse_apex_doc_tag(text)) |tagged| {
+            try append_tagged_doc_line(out, allocator, &state, tagged);
+        } else {
+            try append_doc_text_line(out, allocator, text);
+        }
+    }
+}
+
+fn append_tagged_doc_line(
+    out: *std.ArrayList(u8),
+    allocator: std.mem.Allocator,
+    state: *ApexDocFormatState,
+    tagged: TaggedDocLine,
+) !void {
+    switch (tagged.kind) {
+        .description => if (tagged.rest.len > 0) {
+            try append_doc_text_line(out, allocator, tagged.rest);
+        },
+        .param => {
+            if (!state.wrote_parameters) {
+                try append_section_heading(out, allocator, "Parameters");
+                state.wrote_parameters = true;
+            }
+            try append_doc_text_prefix(out, allocator, "- ");
+            try append_param_doc_rest(out, allocator, tagged.rest);
+        },
+        .return_value => {
+            try append_section_heading(out, allocator, "Returns");
+            if (tagged.rest.len > 0) {
+                try append_doc_text_prefix(out, allocator, "");
+                try append_return_doc_rest(out, allocator, tagged.rest);
+            }
+        },
+        .throws_value => {
+            if (!state.wrote_throws) {
+                try append_section_heading(out, allocator, "Throws");
+                state.wrote_throws = true;
+            }
+            try append_doc_text_prefix(out, allocator, "- ");
+            try append_throws_doc_rest(out, allocator, tagged.rest);
+        },
+        .see => {
+            if (!state.wrote_see) {
+                try append_section_heading(out, allocator, "See Also");
+                state.wrote_see = true;
+            }
+            if (tagged.rest.len > 0) {
+                try append_doc_text_prefix(out, allocator, "- ");
+                try out.appendSlice(allocator, tagged.rest);
+            }
+        },
+        .deprecated => {
+            try append_section_heading(out, allocator, "Deprecated");
+            if (tagged.rest.len > 0) try append_doc_text_line(out, allocator, tagged.rest);
+        },
+        .example => {
+            try append_section_heading(out, allocator, "Example");
+            if (tagged.rest.len > 0) try append_doc_text_line(out, allocator, tagged.rest);
+        },
+        .since, .group, .author, .version, .unknown => {
+            try append_doc_text_prefix(out, allocator, "");
+            try append_doc_tag(out, allocator, tagged.tag);
+            if (tagged.rest.len > 0) {
                 try out.append(allocator, ' ');
-                try out.appendSlice(allocator, rest);
+                try out.appendSlice(allocator, tagged.rest);
             }
         },
     }
+}
+
+fn append_blank_line(out: *std.ArrayList(u8), allocator: std.mem.Allocator) !void {
+    if (out.items.len == 0) return;
+    if (std.mem.endsWith(u8, out.items, "\n\n")) return;
+    if (std.mem.endsWith(u8, out.items, "\n")) {
+        try out.append(allocator, '\n');
+    } else {
+        try out.appendSlice(allocator, "\n\n");
+    }
+}
+
+fn append_section_heading(
+    out: *std.ArrayList(u8),
+    allocator: std.mem.Allocator,
+    heading: []const u8,
+) !void {
+    try append_blank_line(out, allocator);
+    try out.appendSlice(allocator, "**");
+    try out.appendSlice(allocator, heading);
+    try out.appendSlice(allocator, "**\n");
+}
+
+fn append_doc_text_prefix(
+    out: *std.ArrayList(u8),
+    allocator: std.mem.Allocator,
+    prefix: []const u8,
+) !void {
+    if (out.items.len > 0 and !std.mem.endsWith(u8, out.items, "\n")) {
+        try out.append(allocator, '\n');
+    }
+    try out.appendSlice(allocator, prefix);
+}
+
+fn append_doc_text_line(
+    out: *std.ArrayList(u8),
+    allocator: std.mem.Allocator,
+    text: []const u8,
+) !void {
+    try append_doc_text_prefix(out, allocator, "");
+    try out.appendSlice(allocator, text);
 }
 
 const ApexDocTagKind = enum {
@@ -441,7 +564,7 @@ test "hover emphasizes ApexDoc tags" {
         \\     */
         \\    public static List<Account> getRecords(String state) { return null; }
         \\}
-    , "getRecords", "**@description** Returns account records.");
+    , "getRecords", "Returns account records.");
     try expect_hover_contains(
         \\public class Foo {
         \\    /**
@@ -451,7 +574,7 @@ test "hover emphasizes ApexDoc tags" {
         \\     */
         \\    public static List<Account> getRecords(String state) { return null; }
         \\}
-    , "getRecords", "**@param** `state` - selected state");
+    , "getRecords", "**Parameters**\n- `state` - selected state");
     try expect_hover_contains(
         \\public class Foo {
         \\    /**
@@ -461,7 +584,7 @@ test "hover emphasizes ApexDoc tags" {
         \\     */
         \\    public static List<Account> getRecords(String state) { return null; }
         \\}
-    , "getRecords", "**@return** account rows");
+    , "getRecords", "**Returns**\naccount rows");
 }
 
 test "hover formats Javadoc style ApexDoc tags" {
@@ -481,17 +604,17 @@ test "hover formats Javadoc style ApexDoc tags" {
 
     try std.testing.expect(has_text(
         ctx.result,
-        "**@param** `state` (`String`) - selected state",
+        "**Parameters**\n- `state` (`String`) - selected state",
     ));
     try std.testing.expect(has_text(
         ctx.result,
-        "**@returns** `List<Account>` - account rows",
+        "**Returns**\n`List<Account>` - account rows",
     ));
     try std.testing.expect(has_text(
         ctx.result,
-        "**@throws** `QueryException` - when account access is denied",
+        "**Throws**\n- `QueryException` - when account access is denied",
     ));
-    try std.testing.expect(has_text(ctx.result, "**@see** SOQLRecipes#getRecords"));
+    try std.testing.expect(has_text(ctx.result, "**See Also**\n- SOQLRecipes#getRecords"));
 }
 
 test "hover resolves cross-file top-level class at call site" {
@@ -523,7 +646,7 @@ test "hover resolves cross-file top-level class at call site" {
         arena.allocator(),
     );
 
-    try std.testing.expect(has_text(result, "**@description** Useful helper."));
+    try std.testing.expect(has_text(result, "Useful helper."));
 }
 
 test "hover resolves cross-file class member at call site" {
@@ -558,7 +681,7 @@ test "hover resolves cross-file class member at call site" {
     );
 
     try std.testing.expect(has_text(result, "(method) doWork: String"));
-    try std.testing.expect(has_text(result, "**@description** Does useful work."));
+    try std.testing.expect(has_text(result, "Does useful work."));
 }
 
 test "hover on empty space returns null" {
