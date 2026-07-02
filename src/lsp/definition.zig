@@ -191,6 +191,77 @@ test "cross-file: jump to class member in another file" {
     try std.testing.expectEqual(@as(u32, 36), loc.?.range.start.character);
 }
 
+test "cross-file: jump to AuraEnabled static class member in another file" {
+    var store = DocumentStore.init(std.testing.allocator);
+    defer store.deinit();
+
+    try store.open("file:///Hoge.cls", 1,
+        \\public with sharing class Hoge {
+        \\    @AuraEnabled(cacheable=true)
+        \\    public static List<Account> fuga() { return null; }
+        \\}
+    );
+    const main_source =
+        \\public with sharing class Main {
+        \\    public void run() {
+        \\        Hoge.fuga();
+        \\    }
+        \\}
+    ;
+    try store.open("file:///Main.cls", 1, main_source);
+
+    const main_cached = try store.ensure_parsed("file:///Main.cls") orelse unreachable;
+    const main_br = try store.ensure_bound("file:///Main.cls") orelse unreachable;
+    const offset: u32 = @intCast(std.mem.indexOf(u8, main_source, "fuga").? + "fuga".len);
+
+    const loc = get_definition_cross_file(
+        main_br,
+        main_cached.tokens,
+        main_source,
+        "file:///Main.cls",
+        offset,
+        &store,
+    );
+    try std.testing.expect(loc != null);
+    try std.testing.expectEqualStrings("file:///Hoge.cls", loc.?.uri);
+    try std.testing.expectEqual(@as(u32, 32), loc.?.range.start.character);
+}
+
+test "same-file: jump to later AuraEnabled static class member" {
+    var store = DocumentStore.init(std.testing.allocator);
+    defer store.deinit();
+
+    const source =
+        \\public with sharing class Main {
+        \\    public void run() {
+        \\        Hoge.fuga();
+        \\    }
+        \\}
+        \\
+        \\public with sharing class Hoge {
+        \\    @AuraEnabled(cacheable=true)
+        \\    public static List<Account> fuga() { return null; }
+        \\}
+    ;
+    try store.open("file:///Main.cls", 1, source);
+
+    const cached = try store.ensure_parsed("file:///Main.cls") orelse unreachable;
+    const br = try store.ensure_bound("file:///Main.cls") orelse unreachable;
+    const offset: u32 = @intCast(std.mem.indexOf(u8, source, "fuga").? + "fuga".len);
+
+    const loc = get_definition_cross_file(
+        br,
+        cached.tokens,
+        source,
+        "file:///Main.cls",
+        offset,
+        &store,
+    );
+    try std.testing.expect(loc != null);
+    try std.testing.expectEqualStrings("file:///Main.cls", loc.?.uri);
+    try std.testing.expectEqual(@as(u32, 32), loc.?.range.start.character);
+}
+
 test "same-file: this field jumps to class field" {
     var store = DocumentStore.init(std.testing.allocator);
     defer store.deinit();

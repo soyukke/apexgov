@@ -9,11 +9,8 @@ const parser_types = @import("../apex_parser/types.zig");
 
 /// トークンリストから指定オフセット位置の identifier 名を返す。
 pub fn identifier_at_offset(tokens: []const parser_types.Token, offset: u32) ?[]const u8 {
-    for (tokens) |tok| {
-        if (tok.kind == .identifier and
-            offset >= tok.loc.offset and
-            offset < tok.loc.offset + @as(u32, @intCast(tok.lexeme.len)))
-        {
+    for (tokens, 0..) |tok, i| {
+        if (tok.kind == .identifier and identifier_token_contains(tokens, i, offset)) {
             return tok.lexeme;
         }
     }
@@ -29,6 +26,23 @@ pub const ThisMember = struct {
     member_name: []const u8,
 };
 
+fn identifier_token_contains(
+    tokens: []const parser_types.Token,
+    index: usize,
+    offset: u32,
+) bool {
+    const tok = tokens[index];
+    const start = tok.loc.offset;
+    const end = start + @as(u32, @intCast(tok.lexeme.len));
+    if (offset >= start and offset < end) return true;
+    if (offset != end) return false;
+
+    if (index + 1 >= tokens.len) return true;
+    const next = tokens[index + 1];
+    if (next.loc.offset != end) return false;
+    return next.kind != .identifier;
+}
+
 /// `Receiver.member` の member 識別子上に offset がある場合、その左右の識別子を返す。
 pub fn qualified_member_at_offset(
     tokens: []const parser_types.Token,
@@ -36,11 +50,7 @@ pub fn qualified_member_at_offset(
 ) ?QualifiedMember {
     for (tokens, 0..) |tok, i| {
         if (tok.kind != .identifier) continue;
-        if (offset < tok.loc.offset or
-            offset >= tok.loc.offset + @as(u32, @intCast(tok.lexeme.len)))
-        {
-            continue;
-        }
+        if (!identifier_token_contains(tokens, i, offset)) continue;
 
         if (i < 2) return null;
         const dot = tokens[i - 1];
@@ -59,11 +69,7 @@ pub fn this_member_at_offset(
 ) ?ThisMember {
     for (tokens, 0..) |tok, i| {
         if (tok.kind != .identifier) continue;
-        if (offset < tok.loc.offset or
-            offset >= tok.loc.offset + @as(u32, @intCast(tok.lexeme.len)))
-        {
-            continue;
-        }
+        if (!identifier_token_contains(tokens, i, offset)) continue;
 
         if (i < 2) return null;
         const dot = tokens[i - 1];
@@ -81,11 +87,7 @@ pub fn call_arg_count_at_offset(
 ) ?u32 {
     for (tokens, 0..) |tok, i| {
         if (tok.kind != .identifier) continue;
-        if (offset < tok.loc.offset or
-            offset >= tok.loc.offset + @as(u32, @intCast(tok.lexeme.len)))
-        {
-            continue;
-        }
+        if (!identifier_token_contains(tokens, i, offset)) continue;
         return call_arg_count_at_token_index(tokens, i);
     }
     return null;
@@ -281,6 +283,21 @@ test "identifier_at_offset returns null between tokens" {
     try std.testing.expect(identifier_at_offset(tokens, 6) == null);
 }
 
+test "identifier_at_offset accepts token end before punctuation only" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const source = "Hoge.fuga(); Integer x = 1";
+    const tokens = try lexer.tokenize(source, arena.allocator());
+    const fuga_end: u32 = @intCast(std.mem.indexOf(u8, source, "fuga").? + "fuga".len);
+    const hoge_end: u32 = @intCast(std.mem.indexOf(u8, source, "Hoge").? + "Hoge".len);
+    const x_end: u32 = @intCast(std.mem.indexOf(u8, source, "x =").? + "x".len);
+
+    try std.testing.expectEqualStrings("fuga", identifier_at_offset(tokens, fuga_end).?);
+    try std.testing.expectEqualStrings("Hoge", identifier_at_offset(tokens, hoge_end).?);
+    try std.testing.expect(identifier_at_offset(tokens, x_end) == null);
+}
+
 test "qualified_member_at_offset finds member after dot" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -293,6 +310,21 @@ test "qualified_member_at_offset finds member after dot" {
     try std.testing.expect(member != null);
     try std.testing.expectEqualStrings("SOQLRecipes", member.?.receiver_name);
     try std.testing.expectEqualStrings("getRecords", member.?.member_name);
+}
+
+test "qualified_member_at_offset finds member at token end before call" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const source = "Hoge.fuga();";
+    const tokens = try lexer.tokenize(source, arena.allocator());
+    const offset: u32 = @intCast(std.mem.indexOf(u8, source, "fuga").? + "fuga".len);
+    const member = qualified_member_at_offset(tokens, offset);
+
+    try std.testing.expect(member != null);
+    try std.testing.expectEqualStrings("Hoge", member.?.receiver_name);
+    try std.testing.expectEqualStrings("fuga", member.?.member_name);
+    try std.testing.expectEqual(@as(?u32, 0), call_arg_count_at_offset(tokens, offset));
 }
 
 test "qualified_member_at_offset ignores receiver identifier" {

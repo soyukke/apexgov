@@ -191,6 +191,8 @@ function syntheticDocuments() {
         "     */",
         "    private static Integer helper(String label) { return 1; }",
         "    private static Integer helper() { return 0; }",
+        "    @AuraEnabled(cacheable=true)",
+        "    public static List<Account> exposedAccounts() { return null; }",
         "}",
         "",
       ].join("\n"),
@@ -201,6 +203,7 @@ function syntheticDocuments() {
         "public class Caller {",
         "    public void run() {",
         "        Foo.helper('x');",
+        "        Foo.exposedAccounts();",
         "        Foo.staticCount = 2;",
         "    }",
         "}",
@@ -269,6 +272,14 @@ async function checkDefinition(client, docs, report) {
   const caller = docs[1];
   const qualifiedDef = await definitionAt(client, caller, "helper('x')");
   assertLine(qualifiedDef, foo, "helper(String label)", "cross-file qualified method definition");
+
+  const auraStaticDef = await definitionAfter(client, caller, "exposedAccounts");
+  assertLine(
+    auraStaticDef,
+    foo,
+    "exposedAccounts()",
+    "cross-file AuraEnabled static method definition at token end"
+  );
   report.push("definition: OK");
 }
 
@@ -525,6 +536,13 @@ async function definitionAt(client, doc, needle) {
   return client.request("textDocument/definition", {
     textDocument: { uri: doc.uri },
     position: positionOf(doc.text, needle),
+  });
+}
+
+async function definitionAfter(client, doc, needle) {
+  return client.request("textDocument/definition", {
+    textDocument: { uri: doc.uri },
+    position: positionAfter(doc.text, needle),
   });
 }
 
