@@ -159,6 +159,7 @@ pub const Evaluator = struct {
     global_env: *Env,
     stdout: std.ArrayListUnmanaged(u8) = .empty,
     classes: std.StringArrayHashMapUnmanaged(*ast.ClassDecl) = .empty,
+    interfaces: std.StringArrayHashMapUnmanaged(*ast.InterfaceDecl) = .empty,
     top_level_enums: std.StringArrayHashMapUnmanaged(*ast.EnumDecl) = .empty,
     return_value: Value = .void_val,
     assertion_failure: ?[]const u8 = null,
@@ -1802,6 +1803,9 @@ pub const Evaluator = struct {
                 .class_decl => |cd| {
                     try self.register_class_recursive(ca, cd, null);
                 },
+                .interface_decl => |iface| {
+                    try self.register_interface(ca, iface, null);
+                },
                 .trigger_decl => |td| {
                     const obj_lower = std.ascii.lowerString(
                         self.arena.alloc(u8, td.object_name.len) catch continue,
@@ -3220,6 +3224,11 @@ pub const Evaluator = struct {
                 ot,
                 op,
                 record_list.items,
+            );
+            try self.apply_standard_opportunity_line_item_amount_rollup(
+                ot,
+                record_list.items,
+                old_records,
             );
             try self.apply_rollup_summary_side_effects(ot, record_list.items, old_records);
             try self.apply_npsp_bulk_address_validation(ot, op, record_list.items);
@@ -5439,6 +5448,7 @@ pub const Evaluator = struct {
             if (std.ascii.eqlIgnoreCase(record.sobject.type_name, "npe03__Recurring_Donation__c")) {
                 try self.apply_npsp_recurring_donation_defaults(record.sobject);
             }
+            try self.normalize_standard_opportunity_line_item_amounts(record.sobject);
             try self.apply_npsp_contact_current_address_account_default(record.sobject);
             try self.apply_npsp_allocation_percent_amount(record.sobject);
             try self.apply_npsp_default_allocation_parent_amount(record.sobject);
@@ -5458,10 +5468,132 @@ pub const Evaluator = struct {
                 try self.restore_npsp_rd2_monthly_day_of_month(record.sobject);
                 try self.apply_npsp_recurring_donation_closed_end_date_default(record.sobject);
             }
+            try self.normalize_standard_opportunity_line_item_amounts(record.sobject);
             try self.apply_npsp_allocation_percent_amount_update(record.sobject);
             try self.apply_npsp_default_allocation_parent_amount(record.sobject);
             try self.validate_npsp_allocation_percent_bounds(record.sobject);
         }
+    }
+
+    fn normalize_standard_opportunity_line_item_amounts(
+        self: *Evaluator,
+        record: *types.SObject,
+    ) !void {
+        if (!std.ascii.eqlIgnoreCase(record.type_name, "OpportunityLineItem")) return;
+
+        const quantity_value =
+            self.get_s_object_field_value_case_insensitive(record, "Quantity") orelse
+            Value{ .integer = 1 };
+        const quantity = numeric_value_as_f64(quantity_value) orelse 1;
+        if (quantity == 0) return;
+
+        const unit_value =
+            self.get_s_object_field_value_case_insensitive(record, "UnitPrice") orelse
+            Value.null_val;
+        const total_value =
+            self.get_s_object_field_value_case_insensitive(record, "TotalPrice") orelse
+            Value.null_val;
+
+        if (numeric_value_as_f64(unit_value)) |unit| {
+            try utils.sobject_put(
+                &record.fields,
+                self.arena,
+                "TotalPrice",
+                Value{ .double = unit * quantity },
+            );
+            return;
+        }
+
+        if (numeric_value_as_f64(total_value)) |total| {
+            try utils.sobject_put(
+                &record.fields,
+                self.arena,
+                "UnitPrice",
+                Value{ .double = total / quantity },
+            );
+        }
+    }
+
+    fn apply_standard_opportunity_line_item_amount_rollup(
+        self: *Evaluator,
+        child_type: []const u8,
+        new_records: []const Value,
+        old_records: ?std.ArrayListUnmanaged(Value),
+    ) !void {
+        if (!std.ascii.eqlIgnoreCase(child_type, "OpportunityLineItem")) return;
+
+        var impacted_ids: std.StringArrayHashMapUnmanaged(void) = .empty;
+        try self.collect_summary_impact_ids_from_records(
+            &impacted_ids,
+            new_records,
+            "OpportunityId",
+        );
+        if (old_records) |previous_records| {
+            try self.collect_summary_impact_ids_from_records(
+                &impacted_ids,
+                previous_records.items,
+                "OpportunityId",
+            );
+        }
+
+        for (impacted_ids.keys()) |opportunity_id| {
+            try self.refresh_standard_opportunity_amount(opportunity_id);
+        }
+    }
+
+    fn refresh_standard_opportunity_amount(
+        self: *Evaluator,
+        opportunity_id: []const u8,
+    ) !void {
+        const opportunity = self.find_stored_sobject_by_id("Opportunity", opportunity_id) orelse
+            return;
+        const lines = self.store_records_ptr("OpportunityLineItem") orelse return;
+
+        var total: f64 = 0;
+        var found_line = false;
+        for (lines.items) |line_value| {
+            if (line_value != .sobject) continue;
+            const line = line_value.sobject;
+            const line_opportunity =
+                self.get_s_object_field_value_case_insensitive(line, "OpportunityId") orelse
+                continue;
+            if (line_opportunity != .string or
+                !std.ascii.eqlIgnoreCase(line_opportunity.string, opportunity_id))
+            {
+                continue;
+            }
+            found_line = true;
+            total += self.standard_opportunity_line_item_total(line);
+        }
+
+        if (!found_line) return;
+        try utils.sobject_put(
+            &opportunity.fields,
+            self.arena,
+            "Amount",
+            Value{ .double = total },
+        );
+    }
+
+    fn standard_opportunity_line_item_total(
+        self: *Evaluator,
+        line: *types.SObject,
+    ) f64 {
+        const quantity =
+            numeric_value_as_f64(
+                self.get_s_object_field_value_case_insensitive(line, "Quantity") orelse
+                    Value{ .integer = 1 },
+            ) orelse 1;
+        if (numeric_value_as_f64(
+            self.get_s_object_field_value_case_insensitive(line, "UnitPrice") orelse
+                Value.null_val,
+        )) |unit| {
+            return unit * quantity;
+        }
+        return numeric_value_as_f64(
+            self.get_s_object_field_value_case_insensitive(line, "TotalPrice") orelse
+                Value.null_val,
+        ) orelse 0;
     }
 
     fn remember_npsp_explicit_day_of_month_fields(
@@ -32780,8 +32912,6 @@ pub const Evaluator = struct {
                     self.global_env,
                 );
             }
-            if (try self.eval_fflib_sample_apply_discounts(args)) |result| return result;
-            if (try self.apply_fflib_sample_discount_to_store(args)) |result| return result;
         }
         if (std.ascii.eqlIgnoreCase(class_name, "OpportunitiesSelector") and
             std.ascii.eqlIgnoreCase(method_name, "newInstance"))
@@ -32808,95 +32938,6 @@ pub const Evaluator = struct {
             }
         }
         return null;
-    }
-
-    fn eval_fflib_sample_apply_discounts(
-        self: *Evaluator,
-        args: []const Value,
-    ) !?Value {
-        if (args.len < 2 or args[0] != .set) return null;
-        const selector = (try self.fflib_registered_stub_by_type_name(
-            "IOpportunitiesSelector",
-        )) orelse return null;
-        const domain = (try self.fflib_registered_stub_by_type_name("IOpportunities")) orelse
-            return null;
-        const uow = (try self.fflib_registered_stub_by_type_name("fflib_ISObjectUnitOfWork")) orelse
-            return null;
-        _ = try self.eval_instance_method(
-            selector,
-            "selectByIdWithProducts",
-            &.{args[0]},
-            self.global_env,
-        );
-        _ = try self.eval_instance_method(
-            domain,
-            "applyDiscount",
-            &.{ args[1], uow },
-            self.global_env,
-        );
-        _ = try self.eval_instance_method(uow, "commitWork", &.{}, self.global_env);
-        return Value.void_val;
-    }
-
-    fn apply_fflib_sample_discount_to_store(
-        self: *Evaluator,
-        args: []const Value,
-    ) !?Value {
-        if (args.len < 2 or args[0] != .set) return null;
-        const discount = numeric_value_as_f64(args[1]) orelse return null;
-        for (args[0].set.entries.values()) |id_value| {
-            const id = switch (id_value) {
-                .string => |s| s,
-                else => continue,
-            };
-            const opp = self.find_stored_sobject_by_id("Opportunity", id) orelse continue;
-            const amount_value = self.get_s_object_field_value_case_insensitive(
-                opp,
-                "Amount",
-            ) orelse Value.null_val;
-            const amount = numeric_value_as_f64(amount_value) orelse
-                self.sum_opportunity_line_amounts(id);
-            try utils.sobject_put(
-                &opp.fields,
-                self.arena,
-                "Amount",
-                Value{ .double = amount * (1 - discount / 100) },
-            );
-        }
-        return Value.void_val;
-    }
-
-    fn sum_opportunity_line_amounts(self: *Evaluator, opportunity_id: []const u8) f64 {
-        const lines = self.store.get("OpportunityLineItem") orelse return 0;
-        var total: f64 = 0;
-        for (lines.items) |line| {
-            if (line != .sobject) continue;
-            const line_opp = self.get_s_object_field_value_case_insensitive(
-                line.sobject,
-                "OpportunityId",
-            ) orelse continue;
-            if (line_opp != .string or !std.ascii.eqlIgnoreCase(line_opp.string, opportunity_id)) {
-                continue;
-            }
-            if (self.get_s_object_field_value_case_insensitive(
-                line.sobject,
-                "TotalPrice",
-            )) |price| {
-                total += numeric_value_as_f64(price) orelse 0;
-                continue;
-            }
-            const quantity = self.get_s_object_field_value_case_insensitive(
-                line.sobject,
-                "Quantity",
-            ) orelse Value{ .integer = 1 };
-            const unit_price = self.get_s_object_field_value_case_insensitive(
-                line.sobject,
-                "UnitPrice",
-            ) orelse Value{ .integer = 0 };
-            total += (numeric_value_as_f64(quantity) orelse 1) *
-                (numeric_value_as_f64(unit_price) orelse 0);
-        }
-        return total;
     }
 
     fn fflib_registered_stub_by_type_name(
@@ -35907,9 +35948,14 @@ pub const Evaluator = struct {
         method: []const u8,
         args: []const Value,
     ) ?*ast.MethodDecl {
-        const stub_class = self.find_class(class_name) orelse return null;
-        return self.find_method_in_hierarchy_typed(null, stub_class, method, args) orelse
-            self.find_method_in_hierarchy(null, stub_class, method, args.len);
+        if (self.find_class(class_name)) |stub_class| {
+            return self.find_method_in_hierarchy_typed(null, stub_class, method, args) orelse
+                self.find_method_in_hierarchy(null, stub_class, method, args.len);
+        }
+        if (self.find_interface(class_name)) |stub_interface| {
+            return self.find_method_in_interface_hierarchy(stub_interface, method, args);
+        }
+        return null;
     }
 
     fn stub_uses_default_object_method(method: []const u8, arg_len: usize) bool {
@@ -35939,7 +35985,7 @@ pub const Evaluator = struct {
                 else
                     arg
             else
-                coerce_stub_provider_arg_value(obj, method, arg, index);
+                arg;
             try args_list.items.append(self.arena, coerced);
         }
 
@@ -35973,11 +36019,27 @@ pub const Evaluator = struct {
         return .{
             obj,
             Value{ .string = method },
-            Value.null_val,
+            try self.stub_provider_return_type_value(stub_method),
             Value{ .list = type_list },
             Value{ .list = name_list },
             Value{ .list = args_list },
         };
+    }
+
+    fn stub_provider_return_type_value(
+        self: *Evaluator,
+        stub_method: ?*ast.MethodDecl,
+    ) !Value {
+        const method_decl = stub_method orelse return Value.null_val;
+        if (method_decl.return_type.name.len == 0) return Value.null_val;
+        const type_obj = try self.arena.create(types.ObjectInstance);
+        type_obj.* = .{ .class_name = "Type" };
+        try type_obj.fields.put(
+            self.arena,
+            "name",
+            Value{ .string = self.render_type_ref(method_decl.return_type) },
+        );
+        return Value{ .object = type_obj };
     }
 
     fn stub_provider_arg_type_name(
@@ -35993,12 +36055,8 @@ pub const Evaluator = struct {
                 return self.render_type_ref(method_decl.params[index].type_ref);
             }
         }
-        if (std.ascii.eqlIgnoreCase(method, "applyDiscounts") and index == 1 and
-            obj == .object and
-            std.ascii.eqlIgnoreCase(obj.object.class_name, "IOpportunitiesService"))
-        {
-            return "Decimal";
-        }
+        _ = obj;
+        _ = method;
         return switch (arg) {
             .string => "String",
             .integer => "Integer",
@@ -36019,21 +36077,6 @@ pub const Evaluator = struct {
             return coerce_decimal_stub_provider_arg(value);
         }
         return coerce_value_to_declared_scalar_type(value, declared_type);
-    }
-
-    fn coerce_stub_provider_arg_value(
-        obj: Value,
-        method: []const u8,
-        arg: Value,
-        index: usize,
-    ) Value {
-        if (std.ascii.eqlIgnoreCase(method, "applyDiscounts") and index == 1 and
-            obj == .object and
-            std.ascii.eqlIgnoreCase(obj.object.class_name, "IOpportunitiesService"))
-        {
-            return coerce_decimal_stub_provider_arg(arg);
-        }
-        return arg;
     }
 
     fn coerce_decimal_stub_provider_arg(value: Value) Value {
@@ -49774,23 +49817,7 @@ pub const Evaluator = struct {
         if (try self.eval_fflib_application_factory_method(receiver, method_name, args)) |result| {
             return result;
         }
-        return try self.eval_fflib_sample_service_impl_method(instance, method_name, args);
-    }
-
-    fn eval_fflib_sample_service_impl_method(
-        self: *Evaluator,
-        instance: *types.ObjectInstance,
-        method_name: []const u8,
-        args: []const Value,
-    ) !?Value {
-        if (!std.ascii.eqlIgnoreCase(instance.class_name, "OpportunitiesServiceImpl") or
-            !std.ascii.eqlIgnoreCase(method_name, "applyDiscounts") or
-            args.len < 2 or
-            args[0] != .set)
-        {
-            return null;
-        }
-        return try self.eval_fflib_sample_apply_discounts(args);
+        return null;
     }
 
     fn call_resolved_instance_method(
@@ -50192,6 +50219,65 @@ pub const Evaluator = struct {
             } else break;
         }
         return null;
+    }
+
+    fn find_method_in_interface_hierarchy(
+        self: *Evaluator,
+        interface_decl: *ast.InterfaceDecl,
+        method_name: []const u8,
+        args: []const Value,
+    ) ?*ast.MethodDecl {
+        if (self.find_best_method_in_interface(interface_decl, method_name, args)) |md| {
+            return md;
+        }
+        for (interface_decl.extends) |parent_ref| {
+            const parent = self.find_interface(parent_ref.name) orelse continue;
+            if (self.find_method_in_interface_hierarchy(parent, method_name, args)) |md| {
+                return md;
+            }
+        }
+        return null;
+    }
+
+    fn find_best_method_in_interface(
+        self: *Evaluator,
+        interface_decl: *ast.InterfaceDecl,
+        method_name: []const u8,
+        args: []const Value,
+    ) ?*ast.MethodDecl {
+        var candidates: [64]*ast.MethodDecl = undefined;
+        var count: usize = 0;
+        var best_any: ?*ast.MethodDecl = null;
+
+        for (interface_decl.members) |member| {
+            switch (member) {
+                .method_decl => |md| {
+                    if (std.ascii.eqlIgnoreCase(md.name, method_name)) {
+                        if (md.params.len == args.len and count < candidates.len) {
+                            candidates[count] = md;
+                            count += 1;
+                        }
+                        if (best_any == null) best_any = md;
+                    }
+                },
+                else => {},
+            }
+        }
+
+        if (count == 0) return best_any;
+        if (count == 1) return candidates[0];
+
+        const arg_type_hints = self.cast_type_hints;
+        var best: ?*ast.MethodDecl = null;
+        var best_score: i32 = -1;
+        for (candidates[0..count]) |md| {
+            const score = self.score_overload_candidate(md, args, arg_type_hints);
+            if (best == null or score > best_score) {
+                best = md;
+                best_score = score;
+            }
+        }
+        return best orelse candidates[0];
     }
 
     fn find_method_in_class(
@@ -51265,29 +51351,7 @@ pub const Evaluator = struct {
     /// set, including inner interfaces declared as `Outer.Inner`. Used by the cast path
     /// to decide whether to throw TypeException for a failed interface cast.
     fn is_known_interface_name(self: *Evaluator, name: []const u8) bool {
-        if (name.len == 0) return false;
-        // Top-level interface?
-        var iter = self.classes.iterator();
-        while (iter.next()) |entry| {
-            const cd = entry.value_ptr.*;
-            for (cd.members) |member| {
-                switch (member) {
-                    .interface_decl => |iface| {
-                        // Match either "Outer.Inner" or just "Inner"
-                        if (std.ascii.eqlIgnoreCase(iface.name, name)) return true;
-                        if (std.mem.lastIndexOfScalar(u8, name, '.')) |di| {
-                            if (std.ascii.eqlIgnoreCase(name[0..di], entry.key_ptr.*) and
-                                std.ascii.eqlIgnoreCase(name[di + 1 ..], iface.name))
-                            {
-                                return true;
-                            }
-                        }
-                    },
-                    else => {},
-                }
-            }
-        }
-        return false;
+        return name.len > 0 and self.find_interface(name) != null;
     }
 
     const ClassLookupResult = struct {
@@ -51397,6 +51461,19 @@ pub const Evaluator = struct {
         return if (self.find_class_with_name(name)) |entry| entry.decl else null;
     }
 
+    fn find_interface(self: *Evaluator, name: []const u8) ?*ast.InterfaceDecl {
+        if (self.interfaces.get(name)) |iface| return iface;
+        var iter = self.interfaces.iterator();
+        while (iter.next()) |entry| {
+            const key = entry.key_ptr.*;
+            if (std.ascii.eqlIgnoreCase(key, name)) return entry.value_ptr.*;
+            if (std.mem.lastIndexOfScalar(u8, key, '.')) |di| {
+                if (std.ascii.eqlIgnoreCase(key[di + 1 ..], name)) return entry.value_ptr.*;
+            }
+        }
+        return null;
+    }
+
     pub fn build_class_lookup_cache(self: *Evaluator, alloc: std.mem.Allocator) !void {
         if (self.class_lookup_cache_built) return;
         var iter = self.classes.iterator();
@@ -51479,6 +51556,32 @@ pub const Evaluator = struct {
         return null;
     }
 
+    fn register_interface(
+        self: *Evaluator,
+        ca: std.mem.Allocator,
+        iface: *ast.InterfaceDecl,
+        fq_name: ?[]const u8,
+    ) !void {
+        const simple_gop = try self.interfaces.getOrPut(ca, iface.name);
+        if (!simple_gop.found_existing) simple_gop.value_ptr.* = iface;
+        if (fq_name) |fq| try self.interfaces.put(ca, fq, iface);
+
+        const owner_name = fq_name orelse iface.name;
+        for (iface.members) |member| {
+            switch (member) {
+                .interface_decl => |inner_iface| {
+                    const inner_fq = try std.fmt.allocPrint(
+                        ca,
+                        "{s}.{s}",
+                        .{ owner_name, inner_iface.name },
+                    );
+                    try self.register_interface(ca, inner_iface, inner_fq);
+                },
+                else => {},
+            }
+        }
+    }
+
     fn register_class_recursive(
         self: *Evaluator,
         ca: std.mem.Allocator,
@@ -51527,6 +51630,15 @@ pub const Evaluator = struct {
                         .{ parent_name, inner_cd.name },
                     ) catch continue;
                     try self.register_class_recursive(ca, inner_cd, inner_fq);
+                },
+                .interface_decl => |inner_iface| {
+                    const parent_name = fq_name orelse cd.name;
+                    const inner_fq = std.fmt.allocPrint(
+                        ca,
+                        "{s}.{s}",
+                        .{ parent_name, inner_iface.name },
+                    ) catch continue;
+                    try self.register_interface(ca, inner_iface, inner_fq);
                 },
                 .enum_decl => |ed| {
                     for (ed.values) |v| {
@@ -55578,6 +55690,39 @@ test "createStub forwards declared param types for typed null helper arguments" 
     defer r.deinit();
 
     try std.testing.expectEqualStrings("String", r.value.string);
+}
+
+test "createStub forwards interface declared param and return types" {
+    const source =
+        \\public interface StubbedSelector {
+        \\    List<Account> select(Set<Id> recordIds, Decimal discount);
+        \\}
+        \\public class StubRecorder implements StubProvider {
+        \\    public static String seen;
+        \\    public Object handleMethodCall(Object stubbedObject, String stubbedMethodName, Type returnType,
+        \\        List<Type> listOfParamTypes, List<String> listOfParamNames, List<Object> listOfArgs) {
+        \\        seen = returnType.getName() + ':' +
+        \\            listOfParamTypes.get(0).getName() + ':' +
+        \\            listOfParamTypes.get(1).getName() + ':' +
+        \\            String.valueOf(listOfArgs.get(1));
+        \\        return new List<Account>();
+        \\    }
+        \\}
+        \\public class StubInterfaceProbe {
+        \\    public static String run() {
+        \\        StubbedSelector selector = (StubbedSelector) Test.createStub(
+        \\            StubbedSelector.class,
+        \\            new StubRecorder()
+        \\        );
+        \\        selector.select(new Set<Id>{ '001000000000001' }, 10);
+        \\        return StubRecorder.seen;
+        \\    }
+        \\}
+    ;
+    var r = try eval_source(source, "StubInterfaceProbe", "run");
+    defer r.deinit();
+
+    try std.testing.expectEqualStrings("List<Account>:Set<Id>:Decimal:10.0", r.value.string);
 }
 
 test "String.valueOf on Test.createStub proxy does not invoke stubbed Object methods" {
