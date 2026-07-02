@@ -143,23 +143,51 @@ const Parser = struct {
         }
 
         try self.expect(.lbrace);
-        // For now, skip interface body
-        var depth: u32 = 1;
-        while (!self.at_end() and depth > 0) {
-            if (self.check(.lbrace)) depth += 1;
-            if (self.check(.rbrace)) depth -= 1;
-            if (depth > 0) self.pos += 1;
-        }
-        if (self.check(.rbrace)) self.pos += 1;
+        const members = try self.parse_interface_body();
+        try self.expect(.rbrace);
 
         const decl = try self.arena.create(ast.InterfaceDecl);
         decl.* = .{
             .name = name,
             .modifiers = mods,
             .extends = try extends.toOwnedSlice(self.arena),
+            .members = members,
             .loc = loc,
         };
         return decl;
+    }
+
+    fn parse_interface_body(self: *Parser) anyerror![]ast.Decl {
+        var members: std.ArrayListUnmanaged(ast.Decl) = .empty;
+        while (!self.at_end() and !self.check(.rbrace)) {
+            var annotations: std.ArrayListUnmanaged([]const u8) = .empty;
+            while (self.check(.annotation)) {
+                try annotations.append(self.arena, self.current().lexeme);
+                self.pos += 1;
+            }
+
+            const mods = self.parse_modifiers();
+            if (self.check(.class_kw)) {
+                const ann_slice = try annotations.toOwnedSlice(self.arena);
+                try members.append(self.arena, .{
+                    .class_decl = try self.parse_class_decl(mods, ann_slice),
+                });
+            } else if (self.check(.interface_kw)) {
+                try members.append(
+                    self.arena,
+                    .{ .interface_decl = try self.parse_interface_decl(mods) },
+                );
+            } else if (self.check(.enum_kw)) {
+                try members.append(self.arena, .{ .enum_decl = try self.parse_enum_decl(mods) });
+            } else {
+                const member = try self.parse_method_or_field(
+                    mods,
+                    try annotations.toOwnedSlice(self.arena),
+                );
+                try members.append(self.arena, member);
+            }
+        }
+        return members.toOwnedSlice(self.arena);
     }
 
     fn parse_enum_decl(self: *Parser, mods: ast.Modifiers) !*ast.EnumDecl {
@@ -2056,6 +2084,42 @@ test "parse simple class declaration" {
     try std.testing.expectEqual(@as(usize, 1), decls[0].class_decl.members.len);
     try std.testing.expect(decls[0].class_decl.members[0] == .method_decl);
     try std.testing.expectEqualStrings("greet", decls[0].class_decl.members[0].method_decl.name);
+}
+
+test "parse interface method signatures" {
+    const source =
+        \\public interface Gateway extends ParentGateway {
+        \\    void ping(Decimal amount, List<Account> rows);
+        \\    List<Account> selectByIds(Set<Id> ids);
+        \\}
+    ;
+    const tokens = try lexer.tokenize(source, std.testing.allocator);
+    defer std.testing.allocator.free(tokens);
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const decls = try parse(tokens, arena.allocator());
+    try std.testing.expectEqual(@as(usize, 1), decls.len);
+    try std.testing.expect(decls[0] == .interface_decl);
+    const iface = decls[0].interface_decl;
+    try std.testing.expectEqualStrings("Gateway", iface.name);
+    try std.testing.expectEqual(@as(usize, 1), iface.extends.len);
+    try std.testing.expectEqual(@as(usize, 2), iface.members.len);
+
+    const ping = iface.members[0].method_decl;
+    try std.testing.expectEqualStrings("ping", ping.name);
+    try std.testing.expectEqualStrings("void", ping.return_type.name);
+    try std.testing.expectEqualStrings("Decimal", ping.params[0].type_ref.name);
+    try std.testing.expectEqualStrings("List", ping.params[1].type_ref.name);
+    try std.testing.expectEqualStrings("Account", ping.params[1].type_ref.params[0].name);
+
+    const select = iface.members[1].method_decl;
+    try std.testing.expectEqualStrings("selectByIds", select.name);
+    try std.testing.expectEqualStrings("List", select.return_type.name);
+    try std.testing.expectEqualStrings("Account", select.return_type.params[0].name);
+    try std.testing.expectEqualStrings("Set", select.params[0].type_ref.name);
+    try std.testing.expectEqualStrings("Id", select.params[0].type_ref.params[0].name);
 }
 
 test "parse if statement" {

@@ -722,6 +722,7 @@ fn copy_test_eval_context(
     parse_alloc: std.mem.Allocator,
 ) !void {
     test_eval.classes = base_eval.classes;
+    test_eval.interfaces = base_eval.interfaces;
     test_eval.top_level_enums = base_eval.top_level_enums;
     test_eval.class_arena = parse_alloc;
     test_eval.triggers = base_eval.triggers;
