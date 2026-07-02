@@ -24,10 +24,11 @@ const defaultRepos = [
   "NebulaLogger",
   "apex-unified-logging",
 ];
-const repoNames = (args.repos ? args.repos.split(",") : defaultRepos).filter(Boolean);
+const repoNames = selectedRepoNames();
 const maxFiles = Number(args.maxFiles || 20);
 const maxQualified = Number(args.maxQualified || 30);
 const maxPerFile = Number(args.maxPerFile || 8);
+const maxRenames = Number(args.maxRenames || 12);
 const strict = Boolean(args.strict);
 
 class LspClient {
@@ -139,6 +140,20 @@ async function main() {
     requests: 0,
     expectedDefinitions: 0,
     missingExpectedDefinitions: 0,
+    expectedOwnerDefinitions: 0,
+    missingExpectedOwnerDefinitions: 0,
+    expectedReferences: 0,
+    missingExpectedReferences: 0,
+    expectedHovers: 0,
+    missingExpectedHovers: 0,
+    expectedSignatures: 0,
+    missingExpectedSignatures: 0,
+    expectedCompletions: 0,
+    missingExpectedCompletions: 0,
+    expectedRenames: 0,
+    missingExpectedRenames: 0,
+    documentsWithSymbols: 0,
+    emptyDocumentSymbols: 0,
     hardFailures: 0,
   };
   const allFailures = [];
@@ -156,12 +171,27 @@ async function main() {
     totals.requests += result.requests;
     totals.expectedDefinitions += result.expectedDefinitions;
     totals.missingExpectedDefinitions += result.missingExpectedDefinitions;
+    totals.expectedOwnerDefinitions += result.expectedOwnerDefinitions;
+    totals.missingExpectedOwnerDefinitions += result.missingExpectedOwnerDefinitions;
+    totals.expectedReferences += result.expectedReferences;
+    totals.missingExpectedReferences += result.missingExpectedReferences;
+    totals.expectedHovers += result.expectedHovers;
+    totals.missingExpectedHovers += result.missingExpectedHovers;
+    totals.expectedSignatures += result.expectedSignatures;
+    totals.missingExpectedSignatures += result.missingExpectedSignatures;
+    totals.expectedCompletions += result.expectedCompletions;
+    totals.missingExpectedCompletions += result.missingExpectedCompletions;
+    totals.expectedRenames += result.expectedRenames;
+    totals.missingExpectedRenames += result.missingExpectedRenames;
+    totals.documentsWithSymbols += result.documentsWithSymbols;
+    totals.emptyDocumentSymbols += result.emptyDocumentSymbols;
     totals.hardFailures += result.failures.length;
     allFailures.push(...result.failures);
     allWarnings.push(...result.warnings);
     console.log(
       `${repoName}: ${result.files} files, ${result.requests} requests, ` +
-      `${result.expectedDefinitions - result.missingExpectedDefinitions}/${result.expectedDefinitions} expected defs`
+      `memberDefs=${passed(result.expectedDefinitions, result.missingExpectedDefinitions)} ` +
+      `refs=${passed(result.expectedReferences, result.missingExpectedReferences)}`
     );
   }
 
@@ -173,12 +203,34 @@ async function main() {
 
   console.log(
     `LSP dogfood: repos=${totals.repos} files=${totals.files} requests=${totals.requests} ` +
-    `expectedDefs=${totals.expectedDefinitions - totals.missingExpectedDefinitions}/${totals.expectedDefinitions}`
+    `memberDefs=${passed(totals.expectedDefinitions, totals.missingExpectedDefinitions)} ` +
+    `ownerDefs=${passed(totals.expectedOwnerDefinitions, totals.missingExpectedOwnerDefinitions)} ` +
+    `refs=${passed(totals.expectedReferences, totals.missingExpectedReferences)} ` +
+    `hovers=${passed(totals.expectedHovers, totals.missingExpectedHovers)} ` +
+    `signatures=${passed(totals.expectedSignatures, totals.missingExpectedSignatures)} ` +
+    `completions=${passed(totals.expectedCompletions, totals.missingExpectedCompletions)} ` +
+    `renames=${passed(totals.expectedRenames, totals.missingExpectedRenames)} ` +
+    `documentSymbols=${passed(totals.documentsWithSymbols, totals.emptyDocumentSymbols)}`
   );
 
   if (totals.hardFailures > 0 || (strict && totals.missingExpectedDefinitions > 0)) {
     process.exitCode = 1;
   }
+}
+
+function selectedRepoNames() {
+  if (args.allRepos) {
+    if (!fs.existsSync(fixturesRoot)) return [];
+    return fs.readdirSync(fixturesRoot, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name)
+      .sort();
+  }
+  return (args.repos ? args.repos.split(",") : defaultRepos).filter(Boolean);
+}
+
+function passed(total, missing) {
+  return `${total - missing}/${total}`;
 }
 
 async function dogfoodRepo(repoName, repoPath) {
@@ -190,9 +242,24 @@ async function dogfoodRepo(repoName, repoPath) {
     requests: 0,
     expectedDefinitions: 0,
     missingExpectedDefinitions: 0,
+    expectedOwnerDefinitions: 0,
+    missingExpectedOwnerDefinitions: 0,
+    expectedReferences: 0,
+    missingExpectedReferences: 0,
+    expectedHovers: 0,
+    missingExpectedHovers: 0,
+    expectedSignatures: 0,
+    missingExpectedSignatures: 0,
+    expectedCompletions: 0,
+    missingExpectedCompletions: 0,
+    expectedRenames: 0,
+    missingExpectedRenames: 0,
+    documentsWithSymbols: 0,
+    emptyDocumentSymbols: 0,
     failures: [],
     warnings: [],
   };
+  let renameChecks = 0;
 
   try {
     const init = await client.initialize();
@@ -209,9 +276,20 @@ async function dogfoodRepo(repoName, repoPath) {
     await sleep(150);
 
     for (const doc of docs) {
-      await safeRequest(result, repoName, doc, client, "textDocument/documentSymbol", {
+      const symbols = await safeRequest(result, repoName, doc, client, "textDocument/documentSymbol", {
         textDocument: { uri: doc.uri },
       });
+      const declarationPositions = declarationProbePositions(doc.text);
+      if (declarationPositions.length > 0) {
+        result.documentsWithSymbols += 1;
+        if (!Array.isArray(symbols) || symbols.length === 0) {
+          result.emptyDocumentSymbols += 1;
+          result.failures.push(
+            `${repoName}: empty document symbols for ${relative(repoPath, doc.file)}`
+          );
+        }
+      }
+
       await safeRequest(result, repoName, doc, client, "textDocument/foldingRange", {
         textDocument: { uri: doc.uri },
       });
@@ -219,32 +297,77 @@ async function dogfoodRepo(repoName, repoPath) {
         textDocument: { uri: doc.uri },
       });
 
-      for (const pos of declarationProbePositions(doc.text).slice(0, maxPerFile)) {
-        await safeRequest(result, repoName, doc, client, "textDocument/hover", {
+      for (const pos of declarationPositions.slice(0, maxPerFile)) {
+        const hover = await safeRequest(result, repoName, doc, client, "textDocument/hover", {
           textDocument: { uri: doc.uri },
           position: positionAt(doc.text, pos),
         });
+        result.expectedHovers += 1;
+        if (!hasHoverContent(hover)) {
+          result.missingExpectedHovers += 1;
+          result.failures.push(
+            `${repoName}: empty hover at declaration in ${relative(repoPath, doc.file)}`
+          );
+        }
       }
 
-      for (const pos of completionProbePositions(doc.text).slice(0, maxPerFile)) {
-        await safeRequest(result, repoName, doc, client, "textDocument/completion", {
+      for (const probe of completionProbes(doc.text).slice(0, maxPerFile)) {
+        const completion = await safeRequest(result, repoName, doc, client, "textDocument/completion", {
           textDocument: { uri: doc.uri },
-          position: positionAt(doc.text, pos),
+          position: positionAt(doc.text, probe.pos),
           context: { triggerKind: 1 },
         });
+        const labels = completionLabels(completion);
+        for (const label of probe.expectedLabels) {
+          result.expectedCompletions += 1;
+          if (!labels.has(label)) {
+            result.missingExpectedCompletions += 1;
+            result.failures.push(
+              `${repoName}: completion after ${probe.receiver}. missing ${label} in ` +
+              `${relative(repoPath, doc.file)}`
+            );
+          }
+        }
       }
 
       const qualified = qualifiedCallProbes(doc.text).slice(0, maxQualified);
       for (const probe of qualified) {
-        await safeRequest(result, repoName, doc, client, "textDocument/hover", {
+        const expectedMember = classIndex.hasMethod(probe.owner, probe.member);
+
+        if (classIndex.hasClass(probe.owner)) {
+          const ownerDef = await safeRequest(result, repoName, doc, client, "textDocument/definition", {
+            textDocument: { uri: doc.uri },
+            position: positionAt(doc.text, probe.ownerEnd),
+          });
+          result.expectedOwnerDefinitions += 1;
+          if (!ownerDef) {
+            result.missingExpectedOwnerDefinitions += 1;
+            result.failures.push(
+              `${repoName}: missing definition for owner ${probe.owner} in ` +
+              `${relative(repoPath, doc.file)}`
+            );
+          }
+        }
+
+        const hover = await safeRequest(result, repoName, doc, client, "textDocument/hover", {
           textDocument: { uri: doc.uri },
           position: positionAt(doc.text, probe.memberStart),
         });
+
         const def = await safeRequest(result, repoName, doc, client, "textDocument/definition", {
           textDocument: { uri: doc.uri },
           position: positionAt(doc.text, probe.memberEnd),
         });
-        if (classIndex.hasMethod(probe.owner, probe.member)) {
+        if (expectedMember) {
+          result.expectedHovers += 1;
+          if (!hasHoverContent(hover)) {
+            result.missingExpectedHovers += 1;
+            result.failures.push(
+              `${repoName}: empty hover for ${probe.owner}.${probe.member} in ` +
+              `${relative(repoPath, doc.file)}`
+            );
+          }
+
           result.expectedDefinitions += 1;
           if (!def) {
             result.missingExpectedDefinitions += 1;
@@ -253,11 +376,53 @@ async function dogfoodRepo(repoName, repoPath) {
             );
           }
         }
-        await safeRequest(result, repoName, doc, client, "textDocument/signatureHelp", {
+
+        const signature = await safeRequest(result, repoName, doc, client, "textDocument/signatureHelp", {
           textDocument: { uri: doc.uri },
           position: positionAt(doc.text, probe.callOpen + 1),
           context: { triggerKind: 1 },
         });
+        if (expectedMember) {
+          result.expectedSignatures += 1;
+          if (!hasSignature(signature)) {
+            result.missingExpectedSignatures += 1;
+            result.failures.push(
+              `${repoName}: missing signatureHelp for ${probe.owner}.${probe.member} in ` +
+              `${relative(repoPath, doc.file)}`
+            );
+          }
+
+          const refs = await safeRequest(result, repoName, doc, client, "textDocument/references", {
+            textDocument: { uri: doc.uri },
+            position: positionAt(doc.text, probe.memberEnd),
+            context: { includeDeclaration: true },
+          });
+          result.expectedReferences += 1;
+          if (!hasLocationAt(refs, doc.uri, positionAt(doc.text, probe.memberStart))) {
+            result.missingExpectedReferences += 1;
+            result.failures.push(
+              `${repoName}: references for ${probe.owner}.${probe.member} do not include use in ` +
+              `${relative(repoPath, doc.file)}`
+            );
+          }
+
+          if (renameChecks < maxRenames) {
+            renameChecks += 1;
+            const rename = await safeRequest(result, repoName, doc, client, "textDocument/rename", {
+              textDocument: { uri: doc.uri },
+              position: positionAt(doc.text, probe.memberEnd),
+              newName: "__apexgovDogfoodRename",
+            });
+            result.expectedRenames += 1;
+            if (!hasWorkspaceEdit(rename)) {
+              result.missingExpectedRenames += 1;
+              result.failures.push(
+                `${repoName}: rename returned no edits for ${probe.owner}.${probe.member} in ` +
+                `${relative(repoPath, doc.file)}`
+              );
+            }
+          }
+        }
       }
     }
   } finally {
@@ -322,14 +487,17 @@ function buildClassIndex(root) {
     const code = maskNonCode(text);
     for (const block of classBlocks(code)) {
       const methods = new Set();
-      for (const method of methodDeclarations(block.body)) methods.add(method);
+      for (const method of methodDeclarations(block.body)) methods.add(method.toLowerCase());
       classes.set(block.name.toLowerCase(), { name: block.name, file, methods });
     }
   }
   return {
+    hasClass(owner) {
+      return classes.has(owner.toLowerCase());
+    },
     hasMethod(owner, member) {
       const cls = classes.get(owner.toLowerCase());
-      return Boolean(cls && cls.methods.has(member));
+      return Boolean(cls && cls.methods.has(member.toLowerCase()));
     },
   };
 }
@@ -344,7 +512,7 @@ function classBlocks(text) {
     if (open < 0) continue;
     const close = matchingBrace(text, open);
     if (close < 0) continue;
-    out.push({ name, body: text.slice(open + 1, close) });
+    out.push({ name, body: text.slice(open + 1, close), bodyStart: open + 1 });
     re.lastIndex = close + 1;
   }
   return out;
@@ -365,7 +533,7 @@ function matchingBrace(text, open) {
 
 function methodDeclarations(text) {
   const out = [];
-  const re = /\b(?:public|private|protected|global|static|override|virtual|abstract|webservice|testMethod|final|\s)+(?:[A-Za-z_][A-Za-z0-9_.<>?,\s\[\]]*|void)\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(/g;
+  const re = /\b(?:public|private|protected|global|static|override|virtual|abstract|webservice|testMethod|final)\b(?:\s+(?:public|private|protected|global|static|override|virtual|abstract|webservice|testMethod|final))*\s+(?:[A-Za-z_][A-Za-z0-9_.<>?,\s\[\]]*|void)\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(/g;
   let match;
   while ((match = re.exec(text))) {
     const name = match[1];
@@ -383,18 +551,46 @@ function declarationProbePositions(text) {
   let match;
   while ((match = classRe.exec(code))) positions.push(match.index + match[0].lastIndexOf(match[1]));
 
-  const methodRe = /\b(?:public|private|protected|global|static|override|virtual|abstract|webservice|testMethod|final|\s)+(?:[A-Za-z_][A-Za-z0-9_.<>?,\s\[\]]*|void)\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(/g;
-  while ((match = methodRe.exec(code))) positions.push(match.index + match[0].lastIndexOf(match[1]));
+  const methodRe = /\b(?:public|private|protected|global|static|override|virtual|abstract|webservice|testMethod|final)\b(?:\s+(?:public|private|protected|global|static|override|virtual|abstract|webservice|testMethod|final))*\s+(?:[A-Za-z_][A-Za-z0-9_.<>?,\s\[\]]*|void)\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(/g;
+  for (const block of classBlocks(code)) {
+    methodRe.lastIndex = 0;
+    while ((match = methodRe.exec(block.body))) {
+      positions.push(block.bodyStart + match.index + match[0].lastIndexOf(match[1]));
+    }
+  }
   return positions;
 }
 
-function completionProbePositions(text) {
+function completionProbes(text) {
   const code = maskNonCode(text);
-  const positions = [];
+  const probes = [];
   const re = /\b(?:System|Schema|Type|Database|Limits|Account|Contact|String|Id)\./g;
   let match;
-  while ((match = re.exec(code))) positions.push(match.index + match[0].length);
-  return positions;
+  while ((match = re.exec(code))) {
+    const receiver = match[0].slice(0, -1);
+    const expectedLabels = completionExpectedLabels(receiver);
+    if (expectedLabels.length === 0) continue;
+    probes.push({
+      receiver,
+      expectedLabels,
+      pos: match.index + match[0].length,
+    });
+  }
+  return probes;
+}
+
+function completionExpectedLabels(receiver) {
+  switch (receiver.toLowerCase()) {
+    case "system": return ["debug"];
+    case "schema": return ["getGlobalDescribe"];
+    case "type": return ["forName"];
+    case "database": return ["query"];
+    case "limits": return ["getCpuTime"];
+    case "account": return ["Id", "Name", "getSObjectType"];
+    case "contact": return ["LastName", "Email"];
+    case "id": return ["getSObjectType"];
+    default: return [];
+  }
 }
 
 function qualifiedCallProbes(text) {
@@ -405,18 +601,76 @@ function qualifiedCallProbes(text) {
   while ((match = re.exec(code))) {
     const owner = match[1];
     const member = match[2];
+    if (match.index > 0 && (code[match.index - 1] === "." || code[match.index - 1] === "?")) {
+      continue;
+    }
     if (stdlibOwners.has(owner)) continue;
     const ownerStart = match.index;
     const memberStart = ownerStart + owner.length + 1;
     probes.push({
       owner,
       member,
+      ownerStart,
+      ownerEnd: ownerStart + owner.length,
       memberStart,
       memberEnd: memberStart + member.length,
       callOpen: match.index + match[0].lastIndexOf("("),
     });
   }
   return probes;
+}
+
+function hasHoverContent(hover) {
+  if (!hover || !hover.contents) return false;
+  if (typeof hover.contents === "string") return hover.contents.length > 0;
+  if (typeof hover.contents.value === "string") return hover.contents.value.length > 0;
+  if (Array.isArray(hover.contents)) return hover.contents.length > 0;
+  return false;
+}
+
+function hasSignature(signature) {
+  return Boolean(
+    signature &&
+    Array.isArray(signature.signatures) &&
+    signature.signatures.length > 0
+  );
+}
+
+function completionLabels(completion) {
+  const labels = new Set();
+  const items = Array.isArray(completion)
+    ? completion
+    : completion && Array.isArray(completion.items)
+      ? completion.items
+      : [];
+  for (const item of items) {
+    if (item && typeof item.label === "string") labels.add(item.label);
+  }
+  return labels;
+}
+
+function hasLocationAt(locations, uri, pos) {
+  if (!Array.isArray(locations)) return false;
+  return locations.some((loc) => (
+    loc &&
+    loc.uri === uri &&
+    loc.range &&
+    loc.range.start &&
+    loc.range.start.line === pos.line &&
+    loc.range.start.character === pos.character
+  ));
+}
+
+function hasWorkspaceEdit(edit) {
+  if (!edit || !edit.changes) return false;
+  if (Array.isArray(edit.changes.edits)) return edit.changes.edits.length > 0;
+  if (Array.isArray(edit.changes.entries)) {
+    return edit.changes.entries.some((entry) => Array.isArray(entry.edits) && entry.edits.length > 0);
+  }
+  if (typeof edit.changes === "object") {
+    return Object.values(edit.changes).some((edits) => Array.isArray(edits) && edits.length > 0);
+  }
+  return false;
 }
 
 function maskNonCode(text) {
@@ -510,9 +764,15 @@ function parseArgs(argv) {
     else if (arg === "--max-files") out.maxFiles = argv[++i];
     else if (arg === "--max-qualified") out.maxQualified = argv[++i];
     else if (arg === "--max-per-file") out.maxPerFile = argv[++i];
+    else if (arg === "--max-renames") out.maxRenames = argv[++i];
+    else if (arg === "--all-repos") out.allRepos = true;
     else if (arg === "--strict") out.strict = true;
     else if (arg === "--help" || arg === "-h") {
-      console.log("usage: node tools/lsp_dogfood.js [--server zig-out/bin/apexgov] [--repos a,b] [--strict]");
+      console.log(
+        "usage: node tools/lsp_dogfood.js [--server zig-out/bin/apexgov] " +
+        "[--repos a,b|--all-repos] [--max-files N] [--max-qualified N] " +
+        "[--max-per-file N] [--max-renames N] [--strict]"
+      );
       process.exit(0);
     } else {
       throw new Error(`unknown argument: ${arg}`);

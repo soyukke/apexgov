@@ -156,6 +156,26 @@ pub fn current_class_symbol_id(
     return owner_id;
 }
 
+pub fn resolve_top_level_type(
+    result: *const BindResult,
+    name: []const u8,
+) ?*const Symbol {
+    for (result.symbols) |*sym| {
+        if (sym.parent != null) continue;
+        if (!is_top_level_type(sym.kind)) continue;
+        if (!names_equal(sym.name, name)) continue;
+        return sym;
+    }
+    return null;
+}
+
+fn is_top_level_type(kind: SymbolKind) bool {
+    return switch (kind) {
+        .class, .interface, .enum_type, .trigger => true,
+        else => false,
+    };
+}
+
 fn is_class_member(kind: SymbolKind) bool {
     return switch (kind) {
         .method, .field, .constructor, .enum_value, .class, .interface, .enum_type => true,
@@ -165,7 +185,7 @@ fn is_class_member(kind: SymbolKind) bool {
 
 pub fn member_arity_matches(sym: *const Symbol, arg_count: ?u32) bool {
     const expected = arg_count orelse return true;
-    const actual = sym.param_count orelse return true;
+    const actual = sym.param_count orelse return false;
     return actual == expected;
 }
 
@@ -260,7 +280,7 @@ const Binder = struct {
     fn find_token_after(self: *Binder, min_offset: u32, name: []const u8) ?SourceLoc {
         for (self.tokens) |tok| {
             if (tok.loc.offset < min_offset) continue;
-            if (tok.kind == .identifier and std.mem.eql(u8, tok.lexeme, name)) {
+            if (token_can_name_symbol(tok) and names_equal(tok.lexeme, name)) {
                 return tok.loc;
             }
         }
@@ -656,6 +676,18 @@ const Binder = struct {
 
 };
 
+fn token_can_name_symbol(tok: Token) bool {
+    return switch (tok.kind) {
+        .identifier,
+        .when_kw,
+        .with_kw,
+        .without_kw,
+        .sharing_kw,
+        => true,
+        else => false,
+    };
+}
+
 // ---------------------------------------------------------------------------
 // テスト
 // ---------------------------------------------------------------------------
@@ -722,6 +754,20 @@ test "creates symbol for method with return type" {
     try std.testing.expectEqual(SymbolKind.method, sym.?.kind);
     try std.testing.expect(sym.?.type_name != null);
     try std.testing.expectEqualStrings("String", sym.?.type_name.?);
+}
+
+test "keyword member name uses keyword token location" {
+    const source =
+        "public class Foo { public ITestDataBuilder with(SObjectField field) { return null; } }";
+    var ctx = try bind_source(source);
+    defer ctx.deinit();
+
+    const sym = find_symbol(&ctx.result, "with");
+    try std.testing.expect(sym != null);
+    try std.testing.expectEqual(
+        @as(u32, @intCast(std.mem.indexOf(u8, source, "with(").?)),
+        sym.?.loc.offset,
+    );
 }
 
 test "creates symbol for field with type" {

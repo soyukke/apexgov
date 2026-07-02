@@ -69,6 +69,10 @@ lsp-smoke: build-fast
 lsp-dogfood: build-fast
     node tools/lsp_dogfood.js --server ./zig-out/bin/apexgov
 
+# Deeper LSP dogfood sweep over every local Apex fixture repository
+lsp-dogfood-deep: build-fast
+    node tools/lsp_dogfood.js --server ./zig-out/bin/apexgov --all-repos --max-files 30 --max-qualified 35 --max-per-file 8 --max-renames 20 --strict
+
 # VS Code extension package
 vsce-package:
     #!/usr/bin/env bash

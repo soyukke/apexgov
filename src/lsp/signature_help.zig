@@ -225,6 +225,46 @@ test "cross-file helper resolves later same-class member call" {
     try std.testing.expectEqualStrings("String label", result.?.signatures[0].parameters[0].label);
 }
 
+test "cross-file qualified call ignores same-named field for signature" {
+    var store = DocumentStore.init(std.testing.allocator);
+    defer store.deinit();
+
+    try store.open("file:///ADV_PackageInfo_SVC.cls", 1,
+        \\public class ADV_PackageInfo_SVC {
+        \\    private static Boolean useAdv = false;
+        \\    public static Boolean useAdv() { return useAdv; }
+        \\}
+    );
+    const source =
+        \\public class Main {
+        \\    void run() {
+        \\        if (ADV_PackageInfo_SVC.useAdv()) return;
+        \\    }
+        \\}
+    ;
+    try store.open("file:///Main.cls", 1, source);
+    const cached = try store.ensure_parsed("file:///Main.cls") orelse unreachable;
+    const br = try store.ensure_bound("file:///Main.cls") orelse unreachable;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const offset: u32 = @intCast(std.mem.indexOf(u8, source, "useAdv()").? + "useAdv(".len);
+    const result = try get_signature_help_cross_file(
+        br,
+        cached.tokens,
+        source,
+        "file:///Main.cls",
+        offset,
+        &store,
+        arena.allocator(),
+    );
+
+    try std.testing.expect(result != null);
+    try std.testing.expectEqual(@as(usize, 1), result.?.signatures.len);
+    try std.testing.expectEqualStrings("Boolean useAdv(...)", result.?.signatures[0].label);
+}
+
 test "outside call returns null" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

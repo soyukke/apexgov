@@ -75,7 +75,12 @@ pub fn get_definition_cross_file(
         return location_for_symbol(sym, source, uri);
     }
 
-    // 6. ワークスペース内の他ファイルで検索
+    // 6. 同一ファイル内のトップレベル型を検索
+    if (binder_mod.resolve_top_level_type(result, name)) |sym| {
+        return location_for_symbol(sym, source, uri);
+    }
+
+    // 7. ワークスペース内の他ファイルで検索
     const match = store.resolve_symbol_across_files(name, uri) orelse return null;
     return location_for_symbol(&match.symbol, match.source, match.uri);
 }
@@ -343,6 +348,44 @@ test "cross-file: qualified method definition at token end before spaced call" {
     try std.testing.expectEqualStrings("file:///UTIL_RecordTypes.cls", loc.?.uri);
 }
 
+test "cross-file: qualified call prefers method over same-named field" {
+    var store = DocumentStore.init(std.testing.allocator);
+    defer store.deinit();
+
+    try store.open("file:///ADV_PackageInfo_SVC.cls", 1,
+        \\public class ADV_PackageInfo_SVC {
+        \\    private static Boolean useAdv = false;
+        \\    public static Boolean useAdv() { return useAdv; }
+        \\}
+    );
+    const main_source =
+        \\public class Main {
+        \\    void run() {
+        \\        if (ADV_PackageInfo_SVC.useAdv()) return;
+        \\    }
+        \\}
+    ;
+    try store.open("file:///Main.cls", 1, main_source);
+
+    const main_cached = try store.ensure_parsed("file:///Main.cls") orelse unreachable;
+    const main_br = try store.ensure_bound("file:///Main.cls") orelse unreachable;
+    const offset: u32 = @intCast(
+        std.mem.indexOf(u8, main_source, "useAdv").? + "useAdv".len,
+    );
+
+    const loc = get_definition_cross_file(
+        main_br,
+        main_cached.tokens,
+        main_source,
+        "file:///Main.cls",
+        offset,
+        &store,
+    );
+    try std.testing.expect(loc != null);
+    try std.testing.expectEqualStrings("file:///ADV_PackageInfo_SVC.cls", loc.?.uri);
+    try std.testing.expectEqual(@as(u32, 26), loc.?.range.start.character);
+}
+
 test "same-file: jump to later AuraEnabled static class member" {
     var store = DocumentStore.init(std.testing.allocator);
     defer store.deinit();
@@ -376,6 +419,39 @@ test "same-file: jump to later AuraEnabled static class member" {
     try std.testing.expect(loc != null);
     try std.testing.expectEqualStrings("file:///Main.cls", loc.?.uri);
     try std.testing.expectEqual(@as(u32, 32), loc.?.range.start.character);
+}
+
+test "same-file: jump to top-level class receiver" {
+    var store = DocumentStore.init(std.testing.allocator);
+    defer store.deinit();
+
+    const source =
+        \\public class RestRoute {
+        \\    public void run() {
+        \\        throw new RestRoute.RouteNotFoundException();
+        \\    }
+        \\    public class RouteNotFoundException extends Exception {}
+        \\}
+    ;
+    try store.open("file:///RestRoute.cls", 1, source);
+
+    const cached = try store.ensure_parsed("file:///RestRoute.cls") orelse unreachable;
+    const br = try store.ensure_bound("file:///RestRoute.cls") orelse unreachable;
+    const offset: u32 = @intCast(
+        std.mem.indexOf(u8, source, "RestRoute.RouteNotFoundException").? + "RestRoute".len,
+    );
+
+    const loc = get_definition_cross_file(
+        br,
+        cached.tokens,
+        source,
+        "file:///RestRoute.cls",
+        offset,
+        &store,
+    );
+    try std.testing.expect(loc != null);
+    try std.testing.expectEqualStrings("file:///RestRoute.cls", loc.?.uri);
+    try std.testing.expectEqual(@as(u32, 13), loc.?.range.start.character);
 }
 
 test "same-file: this field jumps to class field" {

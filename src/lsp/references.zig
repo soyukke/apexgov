@@ -93,6 +93,14 @@ pub fn get_references_cross_file(
         store,
         allocator,
     );
+
+    try append_top_level_type_token_references(
+        &locations,
+        target,
+        include_declaration,
+        store,
+        allocator,
+    );
     return locations.toOwnedSlice(allocator);
 }
 
@@ -113,13 +121,7 @@ fn resolve_reference_target(
     store: *DocumentStore,
 ) !?ReferenceTarget {
     if (binder_mod.symbol_at_position(result, offset)) |sym| {
-        return .{
-            .uri = uri,
-            .source = source,
-            .tokens = tokens,
-            .bind_result = result,
-            .symbol = sym.*,
-        };
+        return target_from_current(result, tokens, source, uri, sym);
     }
 
     if (position_mod.this_member_at_offset(tokens, offset)) |member| {
@@ -130,13 +132,7 @@ fn resolve_reference_target(
             member.member_name,
             arg_count,
         )) |sym| {
-            return .{
-                .uri = uri,
-                .source = source,
-                .tokens = tokens,
-                .bind_result = result,
-                .symbol = sym.*,
-            };
+            return target_from_current(result, tokens, source, uri, sym);
         }
     }
 
@@ -155,13 +151,11 @@ fn resolve_reference_target(
     const name = position_mod.identifier_at_offset(tokens, offset) orelse return null;
     const arg_count = position_mod.call_arg_count_at_offset(tokens, offset);
     if (binder_mod.resolve_current_class_member_with_arity(result, offset, name, arg_count)) |sym| {
-        return .{
-            .uri = uri,
-            .source = source,
-            .tokens = tokens,
-            .bind_result = result,
-            .symbol = sym.*,
-        };
+        return target_from_current(result, tokens, source, uri, sym);
+    }
+
+    if (binder_mod.resolve_top_level_type(result, name)) |sym| {
+        return target_from_current(result, tokens, source, uri, sym);
     }
 
     if (store.resolve_symbol_across_files(name, uri)) |match| {
@@ -169,6 +163,22 @@ fn resolve_reference_target(
     }
 
     return null;
+}
+
+fn target_from_current(
+    result: *const binder_mod.BindResult,
+    tokens: []const parser_types.Token,
+    source: []const u8,
+    uri: []const u8,
+    sym: *const binder_mod.Symbol,
+) ReferenceTarget {
+    return .{
+        .uri = uri,
+        .source = source,
+        .tokens = tokens,
+        .bind_result = result,
+        .symbol = sym.*,
+    };
 }
 
 fn target_from_match(
@@ -236,6 +246,52 @@ fn append_top_level_type_references(
             );
         }
     }
+}
+
+fn append_top_level_type_token_references(
+    locations: *std.ArrayList(lsp_types.Location),
+    target: ReferenceTarget,
+    include_declaration: bool,
+    store: *DocumentStore,
+    allocator: std.mem.Allocator,
+) !void {
+    if (!is_top_level_type(target.symbol.kind)) return;
+
+    var it = store.documents.iterator();
+    while (it.next()) |entry| {
+        const doc = entry.value_ptr;
+        const cached = try store.ensure_parsed(doc.uri) orelse continue;
+        for (cached.tokens, 0..) |tok, i| {
+            if (!is_top_level_type_token_ref(cached.tokens, i, target)) continue;
+            if (is_target_definition_token(doc.uri, tok, target) and !include_declaration) {
+                continue;
+            }
+            try append_location_unique(
+                locations,
+                location_for_token(doc.uri, doc.text, tok),
+                allocator,
+            );
+        }
+    }
+}
+
+fn is_top_level_type_token_ref(
+    tokens: []const parser_types.Token,
+    index: usize,
+    target: ReferenceTarget,
+) bool {
+    const tok = tokens[index];
+    return tok.kind == .identifier and
+        binder_mod.names_equal(tok.lexeme, target.symbol.name) and
+        !is_member_name_token(tokens, index);
+}
+
+fn is_target_definition_token(
+    uri: []const u8,
+    tok: parser_types.Token,
+    target: ReferenceTarget,
+) bool {
+    return std.mem.eql(u8, uri, target.uri) and tok.loc.offset == target.symbol.loc.offset;
 }
 
 fn append_member_token_references(
@@ -344,6 +400,12 @@ fn is_bare_member_reference(tokens: []const parser_types.Token, index: usize) bo
         if (prev == .dot or prev == .question_dot) return false;
     }
     return true;
+}
+
+fn is_member_name_token(tokens: []const parser_types.Token, index: usize) bool {
+    if (index == 0) return false;
+    const prev = tokens[index - 1].kind;
+    return prev == .dot or prev == .question_dot;
 }
 
 fn is_call_token(tokens: []const parser_types.Token, index: usize) bool {
@@ -536,6 +598,40 @@ test "cross-file: finds references in other files" {
 
     // Helper.cls 内の定義 (少なくとも 1 つ)
     try std.testing.expect(locs.len >= 1);
+}
+
+test "same-file: finds top-level class receiver references" {
+    var store = DocumentStore.init(std.testing.allocator);
+    defer store.deinit();
+
+    const source =
+        \\public class RestRoute {
+        \\    public void run() {
+        \\        throw new RestRoute.RouteNotFoundException();
+        \\    }
+        \\    public class RouteNotFoundException extends Exception {}
+        \\}
+    ;
+    try store.open("file:///RestRoute.cls", 1, source);
+    const cached = try store.ensure_parsed("file:///RestRoute.cls") orelse unreachable;
+    const br = try store.ensure_bound("file:///RestRoute.cls") orelse unreachable;
+    const offset: u32 = @intCast(
+        std.mem.indexOf(u8, source, "RestRoute.RouteNotFoundException").?,
+    );
+
+    const locs = try get_references_cross_file(
+        br,
+        cached.tokens,
+        source,
+        "file:///RestRoute.cls",
+        offset,
+        true,
+        &store,
+        std.testing.allocator,
+    );
+    defer std.testing.allocator.free(locs);
+
+    try std.testing.expect(locs.len >= 2);
 }
 
 test "same-file: finds bare same-class method references from definition" {
