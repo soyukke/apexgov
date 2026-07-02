@@ -32847,13 +32847,6 @@ pub const Evaluator = struct {
         method_name: []const u8,
         args: []const Value,
     ) !?Value {
-        if (try self.eval_fflib_sample_service_static_method(
-            class_name,
-            method_name,
-            args,
-        )) |result| {
-            return result;
-        }
         if (try self.eval_connect_api_helper_static_method(
             class_name,
             method_name,
@@ -32893,49 +32886,6 @@ pub const Evaluator = struct {
                 .eq => 0,
                 .gt => 1,
             } };
-        }
-        return null;
-    }
-
-    fn eval_fflib_sample_service_static_method(
-        self: *Evaluator,
-        class_name: []const u8,
-        method_name: []const u8,
-        args: []const Value,
-    ) !?Value {
-        if (std.ascii.eqlIgnoreCase(class_name, "OpportunitiesService")) {
-            if (try self.fflib_registered_stub_by_type_name("IOpportunitiesService")) |service| {
-                return try self.eval_instance_method(
-                    service,
-                    method_name,
-                    args,
-                    self.global_env,
-                );
-            }
-        }
-        if (std.ascii.eqlIgnoreCase(class_name, "OpportunitiesSelector") and
-            std.ascii.eqlIgnoreCase(method_name, "newInstance"))
-        {
-            if (try self.fflib_registered_stub_by_type_name("IOpportunitiesSelector")) |selector| {
-                return selector;
-            }
-        }
-        if (std.ascii.eqlIgnoreCase(class_name, "Opportunities") and
-            std.ascii.eqlIgnoreCase(method_name, "newInstance"))
-        {
-            if (try self.fflib_registered_stub_by_type_name("IOpportunities")) |domain| {
-                return domain;
-            }
-        }
-        if (std.ascii.eqlIgnoreCase(class_name, "InvoicingService")) {
-            if (try self.fflib_registered_stub_by_type_name("IInvoicingService")) |service| {
-                return try self.eval_instance_method(
-                    service,
-                    method_name,
-                    args,
-                    self.global_env,
-                );
-            }
         }
         return null;
     }
