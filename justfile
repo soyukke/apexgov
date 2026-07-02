@@ -61,6 +61,10 @@ test-fixtures:
 build-fast:
     zig build -Doptimize=ReleaseFast
 
+# LSP JSON-RPC smoke/regression suite
+lsp-smoke: build-fast
+    node tools/lsp_smoke.js --server ./zig-out/bin/apexgov
+
 # 単一リポジトリで interpret test を実行 (time -l で計測)
 # usage: just bench NebulaLogger
 bench REPO: build-fast
