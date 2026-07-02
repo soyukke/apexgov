@@ -345,14 +345,27 @@ pub const WorkspaceEdit = struct {
     pub const ChangeMap = struct {
         uri: []const u8 = "",
         edits: []const TextEdit = &.{},
+        entries: []const ChangeEntry = &.{},
+
+        pub const ChangeEntry = struct {
+            uri: []const u8 = "",
+            edits: []const TextEdit = &.{},
+        };
 
         pub fn jsonStringify(
             self: ChangeMap,
             jw: *std.json.Stringify,
         ) std.json.Stringify.Error!void {
             try jw.beginObject();
-            try jw.objectField(self.uri);
-            try jw.write(self.edits);
+            if (self.entries.len > 0) {
+                for (self.entries) |entry| {
+                    try jw.objectField(entry.uri);
+                    try jw.write(entry.edits);
+                }
+            } else {
+                try jw.objectField(self.uri);
+                try jw.write(self.edits);
+            }
             try jw.endObject();
         }
     };

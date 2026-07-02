@@ -266,13 +266,29 @@ async function checkWorkspaceSymbol(client, report) {
 
 async function checkRename(client, docs, report) {
   const foo = docs[0];
-  const edit = await client.request("textDocument/rename", {
+  const localEdit = await client.request("textDocument/rename", {
     textDocument: { uri: foo.uri },
     position: positionOf(foo.text, "localValue = 1"),
     newName: "renamedLocal",
   });
-  const edits = edit && edit.changes && edit.changes[foo.uri];
-  assertEqual(edits.length, 3, "local variable rename edit count");
+  const localEdits = localEdit && localEdit.changes && localEdit.changes[foo.uri];
+  assertEqual(localEdits.length, 3, "local variable rename edit count");
+
+  const memberEdit = await client.request("textDocument/rename", {
+    textDocument: { uri: foo.uri },
+    position: positionOf(foo.text, "helper(String label)"),
+    newName: "renamedHelper",
+  });
+  assertEqual(
+    editCount(memberEdit, foo.uri),
+    4,
+    "same-file member rename edit count"
+  );
+  assertEqual(
+    editCount(memberEdit, docs[1].uri),
+    1,
+    "cross-file member rename edit count"
+  );
   report.push("rename: OK");
 }
 
@@ -389,6 +405,11 @@ function assertLine(location, expectedDoc, expectedNeedle, label) {
     positionOf(expectedDoc.text, expectedNeedle).line,
     `${label}: line`
   );
+}
+
+function editCount(edit, uri) {
+  const edits = edit && edit.changes && edit.changes[uri];
+  return Array.isArray(edits) ? edits.length : 0;
 }
 
 function positionOf(text, needle) {

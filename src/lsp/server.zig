@@ -640,12 +640,18 @@ pub const Server = struct {
             return;
         };
         const doc = self.store.get(ctx.uri) orelse return;
-        const edit = try rename_mod.get_rename_edits(
+        const cached = try self.store.ensure_parsed(ctx.uri) orelse {
+            try self.transport.send_response(self.allocator, id, null);
+            return;
+        };
+        const edit = try rename_mod.get_rename_edits_cross_file(
             br,
+            cached.tokens,
             doc.text,
             ctx.uri,
             ctx.offset,
             new_name,
+            &self.store,
             self.allocator,
         );
         try self.transport.send_response(self.allocator, id, edit);
