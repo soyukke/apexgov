@@ -183,7 +183,7 @@ pub const DocumentStore = struct {
             const doc = entry.value_ptr;
             const br = self.ensure_bound(doc.uri) catch continue orelse continue;
             for (br.symbols) |sym| {
-                if (is_top_level_type(sym.kind) and std.mem.eql(u8, sym.name, name)) {
+                if (is_top_level_type(sym.kind) and binder_mod.names_equal(sym.name, name)) {
                     return .{
                         .uri = entry.key_ptr.*,
                         .symbol = sym,
@@ -246,7 +246,7 @@ pub const DocumentStore = struct {
 
         var owner_id: ?binder_mod.SymbolId = null;
         for (br.symbols) |sym| {
-            if (is_top_level_type(sym.kind) and std.mem.eql(u8, sym.name, owner_name)) {
+            if (is_top_level_type(sym.kind) and binder_mod.names_equal(sym.name, owner_name)) {
                 owner_id = sym.id;
                 break;
             }
@@ -254,7 +254,7 @@ pub const DocumentStore = struct {
         const parent_id = owner_id orelse return null;
 
         for (br.symbols) |sym| {
-            if (sym.parent == parent_id and std.mem.eql(u8, sym.name, member_name)) {
+            if (sym.parent == parent_id and binder_mod.names_equal(sym.name, member_name)) {
                 if (!binder_mod.member_arity_matches(&sym, arg_count)) continue;
                 return .{ .uri = doc.uri, .symbol = sym, .source = doc.text };
             }
@@ -346,6 +346,27 @@ test "resolve_member_across_files finds class method" {
     try std.testing.expectEqualStrings("file:///Helper.cls", match.?.uri);
     try std.testing.expectEqualStrings("doWork", match.?.symbol.name);
     try std.testing.expectEqualStrings("String", match.?.symbol.type_name.?);
+}
+
+test "resolve_member_across_files is case-insensitive" {
+    var store = DocumentStore.init(std.testing.allocator);
+    defer store.deinit();
+
+    try store.open("file:///CRLP_RollupCMT_TEST.cls", 1,
+        \\public class CRLP_RollupCMT_TEST {
+        \\    public static String generateRollup() { return null; }
+        \\}
+    );
+    try store.open("file:///Main.cls", 1, "public class Main { }");
+
+    const match = store.resolve_member_across_files(
+        "CRLP_RollupCMT_Test",
+        "generateRollup",
+        "file:///Main.cls",
+    );
+    try std.testing.expect(match != null);
+    try std.testing.expectEqualStrings("file:///CRLP_RollupCMT_TEST.cls", match.?.uri);
+    try std.testing.expectEqualStrings("generateRollup", match.?.symbol.name);
 }
 
 test "resolve_symbol_across_files excludes current file" {

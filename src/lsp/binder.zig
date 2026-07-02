@@ -61,6 +61,10 @@ pub const BindResult = struct {
     references: []Reference,
 };
 
+pub fn names_equal(a: []const u8, b: []const u8) bool {
+    return std.ascii.eqlIgnoreCase(a, b);
+}
+
 /// AST を解析してシンボルテーブルと参照リストを構築する。
 pub fn bind(
     decls: []const ast.Decl,
@@ -127,7 +131,7 @@ pub fn resolve_current_class_member_with_arity(
     for (result.symbols) |*sym| {
         if (sym.parent == null or sym.parent.? != owner_id) continue;
         if (!is_class_member(sym.kind)) continue;
-        if (!std.mem.eql(u8, sym.name, member_name)) continue;
+        if (!names_equal(sym.name, member_name)) continue;
         if (!member_arity_matches(sym, arg_count)) continue;
         return sym;
     }
@@ -314,7 +318,7 @@ const Binder = struct {
                     i -= 1;
                     const sym_id = scope.symbol_ids.items[i];
                     if (sym_id < self.symbols.items.len) {
-                        if (std.mem.eql(u8, self.symbols.items[sym_id].name, name)) {
+                        if (names_equal(self.symbols.items[sym_id].name, name)) {
                             return sym_id;
                         }
                     }
@@ -769,6 +773,20 @@ test "identifier creates reference to variable" {
     const sym = find_symbol(&ctx.result, "x");
     try std.testing.expect(sym != null);
     // x の定義 + 使用 = 2 references
+    const refs = try filter_references(&ctx.result, sym.?.id, std.testing.allocator);
+    defer std.testing.allocator.free(refs);
+
+    try std.testing.expectEqual(@as(usize, 2), refs.len);
+}
+
+test "identifier references are case-insensitive" {
+    var ctx = try bind_source(
+        "public class Foo { public void run() { Integer Value = 1; Integer y = value; } }",
+    );
+    defer ctx.deinit();
+
+    const sym = find_symbol(&ctx.result, "Value");
+    try std.testing.expect(sym != null);
     const refs = try filter_references(&ctx.result, sym.?.id, std.testing.allocator);
     defer std.testing.allocator.free(refs);
 

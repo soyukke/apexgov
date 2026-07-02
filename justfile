@@ -65,6 +65,10 @@ build-fast:
 lsp-smoke: build-fast
     node tools/lsp_smoke.js --server ./zig-out/bin/apexgov
 
+# Fixture-backed LSP dogfood sweep across real Apex repositories
+lsp-dogfood: build-fast
+    node tools/lsp_dogfood.js --server ./zig-out/bin/apexgov
+
 # VS Code extension package
 vsce-package:
     #!/usr/bin/env bash

@@ -39,7 +39,7 @@ fn identifier_token_contains(
 
     if (index + 1 >= tokens.len) return true;
     const next = tokens[index + 1];
-    if (next.loc.offset != end) return false;
+    if (next.loc.offset != end) return next.kind == .lparen;
     return next.kind != .identifier;
 }
 
@@ -99,35 +99,142 @@ pub fn call_arg_count_at_token_index(
 ) ?u32 {
     if (index + 1 >= tokens.len or tokens[index + 1].kind != .lparen) return null;
 
-    var depth: u32 = 0;
-    var comma_count: u32 = 0;
-    var has_arg_token = false;
-    for (tokens[index + 1 ..]) |tok| {
+    return count_call_args_after_open_paren(tokens, index + 1);
+}
+
+const ArgCountState = struct {
+    paren_depth: u32 = 0,
+    brace_depth: u32 = 0,
+    bracket_depth: u32 = 0,
+    angle_depth: u32 = 0,
+    comma_count: u32 = 0,
+    has_arg_token: bool = false,
+
+    fn mark_arg(self: *ArgCountState) void {
+        if (self.paren_depth > 0) self.has_arg_token = true;
+    }
+
+    fn top_level_call_arg(self: ArgCountState) bool {
+        return self.paren_depth == 1 and self.brace_depth == 0 and
+            self.bracket_depth == 0 and self.angle_depth == 0;
+    }
+
+    fn finish(self: ArgCountState) u32 {
+        return if (self.has_arg_token) self.comma_count + 1 else 0;
+    }
+};
+
+fn count_call_args_after_open_paren(
+    tokens: []const parser_types.Token,
+    open_index: usize,
+) ?u32 {
+    var state = ArgCountState{};
+    for (tokens[open_index..], open_index..) |tok, tok_index| {
         switch (tok.kind) {
-            .lparen => {
-                depth += 1;
-                if (depth > 1) has_arg_token = true;
-            },
-            .rparen => {
-                if (depth == 0) return null;
-                if (depth == 1) return if (has_arg_token) comma_count + 1 else 0;
-                depth -= 1;
-                has_arg_token = true;
-            },
-            .comma => {
-                if (depth == 1) {
-                    comma_count += 1;
-                } else if (depth > 1) {
-                    has_arg_token = true;
-                }
-            },
+            .lparen => handle_lparen(&state),
+            .rparen => if (handle_rparen(&state)) |count| return count,
+            .lbrace => handle_lbrace(&state),
+            .rbrace => handle_rbrace(&state),
+            .lbracket => handle_lbracket(&state),
+            .rbracket => handle_rbracket(&state),
+            .lt => handle_lt(&state, tokens, tok_index),
+            .gt => handle_gt(&state),
+            .comma => handle_comma(&state),
             .eof => return null,
-            else => {
-                if (depth > 0) has_arg_token = true;
-            },
+            else => state.mark_arg(),
         }
     }
     return null;
+}
+
+fn handle_lparen(state: *ArgCountState) void {
+    if (state.angle_depth == 0) {
+        state.paren_depth += 1;
+        if (state.paren_depth > 1) state.has_arg_token = true;
+    } else {
+        state.has_arg_token = true;
+    }
+}
+
+fn handle_rparen(state: *ArgCountState) ?u32 {
+    if (state.paren_depth == 0) return null;
+    if (state.angle_depth == 0 and state.brace_depth == 0 and state.bracket_depth == 0) {
+        if (state.paren_depth == 1) return state.finish();
+        state.paren_depth -= 1;
+    }
+    state.has_arg_token = true;
+    return null;
+}
+
+fn handle_lbrace(state: *ArgCountState) void {
+    if (state.paren_depth > 0 and state.angle_depth == 0) state.brace_depth += 1;
+    state.has_arg_token = true;
+}
+
+fn handle_rbrace(state: *ArgCountState) void {
+    if (state.brace_depth > 0) state.brace_depth -= 1;
+    state.has_arg_token = true;
+}
+
+fn handle_lbracket(state: *ArgCountState) void {
+    if (state.paren_depth > 0 and state.angle_depth == 0) state.bracket_depth += 1;
+    state.has_arg_token = true;
+}
+
+fn handle_rbracket(state: *ArgCountState) void {
+    if (state.bracket_depth > 0) state.bracket_depth -= 1;
+    state.has_arg_token = true;
+}
+
+fn handle_lt(
+    state: *ArgCountState,
+    tokens: []const parser_types.Token,
+    tok_index: usize,
+) void {
+    if (state.paren_depth > 0 and state.brace_depth == 0 and state.bracket_depth == 0 and
+        looks_like_type_argument_start(tokens, tok_index))
+    {
+        state.angle_depth += 1;
+    }
+    state.has_arg_token = true;
+}
+
+fn handle_gt(state: *ArgCountState) void {
+    if (state.angle_depth > 0) state.angle_depth -= 1;
+    state.has_arg_token = true;
+}
+
+fn handle_comma(state: *ArgCountState) void {
+    if (state.top_level_call_arg()) {
+        state.comma_count += 1;
+    } else if (state.paren_depth > 0) {
+        state.has_arg_token = true;
+    }
+}
+
+fn looks_like_type_argument_start(tokens: []const parser_types.Token, lt_index: usize) bool {
+    if (lt_index == 0) return false;
+    const prev = tokens[lt_index - 1];
+    if (prev.kind != .identifier and prev.kind != .gt) return false;
+
+    var depth: u32 = 0;
+    for (tokens[lt_index + 1 ..]) |tok| {
+        switch (tok.kind) {
+            .lt => depth += 1,
+            .gt => {
+                if (depth == 0) return true;
+                depth -= 1;
+            },
+            .comma,
+            .dot,
+            .identifier,
+            .lbracket,
+            .rbracket,
+            => {},
+            else => return false,
+        }
+    }
+    return false;
 }
 
 /// SourceLoc → LSP Range（開始位置のみ、終了位置は同一点）。
@@ -327,6 +434,23 @@ test "qualified_member_at_offset finds member at token end before call" {
     try std.testing.expectEqual(@as(?u32, 0), call_arg_count_at_offset(tokens, offset));
 }
 
+test "qualified_member_at_offset finds member at token end before spaced call" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const source = "UTIL_RecordTypes.getRecordTypeId (Opportunity.SObjectType, recordTypeName);";
+    const tokens = try lexer.tokenize(source, arena.allocator());
+    const offset: u32 = @intCast(
+        std.mem.indexOf(u8, source, "getRecordTypeId").? + "getRecordTypeId".len,
+    );
+    const member = qualified_member_at_offset(tokens, offset);
+
+    try std.testing.expect(member != null);
+    try std.testing.expectEqualStrings("UTIL_RecordTypes", member.?.receiver_name);
+    try std.testing.expectEqualStrings("getRecordTypeId", member.?.member_name);
+    try std.testing.expectEqual(@as(?u32, 2), call_arg_count_at_offset(tokens, offset));
+}
+
 test "qualified_member_at_offset ignores receiver identifier" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -362,4 +486,32 @@ test "call_arg_count_at_offset counts method arguments" {
 
     try std.testing.expectEqual(@as(?u32, 2), call_arg_count_at_offset(tokens, helper_offset));
     try std.testing.expectEqual(@as(?u32, 0), call_arg_count_at_offset(tokens, empty_offset));
+}
+
+test "call_arg_count_at_offset ignores generic commas in map literal argument" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const source =
+        \\RestRouteTestUtil.setupRestContext(
+        \\    path,
+        \\    uri,
+        \\    new Map<String, String>{ 'expand' => '1' }
+        \\);
+    ;
+    const tokens = try lexer.tokenize(source, arena.allocator());
+    const offset: u32 = @intCast(std.mem.indexOf(u8, source, "setupRestContext").?);
+
+    try std.testing.expectEqual(@as(?u32, 3), call_arg_count_at_offset(tokens, offset));
+}
+
+test "call_arg_count_at_offset ignores collection literal commas" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const source = "helper(new List<String>{ 'a', 'b' }, second);";
+    const tokens = try lexer.tokenize(source, arena.allocator());
+    const offset: u32 = @intCast(std.mem.indexOf(u8, source, "helper").?);
+
+    try std.testing.expectEqual(@as(?u32, 2), call_arg_count_at_offset(tokens, offset));
 }

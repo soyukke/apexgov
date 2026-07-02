@@ -224,7 +224,7 @@ fn append_top_level_type_references(
         const pr = doc.parse_result orelse continue;
         const br = pr.bind_result orelse continue;
         for (br.symbols) |other_sym| {
-            if (!std.mem.eql(u8, other_sym.name, target.symbol.name)) continue;
+            if (!binder_mod.names_equal(other_sym.name, target.symbol.name)) continue;
             try append_bound_references(
                 locations,
                 &br,
@@ -285,7 +285,7 @@ fn append_member_refs_in_doc(
 ) !void {
     for (tokens, 0..) |tok, i| {
         if (tok.kind != .identifier) continue;
-        if (!std.mem.eql(u8, tok.lexeme, target_symbol.name)) continue;
+        if (!binder_mod.names_equal(tok.lexeme, target_symbol.name)) continue;
 
         const is_definition = tok.loc.offset == target_symbol.loc.offset;
         if (is_definition) {
@@ -335,7 +335,7 @@ fn is_qualified_member_reference(
     if (dot != .dot and dot != .question_dot) return false;
     const receiver = tokens[index - 2];
     if (receiver.kind == .this_kw) return true;
-    return receiver.kind == .identifier and std.mem.eql(u8, receiver.lexeme, owner_name);
+    return receiver.kind == .identifier and binder_mod.names_equal(receiver.lexeme, owner_name);
 }
 
 fn is_bare_member_reference(tokens: []const parser_types.Token, index: usize) bool {
@@ -365,7 +365,7 @@ fn owner_id_in_document(
     owner_name: []const u8,
 ) ?binder_mod.SymbolId {
     for (result.symbols) |sym| {
-        if (is_top_level_type(sym.kind) and std.mem.eql(u8, sym.name, owner_name)) {
+        if (is_top_level_type(sym.kind) and binder_mod.names_equal(sym.name, owner_name)) {
             return sym.id;
         }
     }
@@ -604,6 +604,39 @@ test "same-file: finds same-class method references from bare call" {
     defer std.testing.allocator.free(locs);
 
     try std.testing.expectEqual(@as(usize, 4), locs.len);
+}
+
+test "cross-file: member references are case-insensitive" {
+    var store = DocumentStore.init(std.testing.allocator);
+    defer store.deinit();
+
+    const helper_source =
+        \\public class CRLP_RollupCMT_TEST {
+        \\    public static String generateRollup() { return null; }
+        \\}
+    ;
+    const main_source =
+        "public class Main { void run() { CRLP_RollupCMT_Test.generateRollup(); } }";
+    try store.open("file:///CRLP_RollupCMT_TEST.cls", 1, helper_source);
+    try store.open("file:///Main.cls", 1, main_source);
+    const cached = try store.ensure_parsed("file:///CRLP_RollupCMT_TEST.cls") orelse unreachable;
+    const br = try store.ensure_bound("file:///CRLP_RollupCMT_TEST.cls") orelse unreachable;
+    _ = try store.ensure_bound("file:///Main.cls");
+    const offset: u32 = @intCast(std.mem.indexOf(u8, helper_source, "generateRollup").?);
+
+    const locs = try get_references_cross_file(
+        br,
+        cached.tokens,
+        helper_source,
+        "file:///CRLP_RollupCMT_TEST.cls",
+        offset,
+        true,
+        &store,
+        std.testing.allocator,
+    );
+    defer std.testing.allocator.free(locs);
+
+    try std.testing.expectEqual(@as(usize, 2), locs.len);
 }
 
 test "same-file: include_declaration false excludes same-class method definition" {

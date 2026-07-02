@@ -227,6 +227,122 @@ test "cross-file: jump to AuraEnabled static class member in another file" {
     try std.testing.expectEqual(@as(u32, 32), loc.?.range.start.character);
 }
 
+test "cross-file: qualified member definition is case-insensitive" {
+    var store = DocumentStore.init(std.testing.allocator);
+    defer store.deinit();
+
+    try store.open("file:///CRLP_RollupCMT_TEST.cls", 1,
+        \\public class CRLP_RollupCMT_TEST {
+        \\    public static String generateRollup() { return null; }
+        \\}
+    );
+    const main_source =
+        "public class Main { void run() { CRLP_RollupCMT_Test.generateRollup(); } }";
+    try store.open("file:///Main.cls", 1, main_source);
+
+    const main_cached = try store.ensure_parsed("file:///Main.cls") orelse unreachable;
+    const main_br = try store.ensure_bound("file:///Main.cls") orelse unreachable;
+    const offset: u32 = @intCast(
+        std.mem.indexOf(u8, main_source, "generateRollup").? + "generateRollup".len,
+    );
+
+    const loc = get_definition_cross_file(
+        main_br,
+        main_cached.tokens,
+        main_source,
+        "file:///Main.cls",
+        offset,
+        &store,
+    );
+    try std.testing.expect(loc != null);
+    try std.testing.expectEqualStrings("file:///CRLP_RollupCMT_TEST.cls", loc.?.uri);
+}
+
+test "cross-file: generic literal argument counts for overload definition" {
+    var store = DocumentStore.init(std.testing.allocator);
+    defer store.deinit();
+
+    try store.open("file:///RestRouteTestUtil.cls", 1,
+        \\public class RestRouteTestUtil {
+        \\    public static void setupRestContext(String resourcePath, String requestUri) {}
+        \\    public static void setupRestContext(
+        \\        String resourcePath,
+        \\        String requestUri,
+        \\        Map<String, String> query
+        \\    ) {}
+        \\}
+    );
+    const main_source =
+        \\public class Main {
+        \\    void run() {
+        \\        RestRouteTestUtil.setupRestContext(
+        \\            path,
+        \\            uri,
+        \\            new Map<String, String>{ 'expand' => '1' }
+        \\        );
+        \\    }
+        \\}
+    ;
+    try store.open("file:///Main.cls", 1, main_source);
+
+    const main_cached = try store.ensure_parsed("file:///Main.cls") orelse unreachable;
+    const main_br = try store.ensure_bound("file:///Main.cls") orelse unreachable;
+    const offset: u32 = @intCast(
+        std.mem.indexOf(u8, main_source, "setupRestContext").? + "setupRestContext".len,
+    );
+
+    const loc = get_definition_cross_file(
+        main_br,
+        main_cached.tokens,
+        main_source,
+        "file:///Main.cls",
+        offset,
+        &store,
+    );
+    try std.testing.expect(loc != null);
+    try std.testing.expectEqualStrings("file:///RestRouteTestUtil.cls", loc.?.uri);
+    try std.testing.expectEqual(@as(u32, 23), loc.?.range.start.character);
+}
+
+test "cross-file: qualified method definition at token end before spaced call" {
+    var store = DocumentStore.init(std.testing.allocator);
+    defer store.deinit();
+
+    try store.open("file:///UTIL_RecordTypes.cls", 1,
+        \\public class UTIL_RecordTypes {
+        \\    public static Id getRecordTypeId(
+        \\        sObjectType objectType,
+        \\        String recordTypeName
+        \\    ) { return null; }
+        \\}
+    );
+    const main_source =
+        \\public class Main {
+        \\    void run() {
+        \\        UTIL_RecordTypes.getRecordTypeId (Opportunity.SObjectType, recordTypeName);
+        \\    }
+        \\}
+    ;
+    try store.open("file:///Main.cls", 1, main_source);
+
+    const main_cached = try store.ensure_parsed("file:///Main.cls") orelse unreachable;
+    const main_br = try store.ensure_bound("file:///Main.cls") orelse unreachable;
+    const offset: u32 = @intCast(
+        std.mem.indexOf(u8, main_source, "getRecordTypeId").? + "getRecordTypeId".len,
+    );
+
+    const loc = get_definition_cross_file(
+        main_br,
+        main_cached.tokens,
+        main_source,
+        "file:///Main.cls",
+        offset,
+        &store,
+    );
+    try std.testing.expect(loc != null);
+    try std.testing.expectEqualStrings("file:///UTIL_RecordTypes.cls", loc.?.uri);
+}
+
 test "same-file: jump to later AuraEnabled static class member" {
     var store = DocumentStore.init(std.testing.allocator);
     defer store.deinit();

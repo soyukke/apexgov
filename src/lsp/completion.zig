@@ -85,7 +85,7 @@ fn detect_dot_context(
     const sym = binder_mod.symbol_at_position(result, pos) orelse {
         // シンボルテーブルにない場合、名前で全シンボルを検索
         for (result.symbols) |*s| {
-            if (std.mem.eql(u8, s.name, receiver_name)) {
+            if (binder_mod.names_equal(s.name, receiver_name)) {
                 return s.type_name;
             }
         }
@@ -204,7 +204,7 @@ fn is_type_name_char(c: u8) bool {
 
 fn symbol_type_by_name(result: *const binder_mod.BindResult, name: []const u8) ?[]const u8 {
     for (result.symbols) |*s| {
-        if (std.mem.eql(u8, s.name, name)) return s.type_name;
+        if (binder_mod.names_equal(s.name, name)) return s.type_name;
     }
     return null;
 }
@@ -344,7 +344,7 @@ fn append_user_class_members(
         if (sym.parent) |parent_id| {
             if (parent_id < result.symbols.len) {
                 const parent = &result.symbols[parent_id];
-                if (parent.kind == .class and std.mem.eql(u8, parent.name, resolved_type)) {
+                if (parent.kind == .class and binder_mod.names_equal(parent.name, resolved_type)) {
                     const kind: lsp_types.CompletionItemKind = switch (sym.kind) {
                         .method => .method,
                         .field => .field,
@@ -366,7 +366,7 @@ fn is_sobject_type_name(
     type_name: []const u8,
     custom_fields: ?*const sobject_schema.CustomFieldRegistry,
 ) bool {
-    if (std.mem.eql(u8, type_name, "SObject")) return false;
+    if (std.ascii.eqlIgnoreCase(type_name, "SObject")) return false;
     if (sobject_schema.is_s_object(type_name)) return true;
     if (custom_fields) |cf| return cf.is_s_object(type_name);
     return false;
@@ -506,6 +506,16 @@ test "dot completion: String methods after str." {
     try std.testing.expect(has_label_with_kind(ctx.items, "length", .method));
     try std.testing.expect(has_label_with_kind(ctx.items, "toLowerCase", .method));
     try std.testing.expect(has_label_with_kind(ctx.items, "contains", .method));
+}
+
+test "dot completion: variable receiver is case-insensitive" {
+    const source = "public class Foo { public void run() { String Value; value. } }";
+    const dot_pos = std.mem.indexOf(u8, source, "value. ").? + "value.".len;
+    var ctx = try complete_at(source, @intCast(dot_pos));
+    defer ctx.deinit();
+
+    try std.testing.expect(has_label_with_kind(ctx.items, "length", .method));
+    try std.testing.expect(has_label_with_kind(ctx.items, "toLowerCase", .method));
 }
 
 test "dot completion: System.debug static access" {
