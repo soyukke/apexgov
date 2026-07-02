@@ -44,7 +44,7 @@ The extension automatically downloads the `apexgov` binary from GitHub Releases 
 ## Requirements
 
 - No external dependencies required
-- Supported platforms: macOS (ARM/Intel), Linux (x86_64/aarch64)
+- Supported platforms: macOS (ARM/Intel), Linux (x86_64/aarch64), Windows (x86_64/aarch64)
 
 ## Links
 

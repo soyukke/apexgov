@@ -33,15 +33,27 @@ jobs:
           - os: ubuntu-latest
             target: x86_64-linux
             artifact: apexgov-linux-x86_64
+            binary: apexgov
           - os: ubuntu-latest
             target: aarch64-linux
             artifact: apexgov-linux-aarch64
+            binary: apexgov
           - os: macos-latest
             target: aarch64-macos
             artifact: apexgov-darwin-aarch64
+            binary: apexgov
           - os: macos-latest
             target: x86_64-macos
             artifact: apexgov-darwin-x86_64
+            binary: apexgov
+          - os: ubuntu-latest
+            target: x86_64-windows
+            artifact: apexgov-windows-x86_64
+            binary: apexgov.exe
+          - os: ubuntu-latest
+            target: aarch64-windows
+            artifact: apexgov-windows-aarch64
+            binary: apexgov.exe
 
     runs-on: ${{ matrix.os }}
 
@@ -60,8 +72,8 @@ jobs:
       - name: Package
         run: |
           mkdir -p dist
-          cp zig-out/bin/apexgov dist/apexgov
-          tar -czf ${{ matrix.artifact }}.tar.gz -C dist apexgov
+          cp zig-out/bin/${{ matrix.binary }} dist/${{ matrix.binary }}
+          tar -czf ${{ matrix.artifact }}.tar.gz -C dist ${{ matrix.binary }}
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

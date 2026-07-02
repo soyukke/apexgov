@@ -123,6 +123,8 @@ async function downloadServer(
     "darwin-x64": "apexgov-darwin-x86_64",
     "linux-arm64": "apexgov-linux-aarch64",
     "linux-x64": "apexgov-linux-x86_64",
+    "win32-arm64": "apexgov-windows-aarch64",
+    "win32-x64": "apexgov-windows-x86_64",
   };
 
   const key = `${process.platform}-${process.arch}`;
