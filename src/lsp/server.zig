@@ -29,6 +29,7 @@ const JsonValue = std.json.Value;
 const JsonObjectMap = std.json.ObjectMap;
 
 const sobject_schema = @import("sobject_schema.zig");
+const sfdx_project = @import("sfdx_project.zig");
 
 pub const Server = struct {
     allocator: std.mem.Allocator,
@@ -161,15 +162,25 @@ pub const Server = struct {
 
         // rootUri からワークスペースのカスタムフィールドを読み込む
         if (obj_get(obj, "params")) |params| {
+            var loaded_workspace = false;
             if (val_get(params, "rootUri")) |root_uri_val| {
                 const root_uri = switch (root_uri_val) {
                     .string => |s| s,
                     else => null,
                 };
                 if (root_uri) |uri| {
-                    if (uri_to_path(uri)) |ws_path| {
-                        self.workspace_root = self.allocator.dupe(u8, ws_path) catch null;
-                        self.custom_fields.load_from_workspace(self.io, ws_path) catch {};
+                    loaded_workspace = self.load_workspace_from_uri(uri);
+                }
+            }
+            if (!loaded_workspace) {
+                if (val_get(params, "workspaceFolders")) |folders_val| {
+                    if (folders_val == .array and folders_val.array.items.len > 0) {
+                        const folder = folders_val.array.items[0];
+                        if (folder == .object) {
+                            if (obj_get_str(folder.object, "uri")) |uri| {
+                                _ = self.load_workspace_from_uri(uri);
+                            }
+                        }
                     }
                 }
             }
@@ -184,6 +195,92 @@ pub const Server = struct {
         if (std.mem.startsWith(u8, uri, "file:///")) return uri[7..];
         if (std.mem.startsWith(u8, uri, "file://")) return uri[7..];
         return null;
+    }
+
+    fn load_workspace_from_uri(self: *Server, uri: []const u8) bool {
+        const ws_path = uri_to_path(uri) orelse return false;
+        self.workspace_root = self.allocator.dupe(u8, ws_path) catch return false;
+        self.custom_fields.load_from_workspace(self.io, ws_path) catch {};
+        self.preload_workspace_sources(ws_path) catch {};
+        return true;
+    }
+
+    fn preload_workspace_sources(self: *Server, ws_root: []const u8) !void {
+        const pkg_dirs = try sfdx_project.resolve_package_dirs(
+            self.allocator,
+            self.io,
+            ws_root,
+        );
+        defer {
+            for (pkg_dirs) |p| self.allocator.free(p);
+            self.allocator.free(pkg_dirs);
+        }
+
+        for (pkg_dirs) |pkg_dir| {
+            try self.preload_apex_sources_under(pkg_dir);
+        }
+    }
+
+    fn preload_apex_sources_under(self: *Server, root: []const u8) !void {
+        var dir = std.Io.Dir.cwd().openDir(self.io, root, .{ .iterate = true }) catch return;
+        defer dir.close(self.io);
+
+        var walker = dir.walk(self.allocator) catch return;
+        defer walker.deinit();
+
+        while (walker.next(self.io) catch null) |entry| {
+            if (entry.kind != .file) continue;
+            if (!is_apex_source_path(entry.basename)) continue;
+
+            const full_path = std.fs.path.join(
+                self.allocator,
+                &.{ root, entry.path },
+            ) catch continue;
+            defer self.allocator.free(full_path);
+
+            const uri = file_uri_from_path(self.allocator, full_path) catch continue;
+            defer self.allocator.free(uri);
+
+            if (self.store.get(uri) != null) continue;
+
+            const content = std.Io.Dir.cwd().readFileAlloc(
+                self.io,
+                full_path,
+                self.allocator,
+                .limited(8 * 1024 * 1024),
+            ) catch continue;
+            defer self.allocator.free(content);
+
+            self.store.open(uri, 0, content) catch continue;
+        }
+    }
+
+    fn is_apex_source_path(path: []const u8) bool {
+        return std.mem.endsWith(u8, path, ".cls") or
+            std.mem.endsWith(u8, path, ".trigger");
+    }
+
+    fn file_uri_from_path(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
+        var uri: std.ArrayList(u8) = .empty;
+        try uri.appendSlice(allocator, "file://");
+        for (path) |c| {
+            if (uri_char_needs_escape(c)) {
+                try uri.append(allocator, '%');
+                try uri.append(allocator, hex_digit(c >> 4));
+                try uri.append(allocator, hex_digit(c & 0x0f));
+            } else {
+                try uri.append(allocator, c);
+            }
+        }
+        return uri.toOwnedSlice(allocator);
+    }
+
+    fn uri_char_needs_escape(c: u8) bool {
+        return c <= ' ' or c == '%' or c == '#' or c == '?' or c == '[' or c == ']';
+    }
+
+    fn hex_digit(v: u8) u8 {
+        return if (v < 10) '0' + v else 'A' + (v - 10);
     }
 
     fn handle_did_open(self: *Server, obj: JsonObjectMap) !void {
@@ -408,12 +505,24 @@ pub const Server = struct {
             try self.transport.send_response(self.allocator, id, null);
             return;
         };
+        const cached = try self.store.ensure_parsed(ctx.uri) orelse {
+            try self.transport.send_response(self.allocator, id, null);
+            return;
+        };
         const br = try self.store.ensure_bound(ctx.uri) orelse {
             try self.transport.send_response(self.allocator, id, null);
             return;
         };
         const doc = self.store.get(ctx.uri) orelse return;
-        const result = try hover_mod.get_hover(br, doc.text, ctx.offset, self.allocator);
+        const result = try hover_mod.get_hover_cross_file(
+            br,
+            cached.tokens,
+            doc.text,
+            ctx.uri,
+            ctx.offset,
+            &self.store,
+            self.allocator,
+        );
         try self.transport.send_response(self.allocator, id, result);
     }
 
@@ -709,7 +818,6 @@ pub const Server = struct {
         all_dirs: *std.ArrayList([]const u8),
     ) !void {
         _ = ws_root;
-        const sfdx_project = @import("sfdx_project.zig");
         for (&SUB_CANDIDATES) |sub| {
             const sub_dirs = try sfdx_project.resolve_sub_dirs(
                 self.allocator,
@@ -732,7 +840,6 @@ pub const Server = struct {
         method_name: ?[]const u8,
     ) !void {
         const interpret = @import("../interpret/root.zig");
-        const sfdx_project = @import("sfdx_project.zig");
 
         // sfdx-project.json から packageDirectories を解決
         const pkg_dirs = try sfdx_project.resolve_package_dirs(self.allocator, self.io, ws_root);

@@ -20,6 +20,34 @@ pub fn identifier_at_offset(tokens: []const parser_types.Token, offset: u32) ?[]
     return null;
 }
 
+pub const QualifiedMember = struct {
+    receiver_name: []const u8,
+    member_name: []const u8,
+};
+
+/// `Receiver.member` の member 識別子上に offset がある場合、その左右の識別子を返す。
+pub fn qualified_member_at_offset(
+    tokens: []const parser_types.Token,
+    offset: u32,
+) ?QualifiedMember {
+    for (tokens, 0..) |tok, i| {
+        if (tok.kind != .identifier) continue;
+        if (offset < tok.loc.offset or
+            offset >= tok.loc.offset + @as(u32, @intCast(tok.lexeme.len)))
+        {
+            continue;
+        }
+
+        if (i < 2) return null;
+        const dot = tokens[i - 1];
+        if (dot.kind != .dot and dot.kind != .question_dot) return null;
+        const receiver = tokens[i - 2];
+        if (receiver.kind != .identifier) return null;
+        return .{ .receiver_name = receiver.lexeme, .member_name = tok.lexeme };
+    }
+    return null;
+}
+
 /// SourceLoc → LSP Range（開始位置のみ、終了位置は同一点）。
 /// symbols.zig, workspace_symbol.zig, server.zig 等の共通ヘルパー。
 pub fn loc_to_range(loc: parser_types.SourceLoc, source: []const u8) lsp_types.Range {
@@ -171,4 +199,29 @@ test "identifier_at_offset returns null between tokens" {
     const tokens = try lexer.tokenize(source, arena.allocator());
     // offset 6 = space
     try std.testing.expect(identifier_at_offset(tokens, 6) == null);
+}
+
+test "qualified_member_at_offset finds member after dot" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const source = "SOQLRecipes.getRecords();";
+    const tokens = try lexer.tokenize(source, arena.allocator());
+    const offset: u32 = @intCast(std.mem.indexOf(u8, source, "getRecords").?);
+    const member = qualified_member_at_offset(tokens, offset);
+
+    try std.testing.expect(member != null);
+    try std.testing.expectEqualStrings("SOQLRecipes", member.?.receiver_name);
+    try std.testing.expectEqualStrings("getRecords", member.?.member_name);
+}
+
+test "qualified_member_at_offset ignores receiver identifier" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const source = "SOQLRecipes.getRecords();";
+    const tokens = try lexer.tokenize(source, arena.allocator());
+    const offset: u32 = @intCast(std.mem.indexOf(u8, source, "SOQLRecipes").?);
+
+    try std.testing.expect(qualified_member_at_offset(tokens, offset) == null);
 }

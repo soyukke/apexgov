@@ -31,7 +31,33 @@
       "name": "comment.block.apex",
       "begin": "/\\*",
       "end": "\\*/",
+      "patterns": [
+        { "include": "#apexdoc" }
+      ]
+    },
+    "apexdoc": {
+      "patterns": [
+        { "include": "#apexdoc-inline-tag" },
+        { "include": "#apexdoc-tag" },
+        { "include": "#apexdoc-type" }
+      ]
+    },
+    "apexdoc-tag": {
+      "name": "storage.type.annotation.apexdoc.apex",
+      "match": "@(?:abstract|access|alias|api|async|author|borrows|callback|category|class|classdesc|constant|constructor|constructs|copyright|default|deprecated|description|emits|enum|event|example|exception|exports|external|file|fileoverview|fires|function|global|group|hideconstructor|ignore|implements|inheritdoc|inner|instance|interface|kind|lends|license|link|linkplain|listens|literal|member|memberof|method|module|name|namespace|override|overview|package|param|private|property|protected|public|readonly|requires|return|returns|see|since|static|summary|template|this|throws|todo|tutorial|type|typedef|variation|version|virtual|yield|yields)\\b"
+    },
+    "apexdoc-inline-tag": {
+      "name": "meta.inline.apexdoc.apex",
+      "begin": "\\{(@(?:code|docRoot|inheritDoc|link|linkplain|literal|value))\\b",
+      "beginCaptures": {
+        "1": { "name": "storage.type.annotation.apexdoc.apex" }
+      },
+      "end": "\\}",
       "patterns": []
+    },
+    "apexdoc-type": {
+      "name": "entity.name.type.apexdoc.apex",
+      "match": "\\{[A-Za-z_][A-Za-z0-9_.$<>\\[\\], ?|]*\\}"
     },
     "string": {
       "name": "string.quoted.single.apex",

@@ -40,10 +40,31 @@ pub fn get_definition_cross_file(
     // 1. 同一ファイル内で検索
     if (get_definition(result, source, uri, offset)) |loc| return loc;
 
-    // 2. カーソル位置の identifier を取得
+    // 2. `ClassName.member` の member 側をワークスペース内のクラスメンバーへ解決
+    if (position_mod.qualified_member_at_offset(tokens, offset)) |member| {
+        if (store.resolve_member_across_files(
+            member.receiver_name,
+            member.member_name,
+            uri,
+        )) |match| {
+            const pos = position_mod.offset_to_position(match.source, match.symbol.loc.offset);
+            return .{
+                .uri = match.uri,
+                .range = .{
+                    .start = pos,
+                    .end = .{ .line = pos.line, .character = pos.character + @as(
+                        u32,
+                        @intCast(match.symbol.name.len),
+                    ) },
+                },
+            };
+        }
+    }
+
+    // 3. カーソル位置の identifier を取得
     const name = position_mod.identifier_at_offset(tokens, offset) orelse return null;
 
-    // 3. ワークスペース内の他ファイルで検索
+    // 4. ワークスペース内の他ファイルで検索
     const match = store.resolve_symbol_across_files(name, uri) orelse return null;
     const pos = position_mod.offset_to_position(match.source, match.symbol.loc.offset);
     return .{
@@ -120,6 +141,35 @@ test "cross-file: jump to class in another file" {
     );
     try std.testing.expect(loc != null);
     try std.testing.expectEqualStrings("file:///Helper.cls", loc.?.uri);
+}
+
+test "cross-file: jump to class member in another file" {
+    var store = DocumentStore.init(std.testing.allocator);
+    defer store.deinit();
+
+    try store.open(
+        "file:///Helper.cls",
+        1,
+        "public class Helper { public String doWork() { return null; } }",
+    );
+    const main_source = "public class Main { void run() { Helper.doWork(); } }";
+    try store.open("file:///Main.cls", 1, main_source);
+
+    const main_cached = try store.ensure_parsed("file:///Main.cls") orelse unreachable;
+    const main_br = try store.ensure_bound("file:///Main.cls") orelse unreachable;
+    const offset: u32 = @intCast(std.mem.indexOf(u8, main_source, "doWork").?);
+
+    const loc = get_definition_cross_file(
+        main_br,
+        main_cached.tokens,
+        main_source,
+        "file:///Main.cls",
+        offset,
+        &store,
+    );
+    try std.testing.expect(loc != null);
+    try std.testing.expectEqualStrings("file:///Helper.cls", loc.?.uri);
+    try std.testing.expectEqual(@as(u32, 36), loc.?.range.start.character);
 }
 
 test "cross-file: same-file symbol takes priority" {
