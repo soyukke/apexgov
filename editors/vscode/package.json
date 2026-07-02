@@ -1,7 +1,7 @@
 {
   "name": "apexgov",
   "displayName": "apexgov",
-  "description": "Apex Governor Limit Checker & Language Server — offline static analysis for Salesforce Apex",
+  "description": "Cross-platform Apex Governor Limit Checker & Language Server for Salesforce Apex",
   "version": "0.8.2",
   "publisher": "soyukke",
   "license": "MIT",
