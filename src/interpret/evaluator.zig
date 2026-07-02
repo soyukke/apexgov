@@ -36336,145 +36336,6 @@ pub const Evaluator = struct {
         }
     }
 
-    fn npsp_chunking_mock_integer_field(
-        _: *Evaluator,
-        instance: *types.ObjectInstance,
-        field_name: []const u8,
-        fallback_value: i64,
-    ) i64 {
-        if (instance.fields.get(field_name)) |value| {
-            return switch (value) {
-                .integer => |v| v,
-                .long => |v| v,
-                .double => |v| @intFromFloat(v),
-                else => fallback_value,
-            };
-        }
-        return fallback_value;
-    }
-
-    fn object_put_case_insensitive(
-        self: *Evaluator,
-        obj: *types.ObjectInstance,
-        field_name: []const u8,
-        value: Value,
-    ) !void {
-        for (obj.fields.keys()) |key| {
-            if (std.ascii.eqlIgnoreCase(key, field_name)) {
-                try obj.fields.put(self.arena, key, value);
-                return;
-            }
-        }
-        try obj.fields.put(self.arena, field_name, value);
-    }
-
-    fn npsp_salesforce_id_record_distance(id1: []const u8, id2: []const u8) i64 {
-        if (id1.len < 15 or id2.len < 15) return -1;
-        if (!std.ascii.eqlIgnoreCase(id1[0..3], id2[0..3])) return -2;
-        const left = npsp_salesforce_id_numeric_part(id1);
-        const right = npsp_salesforce_id_numeric_part(id2);
-        const diff = left - right;
-        return if (diff < 0) -diff else diff;
-    }
-
-    fn npsp_salesforce_id_numeric_part(id: []const u8) i64 {
-        var value: i64 = 0;
-        const part = id[6..15];
-        for (part) |ch| {
-            value = value * 62 + npsp_salesforce_id_digit(ch);
-        }
-        return value;
-    }
-
-    fn npsp_salesforce_id_digit(ch: u8) i64 {
-        if (ch >= '0' and ch <= '9') return ch - '0';
-        if (ch >= 'A' and ch <= 'Z') return 10 + ch - 'A';
-        if (ch >= 'a' and ch <= 'z') return 36 + ch - 'a';
-        return 0;
-    }
-
-    fn npsp_apply_chunking_ldv_mock_autodetect(
-        self: *Evaluator,
-        batch_obj: *types.ObjectInstance,
-    ) !void {
-        if (!self.fixture_relaxed_exceptions) return;
-        if (!std.ascii.eqlIgnoreCase(batch_obj.class_name, "UTIL_AbstractChunkingLDV_MOCK")) {
-            return;
-        }
-        if (batch_obj.fields.get("ldvMode")) |mode| {
-            if (mode == .boolean and mode.boolean) return;
-        }
-        const account_records = self.store_records_ptr("Account") orelse {
-            try self.object_put_case_insensitive(
-                batch_obj,
-                "ldvMode",
-                Value{ .boolean = false },
-            );
-            return;
-        };
-        var min_id: ?[]const u8 = null;
-        var max_id: ?[]const u8 = null;
-        for (account_records.items) |record| {
-            if (record != .sobject or record.sobject.id == null) continue;
-            const record_id = record.sobject.id.?;
-            if (min_id == null or std.mem.order(u8, record_id, min_id.?) == .lt) {
-                min_id = record_id;
-            }
-            if (max_id == null or std.mem.order(u8, record_id, max_id.?) == .gt) {
-                max_id = record_id;
-            }
-        }
-        const should_ldv = if (min_id != null and max_id != null)
-            npsp_salesforce_id_record_distance(min_id.?, max_id.?) >
-                self.npsp_chunking_mock_integer_field(batch_obj, "testMaxNonLDVSize", 1)
-        else
-            false;
-        try self.object_put_case_insensitive(
-            batch_obj,
-            "ldvMode",
-            Value{ .boolean = should_ldv },
-        );
-    }
-
-    fn npsp_pad_chunking_ldv_mock_jobs(
-        self: *Evaluator,
-        batch_obj: *types.ObjectInstance,
-    ) !void {
-        if (!self.fixture_relaxed_exceptions) return;
-        if (!std.ascii.eqlIgnoreCase(batch_obj.class_name, "UTIL_AbstractChunkingLDV_MOCK")) {
-            return;
-        }
-        const expected_mode =
-            self.get_object_field_case_insensitive(batch_obj, "expectedLdvMode") orelse
-            Value.null_val;
-        if (expected_mode != .boolean or !expected_mode.boolean) return;
-        const account_records = self.store_records_ptr("Account") orelse return;
-        const target_jobs = account_records.items.len;
-        if (target_jobs == 0) return;
-        var existing_jobs: usize = 0;
-        if (self.store.get("AsyncApexJob")) |jobs| {
-            for (jobs.items) |job| {
-                if (job != .sobject) continue;
-                const job_type =
-                    utils.sobject_get(&job.sobject.fields, "JobType") orelse Value.null_val;
-                if (job_type != .string or !std.ascii.eqlIgnoreCase(job_type.string, "BatchApex")) {
-                    continue;
-                }
-                const apex_class =
-                    utils.sobject_get(&job.sobject.fields, "ApexClass") orelse Value.null_val;
-                if (apex_class != .sobject) continue;
-                const name =
-                    utils.sobject_get(&apex_class.sobject.fields, "Name") orelse Value.null_val;
-                if (name == .string and std.ascii.eqlIgnoreCase(name.string, batch_obj.class_name)) {
-                    existing_jobs += 1;
-                }
-            }
-        }
-        while (existing_jobs < target_jobs) : (existing_jobs += 1) {
-            _ = try self.create_async_apex_job("BatchApex", batch_obj.class_name, "execute");
-        }
-    }
-
     fn npsp_sustainer_value_for_account(
         self: *Evaluator,
         account_id: []const u8,
@@ -44995,7 +44856,6 @@ pub const Evaluator = struct {
             if (batch_value != .object) continue;
             try self.execute_pending_batch_job(batch_value.object);
         }
-        try self.npsp_pad_chunking_ldv_mock_jobs(job_batch);
         if (self.fixture_relaxed_exceptions and
             std.ascii.eqlIgnoreCase(job_batch.class_name, "PMT_PaymentCreator_BATCH"))
         {
@@ -52017,7 +51877,6 @@ pub const Evaluator = struct {
             "start",
             &.{batch_context_value},
         );
-        try self.npsp_apply_chunking_ldv_mock_autodetect(batch_obj);
 
         const all_records = try self.collect_batch_scope_records(start_scope);
 
