@@ -41,6 +41,10 @@ pub fn get_hover_cross_file(
     }
 
     const name = position_mod.identifier_at_offset(tokens, offset) orelse return null;
+    if (binder_mod.resolve_current_class_member(result, offset, name)) |sym| {
+        return try hover_for_symbol(sym, source, allocator);
+    }
+
     const match = store.resolve_symbol_across_files(name, uri) orelse return null;
     return try hover_for_symbol(&match.symbol, match.source, allocator);
 }
@@ -682,6 +686,41 @@ test "hover resolves cross-file class member at call site" {
 
     try std.testing.expect(has_text(result, "(method) doWork: String"));
     try std.testing.expect(has_text(result, "Does useful work."));
+}
+
+test "hover resolves later class method at call site" {
+    var store = DocumentStore.init(std.testing.allocator);
+    defer store.deinit();
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const source =
+        \\public class Foo {
+        \\    public void run() { helper(); }
+        \\    /**
+        \\     * @description Performs helper work.
+        \\     */
+        \\    private String helper() { return null; }
+        \\}
+    ;
+    try store.open("file:///Foo.cls", 1, source);
+
+    const cached = try store.ensure_parsed("file:///Foo.cls") orelse unreachable;
+    const br = try store.ensure_bound("file:///Foo.cls") orelse unreachable;
+    const offset: u32 = @intCast(std.mem.indexOf(u8, source, "helper").?);
+    const result = try get_hover_cross_file(
+        br,
+        cached.tokens,
+        source,
+        "file:///Foo.cls",
+        offset,
+        &store,
+        arena.allocator(),
+    );
+
+    try std.testing.expect(has_text(result, "(method) helper: String"));
+    try std.testing.expect(has_text(result, "Performs helper work."));
 }
 
 test "hover on empty space returns null" {

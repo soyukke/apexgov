@@ -42,7 +42,7 @@ pub fn get_definition_cross_file(
 
     // 2. `this.member` の member 側を現在クラスのメンバーへ解決
     if (position_mod.this_member_at_offset(tokens, offset)) |member| {
-        if (resolve_this_member(result, offset, member.member_name)) |sym| {
+        if (binder_mod.resolve_current_class_member(result, offset, member.member_name)) |sym| {
             return location_for_symbol(sym, source, uri);
         }
     }
@@ -61,47 +61,14 @@ pub fn get_definition_cross_file(
     // 4. カーソル位置の identifier を取得
     const name = position_mod.identifier_at_offset(tokens, offset) orelse return null;
 
-    // 5. ワークスペース内の他ファイルで検索
+    // 5. 裸の member() / field を現在クラスのメンバーへ解決
+    if (binder_mod.resolve_current_class_member(result, offset, name)) |sym| {
+        return location_for_symbol(sym, source, uri);
+    }
+
+    // 6. ワークスペース内の他ファイルで検索
     const match = store.resolve_symbol_across_files(name, uri) orelse return null;
     return location_for_symbol(&match.symbol, match.source, match.uri);
-}
-
-fn resolve_this_member(
-    result: *const binder_mod.BindResult,
-    offset: u32,
-    member_name: []const u8,
-) ?*const binder_mod.Symbol {
-    const owner_id = current_class_symbol_id(result, offset) orelse return null;
-    for (result.symbols) |*sym| {
-        if (sym.parent == null or sym.parent.? != owner_id) continue;
-        if (!is_class_member(sym.kind)) continue;
-        if (std.mem.eql(u8, sym.name, member_name)) return sym;
-    }
-    return null;
-}
-
-fn current_class_symbol_id(
-    result: *const binder_mod.BindResult,
-    offset: u32,
-) ?binder_mod.SymbolId {
-    var owner_id: ?binder_mod.SymbolId = null;
-    var owner_offset: u32 = 0;
-    for (result.symbols) |sym| {
-        if (sym.kind != .class and sym.kind != .interface) continue;
-        if (sym.loc.offset > offset) continue;
-        if (owner_id == null or sym.loc.offset >= owner_offset) {
-            owner_id = sym.id;
-            owner_offset = sym.loc.offset;
-        }
-    }
-    return owner_id;
-}
-
-fn is_class_member(kind: binder_mod.SymbolKind) bool {
-    return switch (kind) {
-        .method, .field, .constructor, .enum_value, .class, .interface, .enum_type => true,
-        else => false,
-    };
 }
 
 fn location_for_symbol(
@@ -299,6 +266,36 @@ test "same-file: variable declared with Type jumps to declaration" {
     try std.testing.expect(loc != null);
     try std.testing.expectEqualStrings("file:///Foo.cls", loc.?.uri);
     try std.testing.expectEqual(@as(u32, 13), loc.?.range.start.character);
+}
+
+test "same-file: method call jumps to later class method" {
+    var store = DocumentStore.init(std.testing.allocator);
+    defer store.deinit();
+
+    const source =
+        \\public class Foo {
+        \\    public void run() {
+        \\        helper();
+        \\    }
+        \\    private void helper() {}
+        \\}
+    ;
+    try store.open("file:///Foo.cls", 1, source);
+    const cached = try store.ensure_parsed("file:///Foo.cls") orelse unreachable;
+    const br = try store.ensure_bound("file:///Foo.cls") orelse unreachable;
+    const offset: u32 = @intCast(std.mem.indexOf(u8, source, "helper").?);
+
+    const loc = get_definition_cross_file(
+        br,
+        cached.tokens,
+        source,
+        "file:///Foo.cls",
+        offset,
+        &store,
+    );
+    try std.testing.expect(loc != null);
+    try std.testing.expectEqualStrings("file:///Foo.cls", loc.?.uri);
+    try std.testing.expectEqual(@as(u32, 17), loc.?.range.start.character);
 }
 
 test "cross-file: same-file symbol takes priority" {

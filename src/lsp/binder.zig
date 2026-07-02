@@ -107,6 +107,44 @@ pub fn filter_references(
     return out.toOwnedSlice(allocator);
 }
 
+pub fn resolve_current_class_member(
+    result: *const BindResult,
+    offset: u32,
+    member_name: []const u8,
+) ?*const Symbol {
+    const owner_id = current_class_symbol_id(result, offset) orelse return null;
+    for (result.symbols) |*sym| {
+        if (sym.parent == null or sym.parent.? != owner_id) continue;
+        if (!is_class_member(sym.kind)) continue;
+        if (std.mem.eql(u8, sym.name, member_name)) return sym;
+    }
+    return null;
+}
+
+pub fn current_class_symbol_id(
+    result: *const BindResult,
+    offset: u32,
+) ?SymbolId {
+    var owner_id: ?SymbolId = null;
+    var owner_offset: u32 = 0;
+    for (result.symbols) |sym| {
+        if (sym.kind != .class and sym.kind != .interface) continue;
+        if (sym.loc.offset > offset) continue;
+        if (owner_id == null or sym.loc.offset >= owner_offset) {
+            owner_id = sym.id;
+            owner_offset = sym.loc.offset;
+        }
+    }
+    return owner_id;
+}
+
+fn is_class_member(kind: SymbolKind) bool {
+    return switch (kind) {
+        .method, .field, .constructor, .enum_value, .class, .interface, .enum_type => true,
+        else => false,
+    };
+}
+
 // ---------------------------------------------------------------------------
 // 内部: Binder
 // ---------------------------------------------------------------------------
