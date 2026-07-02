@@ -30,6 +30,7 @@ const maxQualified = Number(args.maxQualified || 30);
 const maxPerFile = Number(args.maxPerFile || 8);
 const maxRenames = Number(args.maxRenames || 12);
 const strict = Boolean(args.strict);
+const isTestOnly = Boolean(args.isTestOnly);
 
 class LspClient {
   constructor(command, rootUri, cwd) {
@@ -152,6 +153,8 @@ async function main() {
     missingExpectedCompletions: 0,
     expectedRenames: 0,
     missingExpectedRenames: 0,
+    expectedCodeLenses: 0,
+    missingExpectedCodeLenses: 0,
     documentsWithSymbols: 0,
     emptyDocumentSymbols: 0,
     hardFailures: 0,
@@ -183,6 +186,8 @@ async function main() {
     totals.missingExpectedCompletions += result.missingExpectedCompletions;
     totals.expectedRenames += result.expectedRenames;
     totals.missingExpectedRenames += result.missingExpectedRenames;
+    totals.expectedCodeLenses += result.expectedCodeLenses;
+    totals.missingExpectedCodeLenses += result.missingExpectedCodeLenses;
     totals.documentsWithSymbols += result.documentsWithSymbols;
     totals.emptyDocumentSymbols += result.emptyDocumentSymbols;
     totals.hardFailures += result.failures.length;
@@ -210,6 +215,7 @@ async function main() {
     `signatures=${passed(totals.expectedSignatures, totals.missingExpectedSignatures)} ` +
     `completions=${passed(totals.expectedCompletions, totals.missingExpectedCompletions)} ` +
     `renames=${passed(totals.expectedRenames, totals.missingExpectedRenames)} ` +
+    `codeLens=${passed(totals.expectedCodeLenses, totals.missingExpectedCodeLenses)} ` +
     `documentSymbols=${passed(totals.documentsWithSymbols, totals.emptyDocumentSymbols)}`
   );
 
@@ -235,7 +241,9 @@ function passed(total, missing) {
 
 async function dogfoodRepo(repoName, repoPath) {
   const classIndex = buildClassIndex(repoPath);
-  const files = sampleFiles(collectApexFiles(repoPath), maxFiles);
+  const files = isTestOnly
+    ? sampleIsTestFiles(collectApexFiles(repoPath), maxFiles)
+    : sampleFiles(collectApexFiles(repoPath), maxFiles);
   const client = new LspClient(serverPath, pathToFileURL(repoPath).toString(), repoPath);
   const result = {
     files: files.length,
@@ -254,6 +262,8 @@ async function dogfoodRepo(repoName, repoPath) {
     missingExpectedCompletions: 0,
     expectedRenames: 0,
     missingExpectedRenames: 0,
+    expectedCodeLenses: 0,
+    missingExpectedCodeLenses: 0,
     documentsWithSymbols: 0,
     emptyDocumentSymbols: 0,
     failures: [],
@@ -296,6 +306,35 @@ async function dogfoodRepo(repoName, repoPath) {
       await safeRequest(result, repoName, doc, client, "textDocument/semanticTokens/full", {
         textDocument: { uri: doc.uri },
       });
+
+      const testLensExpectation = expectedCodeLensCounts(doc.text);
+      if (testLensExpectation.total > 0) {
+        const lenses = await safeRequest(result, repoName, doc, client, "textDocument/codeLens", {
+          textDocument: { uri: doc.uri },
+        });
+        const actual = codeLensCounts(lenses);
+        result.expectedCodeLenses += testLensExpectation.total;
+        const missing = Math.max(0, testLensExpectation.total - actual.total);
+        result.missingExpectedCodeLenses += missing;
+        if (missing > 0) {
+          result.failures.push(
+            `${repoName}: codeLens expected ${testLensExpectation.total} got ${actual.total} ` +
+            `for ${relative(repoPath, doc.file)}`
+          );
+        }
+        if (actual.runTest < testLensExpectation.runTest) {
+          result.failures.push(
+            `${repoName}: codeLens runTest expected ${testLensExpectation.runTest} ` +
+            `got ${actual.runTest} for ${relative(repoPath, doc.file)}`
+          );
+        }
+        if (actual.runAllTests < testLensExpectation.runAllTests) {
+          result.failures.push(
+            `${repoName}: codeLens runAllTests expected ${testLensExpectation.runAllTests} ` +
+            `got ${actual.runAllTests} for ${relative(repoPath, doc.file)}`
+          );
+        }
+      }
 
       for (const pos of declarationPositions.slice(0, maxPerFile)) {
         const hover = await safeRequest(result, repoName, doc, client, "textDocument/hover", {
@@ -480,6 +519,30 @@ function sampleFiles(files, limit) {
   return [...new Set(selected)];
 }
 
+function sampleIsTestFiles(files, limit) {
+  const scored = [];
+  for (const file of files) {
+    const text = fs.readFileSync(file, "utf8");
+    const expectation = expectedCodeLensCounts(text);
+    if (expectation.total === 0) continue;
+    scored.push({ file, score: isTestComplexityScore(text, expectation) });
+  }
+  scored.sort((a, b) => b.score - a.score || a.file.localeCompare(b.file));
+  return scored.slice(0, limit).map((entry) => entry.file);
+}
+
+function isTestComplexityScore(text, expectation) {
+  const lines = text.split(/\r?\n/).length;
+  const asserts = (text.match(/\b(?:System\.)?Assert\b|\bSystem\.assert/g) || []).length;
+  const mocks = (
+    text.match(/\bMock\b|\bStub\b|Test\.startTest|Test\.stopTest|@testSetup/gi) || []
+  ).length;
+  const soql = (text.match(/\[\s*SELECT\b/gi) || []).length;
+  const dml = (text.match(/\b(?:insert|update|upsert|delete|undelete)\b/gi) || []).length;
+  return expectation.runTest * 30 + expectation.runAllTests * 20 +
+    Math.min(lines, 3000) / 10 + asserts * 2 + mocks * 8 + soql * 4 + dml * 3;
+}
+
 function buildClassIndex(root) {
   const classes = new Map();
   for (const file of collectApexFiles(root)) {
@@ -516,6 +579,31 @@ function classBlocks(text) {
     re.lastIndex = close + 1;
   }
   return out;
+}
+
+function expectedCodeLensCounts(text) {
+  const code = maskNonCode(text);
+  let runTest = 0;
+  let runAllTests = 0;
+  for (const block of classBlocks(code)) {
+    const methods = testMethodsInClass(block.body);
+    if (methods > 0) {
+      runTest += methods;
+      runAllTests += 1;
+    }
+  }
+  return { runTest, runAllTests, total: runTest + runAllTests };
+}
+
+function testMethodsInClass(body) {
+  let count = 0;
+  const methodRe = /((?:@\w+(?:\([^)]*\))?\s*)*)(?:public|private|protected|global|static|override|virtual|abstract|webservice|testMethod|final)\b(?:\s+(?:public|private|protected|global|static|override|virtual|abstract|webservice|testMethod|final))*\s+(?:[A-Za-z_][A-Za-z0-9_.<>?,\s\[\]]*|void)\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(/g;
+  let match;
+  while ((match = methodRe.exec(body))) {
+    const declaration = match[0];
+    if (/@isTest\b/i.test(match[1]) || /\btestMethod\b/i.test(declaration)) count += 1;
+  }
+  return count;
 }
 
 function matchingBrace(text, open) {
@@ -673,6 +761,18 @@ function hasWorkspaceEdit(edit) {
   return false;
 }
 
+function codeLensCounts(lenses) {
+  const counts = { runTest: 0, runAllTests: 0, total: 0 };
+  if (!Array.isArray(lenses)) return counts;
+  for (const lens of lenses) {
+    const command = lens && lens.command && lens.command.command;
+    if (command === "apexgov.runTest") counts.runTest += 1;
+    if (command === "apexgov.runAllTests") counts.runAllTests += 1;
+  }
+  counts.total = counts.runTest + counts.runAllTests;
+  return counts;
+}
+
 function maskNonCode(text) {
   let out = "";
   let i = 0;
@@ -766,12 +866,13 @@ function parseArgs(argv) {
     else if (arg === "--max-per-file") out.maxPerFile = argv[++i];
     else if (arg === "--max-renames") out.maxRenames = argv[++i];
     else if (arg === "--all-repos") out.allRepos = true;
+    else if (arg === "--is-test-only") out.isTestOnly = true;
     else if (arg === "--strict") out.strict = true;
     else if (arg === "--help" || arg === "-h") {
       console.log(
         "usage: node tools/lsp_dogfood.js [--server zig-out/bin/apexgov] " +
         "[--repos a,b|--all-repos] [--max-files N] [--max-qualified N] " +
-        "[--max-per-file N] [--max-renames N] [--strict]"
+        "[--max-per-file N] [--max-renames N] [--is-test-only] [--strict]"
       );
       process.exit(0);
     } else {

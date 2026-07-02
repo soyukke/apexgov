@@ -73,6 +73,10 @@ lsp-dogfood: build-fast
 lsp-dogfood-deep: build-fast
     node tools/lsp_dogfood.js --server ./zig-out/bin/apexgov --all-repos --max-files 30 --max-qualified 35 --max-per-file 8 --max-renames 20 --strict
 
+# LSP dogfood focused on complex @IsTest / testMethod classes
+lsp-dogfood-istest: build-fast
+    node tools/lsp_dogfood.js --server ./zig-out/bin/apexgov --all-repos --is-test-only --max-files 20 --max-qualified 35 --max-per-file 10 --max-renames 20 --strict
+
 # VS Code extension package
 vsce-package:
     #!/usr/bin/env bash

@@ -219,18 +219,26 @@ pub const Server = struct {
         for (pkg_dirs) |pkg_dir| {
             try self.preload_apex_sources_under(pkg_dir);
         }
+        try self.preload_apex_sources_under(ws_root);
     }
 
     fn preload_apex_sources_under(self: *Server, root: []const u8) !void {
         var dir = std.Io.Dir.cwd().openDir(self.io, root, .{ .iterate = true }) catch return;
         defer dir.close(self.io);
 
-        var walker = dir.walk(self.allocator) catch return;
+        var walker = dir.walkSelectively(self.allocator) catch return;
         defer walker.deinit();
 
         while (walker.next(self.io) catch null) |entry| {
+            if (entry.kind == .directory) {
+                if (should_descend_preload_dir(entry.basename)) {
+                    walker.enter(self.io, entry) catch continue;
+                }
+                continue;
+            }
+
             if (entry.kind != .file) continue;
-            if (!is_apex_source_path(entry.basename)) continue;
+            if (!is_apex_source_path(entry.path)) continue;
 
             const full_path = std.fs.path.join(
                 self.allocator,
@@ -253,6 +261,28 @@ pub const Server = struct {
 
             self.store.open(uri, 0, content) catch continue;
         }
+    }
+
+    fn should_descend_preload_dir(basename: []const u8) bool {
+        if (basename.len == 0) return true;
+        if (basename[0] == '.') return false;
+
+        const skipped = [_][]const u8{
+            "node_modules",
+            "bower_components",
+            "dist",
+            "build",
+            "coverage",
+            "target",
+            "tmp",
+            "temp",
+            "zig-cache",
+            "zig-out",
+        };
+        for (&skipped) |name| {
+            if (std.ascii.eqlIgnoreCase(basename, name)) return false;
+        }
+        return true;
     }
 
     fn is_apex_source_path(path: []const u8) bool {
@@ -1305,6 +1335,85 @@ test "integration: cross-file definition" {
     defer std.testing.allocator.free(def_resp);
 
     // Helper.cls への定義ジャンプが返る
+    try std.testing.expect(std.mem.indexOf(u8, def_resp, "Helper.cls") != null);
+}
+
+test "integration: workspace preload includes Apex outside packageDirectories" {
+    const alloc = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try tmp_dir.dir.writeFile(std.testing.io, .{
+        .sub_path = "sfdx-project.json",
+        .data =
+        \\{
+        \\  "packageDirectories": [
+        \\    { "path": "force-app", "default": true }
+        \\  ]
+        \\}
+        ,
+    });
+    try tmp_dir.dir.createDirPath(std.testing.io, "force-app/main/default/classes");
+    try tmp_dir.dir.writeFile(std.testing.io, .{
+        .sub_path = "force-app/main/default/classes/Placeholder.cls",
+        .data = "public class Placeholder {}",
+    });
+    try tmp_dir.dir.createDirPath(std.testing.io, "unpackaged/examples/demo/main/default/classes");
+    try tmp_dir.dir.writeFile(std.testing.io, .{
+        .sub_path = "unpackaged/examples/demo/main/default/classes/Helper.cls",
+        .data =
+        \\public class Helper {
+        \\    @AuraEnabled
+        \\    public static String work() { return 'ok'; }
+        \\}
+        ,
+    });
+    const main_source = "public class Main { void run(){ Helper.work(); } }";
+    try tmp_dir.dir.writeFile(std.testing.io, .{
+        .sub_path = "unpackaged/examples/demo/main/default/classes/Main.cls",
+        .data = main_source,
+    });
+
+    const tmp_path = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", alloc);
+    defer alloc.free(tmp_path);
+
+    const root_uri = try Server.file_uri_from_path(alloc, tmp_path);
+    defer alloc.free(root_uri);
+
+    var h = try TestHarness.init();
+    defer h.deinit();
+
+    try std.testing.expect(h.server.load_workspace_from_uri(root_uri));
+
+    const main_path = try std.fs.path.join(
+        alloc,
+        &.{ tmp_path, "unpackaged/examples/demo/main/default/classes/Main.cls" },
+    );
+    defer alloc.free(main_path);
+
+    const main_uri = try Server.file_uri_from_path(alloc, main_path);
+    defer alloc.free(main_uri);
+
+    try std.testing.expect(h.server.store.get(main_uri) != null);
+
+    const work_pos = std.mem.indexOf(u8, main_source, "work").? + "work".len;
+    const def_req = try std.fmt.allocPrint(
+        alloc,
+        \\{{"jsonrpc":"2.0","id":9,"method":"textDocument/definition","params":{{
+        \\  "textDocument":{{"uri":"{s}"}},
+        \\  "position":{{"line":0,"character":{d}}}
+        \\}}}}
+    ,
+        .{ main_uri, work_pos },
+    );
+    defer alloc.free(def_req);
+
+    h.send(def_req);
+    _ = try h.server.handle_message((try h.server.transport.read_message()).?);
+
+    const def_resp = try h.read_response();
+    defer alloc.free(def_resp);
+
     try std.testing.expect(std.mem.indexOf(u8, def_resp, "Helper.cls") != null);
 }
 
