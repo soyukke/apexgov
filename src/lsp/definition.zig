@@ -271,6 +271,36 @@ test "same-file: this method jumps to class method" {
     try std.testing.expectEqual(@as(u32, 20), loc.?.range.start.character);
 }
 
+test "same-file: variable declared with Type jumps to declaration" {
+    var store = DocumentStore.init(std.testing.allocator);
+    defer store.deinit();
+
+    const source =
+        \\public class Foo {
+        \\    public void run(String objType) {
+        \\        Type dynamicMapType = Type.forName('Map<Id,' + objType + '>');
+        \\        System.debug(dynamicMapType);
+        \\    }
+        \\}
+    ;
+    try store.open("file:///Foo.cls", 1, source);
+    const cached = try store.ensure_parsed("file:///Foo.cls") orelse unreachable;
+    const br = try store.ensure_bound("file:///Foo.cls") orelse unreachable;
+    const offset: u32 = @intCast(std.mem.lastIndexOf(u8, source, "dynamicMapType").?);
+
+    const loc = get_definition_cross_file(
+        br,
+        cached.tokens,
+        source,
+        "file:///Foo.cls",
+        offset,
+        &store,
+    );
+    try std.testing.expect(loc != null);
+    try std.testing.expectEqualStrings("file:///Foo.cls", loc.?.uri);
+    try std.testing.expectEqual(@as(u32, 13), loc.?.range.start.character);
+}
+
 test "cross-file: same-file symbol takes priority" {
     var store = DocumentStore.init(std.testing.allocator);
     defer store.deinit();

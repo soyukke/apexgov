@@ -455,6 +455,31 @@ const limits_members = [_]MemberInfo{
 };
 
 // ---------------------------------------------------------------------------
+// Type
+// ---------------------------------------------------------------------------
+
+const type_members = [_]MemberInfo{
+    .{
+        .name = "forName",
+        .kind = .method,
+        .return_type = "Type",
+        .detail = "Type forName(String fullyQualifiedName)",
+    },
+    .{
+        .name = "getName",
+        .kind = .method,
+        .return_type = "String",
+        .detail = "String getName()",
+    },
+    .{
+        .name = "newInstance",
+        .kind = .method,
+        .return_type = "Object",
+        .detail = "Object newInstance()",
+    },
+};
+
+// ---------------------------------------------------------------------------
 // カタログ
 // ---------------------------------------------------------------------------
 
@@ -466,6 +491,7 @@ const all_types = [_]TypeDef{
     .{ .name = "System", .members = &system_members },
     .{ .name = "Database", .members = &database_members },
     .{ .name = "Limits", .members = &limits_members },
+    .{ .name = "Type", .members = &type_members },
 };
 
 /// 型名からメンバー一覧を取得する。
@@ -529,6 +555,19 @@ test "Database has query" {
     var found = false;
     for (members.?) |m| {
         if (std.mem.eql(u8, m.name, "query")) found = true;
+    }
+    try std.testing.expect(found);
+}
+
+test "Type has forName" {
+    const members = get_members("Type");
+    try std.testing.expect(members != null);
+    var found = false;
+    for (members.?) |m| {
+        if (std.mem.eql(u8, m.name, "forName")) {
+            found = true;
+            try std.testing.expectEqualStrings("Type", m.return_type.?);
+        }
     }
     try std.testing.expect(found);
 }

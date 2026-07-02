@@ -24,7 +24,7 @@ const apex_keywords = [_][]const u8{
       "Boolean",   "Date",
     "Datetime",   "Decimal",   "Double",    "Id",        "Integer",
     "Long",       "Object",    "String",    "Blob",      "Time",
-    "List",       "Map",       "Set",
+    "List",       "Map",       "Set",       "Type",
 };
 
 pub fn get_completions(
@@ -257,6 +257,7 @@ test "keywords in completions" {
     try std.testing.expect(has_label(ctx.items, "public"));
     try std.testing.expect(has_label(ctx.items, "class"));
     try std.testing.expect(has_label(ctx.items, "String"));
+    try std.testing.expect(has_label(ctx.items, "Type"));
 }
 
 test "method parameters visible" {
@@ -302,6 +303,33 @@ test "dot completion: System.debug static access" {
 
     try std.testing.expect(has_label_with_kind(ctx.items, "debug", .method));
     try std.testing.expect(has_label_with_kind(ctx.items, "assertEquals", .method));
+}
+
+test "dot completion: Type.forName static access" {
+    const source = "public class Foo { public void run() { Type. } }";
+    const dot_pos = std.mem.indexOf(u8, source, "Type. ").? + 5;
+    var ctx = try complete_at(source, @intCast(dot_pos));
+    defer ctx.deinit();
+
+    try std.testing.expect(has_label_with_kind(ctx.items, "forName", .method));
+    try std.testing.expect(has_label_with_kind(ctx.items, "newInstance", .method));
+}
+
+test "dot completion: Type variable methods" {
+    const source =
+        \\public class Foo {
+        \\    public void run(String objType) {
+        \\        Type dynamicMapType = Type.forName('Map<Id,' + objType + '>');
+        \\        dynamicMapType.
+        \\    }
+        \\}
+    ;
+    const dot_pos = std.mem.indexOf(u8, source, "dynamicMapType.").? + "dynamicMapType.".len;
+    var ctx = try complete_at(source, @intCast(dot_pos));
+    defer ctx.deinit();
+
+    try std.testing.expect(has_label_with_kind(ctx.items, "getName", .method));
+    try std.testing.expect(has_label_with_kind(ctx.items, "newInstance", .method));
 }
 
 test "dot completion: List methods after list." {
