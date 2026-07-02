@@ -32,8 +32,43 @@ const APEX_REFERENCE_DOCS: Record<string, ApexReferenceDoc> = {
   Object: doc("Object", "apex_methods_system_object.htm"),
   Pattern: doc("Pattern", "apex_classes_pattern_and_matcher_pattern_methods.htm"),
   Schema: doc("Schema", "apex_methods_system_schema.htm"),
+  ChildRelationship: doc(
+    "Schema.ChildRelationship",
+    "apex_class_Schema_ChildRelationship.htm"
+  ),
+  DescribeFieldResult: doc(
+    "Schema.DescribeFieldResult",
+    "apex_methods_system_fields_describe.htm"
+  ),
+  "Schema.DescribeFieldResult": doc(
+    "Schema.DescribeFieldResult",
+    "apex_methods_system_fields_describe.htm"
+  ),
+  DescribeSObjectResult: doc(
+    "Schema.DescribeSObjectResult",
+    "apex_methods_system_sobject_describe.htm"
+  ),
+  "Schema.DescribeSObjectResult": doc(
+    "Schema.DescribeSObjectResult",
+    "apex_methods_system_sobject_describe.htm"
+  ),
+  FieldSet: doc("Schema.FieldSet", "apex_methods_system_fieldsets_describe.htm"),
+  RecordTypeInfo: doc(
+    "Schema.RecordTypeInfo",
+    "apex_class_Schema_RecordTypeInfo.htm"
+  ),
   Set: doc("Set", "apex_methods_system_set.htm"),
   SObject: doc("SObject", "apex_methods_system_sobject.htm"),
+  SObjectField: doc("Schema.SObjectField", "apex_class_Schema_SObjectField.htm"),
+  "Schema.SObjectField": doc(
+    "Schema.SObjectField",
+    "apex_class_Schema_SObjectField.htm"
+  ),
+  SObjectType: doc("Schema.SObjectType", "apex_class_Schema_SObjectType.htm"),
+  "Schema.SObjectType": doc(
+    "Schema.SObjectType",
+    "apex_class_Schema_SObjectType.htm"
+  ),
   String: doc("String", "apex_methods_system_string.htm"),
   System: doc("System", "apex_methods_system_system.htm"),
   Test: doc("Test", "apex_testing_tools_start_stop_test.htm"),
@@ -100,15 +135,13 @@ function resolveApexReferenceTarget(
   word: string
 ): ResolvedApexReference | undefined {
   const direct = resolveDoc(word);
-  const memberReceiver = receiverBeforeDot(document, range);
+  const memberReceiverType = inferReceiverTypeBeforeMember(document, range);
 
-  if (memberReceiver) {
-    const receiverType = resolveDoc(memberReceiver) ? memberReceiver : inferVariableType(
-      document,
-      range.start,
-      memberReceiver
-    );
-    const docTarget = receiverType ? resolveDoc(receiverType) : undefined;
+  if (memberReceiverType) {
+    const receiverDoc = resolveDoc(memberReceiverType);
+    const returnType = standardMemberReturnType(memberReceiverType, word);
+    const returnDoc = returnType ? resolveDoc(returnType) : undefined;
+    const docTarget = receiverDoc ?? returnDoc;
     if (docTarget) {
       return {
         label: `${docTarget.name}.${word}`,
@@ -127,25 +160,203 @@ function resolveApexReferenceTarget(
   return undefined;
 }
 
-function receiverBeforeDot(
+function inferReceiverTypeBeforeMember(
   document: vscode.TextDocument,
   range: vscode.Range
 ): string | undefined {
   const line = document.lineAt(range.start.line).text;
-  let i = range.start.character - 1;
+  const expression = receiverExpressionBeforeMember(line, range.start.character);
+  if (!expression) return undefined;
+  return inferExpressionType(document, range.start, expression);
+}
+
+function receiverExpressionBeforeMember(
+  line: string,
+  memberStart: number
+): string | undefined {
+  let i = memberStart - 1;
   while (i >= 0 && /\s/.test(line[i])) i--;
   if (i < 0 || line[i] !== ".") return undefined;
 
   i--;
+  if (i >= 0 && line[i] === "?") i--;
   while (i >= 0 && /\s/.test(line[i])) i--;
   const end = i + 1;
-  while (i >= 0 && /[A-Za-z0-9_]/.test(line[i])) i--;
-  const start = i + 1;
+  const start = expressionStart(line, i);
   if (start >= end) return undefined;
-  return line.slice(start, end);
+  return line.slice(start, end).trim();
 }
 
-function inferVariableType(
+function expressionStart(line: string, index: number): number {
+  let i = index;
+  let parenDepth = 0;
+  let bracketDepth = 0;
+  while (i >= 0) {
+    const ch = line[i];
+    if (ch === ")") parenDepth++;
+    else if (ch === "(") {
+      if (parenDepth === 0) break;
+      parenDepth--;
+    } else if (ch === "]") bracketDepth++;
+    else if (ch === "[") {
+      if (bracketDepth === 0) break;
+      bracketDepth--;
+    }
+
+    if (parenDepth === 0 && bracketDepth === 0 && isExpressionBoundary(ch)) {
+      break;
+    }
+    i--;
+  }
+  return i + 1;
+}
+
+function isExpressionBoundary(ch: string): boolean {
+  return /[\s,;{}=:+\-*/%<>!&|]/.test(ch);
+}
+
+function inferExpressionType(
+  document: vscode.TextDocument,
+  position: vscode.Position,
+  expression: string
+): string | undefined {
+  const trimmed = trimOuterParens(expression.trim());
+  if (!trimmed) return undefined;
+
+  if (resolveDoc(trimmed)) return trimmed;
+
+  const indexAccess = splitTrailingIndexAccess(trimmed);
+  if (indexAccess) {
+    const collectionType = inferExpressionTypeRaw(
+      document,
+      position,
+      indexAccess.receiver
+    );
+    return collectionType ? elementTypeOf(collectionType) : undefined;
+  }
+
+  const methodCall = splitTrailingMethodCall(trimmed);
+  if (methodCall) {
+    const receiverType = inferExpressionType(document, position, methodCall.receiver);
+    return receiverType
+      ? standardMemberReturnType(receiverType, methodCall.method)
+      : undefined;
+  }
+
+  const memberAccess = splitTrailingMemberAccess(trimmed);
+  if (memberAccess) {
+    const receiverType = inferExpressionType(document, position, memberAccess.receiver);
+    return receiverType
+      ? standardMemberReturnType(receiverType, memberAccess.member)
+      : undefined;
+  }
+
+  if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(trimmed)) {
+    return baseTypeName(inferVariableTypeRaw(document, position, trimmed) ?? trimmed);
+  }
+
+  return undefined;
+}
+
+function inferExpressionTypeRaw(
+  document: vscode.TextDocument,
+  position: vscode.Position,
+  expression: string
+): string | undefined {
+  const trimmed = trimOuterParens(expression.trim());
+  if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(trimmed)) {
+    return inferVariableTypeRaw(document, position, trimmed) ?? trimmed;
+  }
+  return inferExpressionType(document, position, trimmed);
+}
+
+function splitTrailingIndexAccess(
+  expression: string
+): { receiver: string } | undefined {
+  if (!expression.endsWith("]")) return undefined;
+  let depth = 0;
+  for (let i = expression.length - 1; i >= 0; i--) {
+    const ch = expression[i];
+    if (ch === "]") depth++;
+    if (ch === "[") {
+      depth--;
+      if (depth === 0) {
+        const receiver = expression.slice(0, i).trim();
+        return receiver ? { receiver } : undefined;
+      }
+    }
+  }
+  return undefined;
+}
+
+function splitTrailingMethodCall(
+  expression: string
+): { receiver: string; method: string } | undefined {
+  if (!expression.endsWith(")")) return undefined;
+  const openParen = matchingOpenParen(expression, expression.length - 1);
+  if (openParen === undefined) return undefined;
+
+  let nameEnd = openParen;
+  let nameStart = nameEnd;
+  while (nameStart > 0 && /[A-Za-z0-9_]/.test(expression[nameStart - 1])) {
+    nameStart--;
+  }
+  if (nameStart === nameEnd) return undefined;
+
+  let dot = nameStart - 1;
+  while (dot >= 0 && /\s/.test(expression[dot])) dot--;
+  if (dot < 0 || expression[dot] !== ".") return undefined;
+
+  const receiver = expression.slice(0, dot).replace(/\?$/, "").trim();
+  const method = expression.slice(nameStart, nameEnd);
+  return receiver ? { receiver, method } : undefined;
+}
+
+function splitTrailingMemberAccess(
+  expression: string
+): { receiver: string; member: string } | undefined {
+  let end = expression.length;
+  while (end > 0 && /\s/.test(expression[end - 1])) end--;
+
+  let nameStart = end;
+  while (nameStart > 0 && /[A-Za-z0-9_]/.test(expression[nameStart - 1])) {
+    nameStart--;
+  }
+  if (nameStart === end) return undefined;
+
+  let dot = nameStart - 1;
+  while (dot >= 0 && /\s/.test(expression[dot])) dot--;
+  if (dot < 0 || expression[dot] !== ".") return undefined;
+
+  const receiver = expression.slice(0, dot).replace(/\?$/, "").trim();
+  const member = expression.slice(nameStart, end);
+  return receiver ? { receiver, member } : undefined;
+}
+
+function matchingOpenParen(expression: string, closeParen: number): number | undefined {
+  let depth = 0;
+  for (let i = closeParen; i >= 0; i--) {
+    const ch = expression[i];
+    if (ch === ")") depth++;
+    if (ch === "(") {
+      depth--;
+      if (depth === 0) return i;
+    }
+  }
+  return undefined;
+}
+
+function trimOuterParens(expression: string): string {
+  let current = expression;
+  while (current.startsWith("(") && current.endsWith(")")) {
+    const open = matchingOpenParen(current, current.length - 1);
+    if (open !== 0) break;
+    current = current.slice(1, -1).trim();
+  }
+  return current;
+}
+
+function inferVariableTypeRaw(
   document: vscode.TextDocument,
   position: vscode.Position,
   variableName: string
@@ -162,13 +373,87 @@ function inferVariableType(
   let typeName: string | undefined;
   let match: RegExpExecArray | null;
   while ((match = decl.exec(before)) !== null) {
-    typeName = baseTypeName(match[1]);
+    typeName = match[1];
   }
   return typeName;
 }
 
 function baseTypeName(raw: string): string {
   return raw.replace(/\s+/g, "").replace(/<.*$/, "");
+}
+
+function elementTypeOf(raw: string): string | undefined {
+  const compact = raw.replace(/\s+/g, "");
+  const listInner = genericInner(compact, "List");
+  if (listInner) return listInner;
+  const setInner = genericInner(compact, "Set");
+  if (setInner) return setInner;
+  if (compact.endsWith("[]")) return compact.slice(0, -2);
+  return undefined;
+}
+
+function genericInner(typeName: string, base: string): string | undefined {
+  const prefix = `${base}<`;
+  if (!typeName.startsWith(prefix) || !typeName.endsWith(">")) return undefined;
+  return typeName.slice(prefix.length, -1);
+}
+
+function standardMemberReturnType(
+  receiverType: string,
+  memberName: string
+): string | undefined {
+  const base = baseTypeName(receiverType);
+  const key = memberName.toLowerCase();
+  if (base === "Map") {
+    if (key === "keyset") return "Set";
+    if (key === "values") return "List";
+    if (key === "get" || key === "put" || key === "remove") return "Object";
+  }
+  if (base === "List" || base === "Set") {
+    if (base === "List" && key === "getsobjecttype") return "Schema.SObjectType";
+    if (key === "clone") return base;
+    if (key === "get" || key === "remove") return "Object";
+  }
+  if (base === "Id" && key === "getsobjecttype") return "Schema.SObjectType";
+  if (base === "SObject") {
+    if (key === "getsobjecttype") return "Schema.SObjectType";
+    if (key === "get" || key === "put" || key === "clone") return "Object";
+  }
+  if (base === "SObjectType" || base === "Schema.SObjectType") {
+    if (key === "getdescribe") return "Schema.DescribeSObjectResult";
+    if (key === "newsobject") return "SObject";
+  }
+  if (
+    base === "DescribeSObjectResult" ||
+    base === "Schema.DescribeSObjectResult"
+  ) {
+    if (key === "getsobjecttype") return "Schema.SObjectType";
+    if (key === "getname" || key === "getlabel" || key === "getlabelplural") return "String";
+    if (key === "fields") return "Object";
+  }
+  if (base === "SObjectField" || base === "Schema.SObjectField") {
+    if (key === "getdescribe") return "Schema.DescribeFieldResult";
+  }
+  if (
+    base === "DescribeFieldResult" ||
+    base === "Schema.DescribeFieldResult"
+  ) {
+    if (key === "getsobjectfield") return "Schema.SObjectField";
+    if (key === "getreferenceTo") return "List";
+  }
+  if (base === "Type") {
+    if (key === "forname") return "Type";
+    if (key === "newinstance") return "Object";
+    if (key === "getname") return "String";
+  }
+  if (base === "Schema") {
+    if (key === "sobjecttype") return "Schema.SObjectType";
+  }
+  if (key === "getsobjecttype" || key === "sobjecttype") {
+    return "Schema.SObjectType";
+  }
+  if (base === "String") return "String";
+  return undefined;
 }
 
 function resolveDoc(name: string): ApexReferenceDoc | undefined {

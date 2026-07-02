@@ -11,20 +11,21 @@ const apex_stdlib = @import("apex_stdlib.zig");
 
 /// Apex キーワード一覧。
 const apex_keywords = [_][]const u8{
-    "abstract",   "break",     "catch",     "class",     "continue",
-    "delete",     "do",        "else",      "enum",      "extends",
-    "final",      "finally",   "for",       "global",    "if",
-    "implements", "insert",    "interface", "merge",     "new",
-    "null",       "override",  "private",   "protected", "public",
-    "return",     "static",    "super",     "switch",    "this",
-    "throw",      "transient", "trigger",   "try",       "undelete",
-    "update",     "upsert",    "virtual",   "void",      "when",
-    "while",      "with",      "without",
+    "abstract",    "break",        "catch",                 "class",               "continue",
+    "delete",      "do",           "else",                  "enum",                "extends",
+    "final",       "finally",      "for",                   "global",              "if",
+    "implements",  "insert",       "interface",             "merge",               "new",
+    "null",        "override",     "private",               "protected",           "public",
+    "return",      "static",       "super",                 "switch",              "this",
+    "throw",       "transient",    "trigger",               "try",                 "undelete",
+    "update",      "upsert",       "virtual",               "void",                "when",
+    "while",       "with",         "without",
     // 組み込み型
-      "Boolean",   "Date",
-    "Datetime",   "Decimal",   "Double",    "Id",        "Integer",
-    "Long",       "Object",    "String",    "Blob",      "Time",
-    "List",       "Map",       "Set",       "Type",
+                  "Boolean",             "Date",
+    "Datetime",    "Decimal",      "Double",                "Id",                  "Integer",
+    "Long",        "Object",       "String",                "Blob",                "Time",
+    "List",        "Map",          "Set",                   "Schema",              "SObject",
+    "SObjectType", "SObjectField", "DescribeSObjectResult", "DescribeFieldResult", "Type",
 };
 
 pub fn get_completions(
@@ -57,6 +58,9 @@ fn detect_dot_context(
     var pos: u32 = offset;
     while (pos > 0 and source[pos - 1] == ' ') pos -= 1;
     if (pos == 0 or source[pos - 1] != '.') return null;
+    const dot_index = pos - 1;
+    if (infer_receiver_type_before_dot(source, dot_index, result, custom_fields)) |t| return t;
+
     pos -= 1; // '.' をスキップ
 
     // '.' の前の識別子を逆方向に読む
@@ -90,6 +94,151 @@ fn detect_dot_context(
     return sym.type_name;
 }
 
+fn infer_receiver_type_before_dot(
+    source: []const u8,
+    dot_index: u32,
+    result: *const binder_mod.BindResult,
+    custom_fields: ?*const sobject_schema.CustomFieldRegistry,
+) ?[]const u8 {
+    var before_dot = dot_index;
+    if (before_dot > 0 and source[before_dot - 1] == '?') before_dot -= 1;
+    while (before_dot > 0 and source[before_dot - 1] == ' ') before_dot -= 1;
+    if (before_dot == 0) return null;
+
+    if (source[before_dot - 1] == ']') {
+        const base_name = identifier_before_index_access(source, before_dot) orelse return null;
+        const raw_type = infer_variable_type_from_source(source, dot_index, base_name) orelse
+            symbol_type_by_name(result, base_name) orelse return null;
+        return element_type_from_collection(raw_type);
+    }
+
+    const receiver_name = identifier_ending_at(source, before_dot) orelse return null;
+    if (apex_stdlib.is_stdlib_type(receiver_name)) return receiver_name;
+    if (sobject_schema.is_s_object(receiver_name)) return receiver_name;
+    if (custom_fields) |cf| {
+        if (cf.is_s_object(receiver_name)) return receiver_name;
+    }
+
+    return infer_variable_type_from_source(source, dot_index, receiver_name) orelse
+        symbol_type_by_name(result, receiver_name);
+}
+
+fn identifier_before_index_access(source: []const u8, end: u32) ?[]const u8 {
+    if (end == 0 or source[end - 1] != ']') return null;
+    var depth: u32 = 0;
+    var i = end;
+    while (i > 0) {
+        i -= 1;
+        if (source[i] == ']') depth += 1;
+        if (source[i] == '[') {
+            depth -= 1;
+            if (depth == 0) return identifier_ending_at(source, @intCast(i));
+        }
+    }
+    return null;
+}
+
+fn identifier_ending_at(source: []const u8, end: u32) ?[]const u8 {
+    var i = end;
+    while (i > 0 and source[i - 1] == ' ') i -= 1;
+    const name_end = i;
+    while (i > 0 and (std.ascii.isAlphanumeric(source[i - 1]) or source[i - 1] == '_')) {
+        i -= 1;
+    }
+    if (i == name_end) return null;
+    return source[i..name_end];
+}
+
+fn infer_variable_type_from_source(source: []const u8, offset: u32, name: []const u8) ?[]const u8 {
+    var search_end: usize = @min(offset, source.len);
+    while (std.mem.lastIndexOf(u8, source[0..search_end], name)) |idx| {
+        search_end = idx;
+        if (!is_word_boundary(source, idx, name.len)) continue;
+
+        var type_end = idx;
+        while (type_end > 0 and std.ascii.isWhitespace(source[type_end - 1])) type_end -= 1;
+        const type_start = type_name_start_before(source, type_end);
+        const raw_type = std.mem.trim(u8, source[type_start..type_end], " \t\r\n");
+        if (raw_type.len > 0) return raw_type;
+    }
+    return null;
+}
+
+fn type_name_start_before(source: []const u8, type_end: usize) usize {
+    var type_start = type_end;
+    var generic_depth: u32 = 0;
+    while (type_start > 0) {
+        const c = source[type_start - 1];
+        if (c == '>') {
+            generic_depth += 1;
+        } else if (c == '<') {
+            if (generic_depth == 0) break;
+            generic_depth -= 1;
+        } else if (generic_depth == 0 and
+            (c == '(' or c == ',' or c == ';' or c == '{' or c == '=' or c == ':'))
+        {
+            break;
+        } else if (!is_type_name_char(c)) {
+            break;
+        }
+        type_start -= 1;
+    }
+    return type_start;
+}
+
+fn is_word_boundary(source: []const u8, start: usize, len: usize) bool {
+    const before_ok = start == 0 or !is_ident_char(source[start - 1]);
+    const after = start + len;
+    const after_ok = after >= source.len or !is_ident_char(source[after]);
+    return before_ok and after_ok;
+}
+
+fn is_ident_char(c: u8) bool {
+    return std.ascii.isAlphanumeric(c) or c == '_';
+}
+
+fn is_type_name_char(c: u8) bool {
+    return is_ident_char(c) or c == '.' or c == '<' or c == '>' or c == ',' or
+        c == '[' or c == ']' or std.ascii.isWhitespace(c);
+}
+
+fn symbol_type_by_name(result: *const binder_mod.BindResult, name: []const u8) ?[]const u8 {
+    for (result.symbols) |*s| {
+        if (std.mem.eql(u8, s.name, name)) return s.type_name;
+    }
+    return null;
+}
+
+fn element_type_from_collection(raw_type: []const u8) ?[]const u8 {
+    const trimmed = std.mem.trim(u8, raw_type, " \t\r\n");
+    if (generic_inner(trimmed, "List")) |inner| return inner;
+    if (generic_inner(trimmed, "Set")) |inner| return inner;
+    if (std.mem.endsWith(u8, trimmed, "[]")) {
+        return std.mem.trim(u8, trimmed[0 .. trimmed.len - 2], " \t");
+    }
+    return null;
+}
+
+fn generic_inner(type_name: []const u8, base_name: []const u8) ?[]const u8 {
+    const compact = std.mem.trim(u8, type_name, " \t\r\n");
+    if (!std.mem.startsWith(u8, compact, base_name)) return null;
+    var i = base_name.len;
+    while (i < compact.len and std.ascii.isWhitespace(compact[i])) i += 1;
+    if (i >= compact.len or compact[i] != '<' or compact[compact.len - 1] != '>') return null;
+    return std.mem.trim(u8, compact[i + 1 .. compact.len - 1], " \t");
+}
+
+fn base_type_name(type_name: []const u8) []const u8 {
+    const trimmed = std.mem.trim(u8, type_name, " \t\r\n");
+    if (std.mem.indexOfScalar(u8, trimmed, '<')) |idx| {
+        return std.mem.trim(u8, trimmed[0..idx], " \t");
+    }
+    if (std.mem.endsWith(u8, trimmed, "[]")) {
+        return std.mem.trim(u8, trimmed[0 .. trimmed.len - 2], " \t");
+    }
+    return trimmed;
+}
+
 /// 型ベースのドット補完。SObject フィールド + 標準ライブラリメソッド。
 fn get_dot_completions(
     type_name: []const u8,
@@ -98,9 +247,23 @@ fn get_dot_completions(
     custom_fields: ?*const sobject_schema.CustomFieldRegistry,
 ) ![]lsp_types.CompletionItem {
     var items: std.ArrayList(lsp_types.CompletionItem) = .empty;
+    const resolved_type = base_type_name(type_name);
 
-    // SObject 標準フィールド
-    if (sobject_schema.get_fields(type_name)) |fields| {
+    try append_standard_sobject_fields(&items, allocator, resolved_type);
+    try append_custom_sobject_fields(&items, allocator, resolved_type, custom_fields);
+    try append_sobject_type_tokens(&items, allocator, resolved_type, custom_fields);
+    try append_stdlib_members(&items, allocator, resolved_type);
+    try append_user_class_members(&items, allocator, resolved_type, result);
+
+    return items.toOwnedSlice(allocator);
+}
+
+fn append_standard_sobject_fields(
+    items: *std.ArrayList(lsp_types.CompletionItem),
+    allocator: std.mem.Allocator,
+    resolved_type: []const u8,
+) !void {
+    if (sobject_schema.get_fields(resolved_type)) |fields| {
         for (fields) |f| {
             try items.append(allocator, .{
                 .label = f.name,
@@ -109,10 +272,16 @@ fn get_dot_completions(
             });
         }
     }
+}
 
-    // カスタムフィールド (__c / __mdt 等)
+fn append_custom_sobject_fields(
+    items: *std.ArrayList(lsp_types.CompletionItem),
+    allocator: std.mem.Allocator,
+    resolved_type: []const u8,
+    custom_fields: ?*const sobject_schema.CustomFieldRegistry,
+) !void {
     if (custom_fields) |cf| {
-        if (cf.get_fields(type_name)) |fields| {
+        if (cf.get_fields(resolved_type)) |fields| {
             for (fields) |f| {
                 try items.append(allocator, .{
                     .label = f.name,
@@ -122,9 +291,39 @@ fn get_dot_completions(
             }
         }
     }
+}
 
-    // Apex 標準ライブラリメソッド
-    if (apex_stdlib.get_members(type_name)) |members| {
+fn append_sobject_type_tokens(
+    items: *std.ArrayList(lsp_types.CompletionItem),
+    allocator: std.mem.Allocator,
+    resolved_type: []const u8,
+    custom_fields: ?*const sobject_schema.CustomFieldRegistry,
+) !void {
+    if (is_sobject_type_name(resolved_type, custom_fields)) {
+        try items.append(allocator, .{
+            .label = "getSObjectType",
+            .kind = .method,
+            .detail = "Schema.SObjectType getSObjectType()",
+        });
+        try items.append(allocator, .{
+            .label = "SObjectType",
+            .kind = .field,
+            .detail = "Schema.SObjectType SObjectType",
+        });
+        try items.append(allocator, .{
+            .label = "sObjectType",
+            .kind = .field,
+            .detail = "Schema.SObjectType sObjectType",
+        });
+    }
+}
+
+fn append_stdlib_members(
+    items: *std.ArrayList(lsp_types.CompletionItem),
+    allocator: std.mem.Allocator,
+    resolved_type: []const u8,
+) !void {
+    if (apex_stdlib.get_members(resolved_type)) |members| {
         for (members) |m| {
             try items.append(allocator, .{
                 .label = m.name,
@@ -133,13 +332,19 @@ fn get_dot_completions(
             });
         }
     }
+}
 
-    // binder 内の同じクラスのメンバー（ユーザー定義クラス）
+fn append_user_class_members(
+    items: *std.ArrayList(lsp_types.CompletionItem),
+    allocator: std.mem.Allocator,
+    resolved_type: []const u8,
+    result: *const binder_mod.BindResult,
+) !void {
     for (result.symbols) |sym| {
         if (sym.parent) |parent_id| {
             if (parent_id < result.symbols.len) {
                 const parent = &result.symbols[parent_id];
-                if (parent.kind == .class and std.mem.eql(u8, parent.name, type_name)) {
+                if (parent.kind == .class and std.mem.eql(u8, parent.name, resolved_type)) {
                     const kind: lsp_types.CompletionItemKind = switch (sym.kind) {
                         .method => .method,
                         .field => .field,
@@ -155,8 +360,16 @@ fn get_dot_completions(
             }
         }
     }
+}
 
-    return items.toOwnedSlice(allocator);
+fn is_sobject_type_name(
+    type_name: []const u8,
+    custom_fields: ?*const sobject_schema.CustomFieldRegistry,
+) bool {
+    if (std.mem.eql(u8, type_name, "SObject")) return false;
+    if (sobject_schema.is_s_object(type_name)) return true;
+    if (custom_fields) |cf| return cf.is_s_object(type_name);
+    return false;
 }
 
 /// 通常補完: スコープ内シンボル + キーワード。
@@ -332,6 +545,95 @@ test "dot completion: Type variable methods" {
     try std.testing.expect(has_label_with_kind(ctx.items, "newInstance", .method));
 }
 
+test "dot completion: SObject methods after for-each variable" {
+    const source =
+        \\public class Foo {
+        \\    public void run(List<SObject> incomingList) {
+        \\        for (SObject current : incomingList) {
+        \\            current.
+        \\        }
+        \\    }
+        \\}
+    ;
+    const dot_pos = std.mem.indexOf(u8, source, "current.").? + "current.".len;
+    var ctx = try complete_at(source, @intCast(dot_pos));
+    defer ctx.deinit();
+
+    try std.testing.expect(has_label_with_kind(ctx.items, "get", .method));
+    try std.testing.expect(has_label_with_kind(ctx.items, "put", .method));
+    try std.testing.expect(has_label_with_kind(ctx.items, "getSObjectType", .method));
+}
+
+test "dot completion: SObject methods after list index null-safe access" {
+    const source =
+        \\public class Foo {
+        \\    public void run(String key, List<SObject> incomingList) {
+        \\        incomingList[0]?.
+        \\    }
+        \\}
+    ;
+    const dot_pos = std.mem.indexOf(u8, source, "incomingList[0]?.").? + "incomingList[0]?.".len;
+    var ctx = try complete_at(source, @intCast(dot_pos));
+    defer ctx.deinit();
+
+    try std.testing.expect(has_label_with_kind(ctx.items, "getSObjectType", .method));
+}
+
+test "dot completion: Id methods after record id" {
+    const source = "public class Foo { public void run() { Id recordId; recordId. } }";
+    const dot_pos = std.mem.indexOf(u8, source, "recordId. ").? + "recordId.".len;
+    var ctx = try complete_at(source, @intCast(dot_pos));
+    defer ctx.deinit();
+
+    try std.testing.expect(has_label_with_kind(ctx.items, "getSObjectType", .method));
+}
+
+test "dot completion: List of SObject exposes getSObjectType" {
+    const source = "public class Foo { public void run() { List<SObject> records; records. } }";
+    const dot_pos = std.mem.indexOf(u8, source, "records. ").? + "records.".len;
+    var ctx = try complete_at(source, @intCast(dot_pos));
+    defer ctx.deinit();
+
+    try std.testing.expect(has_label_with_kind(ctx.items, "getSObjectType", .method));
+}
+
+test "dot completion: SObject type token methods after object type" {
+    const source = "public class Foo { public void run() { Account. } }";
+    const dot_pos = std.mem.indexOf(u8, source, "Account. ").? + "Account.".len;
+    var ctx = try complete_at(source, @intCast(dot_pos));
+    defer ctx.deinit();
+
+    try std.testing.expect(has_label_with_kind(ctx.items, "getSObjectType", .method));
+    try std.testing.expect(has_label_with_kind(ctx.items, "SObjectType", .field));
+}
+
+test "dot completion: Schema namespace methods" {
+    const source = "public class Foo { public void run() { Schema. } }";
+    const dot_pos = std.mem.indexOf(u8, source, "Schema. ").? + "Schema.".len;
+    var ctx = try complete_at(source, @intCast(dot_pos));
+    defer ctx.deinit();
+
+    try std.testing.expect(has_label_with_kind(ctx.items, "getGlobalDescribe", .method));
+    try std.testing.expect(has_label_with_kind(ctx.items, "describeSObjects", .method));
+}
+
+test "dot completion: Schema.SObjectType variable methods" {
+    const source =
+        \\public class Foo {
+        \\    public void run() {
+        \\        Schema.SObjectType token;
+        \\        token.
+        \\    }
+        \\}
+    ;
+    const dot_pos = std.mem.indexOf(u8, source, "token.").? + "token.".len;
+    var ctx = try complete_at(source, @intCast(dot_pos));
+    defer ctx.deinit();
+
+    try std.testing.expect(has_label_with_kind(ctx.items, "getDescribe", .method));
+    try std.testing.expect(has_label_with_kind(ctx.items, "newSObject", .method));
+}
+
 test "dot completion: List methods after list." {
     const source = "public class Foo { public void run() { List items; items. } }";
     const dot_pos = std.mem.indexOf(u8, source, "items. ").? + 6;
@@ -341,6 +643,7 @@ test "dot completion: List methods after list." {
     try std.testing.expect(has_label_with_kind(ctx.items, "add", .method));
     try std.testing.expect(has_label_with_kind(ctx.items, "size", .method));
     try std.testing.expect(has_label_with_kind(ctx.items, "isEmpty", .method));
+    try std.testing.expect(has_label_with_kind(ctx.items, "getSObjectType", .method));
 }
 
 test "dot completion: Contact fields" {
