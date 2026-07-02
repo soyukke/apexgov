@@ -80,6 +80,11 @@
           ],
           "default": "off",
           "description": "Traces the communication between VS Code and the apexgov language server."
+        },
+        "apexgov.standardLibraryDocs.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show official Salesforce Apex Reference links for standard Apex library symbols in hover."
         }
       }
     }

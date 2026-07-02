@@ -9,6 +9,7 @@ import {
   LanguageClientOptions,
   ServerOptions,
 } from "vscode-languageclient/node";
+import { registerApexReferenceHoverProvider } from "./apexReferenceHover";
 
 let client: LanguageClient | undefined;
 
@@ -16,6 +17,7 @@ const outputChannel = vscode.window.createOutputChannel("apexgov");
 
 export async function activate(context: vscode.ExtensionContext) {
   outputChannel.appendLine("apexgov: activating...");
+  registerApexReferenceHoverProvider(context);
 
   let serverPath: string | undefined;
   try {
