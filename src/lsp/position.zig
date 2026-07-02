@@ -75,6 +75,59 @@ pub fn this_member_at_offset(
     return null;
 }
 
+pub fn call_arg_count_at_offset(
+    tokens: []const parser_types.Token,
+    offset: u32,
+) ?u32 {
+    for (tokens, 0..) |tok, i| {
+        if (tok.kind != .identifier) continue;
+        if (offset < tok.loc.offset or
+            offset >= tok.loc.offset + @as(u32, @intCast(tok.lexeme.len)))
+        {
+            continue;
+        }
+        return call_arg_count_at_token_index(tokens, i);
+    }
+    return null;
+}
+
+pub fn call_arg_count_at_token_index(
+    tokens: []const parser_types.Token,
+    index: usize,
+) ?u32 {
+    if (index + 1 >= tokens.len or tokens[index + 1].kind != .lparen) return null;
+
+    var depth: u32 = 0;
+    var comma_count: u32 = 0;
+    var has_arg_token = false;
+    for (tokens[index + 1 ..]) |tok| {
+        switch (tok.kind) {
+            .lparen => {
+                depth += 1;
+                if (depth > 1) has_arg_token = true;
+            },
+            .rparen => {
+                if (depth == 0) return null;
+                if (depth == 1) return if (has_arg_token) comma_count + 1 else 0;
+                depth -= 1;
+                has_arg_token = true;
+            },
+            .comma => {
+                if (depth == 1) {
+                    comma_count += 1;
+                } else if (depth > 1) {
+                    has_arg_token = true;
+                }
+            },
+            .eof => return null,
+            else => {
+                if (depth > 0) has_arg_token = true;
+            },
+        }
+    }
+    return null;
+}
+
 /// SourceLoc → LSP Range（開始位置のみ、終了位置は同一点）。
 /// symbols.zig, workspace_symbol.zig, server.zig 等の共通ヘルパー。
 pub fn loc_to_range(loc: parser_types.SourceLoc, source: []const u8) lsp_types.Range {
@@ -264,4 +317,17 @@ test "this_member_at_offset finds member after this dot" {
 
     try std.testing.expect(member != null);
     try std.testing.expectEqualStrings("recordCount", member.?.member_name);
+}
+
+test "call_arg_count_at_offset counts method arguments" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const source = "helper('a', nested(1, 2)); empty();";
+    const tokens = try lexer.tokenize(source, arena.allocator());
+    const helper_offset: u32 = @intCast(std.mem.indexOf(u8, source, "helper").?);
+    const empty_offset: u32 = @intCast(std.mem.indexOf(u8, source, "empty").?);
+
+    try std.testing.expectEqual(@as(?u32, 2), call_arg_count_at_offset(tokens, helper_offset));
+    try std.testing.expectEqual(@as(?u32, 0), call_arg_count_at_offset(tokens, empty_offset));
 }

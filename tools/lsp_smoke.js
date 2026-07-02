@@ -176,6 +176,7 @@ function syntheticDocuments() {
         "        helper('local');",
         "        this.helper('this');",
         "        Foo.helper('qualified');",
+        "        Integer zeroValue = helper();",
         "        recordId.getSObjectType();",
         "        records[0]?.getSObjectType();",
         "        Account.getSObjectType();",
@@ -189,6 +190,7 @@ function syntheticDocuments() {
         "     * @return computed number",
         "     */",
         "    private static Integer helper(String label) { return 1; }",
+        "    private static Integer helper() { return 0; }",
         "}",
         "",
       ].join("\n"),
@@ -261,6 +263,9 @@ async function checkDefinition(client, docs, report) {
   const innerHelperDef = await definitionAt(client, foo, "nestedHelper();");
   assertLine(innerHelperDef, foo, "nestedHelper() {}", "inner-class method definition");
 
+  const overloadDef = await definitionAt(client, foo, "helper();");
+  assertLine(overloadDef, foo, "helper() { return 0", "overloaded method definition by arity");
+
   const caller = docs[1];
   const qualifiedDef = await definitionAt(client, caller, "helper('x')");
   assertLine(qualifiedDef, foo, "helper(String label)", "cross-file qualified method definition");
@@ -286,6 +291,9 @@ async function checkReferences(client, docs, report) {
 
   const refsFromStaticField = await referencesAt(client, docs[1], "staticCount = 2");
   assertEqual(refsFromStaticField.length, 3, "static field references");
+
+  const refsFromZeroArgHelper = await referencesAt(client, foo, "helper() { return 0");
+  assertEqual(refsFromZeroArgHelper.length, 2, "zero-arg overload references");
 
   const fieldRefs = await referencesAt(client, foo, "recordCount;");
   assertEqual(fieldRefs.length, 4, "field references");
@@ -361,6 +369,7 @@ async function checkLanguageServices(client, docs, report) {
   });
   assert(signature && signature.signatures && signature.signatures.length > 0, "signatureHelp returns helper signature");
   assertIncludes(signature.signatures[0].label, "helper", "signatureHelp labels helper");
+  assertEqual(signature.signatures[0].parameters[0].label, "String label", "signatureHelp selects arity-matched overload");
 
   const highlights = await client.request("textDocument/documentHighlight", {
     textDocument: { uri: foo.uri },
@@ -430,6 +439,13 @@ async function checkRename(client, docs, report) {
   });
   assertEqual(editCount(staticFieldEdit, foo.uri), 2, "same-file static field rename edit count");
   assertEqual(editCount(staticFieldEdit, docs[1].uri), 1, "cross-file static field rename edit count");
+
+  const zeroArgEdit = await client.request("textDocument/rename", {
+    textDocument: { uri: foo.uri },
+    position: positionOf(foo.text, "helper() { return 0"),
+    newName: "renamedZeroHelper",
+  });
+  assertEqual(editCount(zeroArgEdit, foo.uri), 2, "zero-arg overload rename edit count");
 
   report.push("rename: OK");
 }

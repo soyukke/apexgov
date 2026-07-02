@@ -42,17 +42,25 @@ pub fn get_definition_cross_file(
 
     // 2. `this.member` の member 側を現在クラスのメンバーへ解決
     if (position_mod.this_member_at_offset(tokens, offset)) |member| {
-        if (binder_mod.resolve_current_class_member(result, offset, member.member_name)) |sym| {
+        const arg_count = position_mod.call_arg_count_at_offset(tokens, offset);
+        if (binder_mod.resolve_current_class_member_with_arity(
+            result,
+            offset,
+            member.member_name,
+            arg_count,
+        )) |sym| {
             return location_for_symbol(sym, source, uri);
         }
     }
 
     // 3. `ClassName.member` の member 側をワークスペース内のクラスメンバーへ解決
     if (position_mod.qualified_member_at_offset(tokens, offset)) |member| {
-        if (store.resolve_member_across_files(
+        const arg_count = position_mod.call_arg_count_at_offset(tokens, offset);
+        if (store.resolve_member_across_files_with_arity(
             member.receiver_name,
             member.member_name,
             uri,
+            arg_count,
         )) |match| {
             return location_for_symbol(&match.symbol, match.source, match.uri);
         }
@@ -62,7 +70,8 @@ pub fn get_definition_cross_file(
     const name = position_mod.identifier_at_offset(tokens, offset) orelse return null;
 
     // 5. 裸の member() / field を現在クラスのメンバーへ解決
-    if (binder_mod.resolve_current_class_member(result, offset, name)) |sym| {
+    const arg_count = position_mod.call_arg_count_at_offset(tokens, offset);
+    if (binder_mod.resolve_current_class_member_with_arity(result, offset, name, arg_count)) |sym| {
         return location_for_symbol(sym, source, uri);
     }
 

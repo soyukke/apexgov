@@ -31,17 +31,20 @@ pub fn get_hover_cross_file(
     if (try get_hover(result, source, offset, allocator)) |local| return local;
 
     if (position_mod.qualified_member_at_offset(tokens, offset)) |member| {
-        if (store.resolve_member_across_files(
+        const arg_count = position_mod.call_arg_count_at_offset(tokens, offset);
+        if (store.resolve_member_across_files_with_arity(
             member.receiver_name,
             member.member_name,
             uri,
+            arg_count,
         )) |match| {
             return try hover_for_symbol(&match.symbol, match.source, allocator);
         }
     }
 
     const name = position_mod.identifier_at_offset(tokens, offset) orelse return null;
-    if (binder_mod.resolve_current_class_member(result, offset, name)) |sym| {
+    const arg_count = position_mod.call_arg_count_at_offset(tokens, offset);
+    if (binder_mod.resolve_current_class_member_with_arity(result, offset, name, arg_count)) |sym| {
         return try hover_for_symbol(sym, source, allocator);
     }
 

@@ -37,6 +37,7 @@ pub const Symbol = struct {
     type_name: ?[]const u8,
     loc: SourceLoc,
     end_offset: u32,
+    param_count: ?u32,
     parent: ?SymbolId,
     scope_id: ScopeId,
 };
@@ -113,11 +114,22 @@ pub fn resolve_current_class_member(
     offset: u32,
     member_name: []const u8,
 ) ?*const Symbol {
+    return resolve_current_class_member_with_arity(result, offset, member_name, null);
+}
+
+pub fn resolve_current_class_member_with_arity(
+    result: *const BindResult,
+    offset: u32,
+    member_name: []const u8,
+    arg_count: ?u32,
+) ?*const Symbol {
     const owner_id = current_class_symbol_id(result, offset) orelse return null;
     for (result.symbols) |*sym| {
         if (sym.parent == null or sym.parent.? != owner_id) continue;
         if (!is_class_member(sym.kind)) continue;
-        if (std.mem.eql(u8, sym.name, member_name)) return sym;
+        if (!std.mem.eql(u8, sym.name, member_name)) continue;
+        if (!member_arity_matches(sym, arg_count)) continue;
+        return sym;
     }
     return null;
 }
@@ -145,6 +157,12 @@ fn is_class_member(kind: SymbolKind) bool {
         .method, .field, .constructor, .enum_value, .class, .interface, .enum_type => true,
         else => false,
     };
+}
+
+pub fn member_arity_matches(sym: *const Symbol, arg_count: ?u32) bool {
+    const expected = arg_count orelse return true;
+    const actual = sym.param_count orelse return true;
+    return actual == expected;
 }
 
 // ---------------------------------------------------------------------------
@@ -194,6 +212,7 @@ const Binder = struct {
             .type_name = type_name,
             .loc = name_loc,
             .end_offset = symbol_end,
+            .param_count = null,
             .parent = parent,
             .scope_id = self.current_scope,
         });
@@ -369,6 +388,7 @@ const Binder = struct {
         parent: ?SymbolId,
     ) !void {
         const sym_id = try self.add_declaration_symbol(name, kind, return_type, loc, parent);
+        self.symbols.items[sym_id].param_count = @intCast(params.len);
         _ = try self.push_scope();
         try self.bind_params(params, loc, sym_id);
         try self.bind_body_scope(body);

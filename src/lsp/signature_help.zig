@@ -66,12 +66,14 @@ pub fn get_signature_help_cross_file(
 
     const open = find_enclosing_open_paren(source, offset) orelse return null;
     const ident = identifier_ending_at(source, open.method_end) orelse return null;
+    const arg_count = position_mod.call_arg_count_at_offset(tokens, ident.start);
 
     if (position_mod.this_member_at_offset(tokens, ident.start)) |member| {
-        if (binder_mod.resolve_current_class_member(
+        if (binder_mod.resolve_current_class_member_with_arity(
             result,
             ident.start,
             member.member_name,
+            arg_count,
         )) |sym| {
             if (!is_callable(sym.kind)) return null;
             return try signature_for_symbol(result, sym, open.comma_count, allocator);
@@ -79,10 +81,11 @@ pub fn get_signature_help_cross_file(
     }
 
     if (position_mod.qualified_member_at_offset(tokens, ident.start)) |member| {
-        if (store.resolve_member_across_files(
+        if (store.resolve_member_across_files_with_arity(
             member.receiver_name,
             member.member_name,
             uri,
+            arg_count,
         )) |match| {
             const br = try store.ensure_bound(match.uri) orelse return null;
             if (!is_callable(match.symbol.kind)) return null;
@@ -90,7 +93,12 @@ pub fn get_signature_help_cross_file(
         }
     }
 
-    if (binder_mod.resolve_current_class_member(result, ident.start, ident.name)) |sym| {
+    if (binder_mod.resolve_current_class_member_with_arity(
+        result,
+        ident.start,
+        ident.name,
+        arg_count,
+    )) |sym| {
         if (!is_callable(sym.kind)) return null;
         return try signature_for_symbol(result, sym, open.comma_count, allocator);
     }

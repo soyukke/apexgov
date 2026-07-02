@@ -202,12 +202,34 @@ pub const DocumentStore = struct {
         member_name: []const u8,
         preferred_uri: []const u8,
     ) ?SymbolMatch {
-        if (self.resolve_member_in_doc(preferred_uri, owner_name, member_name)) |m| return m;
+        return self.resolve_member_across_files_with_arity(
+            owner_name,
+            member_name,
+            preferred_uri,
+            null,
+        );
+    }
+
+    pub fn resolve_member_across_files_with_arity(
+        self: *DocumentStore,
+        owner_name: []const u8,
+        member_name: []const u8,
+        preferred_uri: []const u8,
+        arg_count: ?u32,
+    ) ?SymbolMatch {
+        if (self.resolve_member_in_doc(preferred_uri, owner_name, member_name, arg_count)) |m| {
+            return m;
+        }
 
         var it = self.documents.iterator();
         while (it.next()) |entry| {
             if (std.mem.eql(u8, entry.key_ptr.*, preferred_uri)) continue;
-            if (self.resolve_member_in_doc(entry.key_ptr.*, owner_name, member_name)) |m| return m;
+            if (self.resolve_member_in_doc(
+                entry.key_ptr.*,
+                owner_name,
+                member_name,
+                arg_count,
+            )) |m| return m;
         }
         return null;
     }
@@ -217,6 +239,7 @@ pub const DocumentStore = struct {
         uri: []const u8,
         owner_name: []const u8,
         member_name: []const u8,
+        arg_count: ?u32,
     ) ?SymbolMatch {
         const doc = self.documents.getPtr(uri) orelse return null;
         const br = (self.ensure_bound(doc.uri) catch return null) orelse return null;
@@ -232,6 +255,7 @@ pub const DocumentStore = struct {
 
         for (br.symbols) |sym| {
             if (sym.parent == parent_id and std.mem.eql(u8, sym.name, member_name)) {
+                if (!binder_mod.member_arity_matches(&sym, arg_count)) continue;
                 return .{ .uri = doc.uri, .symbol = sym, .source = doc.text };
             }
         }

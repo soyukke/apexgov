@@ -123,7 +123,13 @@ fn resolve_reference_target(
     }
 
     if (position_mod.this_member_at_offset(tokens, offset)) |member| {
-        if (binder_mod.resolve_current_class_member(result, offset, member.member_name)) |sym| {
+        const arg_count = position_mod.call_arg_count_at_offset(tokens, offset);
+        if (binder_mod.resolve_current_class_member_with_arity(
+            result,
+            offset,
+            member.member_name,
+            arg_count,
+        )) |sym| {
             return .{
                 .uri = uri,
                 .source = source,
@@ -135,17 +141,20 @@ fn resolve_reference_target(
     }
 
     if (position_mod.qualified_member_at_offset(tokens, offset)) |member| {
-        if (store.resolve_member_across_files(
+        const arg_count = position_mod.call_arg_count_at_offset(tokens, offset);
+        if (store.resolve_member_across_files_with_arity(
             member.receiver_name,
             member.member_name,
             uri,
+            arg_count,
         )) |match| {
             return try target_from_match(store, match);
         }
     }
 
     const name = position_mod.identifier_at_offset(tokens, offset) orelse return null;
-    if (binder_mod.resolve_current_class_member(result, offset, name)) |sym| {
+    const arg_count = position_mod.call_arg_count_at_offset(tokens, offset);
+    if (binder_mod.resolve_current_class_member_with_arity(result, offset, name, arg_count)) |sym| {
         return .{
             .uri = uri,
             .source = source,
@@ -290,7 +299,9 @@ fn append_member_refs_in_doc(
             continue;
         }
 
-        if (is_method_like(target_symbol.kind) and !is_call_token(tokens, i)) continue;
+        if (is_method_like(target_symbol.kind) and !method_call_matches(tokens, i, target_symbol)) {
+            continue;
+        }
         if (is_qualified_member_reference(tokens, i, owner_name)) {
             try append_location_unique(
                 locations,
@@ -337,6 +348,16 @@ fn is_bare_member_reference(tokens: []const parser_types.Token, index: usize) bo
 
 fn is_call_token(tokens: []const parser_types.Token, index: usize) bool {
     return index + 1 < tokens.len and tokens[index + 1].kind == .lparen;
+}
+
+fn method_call_matches(
+    tokens: []const parser_types.Token,
+    index: usize,
+    target_symbol: binder_mod.Symbol,
+) bool {
+    if (!is_call_token(tokens, index)) return false;
+    const arg_count = position_mod.call_arg_count_at_token_index(tokens, index);
+    return binder_mod.member_arity_matches(&target_symbol, arg_count);
 }
 
 fn owner_id_in_document(
@@ -610,6 +631,40 @@ test "same-file: include_declaration false excludes same-class method definition
         "file:///Foo.cls",
         offset,
         false,
+        &store,
+        std.testing.allocator,
+    );
+    defer std.testing.allocator.free(locs);
+
+    try std.testing.expectEqual(@as(usize, 2), locs.len);
+}
+
+test "same-file: method references respect overload arity" {
+    var store = DocumentStore.init(std.testing.allocator);
+    defer store.deinit();
+
+    const source =
+        \\public class Foo {
+        \\    public void run() {
+        \\        helper();
+        \\        helper('x');
+        \\    }
+        \\    private static Integer helper() { return 0; }
+        \\    private static Integer helper(String label) { return 1; }
+        \\}
+    ;
+    try store.open("file:///Foo.cls", 1, source);
+    const cached = try store.ensure_parsed("file:///Foo.cls") orelse unreachable;
+    const br = try store.ensure_bound("file:///Foo.cls") orelse unreachable;
+    const offset: u32 = @intCast(std.mem.indexOf(u8, source, "helper() {").?);
+
+    const locs = try get_references_cross_file(
+        br,
+        cached.tokens,
+        source,
+        "file:///Foo.cls",
+        offset,
+        true,
         &store,
         std.testing.allocator,
     );
