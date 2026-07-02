@@ -25,6 +25,10 @@ pub const QualifiedMember = struct {
     member_name: []const u8,
 };
 
+pub const ThisMember = struct {
+    member_name: []const u8,
+};
+
 /// `Receiver.member` の member 識別子上に offset がある場合、その左右の識別子を返す。
 pub fn qualified_member_at_offset(
     tokens: []const parser_types.Token,
@@ -44,6 +48,29 @@ pub fn qualified_member_at_offset(
         const receiver = tokens[i - 2];
         if (receiver.kind != .identifier) return null;
         return .{ .receiver_name = receiver.lexeme, .member_name = tok.lexeme };
+    }
+    return null;
+}
+
+/// `this.member` の member 識別子上に offset がある場合、member 名を返す。
+pub fn this_member_at_offset(
+    tokens: []const parser_types.Token,
+    offset: u32,
+) ?ThisMember {
+    for (tokens, 0..) |tok, i| {
+        if (tok.kind != .identifier) continue;
+        if (offset < tok.loc.offset or
+            offset >= tok.loc.offset + @as(u32, @intCast(tok.lexeme.len)))
+        {
+            continue;
+        }
+
+        if (i < 2) return null;
+        const dot = tokens[i - 1];
+        if (dot.kind != .dot and dot.kind != .question_dot) return null;
+        const receiver = tokens[i - 2];
+        if (receiver.kind != .this_kw) return null;
+        return .{ .member_name = tok.lexeme };
     }
     return null;
 }
@@ -224,4 +251,17 @@ test "qualified_member_at_offset ignores receiver identifier" {
     const offset: u32 = @intCast(std.mem.indexOf(u8, source, "SOQLRecipes").?);
 
     try std.testing.expect(qualified_member_at_offset(tokens, offset) == null);
+}
+
+test "this_member_at_offset finds member after this dot" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const source = "this.recordCount = 1;";
+    const tokens = try lexer.tokenize(source, arena.allocator());
+    const offset: u32 = @intCast(std.mem.indexOf(u8, source, "recordCount").?);
+    const member = this_member_at_offset(tokens, offset);
+
+    try std.testing.expect(member != null);
+    try std.testing.expectEqualStrings("recordCount", member.?.member_name);
 }
