@@ -1,8 +1,8 @@
 {
   "name": "apexgov",
   "displayName": "apexgov",
-  "description": "Apex Governor Limit Checker & Language Server — offline static analysis for Salesforce Apex",
-  "version": "0.8.0",
+  "description": "Cross-platform Apex Governor Limit Checker & Language Server for Salesforce Apex",
+  "version": "0.8.3",
   "publisher": "soyukke",
   "license": "MIT",
   "repository": {
@@ -80,6 +80,11 @@
           ],
           "default": "off",
           "description": "Traces the communication between VS Code and the apexgov language server."
+        },
+        "apexgov.standardLibraryDocs.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show official Salesforce Apex Reference links for standard Apex library symbols in hover."
         }
       }
     }

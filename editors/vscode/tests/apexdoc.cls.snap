@@ -1,0 +1,53 @@
+>// SYNTAX TEST "source.apex"
+#^^^^^^^^^^^^^^^^^^^^^^^^^^^^ source.apex comment.line.double-slash.apex
+>
+>/**
+#^^ source.apex comment.block.apex
+#  ^^ source.apex comment.block.apex
+> * @description Finds account records.
+#^^^ source.apex comment.block.apex
+#   ^^^^^^^^^^^^ source.apex comment.block.apex storage.type.annotation.apexdoc.apex
+#               ^^^^^^^^^^^^^^^^^^^^^^^^ source.apex comment.block.apex
+> * @param {String} state selected state
+#^^^ source.apex comment.block.apex
+#   ^^^^^^ source.apex comment.block.apex storage.type.annotation.apexdoc.apex
+#         ^ source.apex comment.block.apex
+#          ^^^^^^^^ source.apex comment.block.apex entity.name.type.apexdoc.apex
+#                  ^^^^^^^^^^^^^^^^^^^^^^ source.apex comment.block.apex
+> * @return {List<Account>} matching accounts
+#^^^ source.apex comment.block.apex
+#   ^^^^^^^ source.apex comment.block.apex storage.type.annotation.apexdoc.apex
+#          ^ source.apex comment.block.apex
+#           ^^^^^^^^^^^^^^^ source.apex comment.block.apex entity.name.type.apexdoc.apex
+#                          ^^^^^^^^^^^^^^^^^^^ source.apex comment.block.apex
+> * @returns {List<Account>} matching accounts
+#^^^ source.apex comment.block.apex
+#   ^^^^^^^^ source.apex comment.block.apex storage.type.annotation.apexdoc.apex
+#           ^ source.apex comment.block.apex
+#            ^^^^^^^^^^^^^^^ source.apex comment.block.apex entity.name.type.apexdoc.apex
+#                           ^^^^^^^^^^^^^^^^^^^ source.apex comment.block.apex
+> * @throws {QueryException} when access is denied
+#^^^ source.apex comment.block.apex
+#   ^^^^^^^ source.apex comment.block.apex storage.type.annotation.apexdoc.apex
+#          ^ source.apex comment.block.apex
+#           ^^^^^^^^^^^^^^^^ source.apex comment.block.apex entity.name.type.apexdoc.apex
+#                           ^^^^^^^^^^^^^^^^^^^^^^^ source.apex comment.block.apex
+> * @see {@link SOQLRecipes#getRecords}
+#^^^ source.apex comment.block.apex
+#   ^^^^ source.apex comment.block.apex storage.type.annotation.apexdoc.apex
+#       ^ source.apex comment.block.apex
+#        ^ source.apex comment.block.apex meta.inline.apexdoc.apex
+#         ^^^^^ source.apex comment.block.apex meta.inline.apexdoc.apex storage.type.annotation.apexdoc.apex
+#              ^^^^^^^^^^^^^^^^^^^^^^^ source.apex comment.block.apex meta.inline.apexdoc.apex
+#                                     ^ source.apex comment.block.apex meta.inline.apexdoc.apex
+> */
+#^ source.apex comment.block.apex
+# ^^ source.apex comment.block.apex
+>public class ApexDocExample {}
+#^^^^^^ source.apex storage.modifier.apex
+#      ^ source.apex
+#       ^^^^^ source.apex keyword.declaration.apex
+#            ^ source.apex
+#             ^^^^^^^^^^^^^^ source.apex entity.name.type.apex
+#                           ^^^^ source.apex
+>

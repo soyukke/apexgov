@@ -40,19 +40,64 @@ pub fn get_definition_cross_file(
     // 1. 同一ファイル内で検索
     if (get_definition(result, source, uri, offset)) |loc| return loc;
 
-    // 2. カーソル位置の identifier を取得
+    // 2. `this.member` の member 側を現在クラスのメンバーへ解決
+    if (position_mod.this_member_at_offset(tokens, offset)) |member| {
+        const arg_count = position_mod.call_arg_count_at_offset(tokens, offset);
+        if (binder_mod.resolve_current_class_member_with_arity(
+            result,
+            offset,
+            member.member_name,
+            arg_count,
+        )) |sym| {
+            return location_for_symbol(sym, source, uri);
+        }
+    }
+
+    // 3. `ClassName.member` の member 側をワークスペース内のクラスメンバーへ解決
+    if (position_mod.qualified_member_at_offset(tokens, offset)) |member| {
+        const arg_count = position_mod.call_arg_count_at_offset(tokens, offset);
+        if (store.resolve_member_across_files_with_arity(
+            member.receiver_name,
+            member.member_name,
+            uri,
+            arg_count,
+        )) |match| {
+            return location_for_symbol(&match.symbol, match.source, match.uri);
+        }
+    }
+
+    // 4. カーソル位置の identifier を取得
     const name = position_mod.identifier_at_offset(tokens, offset) orelse return null;
 
-    // 3. ワークスペース内の他ファイルで検索
+    // 5. 裸の member() / field を現在クラスのメンバーへ解決
+    const arg_count = position_mod.call_arg_count_at_offset(tokens, offset);
+    if (binder_mod.resolve_current_class_member_with_arity(result, offset, name, arg_count)) |sym| {
+        return location_for_symbol(sym, source, uri);
+    }
+
+    // 6. 同一ファイル内のトップレベル型を検索
+    if (binder_mod.resolve_top_level_type(result, name)) |sym| {
+        return location_for_symbol(sym, source, uri);
+    }
+
+    // 7. ワークスペース内の他ファイルで検索
     const match = store.resolve_symbol_across_files(name, uri) orelse return null;
-    const pos = position_mod.offset_to_position(match.source, match.symbol.loc.offset);
+    return location_for_symbol(&match.symbol, match.source, match.uri);
+}
+
+fn location_for_symbol(
+    sym: *const binder_mod.Symbol,
+    source: []const u8,
+    uri: []const u8,
+) lsp_types.Location {
+    const pos = position_mod.offset_to_position(source, sym.loc.offset);
     return .{
-        .uri = match.uri,
+        .uri = uri,
         .range = .{
             .start = pos,
             .end = .{ .line = pos.line, .character = pos.character + @as(
                 u32,
-                @intCast(match.symbol.name.len),
+                @intCast(sym.name.len),
             ) },
         },
     };
@@ -120,6 +165,409 @@ test "cross-file: jump to class in another file" {
     );
     try std.testing.expect(loc != null);
     try std.testing.expectEqualStrings("file:///Helper.cls", loc.?.uri);
+}
+
+test "cross-file: jump to class member in another file" {
+    var store = DocumentStore.init(std.testing.allocator);
+    defer store.deinit();
+
+    try store.open(
+        "file:///Helper.cls",
+        1,
+        "public class Helper { public String doWork() { return null; } }",
+    );
+    const main_source = "public class Main { void run() { Helper.doWork(); } }";
+    try store.open("file:///Main.cls", 1, main_source);
+
+    const main_cached = try store.ensure_parsed("file:///Main.cls") orelse unreachable;
+    const main_br = try store.ensure_bound("file:///Main.cls") orelse unreachable;
+    const offset: u32 = @intCast(std.mem.indexOf(u8, main_source, "doWork").?);
+
+    const loc = get_definition_cross_file(
+        main_br,
+        main_cached.tokens,
+        main_source,
+        "file:///Main.cls",
+        offset,
+        &store,
+    );
+    try std.testing.expect(loc != null);
+    try std.testing.expectEqualStrings("file:///Helper.cls", loc.?.uri);
+    try std.testing.expectEqual(@as(u32, 36), loc.?.range.start.character);
+}
+
+test "cross-file: jump to AuraEnabled static class member in another file" {
+    var store = DocumentStore.init(std.testing.allocator);
+    defer store.deinit();
+
+    try store.open("file:///Hoge.cls", 1,
+        \\public with sharing class Hoge {
+        \\    @AuraEnabled(cacheable=true)
+        \\    public static List<Account> fuga() { return null; }
+        \\}
+    );
+    const main_source =
+        \\public with sharing class Main {
+        \\    public void run() {
+        \\        Hoge.fuga();
+        \\    }
+        \\}
+    ;
+    try store.open("file:///Main.cls", 1, main_source);
+
+    const main_cached = try store.ensure_parsed("file:///Main.cls") orelse unreachable;
+    const main_br = try store.ensure_bound("file:///Main.cls") orelse unreachable;
+    const offset: u32 = @intCast(std.mem.indexOf(u8, main_source, "fuga").? + "fuga".len);
+
+    const loc = get_definition_cross_file(
+        main_br,
+        main_cached.tokens,
+        main_source,
+        "file:///Main.cls",
+        offset,
+        &store,
+    );
+    try std.testing.expect(loc != null);
+    try std.testing.expectEqualStrings("file:///Hoge.cls", loc.?.uri);
+    try std.testing.expectEqual(@as(u32, 32), loc.?.range.start.character);
+}
+
+test "cross-file: qualified member definition is case-insensitive" {
+    var store = DocumentStore.init(std.testing.allocator);
+    defer store.deinit();
+
+    try store.open("file:///CRLP_RollupCMT_TEST.cls", 1,
+        \\public class CRLP_RollupCMT_TEST {
+        \\    public static String generateRollup() { return null; }
+        \\}
+    );
+    const main_source =
+        "public class Main { void run() { CRLP_RollupCMT_Test.generateRollup(); } }";
+    try store.open("file:///Main.cls", 1, main_source);
+
+    const main_cached = try store.ensure_parsed("file:///Main.cls") orelse unreachable;
+    const main_br = try store.ensure_bound("file:///Main.cls") orelse unreachable;
+    const offset: u32 = @intCast(
+        std.mem.indexOf(u8, main_source, "generateRollup").? + "generateRollup".len,
+    );
+
+    const loc = get_definition_cross_file(
+        main_br,
+        main_cached.tokens,
+        main_source,
+        "file:///Main.cls",
+        offset,
+        &store,
+    );
+    try std.testing.expect(loc != null);
+    try std.testing.expectEqualStrings("file:///CRLP_RollupCMT_TEST.cls", loc.?.uri);
+}
+
+test "cross-file: generic literal argument counts for overload definition" {
+    var store = DocumentStore.init(std.testing.allocator);
+    defer store.deinit();
+
+    try store.open("file:///RestRouteTestUtil.cls", 1,
+        \\public class RestRouteTestUtil {
+        \\    public static void setupRestContext(String resourcePath, String requestUri) {}
+        \\    public static void setupRestContext(
+        \\        String resourcePath,
+        \\        String requestUri,
+        \\        Map<String, String> query
+        \\    ) {}
+        \\}
+    );
+    const main_source =
+        \\public class Main {
+        \\    void run() {
+        \\        RestRouteTestUtil.setupRestContext(
+        \\            path,
+        \\            uri,
+        \\            new Map<String, String>{ 'expand' => '1' }
+        \\        );
+        \\    }
+        \\}
+    ;
+    try store.open("file:///Main.cls", 1, main_source);
+
+    const main_cached = try store.ensure_parsed("file:///Main.cls") orelse unreachable;
+    const main_br = try store.ensure_bound("file:///Main.cls") orelse unreachable;
+    const offset: u32 = @intCast(
+        std.mem.indexOf(u8, main_source, "setupRestContext").? + "setupRestContext".len,
+    );
+
+    const loc = get_definition_cross_file(
+        main_br,
+        main_cached.tokens,
+        main_source,
+        "file:///Main.cls",
+        offset,
+        &store,
+    );
+    try std.testing.expect(loc != null);
+    try std.testing.expectEqualStrings("file:///RestRouteTestUtil.cls", loc.?.uri);
+    try std.testing.expectEqual(@as(u32, 23), loc.?.range.start.character);
+}
+
+test "cross-file: qualified method definition at token end before spaced call" {
+    var store = DocumentStore.init(std.testing.allocator);
+    defer store.deinit();
+
+    try store.open("file:///UTIL_RecordTypes.cls", 1,
+        \\public class UTIL_RecordTypes {
+        \\    public static Id getRecordTypeId(
+        \\        sObjectType objectType,
+        \\        String recordTypeName
+        \\    ) { return null; }
+        \\}
+    );
+    const main_source =
+        \\public class Main {
+        \\    void run() {
+        \\        UTIL_RecordTypes.getRecordTypeId (Opportunity.SObjectType, recordTypeName);
+        \\    }
+        \\}
+    ;
+    try store.open("file:///Main.cls", 1, main_source);
+
+    const main_cached = try store.ensure_parsed("file:///Main.cls") orelse unreachable;
+    const main_br = try store.ensure_bound("file:///Main.cls") orelse unreachable;
+    const offset: u32 = @intCast(
+        std.mem.indexOf(u8, main_source, "getRecordTypeId").? + "getRecordTypeId".len,
+    );
+
+    const loc = get_definition_cross_file(
+        main_br,
+        main_cached.tokens,
+        main_source,
+        "file:///Main.cls",
+        offset,
+        &store,
+    );
+    try std.testing.expect(loc != null);
+    try std.testing.expectEqualStrings("file:///UTIL_RecordTypes.cls", loc.?.uri);
+}
+
+test "cross-file: qualified call prefers method over same-named field" {
+    var store = DocumentStore.init(std.testing.allocator);
+    defer store.deinit();
+
+    try store.open("file:///ADV_PackageInfo_SVC.cls", 1,
+        \\public class ADV_PackageInfo_SVC {
+        \\    private static Boolean useAdv = false;
+        \\    public static Boolean useAdv() { return useAdv; }
+        \\}
+    );
+    const main_source =
+        \\public class Main {
+        \\    void run() {
+        \\        if (ADV_PackageInfo_SVC.useAdv()) return;
+        \\    }
+        \\}
+    ;
+    try store.open("file:///Main.cls", 1, main_source);
+
+    const main_cached = try store.ensure_parsed("file:///Main.cls") orelse unreachable;
+    const main_br = try store.ensure_bound("file:///Main.cls") orelse unreachable;
+    const offset: u32 = @intCast(
+        std.mem.indexOf(u8, main_source, "useAdv").? + "useAdv".len,
+    );
+
+    const loc = get_definition_cross_file(
+        main_br,
+        main_cached.tokens,
+        main_source,
+        "file:///Main.cls",
+        offset,
+        &store,
+    );
+    try std.testing.expect(loc != null);
+    try std.testing.expectEqualStrings("file:///ADV_PackageInfo_SVC.cls", loc.?.uri);
+    try std.testing.expectEqual(@as(u32, 26), loc.?.range.start.character);
+}
+
+test "same-file: jump to later AuraEnabled static class member" {
+    var store = DocumentStore.init(std.testing.allocator);
+    defer store.deinit();
+
+    const source =
+        \\public with sharing class Main {
+        \\    public void run() {
+        \\        Hoge.fuga();
+        \\    }
+        \\}
+        \\
+        \\public with sharing class Hoge {
+        \\    @AuraEnabled(cacheable=true)
+        \\    public static List<Account> fuga() { return null; }
+        \\}
+    ;
+    try store.open("file:///Main.cls", 1, source);
+
+    const cached = try store.ensure_parsed("file:///Main.cls") orelse unreachable;
+    const br = try store.ensure_bound("file:///Main.cls") orelse unreachable;
+    const offset: u32 = @intCast(std.mem.indexOf(u8, source, "fuga").? + "fuga".len);
+
+    const loc = get_definition_cross_file(
+        br,
+        cached.tokens,
+        source,
+        "file:///Main.cls",
+        offset,
+        &store,
+    );
+    try std.testing.expect(loc != null);
+    try std.testing.expectEqualStrings("file:///Main.cls", loc.?.uri);
+    try std.testing.expectEqual(@as(u32, 32), loc.?.range.start.character);
+}
+
+test "same-file: jump to top-level class receiver" {
+    var store = DocumentStore.init(std.testing.allocator);
+    defer store.deinit();
+
+    const source =
+        \\public class RestRoute {
+        \\    public void run() {
+        \\        throw new RestRoute.RouteNotFoundException();
+        \\    }
+        \\    public class RouteNotFoundException extends Exception {}
+        \\}
+    ;
+    try store.open("file:///RestRoute.cls", 1, source);
+
+    const cached = try store.ensure_parsed("file:///RestRoute.cls") orelse unreachable;
+    const br = try store.ensure_bound("file:///RestRoute.cls") orelse unreachable;
+    const offset: u32 = @intCast(
+        std.mem.indexOf(u8, source, "RestRoute.RouteNotFoundException").? + "RestRoute".len,
+    );
+
+    const loc = get_definition_cross_file(
+        br,
+        cached.tokens,
+        source,
+        "file:///RestRoute.cls",
+        offset,
+        &store,
+    );
+    try std.testing.expect(loc != null);
+    try std.testing.expectEqualStrings("file:///RestRoute.cls", loc.?.uri);
+    try std.testing.expectEqual(@as(u32, 13), loc.?.range.start.character);
+}
+
+test "same-file: this field jumps to class field" {
+    var store = DocumentStore.init(std.testing.allocator);
+    defer store.deinit();
+
+    const source =
+        \\public class Foo {
+        \\    private Integer recordCount;
+        \\    public void run() { this.recordCount = 1; }
+        \\}
+    ;
+    try store.open("file:///Foo.cls", 1, source);
+    const cached = try store.ensure_parsed("file:///Foo.cls") orelse unreachable;
+    const br = try store.ensure_bound("file:///Foo.cls") orelse unreachable;
+    const offset: u32 = @intCast(std.mem.lastIndexOf(u8, source, "recordCount").?);
+
+    const loc = get_definition_cross_file(
+        br,
+        cached.tokens,
+        source,
+        "file:///Foo.cls",
+        offset,
+        &store,
+    );
+    try std.testing.expect(loc != null);
+    try std.testing.expectEqualStrings("file:///Foo.cls", loc.?.uri);
+    try std.testing.expectEqual(@as(u32, 20), loc.?.range.start.character);
+}
+
+test "same-file: this method jumps to class method" {
+    var store = DocumentStore.init(std.testing.allocator);
+    defer store.deinit();
+
+    const source =
+        \\public class Foo {
+        \\    public void run() { this.compute(); }
+        \\    private Integer compute() { return 1; }
+        \\}
+    ;
+    try store.open("file:///Foo.cls", 1, source);
+    const cached = try store.ensure_parsed("file:///Foo.cls") orelse unreachable;
+    const br = try store.ensure_bound("file:///Foo.cls") orelse unreachable;
+    const offset: u32 = @intCast(std.mem.indexOf(u8, source, "compute").?);
+
+    const loc = get_definition_cross_file(
+        br,
+        cached.tokens,
+        source,
+        "file:///Foo.cls",
+        offset,
+        &store,
+    );
+    try std.testing.expect(loc != null);
+    try std.testing.expectEqualStrings("file:///Foo.cls", loc.?.uri);
+    try std.testing.expectEqual(@as(u32, 20), loc.?.range.start.character);
+}
+
+test "same-file: variable declared with Type jumps to declaration" {
+    var store = DocumentStore.init(std.testing.allocator);
+    defer store.deinit();
+
+    const source =
+        \\public class Foo {
+        \\    public void run(String objType) {
+        \\        Type dynamicMapType = Type.forName('Map<Id,' + objType + '>');
+        \\        System.debug(dynamicMapType);
+        \\    }
+        \\}
+    ;
+    try store.open("file:///Foo.cls", 1, source);
+    const cached = try store.ensure_parsed("file:///Foo.cls") orelse unreachable;
+    const br = try store.ensure_bound("file:///Foo.cls") orelse unreachable;
+    const offset: u32 = @intCast(std.mem.lastIndexOf(u8, source, "dynamicMapType").?);
+
+    const loc = get_definition_cross_file(
+        br,
+        cached.tokens,
+        source,
+        "file:///Foo.cls",
+        offset,
+        &store,
+    );
+    try std.testing.expect(loc != null);
+    try std.testing.expectEqualStrings("file:///Foo.cls", loc.?.uri);
+    try std.testing.expectEqual(@as(u32, 13), loc.?.range.start.character);
+}
+
+test "same-file: method call jumps to later class method" {
+    var store = DocumentStore.init(std.testing.allocator);
+    defer store.deinit();
+
+    const source =
+        \\public class Foo {
+        \\    public void run() {
+        \\        helper();
+        \\    }
+        \\    private void helper() {}
+        \\}
+    ;
+    try store.open("file:///Foo.cls", 1, source);
+    const cached = try store.ensure_parsed("file:///Foo.cls") orelse unreachable;
+    const br = try store.ensure_bound("file:///Foo.cls") orelse unreachable;
+    const offset: u32 = @intCast(std.mem.indexOf(u8, source, "helper").?);
+
+    const loc = get_definition_cross_file(
+        br,
+        cached.tokens,
+        source,
+        "file:///Foo.cls",
+        offset,
+        &store,
+    );
+    try std.testing.expect(loc != null);
+    try std.testing.expectEqualStrings("file:///Foo.cls", loc.?.uri);
+    try std.testing.expectEqual(@as(u32, 17), loc.?.range.start.character);
 }
 
 test "cross-file: same-file symbol takes priority" {

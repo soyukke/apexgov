@@ -36,6 +36,8 @@ pub const Symbol = struct {
     kind: SymbolKind,
     type_name: ?[]const u8,
     loc: SourceLoc,
+    end_offset: u32,
+    param_count: ?u32,
     parent: ?SymbolId,
     scope_id: ScopeId,
 };
@@ -58,6 +60,10 @@ pub const BindResult = struct {
     scopes: []Scope,
     references: []Reference,
 };
+
+pub fn names_equal(a: []const u8, b: []const u8) bool {
+    return std.ascii.eqlIgnoreCase(a, b);
+}
 
 /// AST を解析してシンボルテーブルと参照リストを構築する。
 pub fn bind(
@@ -107,6 +113,82 @@ pub fn filter_references(
     return out.toOwnedSlice(allocator);
 }
 
+pub fn resolve_current_class_member(
+    result: *const BindResult,
+    offset: u32,
+    member_name: []const u8,
+) ?*const Symbol {
+    return resolve_current_class_member_with_arity(result, offset, member_name, null);
+}
+
+pub fn resolve_current_class_member_with_arity(
+    result: *const BindResult,
+    offset: u32,
+    member_name: []const u8,
+    arg_count: ?u32,
+) ?*const Symbol {
+    const owner_id = current_class_symbol_id(result, offset) orelse return null;
+    for (result.symbols) |*sym| {
+        if (sym.parent == null or sym.parent.? != owner_id) continue;
+        if (!is_class_member(sym.kind)) continue;
+        if (!names_equal(sym.name, member_name)) continue;
+        if (!member_arity_matches(sym, arg_count)) continue;
+        return sym;
+    }
+    return null;
+}
+
+pub fn current_class_symbol_id(
+    result: *const BindResult,
+    offset: u32,
+) ?SymbolId {
+    var owner_id: ?SymbolId = null;
+    var owner_offset: u32 = 0;
+    for (result.symbols) |sym| {
+        if (sym.kind != .class and sym.kind != .interface) continue;
+        if (sym.loc.offset > offset) continue;
+        if (offset >= sym.end_offset) continue;
+        if (owner_id == null or sym.loc.offset >= owner_offset) {
+            owner_id = sym.id;
+            owner_offset = sym.loc.offset;
+        }
+    }
+    return owner_id;
+}
+
+pub fn resolve_top_level_type(
+    result: *const BindResult,
+    name: []const u8,
+) ?*const Symbol {
+    for (result.symbols) |*sym| {
+        if (sym.parent != null) continue;
+        if (!is_top_level_type(sym.kind)) continue;
+        if (!names_equal(sym.name, name)) continue;
+        return sym;
+    }
+    return null;
+}
+
+fn is_top_level_type(kind: SymbolKind) bool {
+    return switch (kind) {
+        .class, .interface, .enum_type, .trigger => true,
+        else => false,
+    };
+}
+
+fn is_class_member(kind: SymbolKind) bool {
+    return switch (kind) {
+        .method, .field, .constructor, .enum_value, .class, .interface, .enum_type => true,
+        else => false,
+    };
+}
+
+pub fn member_arity_matches(sym: *const Symbol, arg_count: ?u32) bool {
+    const expected = arg_count orelse return true;
+    const actual = sym.param_count orelse return false;
+    return actual == expected;
+}
+
 // ---------------------------------------------------------------------------
 // 内部: Binder
 // ---------------------------------------------------------------------------
@@ -126,6 +208,7 @@ const Binder = struct {
         type_name: ?[]const u8,
         loc: SourceLoc,
         parent: ?SymbolId,
+        end_offset: ?u32,
     ) !SymbolId {
         const id: SymbolId = @intCast(self.symbols.items.len);
 
@@ -140,6 +223,11 @@ const Binder = struct {
 
         // 名前の正確なトークン位置を探す（loc はしばしば宣言の先頭を指す）
         const name_loc = self.find_token_after(loc.offset, name) orelse loc;
+        const name_end = name_loc.offset + @as(u32, @intCast(name.len));
+        const symbol_end = if (end_offset) |end|
+            if (end > name_end) end else name_end
+        else
+            name_end;
 
         try self.symbols.append(self.allocator, .{
             .id = id,
@@ -147,6 +235,8 @@ const Binder = struct {
             .kind = kind,
             .type_name = type_name,
             .loc = name_loc,
+            .end_offset = symbol_end,
+            .param_count = null,
             .parent = parent,
             .scope_id = self.current_scope,
         });
@@ -167,13 +257,51 @@ const Binder = struct {
         return id;
     }
 
+    fn add_declaration_symbol(
+        self: *Binder,
+        name: []const u8,
+        kind: SymbolKind,
+        type_name: ?[]const u8,
+        loc: SourceLoc,
+        parent: ?SymbolId,
+    ) !SymbolId {
+        return self.add_symbol(
+            name,
+            kind,
+            type_name,
+            loc,
+            parent,
+            self.declaration_end_offset(loc.offset),
+        );
+    }
+
     /// loc 以降のトークンから name に一致する identifier を探す。
     /// loc.offset 以降のトークンから name に一致する identifier を探す。
     fn find_token_after(self: *Binder, min_offset: u32, name: []const u8) ?SourceLoc {
         for (self.tokens) |tok| {
             if (tok.loc.offset < min_offset) continue;
-            if (tok.kind == .identifier and std.mem.eql(u8, tok.lexeme, name)) {
+            if (token_can_name_symbol(tok) and names_equal(tok.lexeme, name)) {
                 return tok.loc;
+            }
+        }
+        return null;
+    }
+
+    fn declaration_end_offset(self: *const Binder, start_offset: u32) ?u32 {
+        var depth: u32 = 0;
+        var seen_open = false;
+        for (self.tokens) |tok| {
+            if (tok.loc.offset < start_offset) continue;
+            if (tok.kind == .lbrace) {
+                seen_open = true;
+                depth += 1;
+                continue;
+            }
+            if (!seen_open or tok.kind != .rbrace) continue;
+
+            depth -= 1;
+            if (depth == 0) {
+                return tok.loc.offset + @as(u32, @intCast(tok.lexeme.len));
             }
         }
         return null;
@@ -210,7 +338,7 @@ const Binder = struct {
                     i -= 1;
                     const sym_id = scope.symbol_ids.items[i];
                     if (sym_id < self.symbols.items.len) {
-                        if (std.mem.eql(u8, self.symbols.items[sym_id].name, name)) {
+                        if (names_equal(self.symbols.items[sym_id].name, name)) {
                             return sym_id;
                         }
                     }
@@ -262,6 +390,7 @@ const Binder = struct {
                 type_ref_to_string(p.type_ref),
                 param_loc,
                 owner,
+                null,
             );
         }
     }
@@ -282,7 +411,8 @@ const Binder = struct {
         body: []const ast.Stmt,
         parent: ?SymbolId,
     ) !void {
-        const sym_id = try self.add_symbol(name, kind, return_type, loc, parent);
+        const sym_id = try self.add_declaration_symbol(name, kind, return_type, loc, parent);
+        self.symbols.items[sym_id].param_count = @intCast(params.len);
         _ = try self.push_scope();
         try self.bind_params(params, loc, sym_id);
         try self.bind_body_scope(body);
@@ -292,7 +422,13 @@ const Binder = struct {
     fn bind_decl(self: *Binder, decl: ast.Decl, parent: ?SymbolId, _: ScopeId) !void {
         switch (decl) {
             .class_decl => |cd| {
-                const sym_id = try self.add_symbol(cd.name, .class, null, cd.loc, parent);
+                const sym_id = try self.add_declaration_symbol(
+                    cd.name,
+                    .class,
+                    null,
+                    cd.loc,
+                    parent,
+                );
                 _ = try self.push_scope();
                 for (cd.members) |member| {
                     try self.bind_decl(member, sym_id, self.current_scope);
@@ -300,13 +436,19 @@ const Binder = struct {
                 self.pop_scope();
             },
             .interface_decl => |id| {
-                _ = try self.add_symbol(id.name, .interface, null, id.loc, parent);
+                _ = try self.add_declaration_symbol(id.name, .interface, null, id.loc, parent);
             },
             .enum_decl => |ed| {
-                const sym_id = try self.add_symbol(ed.name, .enum_type, null, ed.loc, parent);
+                const sym_id = try self.add_declaration_symbol(
+                    ed.name,
+                    .enum_type,
+                    null,
+                    ed.loc,
+                    parent,
+                );
                 for (ed.values) |v| {
                     // enum values の正確な位置はトークンから探す必要があるが、簡易版では enum の loc を使用
-                    _ = try self.add_symbol(v, .enum_value, ed.name, ed.loc, sym_id);
+                    _ = try self.add_symbol(v, .enum_value, ed.name, ed.loc, sym_id, null);
                 }
             },
             .method_decl => |md| try self.bind_method_like(
@@ -334,10 +476,11 @@ const Binder = struct {
                     type_ref_to_string(fd.type_ref),
                     fd.loc,
                     parent,
+                    null,
                 );
             },
             .trigger_decl => |td| {
-                _ = try self.add_symbol(td.name, .trigger, null, td.loc, parent);
+                _ = try self.add_declaration_symbol(td.name, .trigger, null, td.loc, parent);
                 _ = try self.push_scope();
                 try self.bind_body_scope(td.body);
                 self.pop_scope();
@@ -376,6 +519,7 @@ const Binder = struct {
                 type_ref_to_string(cc.exception_type),
                 SourceLoc.zero,
                 null,
+                null,
             );
             for (cc.body) |s| try self.bind_stmt(s);
             self.pop_scope();
@@ -392,6 +536,7 @@ const Binder = struct {
             type_ref_to_string(vd.type_ref),
             vd.loc,
             null,
+            null,
         );
         if (vd.initializer) |init_expr| {
             try self.bind_expr(init_expr.*);
@@ -405,6 +550,7 @@ const Binder = struct {
             .for_each_variable,
             type_ref_to_string(fes.elem_type),
             fes.loc,
+            null,
             null,
         );
         try self.bind_expr(fes.iterable.*);
@@ -530,6 +676,18 @@ const Binder = struct {
 
 };
 
+fn token_can_name_symbol(tok: Token) bool {
+    return switch (tok.kind) {
+        .identifier,
+        .when_kw,
+        .with_kw,
+        .without_kw,
+        .sharing_kw,
+        => true,
+        else => false,
+    };
+}
+
 // ---------------------------------------------------------------------------
 // テスト
 // ---------------------------------------------------------------------------
@@ -598,6 +756,20 @@ test "creates symbol for method with return type" {
     try std.testing.expectEqualStrings("String", sym.?.type_name.?);
 }
 
+test "keyword member name uses keyword token location" {
+    const source =
+        "public class Foo { public ITestDataBuilder with(SObjectField field) { return null; } }";
+    var ctx = try bind_source(source);
+    defer ctx.deinit();
+
+    const sym = find_symbol(&ctx.result, "with");
+    try std.testing.expect(sym != null);
+    try std.testing.expectEqual(
+        @as(u32, @intCast(std.mem.indexOf(u8, source, "with(").?)),
+        sym.?.loc.offset,
+    );
+}
+
 test "creates symbol for field with type" {
     var ctx = try bind_source("public class Foo { private Integer count; }");
     defer ctx.deinit();
@@ -653,6 +825,20 @@ test "identifier creates reference to variable" {
     try std.testing.expectEqual(@as(usize, 2), refs.len);
 }
 
+test "identifier references are case-insensitive" {
+    var ctx = try bind_source(
+        "public class Foo { public void run() { Integer Value = 1; Integer y = value; } }",
+    );
+    defer ctx.deinit();
+
+    const sym = find_symbol(&ctx.result, "Value");
+    try std.testing.expect(sym != null);
+    const refs = try filter_references(&ctx.result, sym.?.id, std.testing.allocator);
+    defer std.testing.allocator.free(refs);
+
+    try std.testing.expectEqual(@as(usize, 2), refs.len);
+}
+
 test "references sorted by offset" {
     var ctx = try bind_source(
         "public class Foo { public void run() { Integer x = 1; Integer y = x; } }",
@@ -686,6 +872,32 @@ test "symbol_at_position returns null between tokens" {
     // offset 6 = space between 'public' and 'class'
     const found = symbol_at_position(&ctx.result, 6);
     try std.testing.expect(found == null);
+}
+
+test "current class ignores closed inner class" {
+    const source =
+        \\public class Foo {
+        \\    public class Inner {
+        \\        private void innerOnly() {}
+        \\    }
+        \\    public void run() {
+        \\        this.recordCount = 1;
+        \\        helper();
+        \\    }
+        \\    private Integer recordCount;
+        \\    private void helper() {}
+        \\}
+    ;
+    var ctx = try bind_source(source);
+    defer ctx.deinit();
+
+    const offset: u32 = @intCast(std.mem.indexOf(u8, source, "recordCount = 1").?);
+    const owner_id = current_class_symbol_id(&ctx.result, offset) orelse unreachable;
+    try std.testing.expectEqualStrings("Foo", ctx.result.symbols[owner_id].name);
+
+    const field = resolve_current_class_member(&ctx.result, offset, "recordCount") orelse
+        unreachable;
+    try std.testing.expectEqual(SymbolKind.field, field.kind);
 }
 
 // -- Edge case テスト --

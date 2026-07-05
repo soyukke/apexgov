@@ -1,6 +1,6 @@
-# apexgov — Apex Governor Limit Checker
+# apexgov — Apex Governor Limit Checker & Language Server
 
-Offline static analysis and language server for Salesforce Apex. Detects Governor limit violations in real-time as you code.
+Cross-platform offline static analysis and language server for Salesforce Apex. Detects Governor limit violations in real-time as you code, with prebuilt binaries for macOS, Linux, and Windows.
 
 ## Features
 
@@ -8,8 +8,9 @@ Offline static analysis and language server for Salesforce Apex. Detects Governo
 - **Code Completion** — Apex standard library, SObject fields (standard + custom `__c` / `__mdt`)
 - **Go to Definition** — Jump to symbol definitions
 - **Find References** — Search symbol references
-- **Hover** — Symbol information on hover
-- **Rename** — Rename symbols across the file
+- **Hover** — Symbol information, ApexDoc/Javadoc-style tags, and optional Salesforce Apex Reference links
+- **Signature Help** — Method overloads and argument position while typing calls
+- **Rename** — Rename symbols with workspace-aware references
 - **Syntax Highlighting** — Full TextMate grammar for Apex and embedded SOQL
 - **Document Symbols** — Outline view for classes and methods
 - **Formatting** — Code formatting
@@ -17,7 +18,7 @@ Offline static analysis and language server for Salesforce Apex. Detects Governo
 
 ## How It Works
 
-The extension automatically downloads the `apexgov` binary from GitHub Releases on first activation. No additional dependencies (Zig, JDK, etc.) are required.
+The extension automatically downloads the platform-specific `apexgov` binary from GitHub Releases on first activation. No additional dependencies (Zig, JDK, Java, Salesforce CLI, etc.) are required.
 
 ## Detected Rules
 
@@ -44,7 +45,10 @@ The extension automatically downloads the `apexgov` binary from GitHub Releases 
 ## Requirements
 
 - No external dependencies required
-- Supported platforms: macOS (ARM/Intel), Linux (x86_64/aarch64)
+- Supported platforms:
+  - macOS: Apple Silicon and Intel
+  - Linux: x86_64 and aarch64
+  - Windows: x86_64 and aarch64
 
 ## Links
 

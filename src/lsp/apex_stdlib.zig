@@ -164,6 +164,31 @@ const string_members = [_]MemberInfo{
 };
 
 // ---------------------------------------------------------------------------
+// Id
+// ---------------------------------------------------------------------------
+
+const id_members = [_]MemberInfo{
+    .{
+        .name = "getSObjectType",
+        .kind = .method,
+        .return_type = "Schema.SObjectType",
+        .detail = "Schema.SObjectType getSObjectType()",
+    },
+    .{
+        .name = "to15",
+        .kind = .method,
+        .return_type = "String",
+        .detail = "String to15()",
+    },
+    .{
+        .name = "to18",
+        .kind = .method,
+        .return_type = "String",
+        .detail = "String to18()",
+    },
+};
+
+// ---------------------------------------------------------------------------
 // List
 // ---------------------------------------------------------------------------
 
@@ -195,6 +220,12 @@ const list_members = [_]MemberInfo{
         .kind = .method,
         .return_type = "Boolean",
         .detail = "Boolean isEmpty()",
+    },
+    .{
+        .name = "getSObjectType",
+        .kind = .method,
+        .return_type = "Schema.SObjectType",
+        .detail = "Schema.SObjectType getSObjectType()",
     },
     .{
         .name = "remove",
@@ -283,6 +314,194 @@ const set_members = [_]MemberInfo{
         .detail = "Boolean remove(Object element)",
     },
     .{ .name = "size", .kind = .method, .return_type = "Integer", .detail = "Integer size()" },
+};
+
+// ---------------------------------------------------------------------------
+// SObject
+// ---------------------------------------------------------------------------
+
+const sobject_members = [_]MemberInfo{
+    .{
+        .name = "get",
+        .kind = .method,
+        .return_type = "Object",
+        .detail = "Object get(String fieldName)",
+    },
+    .{
+        .name = "put",
+        .kind = .method,
+        .return_type = "Object",
+        .detail = "Object put(String fieldName, Object value)",
+    },
+    .{
+        .name = "getSObjectType",
+        .kind = .method,
+        .return_type = "Schema.SObjectType",
+        .detail = "Schema.SObjectType getSObjectType()",
+    },
+    .{
+        .name = "clone",
+        .kind = .method,
+        .return_type = "SObject",
+        .detail = "SObject clone(Boolean preserveId, Boolean isDeepClone)",
+    },
+    .{
+        .name = "addError",
+        .kind = .method,
+        .return_type = null,
+        .detail = "void addError(String errorMsg)",
+    },
+    .{
+        .name = "getPopulatedFieldsAsMap",
+        .kind = .method,
+        .return_type = "Map",
+        .detail = "Map<String, Object> getPopulatedFieldsAsMap()",
+    },
+    .{
+        .name = "isSet",
+        .kind = .method,
+        .return_type = "Boolean",
+        .detail = "Boolean isSet(String fieldName)",
+    },
+};
+
+// ---------------------------------------------------------------------------
+// Schema describe tokens
+// ---------------------------------------------------------------------------
+
+const sobject_type_members = [_]MemberInfo{
+    .{
+        .name = "getDescribe",
+        .kind = .method,
+        .return_type = "Schema.DescribeSObjectResult",
+        .detail = "Schema.DescribeSObjectResult getDescribe()",
+    },
+    .{
+        .name = "newSObject",
+        .kind = .method,
+        .return_type = "SObject",
+        .detail = "SObject newSObject()",
+    },
+};
+
+const describe_sobject_result_members = [_]MemberInfo{
+    .{
+        .name = "getSObjectType",
+        .kind = .method,
+        .return_type = "Schema.SObjectType",
+        .detail = "Schema.SObjectType getSObjectType()",
+    },
+    .{
+        .name = "getName",
+        .kind = .method,
+        .return_type = "String",
+        .detail = "String getName()",
+    },
+    .{
+        .name = "getLabel",
+        .kind = .method,
+        .return_type = "String",
+        .detail = "String getLabel()",
+    },
+    .{
+        .name = "getLabelPlural",
+        .kind = .method,
+        .return_type = "String",
+        .detail = "String getLabelPlural()",
+    },
+    .{
+        .name = "isAccessible",
+        .kind = .method,
+        .return_type = "Boolean",
+        .detail = "Boolean isAccessible()",
+    },
+    .{
+        .name = "isCreateable",
+        .kind = .method,
+        .return_type = "Boolean",
+        .detail = "Boolean isCreateable()",
+    },
+    .{
+        .name = "isUpdateable",
+        .kind = .method,
+        .return_type = "Boolean",
+        .detail = "Boolean isUpdateable()",
+    },
+    .{
+        .name = "isDeletable",
+        .kind = .method,
+        .return_type = "Boolean",
+        .detail = "Boolean isDeletable()",
+    },
+};
+
+const sobject_field_members = [_]MemberInfo{
+    .{
+        .name = "getDescribe",
+        .kind = .method,
+        .return_type = "Schema.DescribeFieldResult",
+        .detail = "Schema.DescribeFieldResult getDescribe()",
+    },
+};
+
+const describe_field_result_members = [_]MemberInfo{
+    .{
+        .name = "getSObjectField",
+        .kind = .method,
+        .return_type = "Schema.SObjectField",
+        .detail = "Schema.SObjectField getSObjectField()",
+    },
+    .{
+        .name = "getName",
+        .kind = .method,
+        .return_type = "String",
+        .detail = "String getName()",
+    },
+    .{
+        .name = "getLabel",
+        .kind = .method,
+        .return_type = "String",
+        .detail = "String getLabel()",
+    },
+    .{
+        .name = "getType",
+        .kind = .method,
+        .return_type = "Schema.DisplayType",
+        .detail = "Schema.DisplayType getType()",
+    },
+    .{
+        .name = "isAccessible",
+        .kind = .method,
+        .return_type = "Boolean",
+        .detail = "Boolean isAccessible()",
+    },
+    .{
+        .name = "isCreateable",
+        .kind = .method,
+        .return_type = "Boolean",
+        .detail = "Boolean isCreateable()",
+    },
+    .{
+        .name = "isUpdateable",
+        .kind = .method,
+        .return_type = "Boolean",
+        .detail = "Boolean isUpdateable()",
+    },
+};
+
+const schema_members = [_]MemberInfo{
+    .{
+        .name = "getGlobalDescribe",
+        .kind = .method,
+        .return_type = "Map",
+        .detail = "Map<String, Schema.SObjectType> getGlobalDescribe()",
+    },
+    .{
+        .name = "describeSObjects",
+        .kind = .method,
+        .return_type = "List",
+        .detail = "List<Schema.DescribeSObjectResult> describeSObjects(List<String> sObjectTypes)",
+    },
 };
 
 // ---------------------------------------------------------------------------
@@ -455,17 +674,54 @@ const limits_members = [_]MemberInfo{
 };
 
 // ---------------------------------------------------------------------------
+// Type
+// ---------------------------------------------------------------------------
+
+const type_members = [_]MemberInfo{
+    .{
+        .name = "forName",
+        .kind = .method,
+        .return_type = "Type",
+        .detail = "Type forName(String fullyQualifiedName)",
+    },
+    .{
+        .name = "getName",
+        .kind = .method,
+        .return_type = "String",
+        .detail = "String getName()",
+    },
+    .{
+        .name = "newInstance",
+        .kind = .method,
+        .return_type = "Object",
+        .detail = "Object newInstance()",
+    },
+};
+
+// ---------------------------------------------------------------------------
 // カタログ
 // ---------------------------------------------------------------------------
 
 const all_types = [_]TypeDef{
     .{ .name = "String", .members = &string_members },
+    .{ .name = "Id", .members = &id_members },
     .{ .name = "List", .members = &list_members },
     .{ .name = "Map", .members = &map_members },
     .{ .name = "Set", .members = &set_members },
+    .{ .name = "SObject", .members = &sobject_members },
+    .{ .name = "SObjectType", .members = &sobject_type_members },
+    .{ .name = "Schema.SObjectType", .members = &sobject_type_members },
+    .{ .name = "DescribeSObjectResult", .members = &describe_sobject_result_members },
+    .{ .name = "Schema.DescribeSObjectResult", .members = &describe_sobject_result_members },
+    .{ .name = "SObjectField", .members = &sobject_field_members },
+    .{ .name = "Schema.SObjectField", .members = &sobject_field_members },
+    .{ .name = "DescribeFieldResult", .members = &describe_field_result_members },
+    .{ .name = "Schema.DescribeFieldResult", .members = &describe_field_result_members },
+    .{ .name = "Schema", .members = &schema_members },
     .{ .name = "System", .members = &system_members },
     .{ .name = "Database", .members = &database_members },
     .{ .name = "Limits", .members = &limits_members },
+    .{ .name = "Type", .members = &type_members },
 };
 
 /// 型名からメンバー一覧を取得する。
@@ -505,12 +761,15 @@ test "List has add and size" {
     try std.testing.expect(members != null);
     var has_add = false;
     var has_size = false;
+    var has_sobject_type = false;
     for (members.?) |m| {
         if (std.mem.eql(u8, m.name, "add")) has_add = true;
         if (std.mem.eql(u8, m.name, "size")) has_size = true;
+        if (std.mem.eql(u8, m.name, "getSObjectType")) has_sobject_type = true;
     }
     try std.testing.expect(has_add);
     try std.testing.expect(has_size);
+    try std.testing.expect(has_sobject_type);
 }
 
 test "System has debug" {
@@ -523,12 +782,77 @@ test "System has debug" {
     try std.testing.expect(found);
 }
 
+test "Id has getSObjectType" {
+    const members = get_members("Id");
+    try std.testing.expect(members != null);
+    var found = false;
+    for (members.?) |m| {
+        if (std.mem.eql(u8, m.name, "getSObjectType")) {
+            found = true;
+            try std.testing.expectEqualStrings("Schema.SObjectType", m.return_type.?);
+        }
+    }
+    try std.testing.expect(found);
+}
+
+test "SObject has getSObjectType" {
+    const members = get_members("SObject");
+    try std.testing.expect(members != null);
+    var found = false;
+    for (members.?) |m| {
+        if (std.mem.eql(u8, m.name, "getSObjectType")) {
+            found = true;
+            try std.testing.expectEqualStrings("Schema.SObjectType", m.return_type.?);
+        }
+    }
+    try std.testing.expect(found);
+}
+
+test "Schema.SObjectType has getDescribe" {
+    const members = get_members("Schema.SObjectType");
+    try std.testing.expect(members != null);
+    var found = false;
+    for (members.?) |m| {
+        if (std.mem.eql(u8, m.name, "getDescribe")) {
+            found = true;
+            try std.testing.expectEqualStrings("Schema.DescribeSObjectResult", m.return_type.?);
+        }
+    }
+    try std.testing.expect(found);
+}
+
+test "Schema has describe methods" {
+    const members = get_members("Schema");
+    try std.testing.expect(members != null);
+    var has_global_describe = false;
+    var has_describe_sobjects = false;
+    for (members.?) |m| {
+        if (std.mem.eql(u8, m.name, "getGlobalDescribe")) has_global_describe = true;
+        if (std.mem.eql(u8, m.name, "describeSObjects")) has_describe_sobjects = true;
+    }
+    try std.testing.expect(has_global_describe);
+    try std.testing.expect(has_describe_sobjects);
+}
+
 test "Database has query" {
     const members = get_members("Database");
     try std.testing.expect(members != null);
     var found = false;
     for (members.?) |m| {
         if (std.mem.eql(u8, m.name, "query")) found = true;
+    }
+    try std.testing.expect(found);
+}
+
+test "Type has forName" {
+    const members = get_members("Type");
+    try std.testing.expect(members != null);
+    var found = false;
+    for (members.?) |m| {
+        if (std.mem.eql(u8, m.name, "forName")) {
+            found = true;
+            try std.testing.expectEqualStrings("Type", m.return_type.?);
+        }
     }
     try std.testing.expect(found);
 }
