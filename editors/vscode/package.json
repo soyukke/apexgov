@@ -2,7 +2,7 @@
   "name": "apexgov",
   "displayName": "apexgov",
   "description": "Cross-platform Apex Governor Limit Checker & Language Server for Salesforce Apex",
-  "version": "0.8.2",
+  "version": "0.8.3",
   "publisher": "soyukke",
   "license": "MIT",
   "repository": {
