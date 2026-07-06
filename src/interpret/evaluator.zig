@@ -35350,10 +35350,6 @@ pub const Evaluator = struct {
                 self.global_env,
             );
         }
-        const type_name = self.schema_object_type_name_from_value(object_type) orelse return null;
-        if (std.ascii.eqlIgnoreCase(type_name, "Account")) {
-            return try self.instantiate_class("fflib_DynamicSelectorFactoryTest.MySelector");
-        }
         return null;
     }
 
