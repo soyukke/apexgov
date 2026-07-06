@@ -332,15 +332,24 @@ const Lexer = struct {
             '!' => self.scan_bang(next_char, start, start_loc),
             '<' => self.scan_lt(next_char, start, start_loc),
             '>' => self.scan_gt(next_char, start, start_loc),
-            '&' => if (next_char == '&') blk: {
+            '&' => if (next_char == '=') blk: {
+                self.advance();
+                break :blk self.emit_op(.ampersand_assign, start, start_loc);
+            } else if (next_char == '&') blk: {
                 self.advance();
                 break :blk self.emit_op(.and_op, start, start_loc);
             } else self.emit_op(.ampersand, start, start_loc),
-            '|' => if (next_char == '|') blk: {
+            '|' => if (next_char == '=') blk: {
+                self.advance();
+                break :blk self.emit_op(.pipe_assign, start, start_loc);
+            } else if (next_char == '|') blk: {
                 self.advance();
                 break :blk self.emit_op(.or_op, start, start_loc);
             } else self.emit_op(.pipe, start, start_loc),
-            '^' => self.emit_op(.caret, start, start_loc),
+            '^' => if (next_char == '=') blk: {
+                self.advance();
+                break :blk self.emit_op(.caret_assign, start, start_loc);
+            } else self.emit_op(.caret, start, start_loc),
             '~' => self.emit_op(.not_op, start, start_loc),
             '(' => self.emit_op(.lparen, start, start_loc),
             ')' => self.emit_op(.rparen, start, start_loc),

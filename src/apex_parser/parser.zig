@@ -986,6 +986,9 @@ const Parser = struct {
             .minus_assign => .minus_assign,
             .star_assign => .star_assign,
             .slash_assign => .slash_assign,
+            .ampersand_assign => .ampersand_assign,
+            .caret_assign => .caret_assign,
+            .pipe_assign => .pipe_assign,
             .question_question_equal => .null_coalesce_assign,
             else => null,
         };
@@ -1944,7 +1947,9 @@ const Parser = struct {
             kind != .lbracket and kind != .rbracket and kind != .comma and
             kind != .dot and kind != .question_dot and kind != .assign and
             kind != .plus_assign and kind != .minus_assign and kind != .star_assign and
-            kind != .slash_assign and kind != .soql_literal and kind != .string_literal and
+            kind != .slash_assign and kind != .ampersand_assign and
+            kind != .caret_assign and kind != .pipe_assign and
+            kind != .soql_literal and kind != .string_literal and
             kind != .integer_literal and kind != .double_literal and kind != .long_literal and
             kind != .annotation)
         {
