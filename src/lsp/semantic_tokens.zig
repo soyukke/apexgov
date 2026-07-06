@@ -83,6 +83,7 @@ fn classify_token(tok: Token) ?u32 {
         .and_op, .or_op, .not_op => TT.operator,
         .assign, .plus_assign, .minus_assign => TT.operator,
         .star_assign, .slash_assign => TT.operator,
+        .ampersand_assign, .caret_assign, .pipe_assign => TT.operator,
         .arrow, .question, .question_question => TT.operator,
         .question_question_equal, .question_dot => TT.operator,
         .ampersand, .caret, .pipe => TT.operator,

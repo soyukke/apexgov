@@ -8768,6 +8768,9 @@ fn dispatch_obj_describe_field_result(
     if (std.ascii.eqlIgnoreCase(method_name, "isExternalId")) {
         return describe_field_external_id(ctx, obj, object_type, field_name);
     }
+    if (std.ascii.eqlIgnoreCase(method_name, "isUnique")) {
+        return describe_field_unique(ctx, obj, object_type, field_name);
+    }
     return null;
 }
 
@@ -8944,6 +8947,20 @@ fn describe_field_external_id(
         }
     }
     return obj.fields.get("isExternalId") orelse Value{ .boolean = false };
+}
+
+fn describe_field_unique(
+    ctx: *BuiltinContext,
+    obj: *types.ObjectInstance,
+    object_type: ?[]const u8,
+    field_name: []const u8,
+) Value {
+    if (object_type) |obj_name| {
+        if (lookup_field_metadata(ctx, obj_name, field_name)) |meta| {
+            if (meta.is_unique) return Value{ .boolean = true };
+        }
+    }
+    return obj.fields.get("isUnique") orelse Value{ .boolean = false };
 }
 
 fn dispatch_obj_s_object_type(

@@ -122,6 +122,9 @@ pub const AssignOp = enum {
     minus_assign,
     star_assign,
     slash_assign,
+    ampersand_assign,
+    caret_assign,
+    pipe_assign,
     null_coalesce_assign,
 };
 

@@ -5339,6 +5339,56 @@ test "E2E: standard user cannot access custom fields without permission sets" {
     );
 }
 
+test "E2E: DescribeFieldResult.isUnique uses field metadata" {
+    const alloc = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try tmp_dir.dir.createDirPath(std.testing.io, "unpackaged/config/testing/objects");
+    try tmp_dir.dir.writeFile(std.testing.io, .{
+        .sub_path = "unpackaged/config/testing/objects/Contact.object",
+        .data =
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<CustomObject xmlns="http://soap.sforce.com/2006/04/metadata">
+        \\    <fields>
+        \\        <fullName>UniqueKey__c</fullName>
+        \\        <externalId>true</externalId>
+        \\        <label>Unique Key</label>
+        \\        <type>Text</type>
+        \\        <unique>true</unique>
+        \\    </fields>
+        \\</CustomObject>
+        ,
+    });
+    const tmp_path = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", alloc);
+    defer alloc.free(tmp_path);
+
+    const source =
+        \\public class DescribeUniqueFieldProbe {
+        \\    public static String test() {
+        \\        Schema.DescribeFieldResult direct = Contact.UniqueKey__c.getDescribe();
+        \\        Map<String, Schema.SObjectType> gd = Schema.getGlobalDescribe();
+        \\        Map<String, Schema.SObjectField> fields =
+        \\            gd.get('contact').getDescribe().fields.getMap();
+        \\        Schema.DescribeFieldResult fromMap = fields.get('uniquekey__c').getDescribe();
+        \\        return String.valueOf(direct.isUnique()) + ':' +
+        \\            String.valueOf(direct.isExternalId()) + ':' +
+        \\            fromMap.getName() + ':' +
+        \\            String.valueOf(fromMap.isUnique()) + ':' +
+        \\            String.valueOf(fromMap.isExternalId());
+        \\    }
+        \\}
+    ;
+    const result = try run(alloc, std.testing.io, source, .{
+        .entry_class = "DescribeUniqueFieldProbe",
+        .entry_method = "test",
+        .source_paths = &.{tmp_path},
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("true:true:UniqueKey__c:true:true", result.value.string);
+}
+
 test "E2E: StaticResource IN clause returns multiple stubs" {
     // Multi-line SOQL like in sample fixture
     const source =
@@ -5502,6 +5552,39 @@ test "E2E: Type literals from distinct classes are not collapsed as map keys" {
         \\}
     ;
     try expect_entry_string(source, "TypeKeyedMapTest", "test", "alpha,beta,2");
+}
+
+test "E2E: boolean and bitwise compound assignments" {
+    const source =
+        \\public class CompoundAssignmentProbe {
+        \\    public static String test() {
+        \\        Boolean andFlag = true;
+        \\        andFlag &= false;
+        \\        Boolean orFlag = false;
+        \\        orFlag |= true;
+        \\        Boolean xorFlag = true;
+        \\        xorFlag ^= true;
+        \\        Integer mask = 6;
+        \\        mask &= 3;
+        \\        Integer bits = 4;
+        \\        bits |= 1;
+        \\        Integer flip = 5;
+        \\        flip ^= 3;
+        \\        return String.valueOf(andFlag) + ':' +
+        \\            String.valueOf(orFlag) + ':' +
+        \\            String.valueOf(xorFlag) + ':' +
+        \\            String.valueOf(mask) + ':' +
+        \\            String.valueOf(bits) + ':' +
+        \\            String.valueOf(flip);
+        \\    }
+        \\}
+    ;
+    try expect_entry_string(
+        source,
+        "CompoundAssignmentProbe",
+        "test",
+        "false:true:false:2:5:6",
+    );
 }
 
 test "E2E: Trigger.operationType is null outside of a trigger context" {

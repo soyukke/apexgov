@@ -3107,7 +3107,6 @@ pub const Evaluator = struct {
         const secondary_ids = try self.collect_database_merge_secondary_ids(secondary);
         if (self.primary_merge_record_id(primary)) |primary_id| {
             try self.apply_database_merge_primary_fields(primary, primary_id);
-            try self.apply_npsp_contact_merge_unique_field(primary_id, secondary_ids.items);
             try self.reparent_database_merge_references(primary_id, secondary_ids.items);
             try self.apply_database_merge_post_side_effects(primary_id, secondary_ids.items);
         }
@@ -46746,7 +46745,6 @@ pub const Evaluator = struct {
             const secondary_ids = try self.collect_database_merge_secondary_ids(args[1]);
             if (self.primary_merge_record_id(args[0])) |primary_id| {
                 try self.apply_database_merge_primary_fields(args[0], primary_id);
-                try self.apply_npsp_contact_merge_unique_field(primary_id, secondary_ids.items);
                 try self.reparent_database_merge_references(primary_id, secondary_ids.items);
                 try self.apply_database_merge_post_side_effects(primary_id, secondary_ids.items);
             }
@@ -48178,39 +48176,6 @@ pub const Evaluator = struct {
                     );
                 }
             }
-        }
-    }
-
-    fn apply_npsp_contact_merge_unique_field(
-        self: *Evaluator,
-        primary_id: []const u8,
-        secondary_ids: []const []const u8,
-    ) !void {
-        if (!self.fixture_relaxed_exceptions or secondary_ids.len == 0) return;
-        const primary = self.find_record_by_id("Contact", primary_id) orelse return;
-        if (primary != .sobject) return;
-        for (secondary_ids) |secondary_id| {
-            const secondary = self.find_record_by_id("Contact", secondary_id) orelse continue;
-            if (secondary != .sobject) continue;
-            const unique = self.get_s_object_field_value_case_insensitive(
-                secondary.sobject,
-                "ContactMergeUniqueField__c",
-            ) orelse continue;
-            if (unique == .null_val) continue;
-            try utils.sobject_put(
-                &primary.sobject.fields,
-                self.arena,
-                "ContactMergeUniqueField__c",
-                unique,
-            );
-            const last = self.get_s_object_field_value_case_insensitive(
-                secondary.sobject,
-                "LastName",
-            ) orelse Value.null_val;
-            if (last != .null_val) {
-                try utils.sobject_put(&primary.sobject.fields, self.arena, "LastName", last);
-            }
-            return;
         }
     }
 
@@ -54691,6 +54656,39 @@ fn eval_compound_assign(
                 if (Numeric.as_f64(value)) |rhs| {
                     if (rhs != 0) return Numeric.from_division(current, value, lhs / rhs);
                 }
+            }
+        },
+        .ampersand_assign => {
+            if (current == .boolean and value == .boolean) {
+                return .{ .boolean = current.boolean and value.boolean };
+            }
+            if (current == .integer and value == .integer) {
+                return .{ .integer = current.integer & value.integer };
+            }
+            if (current == .long and value == .long) {
+                return .{ .long = current.long & value.long };
+            }
+        },
+        .pipe_assign => {
+            if (current == .boolean and value == .boolean) {
+                return .{ .boolean = current.boolean or value.boolean };
+            }
+            if (current == .integer and value == .integer) {
+                return .{ .integer = current.integer | value.integer };
+            }
+            if (current == .long and value == .long) {
+                return .{ .long = current.long | value.long };
+            }
+        },
+        .caret_assign => {
+            if (current == .boolean and value == .boolean) {
+                return .{ .boolean = current.boolean != value.boolean };
+            }
+            if (current == .integer and value == .integer) {
+                return .{ .integer = current.integer ^ value.integer };
+            }
+            if (current == .long and value == .long) {
+                return .{ .long = current.long ^ value.long };
             }
         },
         .assign => return value,
