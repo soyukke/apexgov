@@ -318,7 +318,7 @@ pub fn dispatch_static(
     if (ci.eqlIgnoreCase(class_name, "Double"))
         return dispatch_static_double_class(ctx, method_name, args);
     if (ci.eqlIgnoreCase(class_name, "Date")) return dispatch_static_date(ctx, method_name, args);
-    if (ci.eqlIgnoreCase(class_name, "Math")) return dispatch_static_math(method_name, args);
+    if (ci.eqlIgnoreCase(class_name, "Math")) return dispatch_static_math(ctx, method_name, args);
     if (ci.eqlIgnoreCase(class_name, "Time")) return dispatch_static_time(ctx, method_name, args);
     if (ci.eqlIgnoreCase(class_name, "TimeZone"))
         return dispatch_static_time_zone(ctx, method_name, args);
@@ -1030,9 +1030,13 @@ fn date_is_leap_year(year: i32) bool {
         (@mod(year, 100) != 0 or @mod(year, 400) == 0);
 }
 
-fn dispatch_static_math(method_name: []const u8, args: []const Value) !?Value {
+fn dispatch_static_math(
+    ctx: *BuiltinContext,
+    method_name: []const u8,
+    args: []const Value,
+) !?Value {
     if (std.ascii.eqlIgnoreCase(method_name, "random")) {
-        return Value{ .double = 0.999 };
+        return Value{ .double = next_math_random_f64(ctx) };
     }
     if (std.ascii.eqlIgnoreCase(method_name, "pow")) {
         if (args.len >= 2) {
@@ -1082,6 +1086,17 @@ fn dispatch_static_math(method_name: []const u8, args: []const Value) !?Value {
             Value{ .integer = 0 };
     }
     return dispatch_static_math_tail(method_name, args);
+}
+
+fn next_math_random_f64(ctx: *BuiltinContext) f64 {
+    const n = ctx.eval.math_random_counter;
+    ctx.eval.math_random_counter +%= 1;
+    var x = n +% 0xd1b5_4a32_d192_ed03;
+    x = (x ^ (x >> 30)) *% 0xbf58_476d_1ce4_e5b9;
+    x = (x ^ (x >> 27)) *% 0x94d0_49bb_1331_11eb;
+    x ^= x >> 31;
+    const mantissa = x >> 11;
+    return @as(f64, @floatFromInt(mantissa)) / 9007199254740992.0;
 }
 
 fn dispatch_static_math_abs(args: []const Value) Value {
