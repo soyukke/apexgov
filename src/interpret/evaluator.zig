@@ -3237,7 +3237,11 @@ pub const Evaluator = struct {
             try self.apply_npsp_batch_address_initial_state(ot, op, record_list.items);
             try self.apply_npsp_smarty_contact_validation(ot, op, record_list.items);
             try self.apply_npsp_contact_address_instrumentation(ot, op, record_list.items);
-            try self.apply_npsp_address_delete_side_effects(ot, op, record_list.items);
+            const side_effect_records = if (op == .delete)
+                if (old_records) |records| records.items else record_list.items
+            else
+                record_list.items;
+            try self.apply_npsp_address_delete_side_effects(ot, op, side_effect_records);
             try self.cleanup_npsp_negative_payment_default_allocations(ot, op, record_list.items);
             try self.cleanup_npsp_locked_payment_opportunity_default_allocations(
                 ot,
@@ -12187,9 +12191,9 @@ pub const Evaluator = struct {
         op: ast.DmlOp,
         records: []const Value,
     ) !void {
-        if (!self.fixture_relaxed_exceptions) return;
         if (op != .delete) return;
         if (!std.ascii.eqlIgnoreCase(object_type, "Address__c")) return;
+        if (self.npsp_tdtm_globally_disabled()) return;
         for (records) |record| {
             if (record != .sobject) continue;
             try self.apply_npsp_address_delete(record.sobject);
@@ -14407,9 +14411,6 @@ pub const Evaluator = struct {
                 try trash_gop.value_ptr.append(self.arena, removed);
                 try obj.fields.put(self.arena, "IsDeleted", Value{ .boolean = true });
                 if (removed == .sobject) {
-                    if (!std.ascii.eqlIgnoreCase(removed.sobject.type_name, "Address__c")) {
-                        try self.apply_npsp_address_delete(removed.sobject);
-                    }
                     try self.apply_npsp_contact_deceased_delete(removed.sobject);
                 }
                 found = true;
@@ -14454,7 +14455,6 @@ pub const Evaluator = struct {
                     "IsDeleted",
                     Value{ .boolean = true },
                 );
-                try self.apply_npsp_address_delete(removed.sobject);
                 try self.apply_npsp_contact_deceased_delete(removed.sobject);
             }
             try trash_gop.value_ptr.append(self.arena, removed);

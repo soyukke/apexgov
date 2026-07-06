@@ -10791,6 +10791,36 @@ test "E2E: managed package Address insert updates household and contact mailing 
     );
 }
 
+test "E2E: managed package Address sparse delete uses stored old row" {
+    const source =
+        \\public class PackageAddressSparseDeleteProbe {
+        \\    public static String test() {
+        \\        Account household = new Account(Name = 'Household');
+        \\        insert household;
+        \\        Contact contact = new Contact(LastName = 'Donor', AccountId = household.Id);
+        \\        insert contact;
+        \\        Address__c address = new Address__c(
+        \\            Household_Account__c = household.Id,
+        \\            Default_Address__c = true,
+        \\            MailingCity__c = 'Seattle'
+        \\        );
+        \\        insert address;
+        \\        delete new Address__c(Id = address.Id);
+        \\        Account storedHousehold = [SELECT BillingCity FROM Account WHERE Id = :household.Id];
+        \\        Contact storedContact = [SELECT MailingCity FROM Contact WHERE Id = :contact.Id];
+        \\        return String.valueOf(storedHousehold.BillingCity) + ':' +
+        \\            String.valueOf(storedContact.MailingCity);
+        \\    }
+        \\}
+    ;
+    try expect_entry_string(
+        source,
+        "PackageAddressSparseDeleteProbe",
+        "test",
+        "null:null",
+    );
+}
+
 test "E2E: Data Import settings getInstance keeps unset fields null" {
     const source =
         \\public class DataImportSettingsDefaultsProbe {
