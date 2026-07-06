@@ -1608,7 +1608,8 @@ pub const Evaluator = struct {
         outer_name: []const u8,
         simple_name: []const u8,
     ) ?[]const u8 {
-        const outer_decl = self.find_class(outer_name) orelse return null;
+        const outer_lookup = self.find_class_with_name(outer_name) orelse return null;
+        const outer_decl = outer_lookup.decl;
         for (outer_decl.members) |member| {
             switch (member) {
                 .class_decl => |inner_cd| {
@@ -1616,7 +1617,7 @@ pub const Evaluator = struct {
                         return std.fmt.allocPrint(
                             self.arena,
                             "{s}.{s}",
-                            .{ outer_name, inner_cd.name },
+                            .{ outer_lookup.name, inner_cd.name },
                         ) catch null;
                     }
                 },
@@ -6716,41 +6717,87 @@ pub const Evaluator = struct {
         self: *Evaluator,
         obj: *types.ObjectInstance,
     ) !?*types.SObject {
-        const type_name = test_data_builder_sobject_type(obj.class_name) orelse blk: {
-            if (!std.ascii.eqlIgnoreCase(obj.class_name, "DefaultTestDataBuilder")) return null;
-            const object_type = self.get_object_field_case_insensitive(obj, "objectType") orelse
-                return null;
-            break :blk self.schema_object_type_name_from_value(object_type) orelse return null;
-        };
+        const type_name = try self.test_data_builder_sobject_type(obj) orelse return null;
         const sob = try self.arena.create(types.SObject);
         sob.* = .{ .type_name = type_name };
-        if (std.ascii.eqlIgnoreCase(type_name, "Account")) {
-            try utils.sobject_put(&sob.fields, self.arena, "Name", Value{ .string = "ACME" });
-        } else if (std.ascii.eqlIgnoreCase(type_name, "Contact")) {
-            try utils.sobject_put(&sob.fields, self.arena, "LastName", Value{ .string = "Test" });
+
+        if (try self.test_data_builder_default_value_map(obj)) |default_map| {
+            try self.apply_field_value_map_to_sobject(sob, default_map);
         }
         if (obj.fields.get("customValueMap")) |custom_map| {
             if (custom_map == .map) {
-                for (
-                    custom_map.map.entries.keys(),
-                    custom_map.map.entries.values(),
-                ) |key, field_value| {
-                    const original_key = custom_map.map.key_values.get(key) orelse
-                        Value{ .string = key };
-                    if (sobject_field_token_name(original_key)) |field_name| {
-                        try utils.sobject_put(&sob.fields, self.arena, field_name, field_value);
-                    }
-                }
+                try self.apply_field_value_map_to_sobject(sob, custom_map.map);
             }
         }
         return sob;
     }
 
-    fn test_data_builder_sobject_type(class_name: []const u8) ?[]const u8 {
-        if (std.ascii.eqlIgnoreCase(class_name, "AccountTestRecord")) return "Account";
-        if (std.ascii.eqlIgnoreCase(class_name, "ContactTestRecord")) return "Contact";
-        if (std.ascii.eqlIgnoreCase(class_name, "EventTestRecord")) return "Event";
-        return null;
+    fn test_data_builder_sobject_type(
+        self: *Evaluator,
+        obj: *types.ObjectInstance,
+    ) !?[]const u8 {
+        if (!self.test_data_builder_like_object(obj)) return null;
+        const object_type = try self.call_test_data_builder_method(obj, "getSObjectType") orelse
+            return null;
+        return self.schema_object_type_name_from_value(object_type);
+    }
+
+    fn test_data_builder_default_value_map(
+        self: *Evaluator,
+        obj: *types.ObjectInstance,
+    ) !?*types.MapValue {
+        if (!self.object_has_instance_method(obj, "getDefaultValueMap", 0)) return null;
+        const value = try self.call_test_data_builder_method(obj, "getDefaultValueMap") orelse
+            return null;
+        return if (value == .map) value.map else null;
+    }
+
+    fn call_test_data_builder_method(
+        self: *Evaluator,
+        obj: *types.ObjectInstance,
+        method_name: []const u8,
+    ) !?Value {
+        const class_decl = self.find_class(obj.class_name) orelse return null;
+        return try self.call_instance_method(class_decl, obj, method_name, &.{});
+    }
+
+    fn test_data_builder_like_object(self: *Evaluator, obj: *types.ObjectInstance) bool {
+        if (!self.object_has_instance_method(obj, "getSObjectType", 0)) return false;
+        if (self.object_has_instance_method(obj, "registerNewForInsert", 0) or
+            self.object_has_instance_method(obj, "registerNewForInsert", 1))
+        {
+            return true;
+        }
+        if (self.get_object_field_case_insensitive(obj, "customValueMap") != null) return true;
+        if (self.get_object_field_case_insensitive(obj, "registeredRelationships") != null) return true;
+        return self.get_object_field_case_insensitive(obj, "objectType") != null;
+    }
+
+    fn object_has_instance_method(
+        self: *Evaluator,
+        obj: *types.ObjectInstance,
+        method_name: []const u8,
+        arg_count: usize,
+    ) bool {
+        const class_decl = self.find_class(obj.class_name) orelse return false;
+        return self.find_method_in_hierarchy(class_decl, class_decl, method_name, arg_count) != null;
+    }
+
+    fn apply_field_value_map_to_sobject(
+        self: *Evaluator,
+        sob: *types.SObject,
+        field_value_map: *types.MapValue,
+    ) !void {
+        for (
+            field_value_map.entries.keys(),
+            field_value_map.entries.values(),
+        ) |key, field_value| {
+            const original_key = field_value_map.key_values.get(key) orelse
+                Value{ .string = key };
+            if (sobject_field_token_name(original_key)) |field_name| {
+                try utils.sobject_put(&sob.fields, self.arena, field_name, field_value);
+            }
+        }
     }
 
     fn eval_test_data_builder_register_new_method(
@@ -6761,7 +6808,7 @@ pub const Evaluator = struct {
     ) !?Value {
         if (value != .object or
             !std.ascii.eqlIgnoreCase(method, "registerNewForInsert") or
-            test_data_builder_sobject_type(value.object.class_name) == null)
+            (try self.test_data_builder_sobject_type(value.object)) == null)
         {
             return null;
         }
@@ -30152,6 +30199,7 @@ pub const Evaluator = struct {
         if (self.field_access_enum_value(fa)) |enum_value| return Value{ .string = enum_value };
         if (try self.eval_schema_field_access_expr(fa)) |value| return value;
         if (try self.eval_nested_static_field_access_expr(fa)) |value| return value;
+        if (try self.eval_class_literal_field_access_expr(fa, current_env)) |value| return value;
         if (try self.eval_null_safe_field_access_expr(fa, current_env)) |value| return value;
         const obj = try self.eval_expr(fa.object, current_env);
         return try self.eval_field_access(fa, obj, current_env);
@@ -30257,6 +30305,111 @@ pub const Evaluator = struct {
             }
             if (!std.ascii.eqlIgnoreCase(fa.field, "class")) {
                 return try self.make_s_object_field_token(inner_name, fa.field);
+            }
+        }
+        return null;
+    }
+
+    fn eval_class_literal_field_access_expr(
+        self: *Evaluator,
+        fa: *ast.FieldAccess,
+        current_env: *Env,
+    ) !?Value {
+        if (!std.ascii.eqlIgnoreCase(fa.field, "class")) return null;
+        if (fa.object.* == .identifier) {
+            const type_name = self.resolve_class_literal_type_name(
+                fa.object.identifier.name,
+                current_env,
+            ) orelse return null;
+            return try self.make_type_value(type_name);
+        }
+        if (try self.eval_field_access_nested_static(fa)) |value| return value;
+        if (try self.eval_field_access_dotted_class_literal(fa)) |value| return value;
+        return null;
+    }
+
+    fn resolve_class_literal_type_name(
+        self: *Evaluator,
+        name: []const u8,
+        current_env: *Env,
+    ) ?[]const u8 {
+        if (name.len == 0) return null;
+        if (std.mem.indexOfScalar(u8, name, '<') != null and
+            std.mem.endsWith(u8, name, ">"))
+        {
+            return name;
+        }
+        if (self.resolve_visible_user_class_in_scope(current_env, name)) |class_name| {
+            return class_name;
+        }
+        if (self.resolve_visible_user_interface_in_scope(current_env, name)) |interface_name| {
+            return interface_name;
+        }
+        const resolved = self.resolve_full_class_name(name);
+        if (self.find_class(resolved) != null or self.find_interface(resolved) != null) {
+            return resolved;
+        }
+        if (self.is_s_object_type_name(name) or
+            std.ascii.eqlIgnoreCase(name, "SObject") or
+            std.ascii.eqlIgnoreCase(name, "Object") or
+            std.ascii.eqlIgnoreCase(name, "Exception") or
+            is_unqualified_builtin_enum_type_name(name) or
+            is_builtin_static_namespace(name))
+        {
+            return name;
+        }
+        return null;
+    }
+
+    fn resolve_visible_user_interface_in_scope(
+        self: *Evaluator,
+        current_env: ?*Env,
+        simple_name: []const u8,
+    ) ?[]const u8 {
+        if (std.mem.indexOfScalar(u8, simple_name, '.') != null) {
+            if (self.find_interface(simple_name) != null) return simple_name;
+            return null;
+        }
+
+        const scope_class = blk: {
+            if (current_env) |env| {
+                if (env.get_this()) |this_val| {
+                    if (this_val == .object) break :blk this_val.object.class_name;
+                }
+            }
+            break :blk self.current_class;
+        };
+
+        if (scope_class) |scope_name| {
+            if (self.find_inner_interface_fq(scope_name, simple_name)) |fq| return fq;
+            if (self.find_outer_class_name(scope_name)) |outer_name| {
+                if (self.find_inner_interface_fq(outer_name, simple_name)) |fq| return fq;
+            }
+        }
+
+        if (self.find_interface(simple_name) != null) return simple_name;
+        return null;
+    }
+
+    fn find_inner_interface_fq(
+        self: *Evaluator,
+        outer_name: []const u8,
+        simple_name: []const u8,
+    ) ?[]const u8 {
+        const outer_lookup = self.find_class_with_name(outer_name) orelse return null;
+        const outer_decl = outer_lookup.decl;
+        for (outer_decl.members) |member| {
+            switch (member) {
+                .interface_decl => |inner_iface| {
+                    if (std.ascii.eqlIgnoreCase(inner_iface.name, simple_name)) {
+                        return std.fmt.allocPrint(
+                            self.arena,
+                            "{s}.{s}",
+                            .{ outer_lookup.name, inner_iface.name },
+                        ) catch null;
+                    }
+                },
+                else => {},
             }
         }
         return null;
@@ -30588,13 +30741,7 @@ pub const Evaluator = struct {
         while (cur) |cd| {
             if (std.ascii.eqlIgnoreCase(cd.name, target)) return true;
             for (cd.interfaces) |iface| {
-                if (std.ascii.eqlIgnoreCase(iface.name, target)) return true;
-                if (std.mem.lastIndexOfScalar(u8, target, '.')) |di| {
-                    if (std.ascii.eqlIgnoreCase(iface.name, target[di + 1 ..])) return true;
-                }
-                if (std.mem.lastIndexOfScalar(u8, iface.name, '.')) |di| {
-                    if (std.ascii.eqlIgnoreCase(iface.name[di + 1 ..], target)) return true;
-                }
+                if (self.interface_extends_or_matches(iface.name, target, 0)) return true;
             }
             if (cd.super_class) |sc| {
                 if (std.ascii.eqlIgnoreCase(sc.name, target)) return true;
@@ -30685,18 +30832,8 @@ pub const Evaluator = struct {
             var cur: ?*ast.ClassDecl = cd;
             while (cur) |ccd| {
                 for (ccd.interfaces) |iface| {
-                    if (std.ascii.eqlIgnoreCase(iface.name, type_name)) {
+                    if (self.interface_extends_or_matches(iface.name, type_name, 0)) {
                         return Value{ .boolean = true };
-                    }
-                    if (std.mem.lastIndexOfScalar(u8, type_name, '.')) |dot_pos| {
-                        if (std.ascii.eqlIgnoreCase(iface.name, type_name[dot_pos + 1 ..])) {
-                            return Value{ .boolean = true };
-                        }
-                    }
-                    if (std.mem.lastIndexOfScalar(u8, iface.name, '.')) |dot_pos| {
-                        if (std.ascii.eqlIgnoreCase(iface.name[dot_pos + 1 ..], type_name)) {
-                            return Value{ .boolean = true };
-                        }
                     }
                 }
                 if (ccd.super_class) |sc| {
@@ -35349,10 +35486,6 @@ pub const Evaluator = struct {
                 &.{},
                 self.global_env,
             );
-        }
-        const type_name = self.schema_object_type_name_from_value(object_type) orelse return null;
-        if (std.ascii.eqlIgnoreCase(type_name, "Account")) {
-            return try self.instantiate_class("fflib_DynamicSelectorFactoryTest.MySelector");
         }
         return null;
     }
@@ -42493,13 +42626,13 @@ pub const Evaluator = struct {
                 }
                 // Also check interfaces
                 for (c.interfaces) |iface| {
-                    if (std.ascii.eqlIgnoreCase(iface.name, parent_type)) return true;
+                    if (self.interface_extends_or_matches(iface.name, parent_type, 0)) return true;
                 }
                 cd = self.find_constructor_class(sc.name);
             } else {
                 // Check interfaces at this level
                 for (c.interfaces) |iface| {
-                    if (std.ascii.eqlIgnoreCase(iface.name, parent_type)) return true;
+                    if (self.interface_extends_or_matches(iface.name, parent_type, 0)) return true;
                 }
                 break;
             }
@@ -51424,6 +51557,34 @@ pub const Evaluator = struct {
         return null;
     }
 
+    fn interface_extends_or_matches(
+        self: *Evaluator,
+        interface_name: []const u8,
+        target_name: []const u8,
+        depth: u8,
+    ) bool {
+        if (type_names_match(interface_name, target_name)) return true;
+        if (depth > 20) return false;
+        const iface = self.find_interface(interface_name) orelse return false;
+        for (iface.extends) |parent_ref| {
+            if (self.interface_extends_or_matches(parent_ref.name, target_name, depth + 1)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    fn type_names_match(left: []const u8, right: []const u8) bool {
+        if (std.ascii.eqlIgnoreCase(left, right)) return true;
+        if (std.mem.lastIndexOfScalar(u8, left, '.')) |left_dot| {
+            if (std.ascii.eqlIgnoreCase(left[left_dot + 1 ..], right)) return true;
+        }
+        if (std.mem.lastIndexOfScalar(u8, right, '.')) |right_dot| {
+            if (std.ascii.eqlIgnoreCase(left, right[right_dot + 1 ..])) return true;
+        }
+        return false;
+    }
+
     pub fn build_class_lookup_cache(self: *Evaluator, alloc: std.mem.Allocator) !void {
         if (self.class_lookup_cache_built) return;
         var iter = self.classes.iterator();
@@ -52484,12 +52645,7 @@ pub const Evaluator = struct {
     ) bool {
         const cd = self.find_class(class_name) orelse return false;
         for (cd.interfaces) |iface| {
-            if (std.ascii.eqlIgnoreCase(iface.name, interface_name)) return true;
-            if (std.mem.lastIndexOfScalar(u8, iface.name, '.')) |dot_pos| {
-                if (std.ascii.eqlIgnoreCase(iface.name[dot_pos + 1 ..], interface_name)) {
-                    return true;
-                }
-            }
+            if (self.interface_extends_or_matches(iface.name, interface_name, 0)) return true;
         }
         // Check parent class
         if (cd.super_class) |sc| {
@@ -55602,6 +55758,71 @@ test "null-returning helper method preserves declared return type for overload h
     defer r.deinit();
 
     try std.testing.expectEqualStrings("string", r.value.string);
+}
+
+test "interface extends chain is honored for casts and overloads" {
+    const source =
+        \\public interface RootGateway {
+        \\}
+        \\public interface ChildGateway extends RootGateway {
+        \\}
+        \\public class GatewayImpl implements ChildGateway {
+        \\}
+        \\public class InterfaceChainProbe {
+        \\    public static String pick(RootGateway gateway) {
+        \\        return 'root';
+        \\    }
+        \\    public static String pick(Object gateway) {
+        \\        return 'object';
+        \\    }
+        \\    public static String run() {
+        \\        Object raw = new GatewayImpl();
+        \\        RootGateway casted = (RootGateway) raw;
+        \\        return String.valueOf(raw instanceof RootGateway) + ':' +
+        \\            String.valueOf(casted != null) + ':' +
+        \\            pick(new GatewayImpl());
+        \\    }
+        \\}
+    ;
+    var r = try eval_source(source, "InterfaceChainProbe", "run");
+    defer r.deinit();
+
+    try std.testing.expectEqualStrings("true:true:root", r.value.string);
+}
+
+test "class literal resolves user type before same-name local variable" {
+    const source =
+        \\public interface ShadowGateway {
+        \\    String ping();
+        \\}
+        \\public class ShadowGateways implements ShadowGateway {
+        \\    public String ping() {
+        \\        return 'real';
+        \\    }
+        \\}
+        \\public class ShadowRecorder implements StubProvider {
+        \\    public Object handleMethodCall(Object stubbedObject, String stubbedMethodName, Type returnType,
+        \\        List<Type> listOfParamTypes, List<String> listOfParamNames, List<Object> listOfArgs) {
+        \\        return 'stubbed';
+        \\    }
+        \\}
+        \\public class ClassLiteralShadowProbe {
+        \\    public static String run() {
+        \\        List<Account> shadowGateways = new List<Account>();
+        \\        Type literal = ShadowGateways.class;
+        \\        ShadowGateway stubbed = (ShadowGateway) Test.createStub(
+        \\            ShadowGateways.class,
+        \\            new ShadowRecorder()
+        \\        );
+        \\        return literal.getName() + ':' + stubbed.ping() + ':' +
+        \\            String.valueOf(shadowGateways.size());
+        \\    }
+        \\}
+    ;
+    var r = try eval_source(source, "ClassLiteralShadowProbe", "run");
+    defer r.deinit();
+
+    try std.testing.expectEqualStrings("ShadowGateways:stubbed:0", r.value.string);
 }
 
 test "createStub forwards declared param types for typed null helper arguments" {
