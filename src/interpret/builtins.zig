@@ -8255,13 +8255,7 @@ fn dispatch_obj_cache_partition(
     if (std.ascii.eqlIgnoreCase(method_name, "remove") and args.len >= 1) {
         if (cache_map) |cm| {
             if (args.len >= 2 and args[1] == .string) {
-                const builder_name = try cache_partition_remove_builder_name(ctx, args[0]);
-                const cache_key = try std.fmt.allocPrint(
-                    ctx.arena,
-                    "{s}:{s}",
-                    .{ builder_name, args[1].string },
-                );
-                _ = cm.entries.orderedRemove(cache_key);
+                try cache_partition_remove_builder_keys(ctx, cm, args[0], args[1].string);
             } else {
                 const key = try utils.coerce_to_string(args[0], ctx.arena);
                 _ = cm.entries.orderedRemove(key);
@@ -8310,6 +8304,46 @@ fn cache_partition_remove_builder_name(
     }
     return object_string_field(builder_value.object, "name") orelse
         builder_value.object.class_name;
+}
+
+fn cache_partition_remove_builder_keys(
+    ctx: *BuiltinContext,
+    cache_map: *types.MapValue,
+    builder_value: Value,
+    key: []const u8,
+) !void {
+    const builder_name = try cache_partition_remove_builder_name(ctx, builder_value);
+    try cache_partition_remove_builder_key(ctx, cache_map, builder_name, key);
+
+    const class_name = if (std.mem.startsWith(u8, builder_name, "Type:"))
+        builder_name[5..]
+    else
+        builder_name;
+    const resolved_class_name = ctx.eval.resolve_full_class_name_public(class_name);
+    try cache_partition_remove_builder_key(ctx, cache_map, resolved_class_name, key);
+
+    if (std.mem.lastIndexOfScalar(u8, resolved_class_name, '.')) |dot_idx| {
+        try cache_partition_remove_builder_key(
+            ctx,
+            cache_map,
+            resolved_class_name[dot_idx + 1 ..],
+            key,
+        );
+    }
+    if (std.mem.lastIndexOfScalar(u8, class_name, '.')) |dot_idx| {
+        try cache_partition_remove_builder_key(ctx, cache_map, class_name[dot_idx + 1 ..], key);
+    }
+}
+
+fn cache_partition_remove_builder_key(
+    ctx: *BuiltinContext,
+    cache_map: *types.MapValue,
+    builder_name: []const u8,
+    key: []const u8,
+) !void {
+    if (builder_name.len == 0) return;
+    const cache_key = try std.fmt.allocPrint(ctx.arena, "{s}:{s}", .{ builder_name, key });
+    _ = cache_map.entries.orderedRemove(cache_key);
 }
 
 fn cache_partition_get(

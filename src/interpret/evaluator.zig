@@ -1608,7 +1608,8 @@ pub const Evaluator = struct {
         outer_name: []const u8,
         simple_name: []const u8,
     ) ?[]const u8 {
-        const outer_decl = self.find_class(outer_name) orelse return null;
+        const outer_lookup = self.find_class_with_name(outer_name) orelse return null;
+        const outer_decl = outer_lookup.decl;
         for (outer_decl.members) |member| {
             switch (member) {
                 .class_decl => |inner_cd| {
@@ -1616,7 +1617,7 @@ pub const Evaluator = struct {
                         return std.fmt.allocPrint(
                             self.arena,
                             "{s}.{s}",
-                            .{ outer_name, inner_cd.name },
+                            .{ outer_lookup.name, inner_cd.name },
                         ) catch null;
                     }
                 },
@@ -30198,6 +30199,7 @@ pub const Evaluator = struct {
         if (self.field_access_enum_value(fa)) |enum_value| return Value{ .string = enum_value };
         if (try self.eval_schema_field_access_expr(fa)) |value| return value;
         if (try self.eval_nested_static_field_access_expr(fa)) |value| return value;
+        if (try self.eval_class_literal_field_access_expr(fa, current_env)) |value| return value;
         if (try self.eval_null_safe_field_access_expr(fa, current_env)) |value| return value;
         const obj = try self.eval_expr(fa.object, current_env);
         return try self.eval_field_access(fa, obj, current_env);
@@ -30303,6 +30305,111 @@ pub const Evaluator = struct {
             }
             if (!std.ascii.eqlIgnoreCase(fa.field, "class")) {
                 return try self.make_s_object_field_token(inner_name, fa.field);
+            }
+        }
+        return null;
+    }
+
+    fn eval_class_literal_field_access_expr(
+        self: *Evaluator,
+        fa: *ast.FieldAccess,
+        current_env: *Env,
+    ) !?Value {
+        if (!std.ascii.eqlIgnoreCase(fa.field, "class")) return null;
+        if (fa.object.* == .identifier) {
+            const type_name = self.resolve_class_literal_type_name(
+                fa.object.identifier.name,
+                current_env,
+            ) orelse return null;
+            return try self.make_type_value(type_name);
+        }
+        if (try self.eval_field_access_nested_static(fa)) |value| return value;
+        if (try self.eval_field_access_dotted_class_literal(fa)) |value| return value;
+        return null;
+    }
+
+    fn resolve_class_literal_type_name(
+        self: *Evaluator,
+        name: []const u8,
+        current_env: *Env,
+    ) ?[]const u8 {
+        if (name.len == 0) return null;
+        if (std.mem.indexOfScalar(u8, name, '<') != null and
+            std.mem.endsWith(u8, name, ">"))
+        {
+            return name;
+        }
+        if (self.resolve_visible_user_class_in_scope(current_env, name)) |class_name| {
+            return class_name;
+        }
+        if (self.resolve_visible_user_interface_in_scope(current_env, name)) |interface_name| {
+            return interface_name;
+        }
+        const resolved = self.resolve_full_class_name(name);
+        if (self.find_class(resolved) != null or self.find_interface(resolved) != null) {
+            return resolved;
+        }
+        if (self.is_s_object_type_name(name) or
+            std.ascii.eqlIgnoreCase(name, "SObject") or
+            std.ascii.eqlIgnoreCase(name, "Object") or
+            std.ascii.eqlIgnoreCase(name, "Exception") or
+            is_unqualified_builtin_enum_type_name(name) or
+            is_builtin_static_namespace(name))
+        {
+            return name;
+        }
+        return null;
+    }
+
+    fn resolve_visible_user_interface_in_scope(
+        self: *Evaluator,
+        current_env: ?*Env,
+        simple_name: []const u8,
+    ) ?[]const u8 {
+        if (std.mem.indexOfScalar(u8, simple_name, '.') != null) {
+            if (self.find_interface(simple_name) != null) return simple_name;
+            return null;
+        }
+
+        const scope_class = blk: {
+            if (current_env) |env| {
+                if (env.get_this()) |this_val| {
+                    if (this_val == .object) break :blk this_val.object.class_name;
+                }
+            }
+            break :blk self.current_class;
+        };
+
+        if (scope_class) |scope_name| {
+            if (self.find_inner_interface_fq(scope_name, simple_name)) |fq| return fq;
+            if (self.find_outer_class_name(scope_name)) |outer_name| {
+                if (self.find_inner_interface_fq(outer_name, simple_name)) |fq| return fq;
+            }
+        }
+
+        if (self.find_interface(simple_name) != null) return simple_name;
+        return null;
+    }
+
+    fn find_inner_interface_fq(
+        self: *Evaluator,
+        outer_name: []const u8,
+        simple_name: []const u8,
+    ) ?[]const u8 {
+        const outer_lookup = self.find_class_with_name(outer_name) orelse return null;
+        const outer_decl = outer_lookup.decl;
+        for (outer_decl.members) |member| {
+            switch (member) {
+                .interface_decl => |inner_iface| {
+                    if (std.ascii.eqlIgnoreCase(inner_iface.name, simple_name)) {
+                        return std.fmt.allocPrint(
+                            self.arena,
+                            "{s}.{s}",
+                            .{ outer_lookup.name, inner_iface.name },
+                        ) catch null;
+                    }
+                },
+                else => {},
             }
         }
         return null;
@@ -30634,13 +30741,7 @@ pub const Evaluator = struct {
         while (cur) |cd| {
             if (std.ascii.eqlIgnoreCase(cd.name, target)) return true;
             for (cd.interfaces) |iface| {
-                if (std.ascii.eqlIgnoreCase(iface.name, target)) return true;
-                if (std.mem.lastIndexOfScalar(u8, target, '.')) |di| {
-                    if (std.ascii.eqlIgnoreCase(iface.name, target[di + 1 ..])) return true;
-                }
-                if (std.mem.lastIndexOfScalar(u8, iface.name, '.')) |di| {
-                    if (std.ascii.eqlIgnoreCase(iface.name[di + 1 ..], target)) return true;
-                }
+                if (self.interface_extends_or_matches(iface.name, target, 0)) return true;
             }
             if (cd.super_class) |sc| {
                 if (std.ascii.eqlIgnoreCase(sc.name, target)) return true;
@@ -30731,18 +30832,8 @@ pub const Evaluator = struct {
             var cur: ?*ast.ClassDecl = cd;
             while (cur) |ccd| {
                 for (ccd.interfaces) |iface| {
-                    if (std.ascii.eqlIgnoreCase(iface.name, type_name)) {
+                    if (self.interface_extends_or_matches(iface.name, type_name, 0)) {
                         return Value{ .boolean = true };
-                    }
-                    if (std.mem.lastIndexOfScalar(u8, type_name, '.')) |dot_pos| {
-                        if (std.ascii.eqlIgnoreCase(iface.name, type_name[dot_pos + 1 ..])) {
-                            return Value{ .boolean = true };
-                        }
-                    }
-                    if (std.mem.lastIndexOfScalar(u8, iface.name, '.')) |dot_pos| {
-                        if (std.ascii.eqlIgnoreCase(iface.name[dot_pos + 1 ..], type_name)) {
-                            return Value{ .boolean = true };
-                        }
                     }
                 }
                 if (ccd.super_class) |sc| {
@@ -42535,13 +42626,13 @@ pub const Evaluator = struct {
                 }
                 // Also check interfaces
                 for (c.interfaces) |iface| {
-                    if (std.ascii.eqlIgnoreCase(iface.name, parent_type)) return true;
+                    if (self.interface_extends_or_matches(iface.name, parent_type, 0)) return true;
                 }
                 cd = self.find_constructor_class(sc.name);
             } else {
                 // Check interfaces at this level
                 for (c.interfaces) |iface| {
-                    if (std.ascii.eqlIgnoreCase(iface.name, parent_type)) return true;
+                    if (self.interface_extends_or_matches(iface.name, parent_type, 0)) return true;
                 }
                 break;
             }
@@ -51466,6 +51557,34 @@ pub const Evaluator = struct {
         return null;
     }
 
+    fn interface_extends_or_matches(
+        self: *Evaluator,
+        interface_name: []const u8,
+        target_name: []const u8,
+        depth: u8,
+    ) bool {
+        if (type_names_match(interface_name, target_name)) return true;
+        if (depth > 20) return false;
+        const iface = self.find_interface(interface_name) orelse return false;
+        for (iface.extends) |parent_ref| {
+            if (self.interface_extends_or_matches(parent_ref.name, target_name, depth + 1)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    fn type_names_match(left: []const u8, right: []const u8) bool {
+        if (std.ascii.eqlIgnoreCase(left, right)) return true;
+        if (std.mem.lastIndexOfScalar(u8, left, '.')) |left_dot| {
+            if (std.ascii.eqlIgnoreCase(left[left_dot + 1 ..], right)) return true;
+        }
+        if (std.mem.lastIndexOfScalar(u8, right, '.')) |right_dot| {
+            if (std.ascii.eqlIgnoreCase(left, right[right_dot + 1 ..])) return true;
+        }
+        return false;
+    }
+
     pub fn build_class_lookup_cache(self: *Evaluator, alloc: std.mem.Allocator) !void {
         if (self.class_lookup_cache_built) return;
         var iter = self.classes.iterator();
@@ -52526,12 +52645,7 @@ pub const Evaluator = struct {
     ) bool {
         const cd = self.find_class(class_name) orelse return false;
         for (cd.interfaces) |iface| {
-            if (std.ascii.eqlIgnoreCase(iface.name, interface_name)) return true;
-            if (std.mem.lastIndexOfScalar(u8, iface.name, '.')) |dot_pos| {
-                if (std.ascii.eqlIgnoreCase(iface.name[dot_pos + 1 ..], interface_name)) {
-                    return true;
-                }
-            }
+            if (self.interface_extends_or_matches(iface.name, interface_name, 0)) return true;
         }
         // Check parent class
         if (cd.super_class) |sc| {
@@ -55644,6 +55758,71 @@ test "null-returning helper method preserves declared return type for overload h
     defer r.deinit();
 
     try std.testing.expectEqualStrings("string", r.value.string);
+}
+
+test "interface extends chain is honored for casts and overloads" {
+    const source =
+        \\public interface RootGateway {
+        \\}
+        \\public interface ChildGateway extends RootGateway {
+        \\}
+        \\public class GatewayImpl implements ChildGateway {
+        \\}
+        \\public class InterfaceChainProbe {
+        \\    public static String pick(RootGateway gateway) {
+        \\        return 'root';
+        \\    }
+        \\    public static String pick(Object gateway) {
+        \\        return 'object';
+        \\    }
+        \\    public static String run() {
+        \\        Object raw = new GatewayImpl();
+        \\        RootGateway casted = (RootGateway) raw;
+        \\        return String.valueOf(raw instanceof RootGateway) + ':' +
+        \\            String.valueOf(casted != null) + ':' +
+        \\            pick(new GatewayImpl());
+        \\    }
+        \\}
+    ;
+    var r = try eval_source(source, "InterfaceChainProbe", "run");
+    defer r.deinit();
+
+    try std.testing.expectEqualStrings("true:true:root", r.value.string);
+}
+
+test "class literal resolves user type before same-name local variable" {
+    const source =
+        \\public interface ShadowGateway {
+        \\    String ping();
+        \\}
+        \\public class ShadowGateways implements ShadowGateway {
+        \\    public String ping() {
+        \\        return 'real';
+        \\    }
+        \\}
+        \\public class ShadowRecorder implements StubProvider {
+        \\    public Object handleMethodCall(Object stubbedObject, String stubbedMethodName, Type returnType,
+        \\        List<Type> listOfParamTypes, List<String> listOfParamNames, List<Object> listOfArgs) {
+        \\        return 'stubbed';
+        \\    }
+        \\}
+        \\public class ClassLiteralShadowProbe {
+        \\    public static String run() {
+        \\        List<Account> shadowGateways = new List<Account>();
+        \\        Type literal = ShadowGateways.class;
+        \\        ShadowGateway stubbed = (ShadowGateway) Test.createStub(
+        \\            ShadowGateways.class,
+        \\            new ShadowRecorder()
+        \\        );
+        \\        return literal.getName() + ':' + stubbed.ping() + ':' +
+        \\            String.valueOf(shadowGateways.size());
+        \\    }
+        \\}
+    ;
+    var r = try eval_source(source, "ClassLiteralShadowProbe", "run");
+    defer r.deinit();
+
+    try std.testing.expectEqualStrings("ShadowGateways:stubbed:0", r.value.string);
 }
 
 test "createStub forwards declared param types for typed null helper arguments" {

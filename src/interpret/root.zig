@@ -3838,6 +3838,30 @@ test "E2E: cached Organization accessor works through an inner CacheBuilder" {
     try expect_entry_string(source, "CachedOrgAccessor", "test", "true:1");
 }
 
+test "E2E: Cache.Partition remove clears inner CacheBuilder aliases" {
+    const source =
+        \\public class CacheAliasOwner {
+        \\    private Object cachedValue = loadValue();
+        \\    private Object loadValue() {
+        \\        return Cache.Org.getPartition('local.default').get(InnerBuilder.class, 'demo');
+        \\    }
+        \\    public class InnerBuilder implements Cache.CacheBuilder {
+        \\        public Object doLoad(String key) { return 'loaded:' + key; }
+        \\    }
+        \\    public static String test() {
+        \\        Cache.OrgPartition partition = Cache.Org.getPartition('local.default');
+        \\        CacheAliasOwner owner = new cacheAliasOwner();
+        \\        Integer beforeRemove = partition.getNumKeys();
+        \\        partition.remove(CacheAliasOwner.InnerBuilder.class, 'demo');
+        \\        return String.valueOf(owner.cachedValue) + ':' +
+        \\            String.valueOf(beforeRemove) + ':' +
+        \\            String.valueOf(partition.getNumKeys());
+        \\    }
+        \\}
+    ;
+    try expect_entry_string(source, "CacheAliasOwner", "test", "loaded:demo:1:0");
+}
+
 test "E2E: Cache.Partition isAvailable returns true for existing org partition" {
     const source =
         \\public class CacheAvailabilityTest {
