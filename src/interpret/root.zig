@@ -3684,6 +3684,21 @@ test "E2E: System clock values are monotonic and expose epoch millis" {
     try expect_entry_string(source, "SystemClockProbe", "test", "true:true");
 }
 
+test "E2E: Math.random returns changing values in Apex range" {
+    const source =
+        \\public class MathRandomProbe {
+        \\    public static String test() {
+        \\        Double first = Math.random();
+        \\        Double second = Math.random();
+        \\        return String.valueOf(first >= 0 && first < 1) +
+        \\            ':' + String.valueOf(second >= 0 && second < 1) +
+        \\            ':' + String.valueOf(first != second);
+        \\    }
+        \\}
+    ;
+    try expect_entry_string(source, "MathRandomProbe", "test", "true:true:true");
+}
+
 test "E2E: Database.query on unknown object throws QueryException" {
     const source =
         \\public class UnknownObjTest {
@@ -22463,6 +22478,151 @@ test "E2E: User insert defaults IsActive to true and WHERE PermissionsX = TRUE m
         \\}
     ;
     try expect_entry_string(source, "UserDefaultsWhereProbe", "test", "profiles=1|activeUsers=1");
+}
+
+test "E2E: User insert preserves explicit identity fields and derives standard fields" {
+    const source =
+        \\public class UserExplicitIdentityProbe {
+        \\    public static String test() {
+        \\        Profile p = [
+        \\            SELECT Id, Name, UserType
+        \\            FROM Profile
+        \\            WHERE Name = 'Standard User'
+        \\            LIMIT 1
+        \\        ];
+        \\        User u = new User(
+        \\            ProfileId = p.Id,
+        \\            FirstName = 'Ada',
+        \\            LastName = 'Lovelace',
+        \\            Email = 'ada@example.com',
+        \\            UserName = 'ada.login@example.com',
+        \\            Alias = 'adal',
+        \\            TimeZoneSidKey = 'Europe/London',
+        \\            EmailEncodingKey = 'UTF-8',
+        \\            LanguageLocaleKey = 'en_GB',
+        \\            LocaleSidKey = 'en_GB'
+        \\        );
+        \\        insert u;
+        \\        User loaded = [
+        \\            SELECT Id, Username, Email, Alias, Name, IsActive,
+        \\                ProfileId, Profile.Name, UserType, CommunityNickname
+        \\            FROM User
+        \\            WHERE Id = :u.Id
+        \\        ];
+        \\        return loaded.Username +
+        \\            ':' + loaded.Email +
+        \\            ':' + loaded.Alias +
+        \\            ':' + loaded.Name +
+        \\            ':' + String.valueOf(loaded.IsActive) +
+        \\            ':' + loaded.Profile.Name +
+        \\            ':' + loaded.UserType +
+        \\            ':' + loaded.CommunityNickname;
+        \\    }
+        \\}
+    ;
+    try expect_entry_string(
+        source,
+        "UserExplicitIdentityProbe",
+        "test",
+        "ada.login@example.com:ada@example.com:adal:Ada Lovelace:true:Standard User:Standard:adal",
+    );
+}
+
+test "E2E: User insert enforces username uniqueness" {
+    const source =
+        \\public class UserUsernameUniqueProbe {
+        \\    private static User makeUser(String aliasValue) {
+        \\        return new User(
+        \\            ProfileId = UserInfo.getProfileId(),
+        \\            LastName = 'Duplicate',
+        \\            Email = aliasValue + '@example.com',
+        \\            Username = 'duplicate-user@example.com',
+        \\            Alias = aliasValue,
+        \\            TimeZoneSidKey = 'America/Los_Angeles',
+        \\            EmailEncodingKey = 'UTF-8',
+        \\            LanguageLocaleKey = 'en_US',
+        \\            LocaleSidKey = 'en_US'
+        \\        );
+        \\    }
+        \\
+        \\    public static String test() {
+        \\        insert makeUser('dupone');
+        \\        try {
+        \\            insert makeUser('duptwo');
+        \\            return 'no-error';
+        \\        } catch (DmlException e) {
+        \\            return e.getTypeName() + ':' + e.getMessage();
+        \\        }
+        \\    }
+        \\}
+    ;
+    try expect_entry_string(
+        source,
+        "UserUsernameUniqueProbe",
+        "test",
+        "System.DmlException:DUPLICATE_VALUE: duplicate value found: Username",
+    );
+}
+
+test "E2E: User update can keep the same username" {
+    const source =
+        \\public class UserUsernameSelfUpdateProbe {
+        \\    public static String test() {
+        \\        User u = new User(
+        \\            ProfileId = UserInfo.getProfileId(),
+        \\            LastName = 'SelfUpdate',
+        \\            Email = 'self.update@example.com',
+        \\            Username = 'self.update@example.com',
+        \\            Alias = 'selfupd',
+        \\            TimeZoneSidKey = 'America/Los_Angeles',
+        \\            EmailEncodingKey = 'UTF-8',
+        \\            LanguageLocaleKey = 'en_US',
+        \\            LocaleSidKey = 'en_US'
+        \\        );
+        \\        insert u;
+        \\        update new User(Id = u.Id, Username = 'self.update@example.com', Alias = 'selfup2');
+        \\        User loaded = [SELECT Username, Alias FROM User WHERE Id = :u.Id];
+        \\        return loaded.Username + ':' + loaded.Alias;
+        \\    }
+        \\}
+    ;
+    try expect_entry_string(
+        source,
+        "UserUsernameSelfUpdateProbe",
+        "test",
+        "self.update@example.com:selfup2",
+    );
+}
+
+test "E2E: synthetic User queries honor full WHERE and nullable parent paths" {
+    const source =
+        \\public class UserSyntheticWhereProbe {
+        \\    public static String test() {
+        \\        List<User> portalUsers = [
+        \\            SELECT Id, UserRoleId
+        \\            FROM User
+        \\            WHERE UserRoleId != NULL
+        \\            AND UserType = 'CustomerSuccess'
+        \\        ];
+        \\        String automatedProcessUsername = 'autoproc@' + UserInfo.getOrganizationId();
+        \\        User automatedProcess = [
+        \\            SELECT Id, Username, TimeZoneSidKey
+        \\            FROM User
+        \\            WHERE Username = :automatedProcessUsername
+        \\            AND Profile.Name = NULL
+        \\        ];
+        \\        return String.valueOf(portalUsers.size()) +
+        \\            ':' + automatedProcess.Username +
+        \\            ':' + String.valueOf(automatedProcess.TimeZoneSidKey != null);
+        \\    }
+        \\}
+    ;
+    try expect_entry_string(
+        source,
+        "UserSyntheticWhereProbe",
+        "test",
+        "0:autoproc@00D000000000001:true",
+    );
 }
 
 test "E2E: SUM aggregate SOQL with ALL ROWS sums active store + recycle bin" {

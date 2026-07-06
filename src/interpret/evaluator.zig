@@ -343,6 +343,7 @@ pub const Evaluator = struct {
     npsp_opportunity_allocation_dml_depth: u32 = 0,
     attached_finalizer: ?*types.ObjectInstance = null,
     logical_clock_millis: i64 = 1_777_593_600_000,
+    math_random_counter: u64 = 1,
     crypto_random_counter: u64 = 1,
     fixture_relaxed_exceptions: bool = false,
 
@@ -1064,6 +1065,7 @@ pub const Evaluator = struct {
             "Name",
             Value{ .string = if (is_automated_process) "Automated Process" else "Test User" },
         );
+        try self.apply_standard_object_defaults(user);
         return Value{ .sobject = user };
     }
 
@@ -7271,6 +7273,9 @@ pub const Evaluator = struct {
         obj: *types.SObject,
         only_present: bool,
     ) ?[]const u8 {
+        if (std.ascii.eqlIgnoreCase(obj.type_name, "User")) {
+            if (self.find_standard_user_username_conflict(obj, only_present)) return "Username";
+        }
         const type_meta = self.field_metadata.get(obj.type_name) orelse return null;
         var field_iter = type_meta.iterator();
         while (field_iter.next()) |entry| {
@@ -7298,6 +7303,33 @@ pub const Evaluator = struct {
             }
         }
         return null;
+    }
+
+    fn find_standard_user_username_conflict(
+        self: *Evaluator,
+        obj: *types.SObject,
+        only_present: bool,
+    ) bool {
+        const username = get_upsert_field_value(obj, "Username");
+        if (username == .null_val) return false;
+        if (only_present and utils.sobject_get(&obj.fields, "Username") == null) return false;
+        const records = self.store.get("User") orelse return false;
+        for (records.items) |record| {
+            if (record != .sobject) continue;
+            const existing_username = get_upsert_field_value(record.sobject, "Username");
+            if (existing_username == .null_val) continue;
+            if (existing_username == .string and username == .string) {
+                if (!std.ascii.eqlIgnoreCase(existing_username.string, username.string)) continue;
+            } else if (!utils.value_eql(existing_username, username)) {
+                continue;
+            }
+            const obj_id = self.sobject_id_for_result(obj);
+            const record_id = self.sobject_id_for_result(record.sobject);
+            if (obj_id != null and record_id != null and
+                std.ascii.eqlIgnoreCase(obj_id.?, record_id.?)) continue;
+            return true;
+        }
+        return false;
     }
 
     fn throw_duplicate_value(self: *Evaluator, field_name: []const u8) anyerror!void {
@@ -7961,6 +7993,17 @@ pub const Evaluator = struct {
     fn apply_insert_name(self: *Evaluator, obj: *types.SObject, id: []const u8) !void {
         try self.apply_insert_auto_number_fields(obj);
         const existing_name = utils.sobject_get(&obj.fields, "Name");
+        if (std.ascii.eqlIgnoreCase(obj.type_name, "User")) {
+            if (existing_name == null or existing_name.? == .null_val) {
+                try utils.sobject_put(
+                    &obj.fields,
+                    self.arena,
+                    "Name",
+                    Value{ .string = try self.user_display_name(obj) },
+                );
+            }
+            return;
+        }
         if (!has_implicit_name_field(obj.type_name)) return;
         if (existing_name != null and existing_name.? != .null_val) return;
         if (std.ascii.eqlIgnoreCase(obj.type_name, "Contact") or
@@ -7981,6 +8024,25 @@ pub const Evaluator = struct {
             );
             try obj.fields.put(self.arena, "Name", Value{ .string = auto_name });
         }
+    }
+
+    fn user_display_name(self: *Evaluator, obj: *types.SObject) ![]const u8 {
+        const first = self.sobject_non_empty_string(obj, "FirstName") orelse "";
+        const last = self.sobject_non_empty_string(obj, "LastName") orelse "";
+        if (first.len > 0 and last.len > 0) {
+            return try std.fmt.allocPrint(self.arena, "{s} {s}", .{ first, last });
+        }
+        if (last.len > 0) return last;
+        if (first.len > 0) return first;
+        if (self.sobject_non_empty_string(obj, "Username")) |username| return username;
+        return "User";
+    }
+
+    fn sobject_non_empty_string(_: *Evaluator, obj: *types.SObject, field_name: []const u8) ?[]const u8 {
+        const value = utils.sobject_get(&obj.fields, field_name) orelse return null;
+        if (value != .string) return null;
+        const trimmed = std.mem.trim(u8, value.string, " \t\r\n");
+        return if (trimmed.len > 0) trimmed else null;
     }
 
     fn apply_insert_auto_number_fields(self: *Evaluator, obj: *types.SObject) !void {
@@ -13048,6 +13110,17 @@ pub const Evaluator = struct {
             if (try self.validate_required_field_value(obj, "StageName", only_present)) |err_msg| return err_msg;
             if (try self.validate_required_field_value(obj, "CloseDate", only_present)) |err_msg| return err_msg;
         }
+        if (std.ascii.eqlIgnoreCase(type_name, "User")) {
+            if (try self.validate_required_field_value(obj, "Alias", only_present)) |err_msg| return err_msg;
+            if (try self.validate_required_field_value(obj, "Email", only_present)) |err_msg| return err_msg;
+            if (try self.validate_required_field_value(obj, "EmailEncodingKey", only_present)) |err_msg| return err_msg;
+            if (try self.validate_required_field_value(obj, "LanguageLocaleKey", only_present)) |err_msg| return err_msg;
+            if (try self.validate_required_field_value(obj, "LastName", only_present)) |err_msg| return err_msg;
+            if (try self.validate_required_field_value(obj, "LocaleSidKey", only_present)) |err_msg| return err_msg;
+            if (try self.validate_required_field_value(obj, "ProfileId", only_present)) |err_msg| return err_msg;
+            if (try self.validate_required_field_value(obj, "TimeZoneSidKey", only_present)) |err_msg| return err_msg;
+            if (try self.validate_required_field_value(obj, "Username", only_present)) |err_msg| return err_msg;
+        }
         if (std.ascii.eqlIgnoreCase(type_name, "ContentVersion")) {
             if (validate_content_version_required(obj)) |err_msg| return err_msg;
         }
@@ -13322,6 +13395,29 @@ pub const Evaluator = struct {
                     Value{ .boolean = true },
                 );
             }
+            try self.apply_user_string_default(obj, "TimeZoneSidKey", "America/Los_Angeles");
+            try self.apply_user_string_default(obj, "LocaleSidKey", "en_US");
+            try self.apply_user_string_default(obj, "EmailEncodingKey", "UTF-8");
+            try self.apply_user_string_default(obj, "LanguageLocaleKey", "en_US");
+            try self.apply_user_profile_defaults(obj);
+            if (self.get_s_object_field_value_case_insensitive(obj, "UserType") == null) {
+                try utils.sobject_put(
+                    &obj.fields,
+                    self.arena,
+                    "UserType",
+                    Value{ .string = "Standard" },
+                );
+            }
+            if (self.get_s_object_field_value_case_insensitive(obj, "CommunityNickname") == null) {
+                if (self.user_default_community_nickname(obj)) |nickname| {
+                    try utils.sobject_put(
+                        &obj.fields,
+                        self.arena,
+                        "CommunityNickname",
+                        Value{ .string = nickname },
+                    );
+                }
+            }
         }
         if (std.ascii.eqlIgnoreCase(obj.type_name, "Opportunity")) {
             try self.apply_zero_default(obj, "npe01__Payments_Made__c");
@@ -13342,6 +13438,68 @@ pub const Evaluator = struct {
         if (std.ascii.eqlIgnoreCase(obj.type_name, "npe03__Recurring_Donation__c")) {
             try self.apply_npsp_recurring_donation_defaults(obj);
         }
+    }
+
+    fn apply_user_string_default(
+        self: *Evaluator,
+        obj: *types.SObject,
+        field_name: []const u8,
+        value: []const u8,
+    ) !void {
+        if (self.get_s_object_field_value_case_insensitive(obj, field_name) != null) return;
+        try utils.sobject_put(&obj.fields, self.arena, field_name, Value{ .string = value });
+    }
+
+    fn apply_user_profile_defaults(self: *Evaluator, obj: *types.SObject) !void {
+        if (self.get_s_object_field_value_case_insensitive(obj, "ProfileId")) |profile_id| {
+            if (profile_id == .string and profile_id.string.len > 0) {
+                if (self.get_s_object_field_value_case_insensitive(obj, "Profile") == null) {
+                    if (try self.profile_value_for_user_profile_id(profile_id.string)) |profile| {
+                        try utils.sobject_put(&obj.fields, self.arena, "Profile", profile);
+                    }
+                }
+            }
+        } else if (self.get_s_object_field_value_case_insensitive(obj, "Profile")) |profile| {
+            if (profile == .sobject) {
+                if (profile.sobject.id) |profile_id| {
+                    try utils.sobject_put(
+                        &obj.fields,
+                        self.arena,
+                        "ProfileId",
+                        Value{ .string = profile_id },
+                    );
+                }
+            }
+        }
+
+        if (self.get_s_object_field_value_case_insensitive(obj, "UserType") != null) return;
+        const profile = self.get_s_object_field_value_case_insensitive(obj, "Profile") orelse return;
+        if (profile != .sobject) return;
+        const user_type = utils.sobject_get(&profile.sobject.fields, "UserType") orelse return;
+        try utils.sobject_put(&obj.fields, self.arena, "UserType", user_type);
+    }
+
+    fn profile_value_for_user_profile_id(
+        self: *Evaluator,
+        profile_id: []const u8,
+    ) !?Value {
+        if (self.find_record_by_id("Profile", profile_id)) |profile| return profile;
+        if (std.ascii.eqlIgnoreCase(profile_id, "00e000000000001")) {
+            const profile = try self.arena.create(types.SObject);
+            profile.* = .{ .type_name = "Profile", .id = profile_id };
+            try profile.fields.put(self.arena, "Id", Value{ .string = profile_id });
+            try self.populate_synthetic_profile(profile, "System Administrator");
+            return Value{ .sobject = profile };
+        }
+        return null;
+    }
+
+    fn user_default_community_nickname(self: *Evaluator, obj: *types.SObject) ?[]const u8 {
+        if (self.sobject_non_empty_string(obj, "Alias")) |alias| return alias;
+        const username = self.sobject_non_empty_string(obj, "Username") orelse return null;
+        const at_index = std.mem.indexOfScalar(u8, username, '@') orelse username.len;
+        const local = std.mem.trim(u8, username[0..at_index], " \t\r\n");
+        return if (local.len > 0) local else null;
     }
 
     fn apply_npsp_recurring_donation_defaults(self: *Evaluator, obj: *types.SObject) !void {
@@ -15886,15 +16044,6 @@ pub const Evaluator = struct {
                 try self.create_user_for_query(soql, current_env)
             else
                 try self.create_current_user_record();
-            if (use_query_specific_user and
-                std.ascii.indexOfIgnoreCase(soql, "IsActive = FALSE") == null)
-            {
-                try records.append(self.arena, user_record);
-                const gop = try self.store.getOrPut(self.arena, "User");
-                if (!gop.found_existing) gop.value_ptr.* = .empty;
-                try gop.value_ptr.append(self.arena, user_record);
-                return;
-            }
             try self.append_seeded_store_record("User", user_record, soql, current_env, records);
             return;
         }
@@ -19420,6 +19569,12 @@ pub const Evaluator = struct {
             const contains = self.bind_collection_contains(field_name, field.value, cmp_val);
             return if (op.kind == .neq) !contains else contains;
         }
+        if (cmp_val == .null_val or field.value == .null_val) {
+            const equal = soql_where_null_equal(field_name, field.value, cmp_val);
+            if (op.kind == .neq) return !equal;
+            if (op.kind == .eq) return equal;
+            return false;
+        }
         const equal = self.where_values_equal_for_record(sob, field_name, field.value, cmp_val);
         if (op.kind == .neq) return !equal;
         if (where_operator_is_ordered(op.kind)) {
@@ -19542,6 +19697,21 @@ pub const Evaluator = struct {
         return utils.value_eql(lhs, rhs);
     }
 
+    fn soql_where_null_equal(field_name: []const u8, lhs: Value, rhs: Value) bool {
+        return soql_where_is_null_value(field_name, lhs) and
+            soql_where_is_null_value(field_name, rhs);
+    }
+
+    fn soql_where_is_null_value(field_name: []const u8, value: Value) bool {
+        if (value == .null_val) return true;
+        if (std.ascii.eqlIgnoreCase(field_name, "Id") or
+            std.ascii.endsWithIgnoreCase(field_name, ".Id"))
+        {
+            return false;
+        }
+        return value == .string and value.string.len == 0;
+    }
+
     fn soql_empty_string_matches_null(field_name: []const u8, lhs: Value, rhs: Value) bool {
         if (std.ascii.eqlIgnoreCase(field_name, "Id") or
             std.ascii.endsWithIgnoreCase(field_name, ".Id"))
@@ -19640,8 +19810,10 @@ pub const Evaluator = struct {
             }
             const first_segment = field_name[0..std.mem.indexOfScalar(u8, field_name, '.').?];
             const strict_parent_path =
-                std.ascii.eqlIgnoreCase(sob.type_name, "Allocation__c") and
-                is_parent_relationship_name(first_segment);
+                (std.ascii.eqlIgnoreCase(sob.type_name, "Allocation__c") and
+                    is_parent_relationship_name(first_segment)) or
+                (std.ascii.eqlIgnoreCase(sob.type_name, "User") and
+                    is_parent_relationship_name(first_segment));
             if (!strict_parent_path) {
                 if (self.resolve_aliased_where_field_value(sob, field_name)) |value| {
                     return .{ .value = value, .found = true };
@@ -54678,11 +54850,11 @@ fn find_logical_op(clause: []const u8, keyword: []const u8) ?usize {
 }
 
 fn logical_op_boundary_before(ch: u8) bool {
-    return ch == ' ' or ch == '\n' or ch == ')';
+    return is_soql_whitespace(ch) or ch == ')';
 }
 
 fn logical_op_boundary_after(ch: u8) bool {
-    return ch == ' ' or ch == '\n' or ch == '(';
+    return is_soql_whitespace(ch) or ch == '(';
 }
 
 fn extract_offset(soql: []const u8) ?usize {
