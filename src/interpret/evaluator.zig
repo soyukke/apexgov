@@ -6716,41 +6716,87 @@ pub const Evaluator = struct {
         self: *Evaluator,
         obj: *types.ObjectInstance,
     ) !?*types.SObject {
-        const type_name = test_data_builder_sobject_type(obj.class_name) orelse blk: {
-            if (!std.ascii.eqlIgnoreCase(obj.class_name, "DefaultTestDataBuilder")) return null;
-            const object_type = self.get_object_field_case_insensitive(obj, "objectType") orelse
-                return null;
-            break :blk self.schema_object_type_name_from_value(object_type) orelse return null;
-        };
+        const type_name = try self.test_data_builder_sobject_type(obj) orelse return null;
         const sob = try self.arena.create(types.SObject);
         sob.* = .{ .type_name = type_name };
-        if (std.ascii.eqlIgnoreCase(type_name, "Account")) {
-            try utils.sobject_put(&sob.fields, self.arena, "Name", Value{ .string = "ACME" });
-        } else if (std.ascii.eqlIgnoreCase(type_name, "Contact")) {
-            try utils.sobject_put(&sob.fields, self.arena, "LastName", Value{ .string = "Test" });
+
+        if (try self.test_data_builder_default_value_map(obj)) |default_map| {
+            try self.apply_field_value_map_to_sobject(sob, default_map);
         }
         if (obj.fields.get("customValueMap")) |custom_map| {
             if (custom_map == .map) {
-                for (
-                    custom_map.map.entries.keys(),
-                    custom_map.map.entries.values(),
-                ) |key, field_value| {
-                    const original_key = custom_map.map.key_values.get(key) orelse
-                        Value{ .string = key };
-                    if (sobject_field_token_name(original_key)) |field_name| {
-                        try utils.sobject_put(&sob.fields, self.arena, field_name, field_value);
-                    }
-                }
+                try self.apply_field_value_map_to_sobject(sob, custom_map.map);
             }
         }
         return sob;
     }
 
-    fn test_data_builder_sobject_type(class_name: []const u8) ?[]const u8 {
-        if (std.ascii.eqlIgnoreCase(class_name, "AccountTestRecord")) return "Account";
-        if (std.ascii.eqlIgnoreCase(class_name, "ContactTestRecord")) return "Contact";
-        if (std.ascii.eqlIgnoreCase(class_name, "EventTestRecord")) return "Event";
-        return null;
+    fn test_data_builder_sobject_type(
+        self: *Evaluator,
+        obj: *types.ObjectInstance,
+    ) !?[]const u8 {
+        if (!self.test_data_builder_like_object(obj)) return null;
+        const object_type = try self.call_test_data_builder_method(obj, "getSObjectType") orelse
+            return null;
+        return self.schema_object_type_name_from_value(object_type);
+    }
+
+    fn test_data_builder_default_value_map(
+        self: *Evaluator,
+        obj: *types.ObjectInstance,
+    ) !?*types.MapValue {
+        if (!self.object_has_instance_method(obj, "getDefaultValueMap", 0)) return null;
+        const value = try self.call_test_data_builder_method(obj, "getDefaultValueMap") orelse
+            return null;
+        return if (value == .map) value.map else null;
+    }
+
+    fn call_test_data_builder_method(
+        self: *Evaluator,
+        obj: *types.ObjectInstance,
+        method_name: []const u8,
+    ) !?Value {
+        const class_decl = self.find_class(obj.class_name) orelse return null;
+        return try self.call_instance_method(class_decl, obj, method_name, &.{});
+    }
+
+    fn test_data_builder_like_object(self: *Evaluator, obj: *types.ObjectInstance) bool {
+        if (!self.object_has_instance_method(obj, "getSObjectType", 0)) return false;
+        if (self.object_has_instance_method(obj, "registerNewForInsert", 0) or
+            self.object_has_instance_method(obj, "registerNewForInsert", 1))
+        {
+            return true;
+        }
+        if (self.get_object_field_case_insensitive(obj, "customValueMap") != null) return true;
+        if (self.get_object_field_case_insensitive(obj, "registeredRelationships") != null) return true;
+        return self.get_object_field_case_insensitive(obj, "objectType") != null;
+    }
+
+    fn object_has_instance_method(
+        self: *Evaluator,
+        obj: *types.ObjectInstance,
+        method_name: []const u8,
+        arg_count: usize,
+    ) bool {
+        const class_decl = self.find_class(obj.class_name) orelse return false;
+        return self.find_method_in_hierarchy(class_decl, class_decl, method_name, arg_count) != null;
+    }
+
+    fn apply_field_value_map_to_sobject(
+        self: *Evaluator,
+        sob: *types.SObject,
+        field_value_map: *types.MapValue,
+    ) !void {
+        for (
+            field_value_map.entries.keys(),
+            field_value_map.entries.values(),
+        ) |key, field_value| {
+            const original_key = field_value_map.key_values.get(key) orelse
+                Value{ .string = key };
+            if (sobject_field_token_name(original_key)) |field_name| {
+                try utils.sobject_put(&sob.fields, self.arena, field_name, field_value);
+            }
+        }
     }
 
     fn eval_test_data_builder_register_new_method(
@@ -6761,7 +6807,7 @@ pub const Evaluator = struct {
     ) !?Value {
         if (value != .object or
             !std.ascii.eqlIgnoreCase(method, "registerNewForInsert") or
-            test_data_builder_sobject_type(value.object.class_name) == null)
+            (try self.test_data_builder_sobject_type(value.object)) == null)
         {
             return null;
         }

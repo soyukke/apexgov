@@ -19299,6 +19299,63 @@ test "E2E: method returning Map<Schema.SObjectField,Object> prefers matching ove
     try expect_entry_string(source, "FieldMapOverloadTest", "test", "matched");
 }
 
+test "E2E: SObject builder conversion uses declared type and default field map" {
+    const source =
+        \\public virtual class GenericSObjectBuilder {
+        \\    protected Map<Schema.SObjectField, Object> customValueMap;
+        \\    public GenericSObjectBuilder() {
+        \\        customValueMap = new Map<Schema.SObjectField, Object>();
+        \\    }
+        \\    public virtual Schema.SObjectType getSObjectType() {
+        \\        return Account.SObjectType;
+        \\    }
+        \\    protected virtual Map<Schema.SObjectField, Object> getDefaultValueMap() {
+        \\        return new Map<Schema.SObjectField, Object>();
+        \\    }
+        \\    protected GenericSObjectBuilder withData(Schema.SObjectField field, Object value) {
+        \\        customValueMap.put(field, value);
+        \\        return this;
+        \\    }
+        \\    public SObject registerNewForInsert() {
+        \\        return null;
+        \\    }
+        \\    public List<SObject> registerNewForInsert(Integer count) {
+        \\        return null;
+        \\    }
+        \\}
+        \\public class GenericAccountBuilder extends GenericSObjectBuilder {
+        \\    public override Schema.SObjectType getSObjectType() {
+        \\        return Account.SObjectType;
+        \\    }
+        \\    protected override Map<Schema.SObjectField, Object> getDefaultValueMap() {
+        \\        return new Map<Schema.SObjectField, Object>{ Account.Name => 'Default Name' };
+        \\    }
+        \\    public GenericAccountBuilder named(String name) {
+        \\        this.withData(Account.Name, name);
+        \\        return this;
+        \\    }
+        \\}
+        \\public class GenericBuilderConversionProbe {
+        \\    public static String test() {
+        \\        Account defaulted = (Account) new GenericAccountBuilder().registerNewForInsert();
+        \\        Account custom = (Account) new GenericAccountBuilder()
+        \\            .named('Custom Name')
+        \\            .registerNewForInsert();
+        \\        Account storedDefault = [SELECT Name FROM Account WHERE Id = :defaulted.Id];
+        \\        Account storedCustom = [SELECT Name FROM Account WHERE Id = :custom.Id];
+        \\        return defaulted.Name + ':' + storedDefault.Name + ':' +
+        \\            custom.Name + ':' + storedCustom.Name;
+        \\    }
+        \\}
+    ;
+    try expect_entry_string(
+        source,
+        "GenericBuilderConversionProbe",
+        "test",
+        "Default Name:Default Name:Custom Name:Custom Name",
+    );
+}
+
 test "E2E: Schema field token strings resolve describe map entries for put" {
     const source =
         \\public class FieldStringLookupTest {
