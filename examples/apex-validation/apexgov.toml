@@ -1,0 +1,11 @@
+[budget.sync]
+cpu_ms = 8000
+heap_bytes = 5000000
+
+[budget.async]
+cpu_ms = 50000
+heap_bytes = 10000000
+
+[ci]
+fail_on_regression = true
+regression_percent = 15

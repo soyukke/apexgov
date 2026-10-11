@@ -1,0 +1,88 @@
+>// SYNTAX TEST "source.apex"
+#^^^^^^^^^^^^^^^^^^^^^^^^^^^^ source.apex comment.line.double-slash.apex
+>
+>public with sharing class RecordPage {
+#^^^^^^ source.apex storage.modifier.apex
+#      ^ source.apex
+#       ^^^^ source.apex storage.modifier.apex
+#           ^ source.apex
+#            ^^^^^^^ source.apex storage.modifier.apex
+#                   ^ source.apex
+#                    ^^^^^ source.apex keyword.declaration.apex
+#                         ^ source.apex
+#                          ^^^^^^^^^^ source.apex entity.name.type.apex
+#                                    ^^^ source.apex
+>// <-- storage.modifier.apex
+#^^^^^^^^^^^^^^^^^^^^^^^^^^^^ source.apex comment.line.double-slash.apex
+>//     ^^^^ storage.modifier.apex
+#^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ source.apex comment.line.double-slash.apex
+>//          ^^^^^^^ storage.modifier.apex
+#^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ source.apex comment.line.double-slash.apex
+>//                  ^^^^^ keyword.declaration.apex
+#^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ source.apex comment.line.double-slash.apex
+>//                        ^^^^^^^^^^ entity.name.type.apex
+#^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ source.apex comment.line.double-slash.apex
+>
+>    private List<String> records;
+#^^^^ source.apex
+#    ^^^^^^^ source.apex storage.modifier.apex
+#           ^ source.apex
+#            ^^^^ source.apex support.type.apex
+#                ^ source.apex
+#                 ^^^^^^ source.apex support.type.apex
+#                       ^^^^^^^^^ source.apex
+#                                ^ source.apex punctuation.terminator.apex
+>//  ^^^^^^^ storage.modifier.apex
+#^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ source.apex comment.line.double-slash.apex
+>//          ^^^^ support.type.apex
+#^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ source.apex comment.line.double-slash.apex
+>//               ^^^^^^ support.type.apex
+#^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ source.apex comment.line.double-slash.apex
+>
+>    private Integer totalRecordCount;
+#^^^^ source.apex
+#    ^^^^^^^ source.apex storage.modifier.apex
+#           ^ source.apex
+#            ^^^^^^^ source.apex support.type.apex
+#                   ^^^^^^^^^^^^^^^^^ source.apex
+#                                    ^ source.apex punctuation.terminator.apex
+>//  ^^^^^^^ storage.modifier.apex
+#^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ source.apex comment.line.double-slash.apex
+>//          ^^^^^^^ support.type.apex
+#^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ source.apex comment.line.double-slash.apex
+>
+>    public List<String> getRecords() {
+#^^^^ source.apex
+#    ^^^^^^ source.apex storage.modifier.apex
+#          ^ source.apex
+#           ^^^^ source.apex support.type.apex
+#               ^ source.apex
+#                ^^^^^^ source.apex support.type.apex
+#                      ^^ source.apex
+#                        ^^^^^^^^^^ source.apex entity.name.function.apex
+#                                  ^^^^^ source.apex
+>//  ^^^^^^ storage.modifier.apex
+#^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ source.apex comment.line.double-slash.apex
+>//         ^^^^ entity.name.type.apex
+#^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ source.apex comment.line.double-slash.apex
+>//              ^^^^^^ support.type.apex
+#^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ source.apex comment.line.double-slash.apex
+>//                      ^^^^^^^^^^ entity.name.function.apex
+#^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ source.apex comment.line.double-slash.apex
+>
+>        return this.records;
+#^^^^^^^^ source.apex
+#        ^^^^^^ source.apex keyword.control.apex
+#              ^ source.apex
+#               ^^^^ source.apex keyword.other.apex
+#                   ^^^^^^^^ source.apex
+#                           ^ source.apex punctuation.terminator.apex
+>//      ^^^^^^ keyword.control.apex
+#^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ source.apex comment.line.double-slash.apex
+>//             ^^^^ keyword.other.apex
+#^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ source.apex comment.line.double-slash.apex
+>    }
+#^^^^^^ source.apex
+>}
+#^^ source.apex
+>

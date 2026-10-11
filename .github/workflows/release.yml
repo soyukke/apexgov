@@ -1,0 +1,100 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  version-check:
+    name: Version Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify tag matches package.json version
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          PKG_VER=$(node -p "require('./editors/vscode/package.json').version")
+          echo "Tag version: $TAG"
+          echo "package.json version: $PKG_VER"
+          if [ "$TAG" != "$PKG_VER" ]; then
+            echo "::error::Tag v$TAG does not match package.json version $PKG_VER"
+            exit 1
+          fi
+
+  build:
+    needs: version-check
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-linux
+            artifact: apexgov-linux-x86_64
+            binary: apexgov
+          - os: ubuntu-latest
+            target: aarch64-linux
+            artifact: apexgov-linux-aarch64
+            binary: apexgov
+          - os: macos-latest
+            target: aarch64-macos
+            artifact: apexgov-darwin-aarch64
+            binary: apexgov
+          - os: macos-latest
+            target: x86_64-macos
+            artifact: apexgov-darwin-x86_64
+            binary: apexgov
+          - os: ubuntu-latest
+            target: x86_64-windows
+            artifact: apexgov-windows-x86_64
+            binary: apexgov.exe
+          - os: ubuntu-latest
+            target: aarch64-windows
+            artifact: apexgov-windows-aarch64
+            binary: apexgov.exe
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Build
+        run: zig build --release=fast -Dtarget=${{ matrix.target }}
+
+      - name: Package
+        run: |
+          mkdir -p dist
+          cp zig-out/bin/${{ matrix.binary }} dist/${{ matrix.binary }}
+          cp LICENSE THIRD_PARTY_NOTICES.md dist/
+          tar -czf ${{ matrix.artifact }}.tar.gz -C dist ${{ matrix.binary }} LICENSE THIRD_PARTY_NOTICES.md
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}.tar.gz
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: artifacts/*.tar.gz

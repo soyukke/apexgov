@@ -1,0 +1,108 @@
+{
+  "name": "apexgov",
+  "displayName": "apexgov",
+  "description": "Cross-platform Apex Governor Limit Checker & Language Server for Salesforce Apex",
+  "version": "0.8.5",
+  "publisher": "soyukke",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/soyukke/apexgov"
+  },
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "Linters",
+    "Programming Languages"
+  ],
+  "keywords": [
+    "apex",
+    "salesforce",
+    "governor limits",
+    "soql",
+    "dml",
+    "lsp"
+  ],
+  "activationEvents": [
+    "onLanguage:apex",
+    "workspaceContains:**/*.cls",
+    "workspaceContains:**/*.trigger"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "apexgov.runTest",
+        "title": "Run Apex Test",
+        "category": "apexgov"
+      },
+      {
+        "command": "apexgov.runAllTests",
+        "title": "Run All Apex Tests",
+        "category": "apexgov"
+      }
+    ],
+    "languages": [
+      {
+        "id": "apex",
+        "aliases": [
+          "Apex"
+        ],
+        "extensions": [
+          ".cls",
+          ".trigger"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "apex",
+        "scopeName": "source.apex",
+        "path": "./syntaxes/apex.tmLanguage.json"
+      }
+    ],
+    "configuration": {
+      "title": "apexgov",
+      "properties": {
+        "apexgov.serverPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to apexgov binary. If empty, the extension downloads it automatically."
+        },
+        "apexgov.trace.server": {
+          "type": "string",
+          "enum": [
+            "off",
+            "messages",
+            "verbose"
+          ],
+          "default": "off",
+          "description": "Traces the communication between VS Code and the apexgov language server."
+        },
+        "apexgov.standardLibraryDocs.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show official Salesforce Apex Reference links for standard Apex library symbols in hover."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "test:grammar": "vscode-tmgrammar-snap -s source.apex -g syntaxes/apex.tmLanguage.json tests/*.cls",
+    "watch": "tsc -watch -p ./"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.80.0",
+    "@vscode/vsce": "^3.0.0",
+    "typescript": "^5.4.0",
+    "vscode-tmgrammar-test": "^0.1.3"
+  }
+}

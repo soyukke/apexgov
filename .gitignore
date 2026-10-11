@@ -1,0 +1,38 @@
+# Zig build outputs
+.zig-cache/
+zig-out/
+*.o
+*.obj
+*.exe
+
+# Local env and secrets
+.env
+.env.*
+!.env.example
+.envrc
+.direnv/
+
+# Common local files
+.DS_Store
+.idea/
+.vscode/
+
+# Local output artifacts
+reports/
+artifacts/
+tmp/
+.cache/
+
+# Nix
+result
+
+# Local external Apex fixtures (git-ignored validation inputs)
+.local-fixtures/
+
+# Claude Code
+.claude/*
+!.claude/skills/
+.claude/skills/local-fixtures/
+
+# Codex local configuration and skills
+.codex/
