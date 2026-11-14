@@ -47,14 +47,14 @@ pub const DocumentStore = struct {
 
     /// ドキュメントを開く（didOpen）。
     pub fn open(self: *DocumentStore, uri: []const u8, version: i64, text: []const u8) !void {
-        // 既存エントリがあれば解放してから上書き
-        if (self.documents.getPtr(uri)) |existing| {
-            self.free_document(existing);
-            _ = self.documents.remove(uri);
-        }
-
         const uri_copy = try self.allocator.dupe(u8, uri);
+        errdefer self.allocator.free(uri_copy);
+
         const text_copy = try self.allocator.dupe(u8, text);
+        errdefer self.allocator.free(text_copy);
+
+        // 既存エントリがあれば削除してから解放
+        self.close(uri);
 
         try self.documents.put(uri_copy, .{
             .uri = uri_copy,
@@ -470,4 +470,28 @@ test "apply_incremental_change: invalidates parse cache" {
 
     // キャッシュがクリアされている
     try std.testing.expect(store.get("file:///t.cls").?.parse_result == null);
+}
+
+test "reopening an existing document replaces its contents" {
+    var store = DocumentStore.init(std.testing.allocator);
+    defer store.deinit();
+
+    const uri = "file:///ClaseA.cls";
+
+    try store.open(uri, 0, "public class ClaseA {}");
+    try store.open(uri, 1, "public class ClaseA { Integer x; }");
+
+    try std.testing.expectEqual(
+        @as(u32, 1),
+        store.documents.count(),
+    );
+
+    const doc = store.get(uri).?;
+
+    try std.testing.expectEqual(@as(i64, 1), doc.version);
+
+    try std.testing.expectEqualStrings(
+        "public class ClaseA { Integer x; }",
+        doc.text,
+    );
 }
