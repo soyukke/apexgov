@@ -166,6 +166,7 @@ function syntheticDocuments() {
         "        }",
         "        private void nestedHelper() {}",
         "    }",
+        "    public void instanceWork() {}",
         "    public void run(Id recordId, List<SObject> records) {",
         "        Integer localValue = 1;",
         "        Integer copy = localValue;",
@@ -204,6 +205,8 @@ function syntheticDocuments() {
         "        Foo.helper('x');",
         "        Foo.exposedAccounts();",
         "        Foo.staticCount = 2;",
+        "        Foo instance = new Foo();",
+        "        instance.instanceWork();",
         "    }",
         "}",
         "",
@@ -341,6 +344,9 @@ async function checkCompletion(client, docs, report) {
   await expectCompletionLabels(client, foo, "Account.", ["getSObjectType", "SObjectType"]);
   await expectCompletionLabels(client, foo, "Schema.", ["getGlobalDescribe", "describeSObjects"]);
   await expectCompletionLabels(client, foo, "Type.", ["forName", "newInstance"]);
+  const caller = docs[1];
+  await expectCompletionLabels(client, caller, "Foo.", ["exposedAccounts", "staticCount"]);
+  await expectCompletionLabels(client, caller, "instance.", ["instanceWork"]);
   report.push("completion: OK");
 }
 

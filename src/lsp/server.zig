@@ -620,10 +620,12 @@ pub const Server = struct {
             return;
         };
         const doc = self.store.get(ctx.uri) orelse return;
-        const items = try completion_mod.get_completions(
+        const items = try completion_mod.get_completions_cross_file(
             br,
             doc.text,
+            ctx.uri,
             ctx.offset,
+            &self.store,
             self.allocator,
             &self.custom_fields,
         );
