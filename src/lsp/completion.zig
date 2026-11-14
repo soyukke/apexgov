@@ -8,6 +8,7 @@ const lsp_types = @import("types.zig");
 const binder_mod = @import("binder.zig");
 const sobject_schema = @import("sobject_schema.zig");
 const apex_stdlib = @import("apex_stdlib.zig");
+const DocumentStore = @import("document_store.zig").DocumentStore;
 
 /// Apex キーワード一覧。
 const apex_keywords = [_][]const u8{
@@ -42,6 +43,80 @@ pub fn get_completions(
     }
 
     // 通常補完: スコープ内シンボル + キーワード
+    return get_default_completions(result, allocator);
+}
+
+fn dot_receiver_name(
+    source: []const u8,
+    offset: u32,
+) ?[]const u8 {
+    var pos = offset;
+
+    while (pos > 0 and source[pos - 1] == ' ') {
+        pos -= 1;
+    }
+
+    if (pos == 0 or source[pos - 1] != '.') {
+        return null;
+    }
+
+    return identifier_ending_at(source, pos - 1);
+}
+
+pub fn get_completions_cross_file(
+    result: *const binder_mod.BindResult,
+    source: []const u8,
+    uri: []const u8,
+    offset: u32,
+    store: *DocumentStore,
+    allocator: std.mem.Allocator,
+    custom_fields: ?*const sobject_schema.CustomFieldRegistry,
+) ![]lsp_types.CompletionItem {
+    const local_type = detect_dot_context(
+        source,
+        offset,
+        result,
+        custom_fields,
+    );
+
+    if (local_type) |type_name| {
+        const local_items = try get_dot_completions(
+            type_name,
+            result,
+            allocator,
+            custom_fields,
+        );
+
+        if (local_items.len > 0) return local_items;
+        allocator.free(local_items);
+    }
+
+    const type_name = local_type orelse
+        dot_receiver_name(source, offset) orelse
+        return get_default_completions(result, allocator);
+
+    const resolved_type = base_type_name(type_name);
+
+    if (store.resolve_symbol_across_files(resolved_type, uri)) |match| {
+        if (try store.ensure_bound(match.uri)) |br| {
+            var items: std.ArrayList(lsp_types.CompletionItem) = .empty;
+            errdefer items.deinit(allocator);
+
+            try append_user_class_members(
+                &items,
+                allocator,
+                resolved_type,
+                br,
+            );
+
+            return items.toOwnedSlice(allocator);
+        }
+    }
+
+    if (local_type != null) {
+        return allocator.alloc(lsp_types.CompletionItem, 0);
+    }
+
     return get_default_completions(result, allocator);
 }
 
@@ -433,6 +508,55 @@ fn complete_at(source: []const u8, offset: u32) !TestComplCtx {
     return .{ .items = items, .arena = arena };
 }
 
+const TestCrossFileComplCtx = struct {
+    store: DocumentStore,
+    arena: std.heap.ArenaAllocator,
+    items: []lsp_types.CompletionItem,
+
+    fn deinit(self: *TestCrossFileComplCtx) void {
+        self.arena.deinit();
+        self.store.deinit();
+    }
+};
+
+fn complete_at_cross_file(
+    source: []const u8,
+    offset: u32,
+    external_source: ?[]const u8,
+) !TestCrossFileComplCtx {
+    var store = DocumentStore.init(std.testing.allocator);
+    errdefer store.deinit();
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    errdefer arena.deinit();
+
+    const uri = "file:///Main.cls";
+
+    if (external_source) |external| {
+        try store.open("file:///External.cls", 1, external);
+    }
+
+    try store.open(uri, 1, source);
+
+    const br = try store.ensure_bound(uri) orelse unreachable;
+
+    const items = try get_completions_cross_file(
+        br,
+        source,
+        uri,
+        offset,
+        &store,
+        arena.allocator(),
+        null,
+    );
+
+    return .{
+        .store = store,
+        .arena = arena,
+        .items = items,
+    };
+}
+
 fn has_label(items: []const lsp_types.CompletionItem, label: []const u8) bool {
     for (items) |item| {
         if (std.mem.eql(u8, item.label, label)) return true;
@@ -676,4 +800,161 @@ test "no dot: returns keywords and symbols, not SObject fields" {
     try std.testing.expect(has_label(ctx.items, "public"));
     // SObject フィールドは含まれない
     try std.testing.expect(!has_label(ctx.items, "Phone"));
+}
+
+test "dot completion: instance members across files" {
+    const external =
+        \\public class External {
+        \\    public void doWork() {}
+        \\}
+    ;
+
+    const source =
+        \\public class Main {
+        \\    public void run() {
+        \\        External instance = new External();
+        \\        instance.
+        \\    }
+        \\}
+    ;
+
+    const offset = std.mem.indexOf(u8, source, "instance.").? +
+        "instance.".len;
+
+    var ctx = try complete_at_cross_file(
+        source,
+        @intCast(offset),
+        external,
+    );
+    defer ctx.deinit();
+
+    try std.testing.expect(
+        has_label_with_kind(ctx.items, "doWork", .method),
+    );
+}
+
+test "dot completion: static members across files" {
+    const external =
+        \\public class External {
+        \\    public static void doWork() {}
+        \\}
+    ;
+
+    const source =
+        \\public class Main {
+        \\    public void run() {
+        \\        External.
+        \\    }
+        \\}
+    ;
+
+    const offset = std.mem.indexOf(u8, source, "External.").? +
+        "External.".len;
+
+    var ctx = try complete_at_cross_file(
+        source,
+        @intCast(offset),
+        external,
+    );
+    defer ctx.deinit();
+
+    try std.testing.expect(
+        has_label_with_kind(ctx.items, "doWork", .method),
+    );
+}
+
+test "cross-file completion preserves local class members" {
+    const source =
+        \\public class Main {
+        \\    public void doWork() {}
+        \\    public void run() {
+        \\        Main instance = new Main();
+        \\        instance.
+        \\    }
+        \\}
+    ;
+
+    const offset = std.mem.indexOf(u8, source, "instance.").? +
+        "instance.".len;
+
+    var ctx = try complete_at_cross_file(
+        source,
+        @intCast(offset),
+        null,
+    );
+    defer ctx.deinit();
+
+    try std.testing.expect(
+        has_label_with_kind(ctx.items, "doWork", .method),
+    );
+}
+
+test "cross-file completion preserves standard type members" {
+    const source =
+        \\public class Main {
+        \\    public void run() {
+        \\        String value = 'hello';
+        \\        value.
+        \\    }
+        \\}
+    ;
+
+    const offset = std.mem.indexOf(u8, source, "value.").? +
+        "value.".len;
+
+    var ctx = try complete_at_cross_file(
+        source,
+        @intCast(offset),
+        null,
+    );
+    defer ctx.deinit();
+
+    try std.testing.expect(
+        has_label_with_kind(ctx.items, "length", .method),
+    );
+}
+
+test "cross-file completion preserves default completions" {
+    const source =
+        \\public class Main {
+        \\    public void run() {
+        \\        Integer myVar = 1;
+        \\    }
+        \\}
+    ;
+
+    const offset = std.mem.indexOf(u8, source, "1;").? +
+        "1;".len;
+
+    var ctx = try complete_at_cross_file(
+        source,
+        @intCast(offset),
+        null,
+    );
+    defer ctx.deinit();
+
+    try std.testing.expect(has_label(ctx.items, "myVar"));
+    try std.testing.expect(has_label(ctx.items, "return"));
+}
+
+test "cross-file completion preserves unknown receiver fallback" {
+    const source =
+        \\public class Main {
+        \\    public void run() {
+        \\        UnknownType.
+        \\    }
+        \\}
+    ;
+
+    const offset = std.mem.indexOf(u8, source, "UnknownType.").? +
+        "UnknownType.".len;
+
+    var ctx = try complete_at_cross_file(
+        source,
+        @intCast(offset),
+        null,
+    );
+    defer ctx.deinit();
+
+    try std.testing.expect(has_label(ctx.items, "return"));
 }
